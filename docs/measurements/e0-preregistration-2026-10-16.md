@@ -8,6 +8,11 @@
 the window minus 1024. That never times a 16384-window model above 8192, which is short of the full-window turns P3
 grades. The sizes are now 4096, 8192 and the window minus 1024. No other part changed.
 
+**Amendment 2, 2026-10-16, before any timed run.** Two Mac arms added: goinfer's curated `demo:0.5b` tier
+(Qwen2.5-Coder-0.5B) and gemma-4-E2B, both used by goinfer's `demo/agent`. The floor moves from the 1.5B to the
+0.5B, the model least likely to pass. With the 1.5B as the floor, a good 1.5B result would have voided the smoke set
+rather than counted. The 1.5B (`demo:1.5b`) is now an ordinary candidate.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
@@ -31,7 +36,9 @@ storage"). Every arm is served by `goinfer-serve` from one pinned goinfer revisi
 |---|---|---|---|
 | Mac (M1 Pro 16 GB, macOS 26) | metal | `qwen2.5-7b-instruct-q4_k_m.gguf` | the 7B that works on nobara, on the Mac |
 | Mac | metal | `gemma-4-e4b-gguf/gemma-4-E4B_q4_0-it.gguf` | the size between 3B and 7B, never tried for agent use |
-| Mac | metal | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | the floor: a model expected to fail the smoke set. If it passes, the set is too easy |
+| Mac | metal | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | goinfer's `demo:1.5b` tier |
+| Mac | metal | `gemma-4-e2b-gguf/gemma-4-E2B_q4_0-it.gguf` | the small gemma `demo/agent` runs |
+| Mac | metal | `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf` | goinfer's `demo:0.5b` tier, and the floor: the model least likely to pass the smoke set. If it passes, the set is too easy |
 | Mac | metal | `phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf` | DESIGN §8.4 candidate. A 4,096 window, so fit, check and smoke only: reported, never eligible |
 | Mac | cpu | `qwen2.5-7b-instruct-q4_k_m.gguf` | the CPU path that did not fit at q3_k_m (opencode.md); fit decides again |
 | nobara (RTX 2070 SUPER 8 GB) | cuda | `qwen2.5-7b-instruct-q4_k_m.gguf` | **the incumbent**: the one configuration measured working |
@@ -125,7 +132,7 @@ incumbent stays and that is recorded as a finding.
   flips between runs exposes nondeterminism, which is a finding in itself.
 - **2.0× TTFT and 10 tok/s** are what the owner will tolerate on the Mac in exchange for not needing nobara. They are
   judgements, registered as such. The 10% band exists because they are not measurements.
-- **The floor arm** (1.5B) has to fail. If it passes 17 or more, the smoke set cannot separate models, and the run
+- **The floor arm** (0.5B) has to fail. If it passes 17 or more, the smoke set cannot separate models, and the run
   grades nothing. It is then recorded as void for the eligibility rule, and only the speed rows stand.
 
 ## Run discipline
