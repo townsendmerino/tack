@@ -75,9 +75,10 @@ say what each will hold.
 
 ## Day loop: seconds, not minutes
 
-- Check a change with the touched-files checker once it exists (P0): gofmt, build and vet of what the diff touches, and
-  the tests of the touched packages. Until then: `gofmt -l`, `go vet` (both GOOS), and `go test -run '<yours>'` on the
-  package you changed.
+- Check a change with `go run ./tools/touched`: gofmt, build and vet (darwin and linux, cgo off) of what the diff
+  touches and everything importing it, and the tests of the touched packages and their direct importers. `-base <ref>`
+  changes what the diff is taken against; `-all` checks everything, as CI does. `go run ./tools/lint` is staticcheck
+  behind its canary (below). Locally a `go.work` containing `use .` keeps a parent directory's workspace out.
 - Do not run whole-module test suites by day; CI runs them on every push.
 - A red CI run is fixed by running the one failing test by name, not by re-running everything.
 - **A change that forces a long run on the day loop is a modularity bug.** Say so in the report, name the edge that

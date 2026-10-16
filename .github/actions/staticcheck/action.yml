@@ -1,0 +1,16 @@
+name: install-staticcheck
+description: >
+  Builds the pinned staticcheck from source and puts it on PATH. The pin is this directory's go.mod (staticcheck v0.8.1
+  against golang.org/x/tools v0.51.0, as goinfer's CI pins it): no staticcheck release reads Go 1.27.2's export data,
+  and a staticcheck that cannot read it analyses nothing and exits 0. tools/lint's canary catches that case.
+runs:
+  using: composite
+  steps:
+    - name: build staticcheck (go.mod in .github/actions/staticcheck)
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.local/bin"
+        GOWORK=off go build -C "$GITHUB_ACTION_PATH" -o "$HOME/.local/bin/staticcheck" honnef.co/go/tools/cmd/staticcheck
+        "$HOME/.local/bin/staticcheck" -version
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
