@@ -1,0 +1,36 @@
+# E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB): the arms of docs/measurements/e0-preregistration-2026-10-16.md,
+# in run order. Run by goinfer's scripts/night.py on nobara, one job per arm, never by day except -fit-only.
+
+box = "nobara"
+# Cross-built on the Mac from a git archive of goinfer 41e13b26: `go work init . ./cuda`, GOOS=linux GOARCH=amd64
+# CGO_ENABLED=0, -tags cuda, ./cuda/cmd/serve.
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-41e13b26"
+goinfer_rev = "41e13b26"
+# The same snapshot of tack at ea9d411 the Mac's jobs size their prompts from.
+workspace = "~/tack-runs/e0/workspace/tack"
+
+[[arm]]
+name = "qwen2.5-7b-q4km-cuda" # the incumbent
+model_path = "~/models/qwen2.5-7b-instruct-q4_k_m.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "granite-4.0-h-tiny-q8-cuda"
+model_path = "~/models/granite/granite-4.0-h-tiny-Q8_0.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "gpt-oss-20b-mxfp4-cuda"
+model_path = "~/models/gpt-oss-20b-MXFP4.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "gemma4-26b-q4km-cuda"
+model_path = "~/models/gemma4-26b-q4_k_m.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "phi3-mini-4k-q4-cuda"
+model_path = "~/models/phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf"
+args = ["-backend", "cuda"]
+ctx = [4096]
