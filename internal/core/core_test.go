@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http/httptest"
 	"os"
@@ -68,6 +69,11 @@ type fixture struct {
 	tap    *tap
 	events chan proto.Event
 	script *goinfertest.Scripted
+
+	// timing: each fsync the store made, and when each event reached the client, to tell a slow disk from a stall.
+	mu       sync.Mutex
+	syncs    []string
+	arrivals []time.Time
 }
 
 func newFixture(t *testing.T, replies ...goinfertest.Reply) *fixture {
@@ -75,6 +81,12 @@ func newFixture(t *testing.T, replies ...goinfertest.Reply) *fixture {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+	}
+	f := &fixture{tap: &tap{}, events: make(chan proto.Event, 256)}
+	st.OnSync = func(typ proto.EventType, took time.Duration) {
+		f.mu.Lock()
+		f.syncs = append(f.syncs, fmt.Sprintf("%s %s", typ, took.Round(time.Microsecond)))
+		f.mu.Unlock()
 	}
 	script := goinfertest.NewScripted("m", 16384, replies...)
 	ts := httptest.NewServer(script)
@@ -87,9 +99,14 @@ func newFixture(t *testing.T, replies ...goinfertest.Reply) *fixture {
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	go c.Serve(ctx, b)
-	f := &fixture{core: c, tap: &tap{}, events: make(chan proto.Event, 256), script: script}
+	f.core, f.script = c, script
 	f.client = NewClient(&tapConn{Conn: a, t: f.tap})
-	f.client.OnEvent = func(p proto.SessionEventParams) { f.events <- p.Event }
+	f.client.OnEvent = func(p proto.SessionEventParams) {
+		f.mu.Lock()
+		f.arrivals = append(f.arrivals, time.Now())
+		f.mu.Unlock()
+		f.events <- p.Event
+	}
 	if err := f.client.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +160,7 @@ func TestTrafficConformsToTheProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	evs := f.waitTurnEnd(t)
+	f.logTiming(t)
 	if pr.Seq != 1 || evs[0].Type != proto.EvUserMessage {
 		t.Fatalf("prompt seq %d, first event %s", pr.Seq, evs[0].Type)
 	}
@@ -251,4 +269,17 @@ func types(evs []proto.Event) []proto.EventType {
 		out[i] = ev.Type
 	}
 	return out
+}
+
+// logTiming reports each fsync's duration and the gap between the turn's first two events, on stderr so it streams
+// under -v and is visible in CI even when the test passes (the macOS job runs this test with -v).
+func (f *fixture) logTiming(t *testing.T) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gap := time.Duration(0)
+	if len(f.arrivals) >= 2 {
+		gap = f.arrivals[1].Sub(f.arrivals[0])
+	}
+	fmt.Fprintf(os.Stderr, "%s: %d events; first-to-second event gap %s; fsyncs: %s\n", t.Name(), len(f.arrivals),
+		gap.Round(time.Microsecond), strings.Join(f.syncs, ", "))
 }

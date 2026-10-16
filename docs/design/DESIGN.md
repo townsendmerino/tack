@@ -1033,6 +1033,8 @@ As in §7.7, plus a per-day usage chart (Swift Charts: tokens, prefill and decod
 - No model fits, or the owner prefers another server: the same screen connects Ollama, LM Studio, llama.cpp's server, or
   a remote goinfer by URL. Nothing about tack requires the bundled server to be the one in use.
 - ken indexes the first workspace with the bundled embedding model, offline, while the model downloads.
+- The app and the Homebrew install write a default `[ken]` section to `config.toml` with `model_dir` pointing at the
+  bundled embedding model, since tack requires it to be explicit and without it a new user silently gets no search tool.
 - **The open question is the 16 GB Mac** (risk R12): goinfer has no agent setup measured working there yet. E0 decides
   what the first-run screen says to a 16 GB owner — a smaller model with clear limits, or a recommendation to use a
   remote server — and it says that plainly rather than letting a model that does not fit fail later.

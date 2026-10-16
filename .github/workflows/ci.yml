@@ -32,6 +32,11 @@ jobs:
         run: go run ./tools/touched -all
       - name: lint
         run: go run ./tools/lint
+      # The store's fsync timings and the gap between a turn's first two events, printed even on a pass: a macOS run once
+      # stalled after the first event, and darwin's File.Sync is F_FULLFSYNC (a drive-cache flush). Evidence for the
+      # log's durability decision, which is pending with the owner.
+      - name: core fsync timing
+        run: go test -count=1 -v -run TestTrafficConformsToTheProtocol ./internal/core
       # The fixtures pass on both sides (DESIGN §9.3): the generated Swift types decode and re-encode every fixture
       # event. Go's side is internal/proto's TestFixturesConform; staleness of the Swift file is swiftgen's test.
       - name: swift fixture check

@@ -19,6 +19,9 @@ import (
 type Store struct {
 	root  string
 	Blobs *Blobs
+	// OnSync, when set, is told how long each fsync Append makes took, and for which event type. Set it before creating
+	// or opening logs.
+	OnSync func(typ proto.EventType, took time.Duration)
 	// now stamps events; tests replace it.
 	now func() time.Time
 }
@@ -46,6 +49,7 @@ type Log struct {
 	now     func() time.Time
 	// sync makes the file durable; tests count calls through it.
 	sync func(*os.File) error
+	onSync func(proto.EventType, time.Duration)
 }
 
 func (s *Store) logPath(id proto.SessionID) string {
@@ -62,7 +66,7 @@ func (s *Store) Create(id proto.SessionID) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync}, nil
+	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
 }
 
 // OpenLog reopens an existing session's log for appending. A torn last line (a crash mid-append, so no trailing
@@ -89,7 +93,7 @@ func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
 			return nil, err
 		}
 	}
-	l := &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync}
+	l := &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
 	if n := len(evs); n > 0 {
 		l.lastSeq = evs[n-1].Seq
 	}
@@ -174,8 +178,12 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	}
 	l.lastSeq = ev.Seq
 	if spec.Fsync {
+		t0 := time.Now()
 		if err := l.sync(l.f); err != nil {
 			return proto.Event{}, err
+		}
+		if l.onSync != nil {
+			l.onSync(typ, time.Since(t0))
 		}
 	}
 	return ev, nil
