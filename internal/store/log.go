@@ -29,7 +29,7 @@ type Store struct {
 // Open opens (creating if needed) the store rooted at dir. dir is created 0700: nothing in it is for other users.
 func Open(dir string) (*Store, error) {
 	for _, d := range []string{dir, filepath.Join(dir, "sessions"), filepath.Join(dir, "blobs")} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+		if err := mkdirAllSynced(d, 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -59,11 +59,15 @@ func (s *Store) logPath(id proto.SessionID) string {
 // Create starts a new session's log. It fails if the session exists.
 func (s *Store) Create(id proto.SessionID) (*Log, error) {
 	p := s.logPath(id)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+	if err := mkdirAllSynced(filepath.Dir(p), 0o700); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	if err := syncDir(filepath.Dir(p)); err != nil { // the new log's directory entry (ADR-004)
+		f.Close()
 		return nil, err
 	}
 	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
