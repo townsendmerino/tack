@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -377,4 +378,29 @@ func withoutKey(env []string) []string {
 		}
 	}
 	return out
+}
+
+// Endpoint is the running child's base URL and API key, for tools that drive it directly (goinfer-serve check).
+func (s *Supervisor) Endpoint() (url, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.baseURL, s.key
+}
+
+// PeakRSS is the last child's peak resident set in bytes, from getrusage once it has exited; 0 while it runs. It is
+// RSS, which Darwin lowers under memory pressure: a measurement's context, never a guard (CLAUDE.md).
+func (s *Supervisor) PeakRSS() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || !s.dead() { // ProcessState is written by the reaper; read it only after exited closes
+		return 0
+	}
+	ru, ok := s.cmd.ProcessState.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return 0
+	}
+	if runtime.GOOS == "darwin" {
+		return ru.Maxrss // bytes on Darwin
+	}
+	return ru.Maxrss * 1024 // KiB on Linux
 }

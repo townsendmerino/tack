@@ -1,0 +1,562 @@
+package eval
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/tools"
+)
+
+// Options configures a run of `tack eval models`.
+type Options struct {
+	Manifest *Manifest
+	Out      string // results directory: results.jsonl, check-<arm>.txt
+	Arm      string // run only this arm
+	FitOnly  bool   // the day fit check: load each arm and record goinfer's plan, nothing timed
+	TackRev  string
+	LockPath string
+	Log      io.Writer     // phases, heartbeats and results as they happen
+	Beat     time.Duration // heartbeat interval (default 30s)
+	// Pressure reads memory pressure; nil means models.MemoryPressure.
+	Pressure func() (models.Pressure, error)
+}
+
+// ErrHeld is returned (wrapped) when another timed run holds the box.
+var ErrHeld = errors.New("the timing lock is held")
+
+// Run runs every arm of the manifest in order. A timed run holds the timing lock throughout; the fit check only
+// checks that no timed run holds it. An arm that fails records why and the run goes on to the next.
+func Run(ctx context.Context, o Options) error {
+	if o.Beat == 0 {
+		o.Beat = 30 * time.Second
+	}
+	if o.Pressure == nil {
+		o.Pressure = models.MemoryPressure
+	}
+	if o.FitOnly {
+		if err := CheckTimingLock(o.LockPath); err != nil {
+			return fmt.Errorf("%w: %v", ErrHeld, err)
+		}
+	} else {
+		lock, err := AcquireTimingLock(o.LockPath, "tack eval models "+o.Manifest.Box)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrHeld, err)
+		}
+		defer lock.Release()
+	}
+	if err := os.MkdirAll(o.Out, 0o755); err != nil {
+		return err
+	}
+	rf, err := os.OpenFile(filepath.Join(o.Out, "results.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer rf.Close()
+	r := &runner{o: o, results: rf}
+	start := time.Now()
+	r.logf("e0 %s: start %s, %d arms, fit-only=%v, tack %s, goinfer %s", o.Manifest.Box, start.Format("15:04:05 MST"),
+		len(o.Manifest.Arms), o.FitOnly, o.TackRev, o.Manifest.GoinferRev)
+	for i, arm := range o.Manifest.Arms {
+		if o.Arm != "" && arm.Name != o.Arm {
+			continue
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		r.logf("e0 %s: arm %d/%d %s (started %s, elapsed %s)", o.Manifest.Box, i+1, len(o.Manifest.Arms), arm.Name,
+			start.Format("15:04"), time.Since(start).Round(time.Second))
+		r.arm(ctx, arm)
+	}
+	r.logf("e0 %s: done in %s", o.Manifest.Box, time.Since(start).Round(time.Second))
+	return nil
+}
+
+type runner struct {
+	o       Options
+	mu      sync.Mutex
+	results io.Writer
+}
+
+func (r *runner) logf(format string, args ...any) {
+	if r.o.Log != nil {
+		fmt.Fprintf(r.o.Log, time.Now().Format("15:04:05")+" "+format+"\n", args...)
+	}
+}
+
+// record writes one result line.
+func (r *runner) record(arm Arm, phase string, fields map[string]any) {
+	rec := map[string]any{"box": r.o.Manifest.Box, "arm": arm.Name, "model_path": arm.ModelPath, "phase": phase,
+		"at": time.Now().UTC().Format(time.RFC3339), "tack": r.o.TackRev, "goinfer": r.o.Manifest.GoinferRev}
+	for k, v := range fields {
+		rec[k] = v
+	}
+	b, _ := json.Marshal(rec)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fmt.Fprintf(r.results, "%s\n", b)
+}
+
+// progress is the heartbeat's state: the phase and its done/total count. Items differ in cost (a 16k prompt against
+// a 4k one), so the heartbeat reports counts, not an estimate of time left.
+type progress struct {
+	mu          sync.Mutex
+	phase       string
+	done, total int
+	phaseStart  time.Time
+}
+
+func (p *progress) enter(phase string, total int) {
+	p.mu.Lock()
+	p.phase, p.done, p.total, p.phaseStart = phase, 0, total, time.Now()
+	p.mu.Unlock()
+}
+
+func (p *progress) step() {
+	p.mu.Lock()
+	p.done++
+	p.mu.Unlock()
+}
+
+func (r *runner) arm(ctx context.Context, arm Arm) {
+	armStart := time.Now()
+	p := &progress{}
+	stopBeat := make(chan struct{})
+	go func() {
+		t := time.NewTicker(r.o.Beat)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				p.mu.Lock()
+				r.logf("  heartbeat %s phase=%s %d/%d, phase %s, arm %s", arm.Name, p.phase, p.done, p.total,
+					time.Since(p.phaseStart).Round(time.Second), time.Since(armStart).Round(time.Second))
+				p.mu.Unlock()
+			case <-stopBeat:
+				return
+			}
+		}
+	}()
+	defer close(stopBeat)
+	phase := func(name string, total int, f func()) {
+		p.enter(name, total)
+		r.logf("  %s: enter %s", arm.Name, name)
+		t0 := time.Now()
+		f()
+		r.logf("  %s: leave %s after %s", arm.Name, name, time.Since(t0).Round(time.Millisecond))
+	}
+
+	// Memory pressure, sampled through the arm (the Mac's guard signal), and VRAM on CUDA boxes.
+	samp := newSampler(r.o.Pressure)
+	defer samp.stop()
+
+	var dirs []string // removed when the arm ends: the admitted child keeps its socket and log there until then
+	defer func() {
+		for _, d := range dirs {
+			os.RemoveAll(d)
+		}
+	}()
+	var sup *models.Supervisor
+	var srv server.Server
+	window, admitted := 0, 0
+	phase("fit", len(arm.Ctx), func() {
+		if pr, err := r.o.Pressure(); err == nil && pr >= models.PressureWarning {
+			r.record(arm, "fit", map[string]any{"skipped": "pressure", "pressure": pr.String()})
+			return
+		}
+		for _, n := range arm.Ctx {
+			dir, err := os.MkdirTemp("/tmp", "tke0")
+			if err != nil {
+				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
+				return
+			}
+			dirs = append(dirs, dir)
+			s, err := models.NewSupervisor(models.ChildConfig{Binary: r.o.Manifest.GoinferServe, ModelPath: arm.ModelPath,
+				Model: arm.Name, Ctx: n, Args: arm.Args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
+			if err != nil {
+				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
+				return
+			}
+			t0 := time.Now()
+			c, err := s.Ensure(ctx)
+			p.step()
+			if err != nil {
+				_ = s.Stop()
+				r.record(arm, "fit", map[string]any{"ctx": n, "admitted": false, "error": err.Error(), "log_tail": tail(filepath.Join(dir, "goinfer-serve.log"), 20)})
+				r.logf("  %s: -ctx %d refused: %v", arm.Name, n, err)
+				continue
+			}
+			plan, _ := s.Plan()
+			window, admitted, sup, srv = plan.ContextWindow, n, s, c
+			if window == 0 {
+				window = n
+			}
+			r.record(arm, "fit", map[string]any{"ctx": n, "admitted": true, "fit_line": plan.FitLine,
+				"context_window": plan.ContextWindow, "load_ms": time.Since(t0).Milliseconds()})
+			r.logf("  %s: -ctx %d admitted, window %d; %s", arm.Name, n, window, plan.FitLine)
+			return
+		}
+	})
+	if sup == nil {
+		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": "no context was admitted"})
+		return
+	}
+	defer func() {
+		_ = sup.Stop()
+		rss := sup.PeakRSS()
+		pmax, vram := samp.stop()
+		r.record(arm, "footprint", map[string]any{"rss_peak_bytes": rss, "rss_note": "RSS: reads low under pressure on Darwin",
+			"pressure_max": pmax.String(), "vram_peak_mib": vram})
+	}()
+	if r.o.FitOnly {
+		return
+	}
+
+	url, key := sup.Endpoint()
+	checkOK, checkFails := true, 0
+	phase("check", 1, func() {
+		out, code := r.serveCheck(ctx, url, key, arm.Name)
+		p.step()
+		path := filepath.Join(r.o.Out, "check-"+arm.Name+".txt")
+		_ = os.WriteFile(path, []byte(out), 0o644)
+		checkFails = failedRows(out, code)
+		checkOK = code == 0
+		r.record(arm, "check", map[string]any{"exit": code, "failed_rows": checkFails, "output": path})
+	})
+
+	smoke := [2]int{}
+	malformed := 0
+	var unstable []int
+	phase("smoke", 2*len(SmokeTasks), func() {
+		first := make([]bool, len(SmokeTasks))
+		for run := 0; run < 2; run++ {
+			for i := range SmokeTasks {
+				res, err := r.smokeOne(ctx, srv, arm, i)
+				p.step()
+				f := map[string]any{"run": run + 1, "result": res}
+				if err != nil {
+					f["error"] = err.Error()
+				}
+				r.record(arm, "smoke", f)
+				if res.Pass {
+					smoke[run]++
+				}
+				if res.Malformed {
+					malformed++
+				}
+				if run == 0 {
+					first[i] = res.Pass
+				} else if first[i] != res.Pass {
+					unstable = append(unstable, i)
+				}
+			}
+			r.logf("  %s: smoke run %d: %d/%d", arm.Name, run+1, smoke[run], len(SmokeTasks))
+		}
+		r.record(arm, "smoke_summary", map[string]any{"pass": smoke, "malformed": malformed, "unstable_tasks": unstable})
+	})
+	verdict, why := grade(admitted > 0 && window >= 8192, checkOK, checkFails, smoke, malformed)
+	r.record(arm, "verdict", map[string]any{"verdict": verdict, "why": why, "window": window, "admitted_ctx": admitted})
+	r.logf("  %s: verdict %s (%s)", arm.Name, verdict, why)
+	if window < 8192 {
+		return
+	}
+
+	filler := repoText(r.o.Manifest.Workspace)
+	var sizes []int
+	for _, n := range []int{4096, 8192, 16384} {
+		if n <= window-1024 {
+			sizes = append(sizes, n)
+		}
+	}
+	phase("ttft", len(sizes)*8, func() {
+		for _, n := range sizes {
+			if ctx.Err() != nil {
+				return
+			}
+			r.ttft(ctx, srv, arm, n, filler, p)
+		}
+	})
+	phase("decode", 3, func() {
+		var rates []float64
+		for i := 0; i < 3; i++ {
+			rate, toks, err := decodeOnce(ctx, srv, arm.Name)
+			p.step()
+			f := map[string]any{"rep": i + 1, "tok_per_s": rate, "tokens": toks}
+			if err != nil {
+				f["error"] = err.Error()
+			} else {
+				rates = append(rates, rate)
+			}
+			r.record(arm, "decode", f)
+		}
+		if len(rates) > 0 {
+			med, lo, hi := spread(rates)
+			r.record(arm, "decode_summary", map[string]any{"median": med, "min": lo, "max": hi})
+			r.logf("  %s: decode median %.1f tok/s", arm.Name, med)
+		}
+	})
+}
+
+// grade is the pre-registered per-arm rule (docs/measurements/e0-preregistration-2026-10-16.md, "Decision rule").
+func grade(windowOK, checkOK bool, checkFails int, smoke [2]int, malformed int) (string, string) {
+	lo := min(smoke[0], smoke[1])
+	switch {
+	case !windowOK:
+		return "fail", "no window of at least 8192 was admitted"
+	case checkOK && lo >= 17 && malformed == 0:
+		return "eligible", fmt.Sprintf("smoke %d/%d, check ok", smoke[0], smoke[1])
+	case lo >= 14 && malformed == 0 && (checkOK || checkFails == 1):
+		return "parked", fmt.Sprintf("smoke %d/%d, check failed rows %d", smoke[0], smoke[1], checkFails)
+	}
+	return "fail", fmt.Sprintf("smoke %d/%d, malformed %d, check ok=%v failed rows %d", smoke[0], smoke[1], malformed, checkOK, checkFails)
+}
+
+var failedRe = regexp.MustCompile(`(?m)^(\d+) of \d+ checks FAILED`)
+
+// failedRows reads goinfer-serve check's summary line ("N of M checks FAILED", internal/servecheck/cmd.go). A failing
+// exit with no summary counts as an unknown number of failures (-1).
+func failedRows(out string, exit int) int {
+	if m := failedRe.FindStringSubmatch(out); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	if exit == 0 {
+		return 0
+	}
+	return -1
+}
+
+func (r *runner) serveCheck(ctx context.Context, url, key, model string) (string, int) {
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, r.o.Manifest.GoinferServe, "check", "-api-key", key, "-model", model, url)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return string(out), ee.ExitCode()
+		}
+		return string(out) + "\n" + err.Error(), -1
+	}
+	return string(out), 0
+}
+
+func smokeRequest(model, workspace string, i int) server.Request {
+	zero := 0.0
+	return server.Request{Model: model, System: loop.SystemPrompt, Tools: tools.NewSet(nil).Specs(), MaxTokens: 256,
+		Temperature: &zero, Messages: []server.Message{{Role: server.User,
+			Content: []server.Block{server.TextBlock(loop.UserText(true, workspace, SmokeTasks[i].Prompt))}}}}
+}
+
+func (r *runner) smokeOne(ctx context.Context, srv server.Server, arm Arm, i int) (SmokeResult, error) {
+	resp, err := srv.Stream(ctx, smokeRequest(arm.Name, r.o.Manifest.Workspace, i), nil)
+	if err != nil {
+		return SmokeResult{Task: i, Why: "request failed"}, err
+	}
+	return ScoreSmoke(i, resp), nil
+}
+
+// ttft measures time to the first streamed token at about n prompt tokens: three cold repeats (a fresh nonce at the
+// start of the system prompt, so nothing is reused) after one warm-up, and three reused repeats (the previous prompt
+// with only its last 512 tokens changed) after one warm-up.
+func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, filler string, p *progress) {
+	chars, counted, err := sizeFiller(ctx, srv, arm.Name, filler, n)
+	if err != nil {
+		r.record(arm, "ttft", map[string]any{"size": n, "error": err.Error()})
+		return
+	}
+	tailChars := chars * 512 / n
+	prefix := filler[:chars-tailChars]
+	tailAt := func(i int) string { // distinct tails of the same length, from further into the text
+		off := (chars + i*tailChars) % (len(filler) - tailChars)
+		return filler[off : off+tailChars]
+	}
+	measure := func(cell string, rep int, system, user string) {
+		d, err := firstToken(ctx, srv, arm.Name, system, user)
+		p.step()
+		f := map[string]any{"size": n, "counted": counted, "cell": cell, "rep": rep, "ttft_ms": d.Milliseconds()}
+		if err != nil {
+			f["error"] = err.Error()
+		}
+		if rep > 0 {
+			r.record(arm, "ttft", f)
+		}
+	}
+	nonce := func() string { return fmt.Sprintf("run %d\n\n", time.Now().UnixNano()) }
+	for rep := 0; rep <= 3; rep++ { // rep 0 is the warm-up
+		measure("cold", rep, nonce()+loop.SystemPrompt, prefix+tailAt(rep))
+	}
+	for rep := 0; rep <= 3; rep++ {
+		measure("reused", rep, loop.SystemPrompt, prefix+tailAt(10+rep))
+	}
+}
+
+// sizeFiller finds how many characters of filler make the request about n tokens by the server's own count_tokens.
+func sizeFiller(ctx context.Context, srv server.Server, model, filler string, n int) (chars, counted int, err error) {
+	lo, hi := 0, len(filler)
+	for lo < hi && hi-lo > 64 {
+		mid := (lo + hi) / 2
+		c, err := srv.CountTokens(ctx, ttftRequest(model, loop.SystemPrompt, filler[:mid]))
+		if err != nil {
+			return 0, 0, err
+		}
+		if c <= n {
+			lo, counted = mid, c
+		} else {
+			hi = mid
+		}
+	}
+	if counted < n*9/10 {
+		return 0, 0, fmt.Errorf("the repository text reaches only %d of %d tokens", counted, n)
+	}
+	return lo, counted, nil
+}
+
+func ttftRequest(model, system, user string) server.Request {
+	zero := 0.0
+	return server.Request{Model: model, System: system, Tools: tools.NewSet(nil).Specs(), MaxTokens: 1, Temperature: &zero,
+		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(user)}}}}
+}
+
+func firstToken(ctx context.Context, srv server.Server, model, system, user string) (time.Duration, error) {
+	t0 := time.Now()
+	var first time.Duration
+	_, err := srv.Stream(ctx, ttftRequest(model, system, user), func(server.Delta) {
+		if first == 0 {
+			first = time.Since(t0)
+		}
+	})
+	if err == nil && first == 0 {
+		err = errors.New("no token was streamed")
+	}
+	return first, err
+}
+
+func decodeOnce(ctx context.Context, srv server.Server, model string) (float64, int, error) {
+	zero := 0.0
+	req := server.Request{Model: model, MaxTokens: 256, Temperature: &zero, Messages: []server.Message{{Role: server.User,
+		Content: []server.Block{server.TextBlock("Write a long, detailed story about a lighthouse keeper. Keep writing until you are stopped.")}}}}
+	var first, last time.Time
+	resp, err := srv.Stream(ctx, req, func(server.Delta) {
+		now := time.Now()
+		if first.IsZero() {
+			first = now
+		}
+		last = now
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	toks := resp.Usage.OutputTokens
+	el := last.Sub(first).Seconds()
+	if toks < 2 || el <= 0 {
+		return 0, toks, fmt.Errorf("too few tokens (%d) to time", toks)
+	}
+	return float64(toks-1) / el, toks, nil
+}
+
+// repoText is the workspace's Go source, concatenated in path order: real code to size prompts with.
+func repoText(root string) string {
+	var paths []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "testdata") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ".go") {
+			paths = append(paths, p)
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	var b strings.Builder
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		rel, _ := filepath.Rel(root, p)
+		fmt.Fprintf(&b, "// file: %s\n%s\n", rel, data)
+	}
+	return b.String()
+}
+
+func spread(xs []float64) (med, lo, hi float64) {
+	s := append([]float64(nil), xs...)
+	sort.Float64s(s)
+	return s[len(s)/2], s[0], s[len(s)-1]
+}
+
+func tail(path string, n int) string {
+	b, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// sampler records the highest memory pressure and, where nvidia-smi exists, the highest GPU memory used, once a
+// second while an arm runs.
+type sampler struct {
+	mu   sync.Mutex
+	pmax models.Pressure
+	vram int
+	done chan struct{}
+	once sync.Once
+}
+
+func newSampler(pressure func() (models.Pressure, error)) *sampler {
+	s := &sampler{done: make(chan struct{})}
+	smi, _ := exec.LookPath("nvidia-smi")
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			if pr, err := pressure(); err == nil {
+				s.mu.Lock()
+				s.pmax = max(s.pmax, pr)
+				s.mu.Unlock()
+			}
+			if smi != "" && runtime.GOOS == "linux" {
+				out, err := exec.Command(smi, "--query-gpu=memory.used", "--format=csv,noheader,nounits").Output()
+				if v, perr := strconv.Atoi(strings.TrimSpace(strings.Split(string(out), "\n")[0])); err == nil && perr == nil {
+					s.mu.Lock()
+					s.vram = max(s.vram, v)
+					s.mu.Unlock()
+				}
+			}
+			select {
+			case <-t.C:
+			case <-s.done:
+				return
+			}
+		}
+	}()
+	return s
+}
+
+func (s *sampler) stop() (models.Pressure, int) {
+	s.once.Do(func() { close(s.done) })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pmax, s.vram
+}

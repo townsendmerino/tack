@@ -23,6 +23,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runCmd(args[1:], stdout, stderr)
+	case "eval":
+		return evalCmd(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "tack", version)
 		return 0
@@ -38,6 +40,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
   tack run [flags] "<question>"   answer a question about a repository (read-only tools)
+  tack eval models -manifest FILE -out DIR [-arm NAME] [-fit-only]
+                                  E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
   tack version
 `)
 }
