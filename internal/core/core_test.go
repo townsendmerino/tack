@@ -139,10 +139,12 @@ func (f *fixture) waitTurnEnd(t *testing.T) []proto.Event {
 			if ev.Type == proto.EvTurnEnd {
 				return got
 			}
-		case <-time.After(30 * time.Second):
-			// Every goroutine's stack, so a stall shows where it is (a macOS CI run once saw only the first event).
+		case <-time.After(5 * time.Second):
+			// A turn against the scripted server takes milliseconds, and its fsyncs measured 5–36 ms on macOS CI, so 5 s
+			// between events is a stall. Every goroutine's stack shows where. A macOS CI run once got only the first
+			// event: no fsync happens between it and request.sent, only Source.Ensure's first HTTP request.
 			buf := make([]byte, 1<<20)
-			t.Fatalf("no turn.end within 30s of the last event; got %d events: %v\n%s", len(got), types(got), buf[:runtime.Stack(buf, true)])
+			t.Fatalf("no event within 5s of the last; got %d events: %v\n%s", len(got), types(got), buf[:runtime.Stack(buf, true)])
 		}
 	}
 }

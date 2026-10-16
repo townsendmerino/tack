@@ -86,3 +86,59 @@ card, which refuses the model at 24k. On the Mac, E0's fit check on 2026-10-16 a
 0.2 GB of goinfer's plan left for prefill. Turns are prefill-heavy, and the fixed prompt is re-prefilled on every cache
 break. Small models also follow instructions less well as the context grows. The window is the hardware's limit, not
 a product choice.
+
+## ADR-004 — The session log survives power loss: F_FULLFSYNC everywhere, directory entries included
+
+**Status:** decided 2026-10-16 by the owner.
+
+**Question.** How durable does the session log need to be? Data written but not synced already survives a daemon
+crash; only a kernel panic or power loss loses it. On darwin, Go's `File.Sync` is `F_FULLFSYNC`, which flushes the
+drive's cache (go1.27.2 `src/internal/poll/fd_fsync_darwin.go`). The store pays it at every turn boundary
+(`user.message`, `turn.end`) and before every tool runs (`tool.started`).
+
+**Measured** on the M1 Pro, 2026-10-16 12:56 PDT, memory pressure normal, an idle disk: 300 syncs per method, each
+after a 1 KiB append to a file in `~/tack-runs` on the volume that holds tack's state directory.
+
+| method | p50 | p99 | max |
+|---|---|---|---|
+| `F_FULLFSYNC` (`File.Sync`) | 4.0 ms | 9.5 ms | 25 ms |
+| `fsync(2)` | 0.08 ms | 0.9 ms | 5.4 ms |
+| `F_BARRIERFSYNC` | 0.6 ms | 1.5 ms | 4.6 ms |
+
+On a GitHub macOS runner (run 38958679509), one turn's syncs took 36 ms (`user.message`), 4.6 ms (`tool.started`) and
+17.5 ms (`turn.end`).
+
+**Options.** (a) `F_FULLFSYNC` everywhere; (b) plain `fsync(2)`, which leaves data in the drive's volatile cache; (c)
+`F_FULLFSYNC` at turn end and plain `fsync` before tools.
+
+**Decision: (a).** A 10-tool turn makes 12 syncs, about 50 ms at p50 and about 115 ms at p99. Model turns take seconds
+of prefill, so that is 1–2% at most.
+
+- **The sync before a tool protects against side effects repeating.** If `tool.started` is lost to power loss, the log
+  can lose the call and the model's response with it. On resume the model is asked again and may re-run a command
+  that already ran, which DESIGN §6.1 forbids.
+- **(b) can reorder.** A later block can survive power loss while an earlier one is lost. That leaves a malformed line
+  mid-file, which the store refuses to open rather than guess at.
+- **(c) weakens the one sync that matters most.**
+- If sync time ever shows in a turn's profile, the fallback is `F_BARRIERFSYNC`, not plain `fsync`. It keeps writes in
+  order, so the torn-tail repair still holds.
+
+**Directory entries are part of the promise.** A synced file is unreachable after power loss if its directory entry
+was lost. The store therefore syncs the containing directory after:
+
+- every directory it creates (`internal/store/dirsync.go:mkdirAllSynced`, the parent of each new directory, top
+  down);
+- creating a session's `events.jsonl` (`Store.Create`);
+- renaming a blob into place (`Blobs.Put`).
+
+The rule is that **a blob, directory entry included, is durable before any event that refers to it is synced.** `Put`
+returns only after both syncs, and callers put a blob before appending the event that names it.
+
+**Tests that hold it:**
+
+- `TestAppendFsyncsExactlyWhereRequired` fails if the sync on a turn boundary or on `tool.started` is removed.
+- `TestDirectoryEntriesAreSynced` and `TestBlobDirSyncFollowsTheRename` fail if any of the three directory syncs is
+  removed.
+
+**Open.** Measure `F_FULLFSYNC` once while goinfer is writing a large cache file. The 9.5 ms p99 is from an idle disk,
+and goinfer's first load of a model writes gigabytes beside it.
