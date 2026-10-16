@@ -75,6 +75,14 @@ func scratchRepo(t *testing.T) Repo {
 	write("calc/tagged_test.go", "//go:build linux\n\npackage calc\n\nimport \"testing\"\n\nfunc TestT(t *testing.T) {\n\tif T() != 1 {\n\t\tt.Fatal()\n\t}\n}\n")
 	commit("tagged") // rule 6
 
+	write("calc/msg.go", "package calc\n\nfunc Msg() string { return \"the quick brown fox jumps over\" }\n")
+	write("calc/msg_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestMsg(t *testing.T) {\n\tif Msg() != \"the quick brown fox jumps over\" {\n\t\tt.Fatal(Msg())\n\t}\n}\n")
+	commit("literal leak") // rule 8: the asserted 30-character string is in the fix
+
+	write("calc/hi.go", "package calc\n\nfunc Hi() string { return \"hello\" }\n")
+	write("calc/hi_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestHi(t *testing.T) {\n\tif Hi() != \"hello\" {\n\t\tt.Fatal(Hi())\n\t}\n}\n")
+	commit("short literal") // rule 8 keeps it: under 20 characters
+
 	write("sub/go.mod", "module m/sub\n\ngo 1.22\n")
 	write("sub/x.go", "package sub\n\nfunc X() int { return 1 }\n")
 	write("sub/x_test.go", "package sub\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n")
@@ -86,18 +94,18 @@ func scratchRepo(t *testing.T) Repo {
 func TestStaticAndVerify(t *testing.T) {
 	t.Setenv("GOFLAGS", "")
 	r := scratchRepo(t)
-	cs, n, err := Static(r)
+	cs, st, err := Static(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 9 {
-		t.Fatalf("read %d commits, want 9", n)
+	if st.Read != 11 || st.Rule8 != 1 {
+		t.Fatalf("read %d commits, rule 8 removed %d; want 11 and 1", st.Read, st.Rule8)
 	}
 	var got []string
 	for _, c := range cs {
 		got = append(got, c.Subject+":"+strings.Join(c.Tests, ","))
 	}
-	want := []string{"fix Add:TestAdd", "add Sub:TestSub", "document Add:TestMul"}
+	want := []string{"fix Add:TestAdd", "add Sub:TestSub", "document Add:TestMul", "short literal:TestHi"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("candidates %v, want %v", got, want)
 	}

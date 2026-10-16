@@ -35,6 +35,7 @@ type Candidate struct {
 	TestFiles  []string  `json:"test_files"`
 	Why        Measure   `json:"why"`
 	Verified   *Verified `json:"verified,omitempty"` // stage 2
+	Rejected   string    `json:"rejected,omitempty"` // why stage 1 rejected it, for the rules that report one
 	Statement  string    `json:"statement,omitempty"`
 	ReviewedBy string    `json:"reviewed_by,omitempty"`
 }
@@ -99,42 +100,49 @@ func isNonTestGo(f string) bool {
 	return strings.HasSuffix(f, ".go") && !isTestFile(f) && !strings.Contains("/"+f, "/testdata/")
 }
 
-// Static runs stage 1 over a repository's first-parent history and returns the candidates, oldest first, with the
-// count of commits read.
-func Static(r Repo) ([]Candidate, int, error) {
+// Stats counts what stage 1 read and what rule 8 removed.
+type Stats struct {
+	Read  int // first-parent commits read
+	Rule8 int // candidates that passed rules 1–7 and were removed by rule 8
+}
+
+// Static runs stage 1 over a repository's first-parent history and returns the candidates, oldest first.
+func Static(r Repo) ([]Candidate, Stats, error) {
+	var st Stats
 	subs, err := subModules(r)
 	if err != nil {
-		return nil, 0, err
+		return nil, st, err
 	}
 	log, err := git(r.Path, "log", "--first-parent", "--format=%H%x00%P%x00%s", r.Frozen)
 	if err != nil {
-		return nil, 0, err
+		return nil, st, err
 	}
 	var out []Candidate
-	n := 0
 	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
 		f := strings.SplitN(line, "\x00", 3)
 		if len(f) != 3 {
 			continue
 		}
-		n++
+		st.Read++
 		commit, parents, subject := f[0], strings.Fields(f[1]), f[2]
 		if len(parents) != 1 || strings.HasPrefix(subject, "Revert") || strings.HasPrefix(subject, "Merge") { // rule 1
 			continue
 		}
 		c, ok, err := check(r, subs, commit, parents[0], subject)
 		if err != nil {
-			return nil, n, fmt.Errorf("%s %s: %w", r.Name, commit[:8], err)
+			return nil, st, fmt.Errorf("%s %s: %w", r.Name, commit[:8], err)
 		}
 		if ok {
 			out = append(out, c)
+		} else if strings.HasPrefix(c.Rejected, "rule 8") {
+			st.Rule8++
 		}
 	}
 	// git log is newest first; return oldest first.
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
-	return out, n, nil
+	return out, st, nil
 }
 
 var generated = regexp.MustCompile(`(?m)^// Code generated .* DO NOT EDIT\.$`)
@@ -192,8 +200,14 @@ func check(r Repo, subs []string, commit, parent, subject string) (Candidate, bo
 			c.Why.LargestFileLen = max(c.Why.LargestFileLen, lines)
 		}
 	}
-	tests, pkgs, files, err := namedTests(r, parent, commit, testFiles)
+	tests, pkgs, files, literals, err := namedTests(r, parent, commit, testFiles)
 	if err != nil || len(tests) == 0 { // rule 5
+		return c, false, err
+	}
+	if hit, err := literalInFix(r, parent, commit, nonTest, literals); err != nil || hit != "" { // rule 8
+		if hit != "" {
+			c.Rejected = "rule 8: " + strconv.Quote(hit)
+		}
 		return c, false, err
 	}
 	for _, p := range pkgs { // rule 7
@@ -208,12 +222,12 @@ func check(r Repo, subs []string, commit, parent, subject string) (Candidate, bo
 
 // namedTests finds the top-level TestXxx(t *testing.T) functions the commit adds or changes: those whose span in the
 // commit's file contains a changed line, or the position of a deletion.
-func namedTests(r Repo, parent, commit string, testFiles []string) (tests, pkgs, files []string, err error) {
+func namedTests(r Repo, parent, commit string, testFiles []string) (tests, pkgs, files, literals []string, err error) {
 	seenPkg := map[string]bool{}
 	for _, f := range testFiles {
 		diff, err := git(r.Path, "diff", "-U0", "--no-renames", parent, commit, "--", f)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		changed := changedLines(diff)
 		src, err := git(r.Path, "show", commit+":"+f)
@@ -235,6 +249,7 @@ func namedTests(r Repo, parent, commit string, testFiles []string) (tests, pkgs,
 			for _, l := range changed {
 				if l >= from && l <= to {
 					tests = append(tests, fd.Name.Name)
+					literals = append(literals, stringLiterals(fd, src, fset)...)
 					found = true
 					break
 				}
@@ -252,7 +267,7 @@ func namedTests(r Repo, parent, commit string, testFiles []string) (tests, pkgs,
 			}
 		}
 	}
-	return tests, pkgs, files, nil
+	return tests, pkgs, files, literals, nil
 }
 
 func isTestFunc(fd *ast.FuncDecl) bool {
@@ -316,4 +331,53 @@ func bigTestdata(r Repo, commit, pkg string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// minLiteral is rule 8's threshold: a string literal of at least this many characters.
+const minLiteral = 20
+
+// stringLiterals is every string literal of at least minLiteral characters in a function's body, as its value and,
+// when that differs, as written in the source (so an escaped literal matches the fix's source text either way).
+func stringLiterals(fd *ast.FuncDecl, src string, fset *token.FileSet) []string {
+	var out []string
+	ast.Inspect(fd, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		if v, err := strconv.Unquote(lit.Value); err == nil && len(v) >= minLiteral {
+			out = append(out, v)
+			if raw := lit.Value[1 : len(lit.Value)-1]; raw != v {
+				out = append(out, raw)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// literalInFix is rule 8: the first of the named tests' long literals that appears verbatim in a line the commit adds
+// to a non-test file, or "".
+func literalInFix(r Repo, parent, commit string, nonTest, literals []string) (string, error) {
+	if len(literals) == 0 {
+		return "", nil
+	}
+	diff, err := git(r.Path, append([]string{"diff", "-U0", "--no-renames", parent, commit, "--"}, nonTest...)...)
+	if err != nil {
+		return "", err
+	}
+	var added strings.Builder
+	for _, l := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") {
+			added.WriteString(l[1:])
+			added.WriteByte('\n')
+		}
+	}
+	text := added.String()
+	for _, lit := range literals {
+		if strings.Contains(text, lit) {
+			return lit, nil
+		}
+	}
+	return "", nil
 }

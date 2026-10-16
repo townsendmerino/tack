@@ -89,7 +89,7 @@ func mineStatic(repos repoFlags, out string, log io.Writer) error {
 	total := 0
 	for _, r := range repos {
 		t0 := time.Now()
-		cs, n, err := mine.Static(r)
+		cs, st, err := mine.Static(r)
 		if err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func mineStatic(repos repoFlags, out string, log io.Writer) error {
 			}
 		}
 		total += len(cs)
-		logf(log, "static %s @%s: %d commits read, %d candidates, %s", r.Name, r.Frozen, n, len(cs), time.Since(t0).Round(time.Millisecond))
+		logf(log, "static %s @%s: %d commits read, %d candidates, %d removed by rule 8, %s", r.Name, r.Frozen, st.Read, len(cs), st.Rule8, time.Since(t0).Round(time.Millisecond))
 	}
 	logf(log, "static: %d candidates in %s", total, filepath.Join(out, "candidates.jsonl"))
 	return nil

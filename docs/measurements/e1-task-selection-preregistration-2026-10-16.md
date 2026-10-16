@@ -19,6 +19,11 @@ procedural. None of them changes which candidates a full run would choose:
 - **Check command.** It carries its environment: `GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=0 go test … -buildvcs=false`,
   exactly as verified.
 
+**Amendment 2, 2026-10-16, before any statement or agent run** (owner). Stage 1 gains rule 8, "no literal leak",
+ below. It applies to all 227 candidates, and the pilot's choice and E1's verification are re-run from the new candidate
+ list. Three of the first pilot set were exact-text tasks: their tests asserted literal strings that the fix adds, so
+ any statement would have to quote the fix. The rule is mechanical, so the selection stays blind to outcomes.
+
 ## Population
 
 The first-parent history of each repository's `main` branch, frozen at:
@@ -47,6 +52,11 @@ A commit is a candidate when all of these hold:
 6. No changed file carries a `//go:build` constraint, and no named test's file imports `C`.
 7. The named tests' packages are not under a GPU or model directory, and they read no file larger than 1 MB from
    `testdata/`. A test that needs a real checkpoint skips without one, and a skip fails the oracle anyway.
+
+8. **No literal leak** (amendment 2). Every string literal of 20 or more characters inside the named tests' bodies is
+   collected, as its value and as written. A candidate is rejected if any of them appears verbatim in a line the commit
+   adds to a non-test file. A test that asserts exact output text would otherwise need a statement that spells out the
+   fix.
 
 ## Stage 2 — verification (a night job; each candidate once)
 
