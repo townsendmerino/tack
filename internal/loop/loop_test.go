@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ type harness struct {
 	events []proto.Event
 	slept  []time.Duration
 	ws     *tools.Workspace
+	// order is one timeline of durability: "put <handle>" when a blob is durable, "append <type> <blob>" when an event is
+	// recorded, "sync <type>" when the log syncs on that event's append.
+	order []string
 }
 
 // newHarness runs a session against a scripted goinfer over a small workspace.
@@ -41,11 +45,14 @@ func newHarness(t *testing.T, b Budget, replies ...goinfertest.Reply) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h := &harness{st: st, ws: ws}
+	st.OnSync = func(typ proto.EventType, _ time.Duration) { h.order = append(h.order, "sync "+string(typ)) }
+	st.Blobs.OnPut = func(handle string) { h.order = append(h.order, "put "+handle) }
 	log, err := st.Create("s_test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{st: st, log: log, ws: ws, script: goinfertest.NewScripted("m", 16384, replies...)}
+	h.log, h.script = log, goinfertest.NewScripted("m", 16384, replies...)
 	ts := httptest.NewServer(h.script)
 	t.Cleanup(ts.Close)
 	if b.MaxRequests == 0 {
@@ -53,7 +60,18 @@ func newHarness(t *testing.T, b Budget, replies ...goinfertest.Reply) *harness {
 	}
 	h.sess = New(Config{Source: models.NewRemote("local", ts.URL, "", "", nil), Tools: tools.NewSet(nil), WS: ws,
 		Log: log, Blobs: st.Blobs, Budget: b,
-		Emit:  func(ev proto.Event) { h.events = append(h.events, ev) },
+		Emit: func(ev proto.Event) {
+			h.events = append(h.events, ev)
+			if ev.Seq != 0 {
+				blob := ""
+				if v, err := ev.Decode(); err == nil {
+					if f, ok := v.(proto.ToolFinished); ok {
+						blob = f.Blob
+					}
+				}
+				h.order = append(h.order, strings.TrimSpace("append "+string(ev.Type)+" "+blob))
+			}
+		},
 		Sleep: func(_ context.Context, d time.Duration) error { h.slept = append(h.slept, d); return nil }})
 	return h
 }
@@ -248,5 +266,38 @@ func TestRebuildAfterACrashMarksTheCallUnknown(t *testing.T) {
 	last := re.Request().Messages[len(re.Request().Messages)-1]
 	if b := last.Content[0]; b.Type != "tool_result" || !b.IsError || !strings.Contains(b.Result, "outcome unknown") {
 		t.Fatalf("last block %+v", b)
+	}
+}
+
+// TestBlobDurableBeforeTheEventNamingItIsSynced holds ADR-004's ordering rule through the loop, the store's caller: a
+// tool result too long for the model goes to a blob, and that blob, directory entry included, is durable before the
+// tool.finished event naming it is recorded, and so before the log sync that makes the event durable.
+func TestBlobDurableBeforeTheEventNamingItIsSynced(t *testing.T) {
+	h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "grep", `{"pattern":"."}`), goinfertest.Says("ok"))
+	h.sess.cfg.MaxResultBytes = 40
+	if stop, err := h.sess.Turn(context.Background(), "everything"); err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("stop %q, %v", stop, err)
+	}
+	var handle string
+	for _, ev := range h.events {
+		if ev.Type == proto.EvToolFinished {
+			v, _ := ev.Decode()
+			handle = v.(proto.ToolFinished).Blob
+		}
+	}
+	if handle == "" {
+		t.Fatal("the result did not go to a blob")
+	}
+	index := func(s string) int { return slices.Index(h.order, s) }
+	put, appended := index("put "+handle), index("append tool.finished "+handle)
+	synced := -1 // the first sync after the event is appended makes it durable
+	for i := appended + 1; i < len(h.order) && appended >= 0; i++ {
+		if strings.HasPrefix(h.order[i], "sync ") {
+			synced = i
+			break
+		}
+	}
+	if put < 0 || appended < 0 || synced < 0 || !(put < appended && appended < synced) {
+		t.Fatalf("want the blob durable, then the event naming it appended, then synced; order:\n  %s", strings.Join(h.order, "\n  "))
 	}
 }

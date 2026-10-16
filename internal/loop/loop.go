@@ -204,8 +204,16 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					Result: fmt.Sprintf("error: not run: the turn's tool-call budget (%d) was exceeded", s.cfg.Budget.MaxToolCalls)}
 			default:
 				calls++
-				if fin, err = s.runTool(ctx, b, callEv.Seq); err != nil {
+				var full []byte
+				if fin, full, err = s.runTool(ctx, b, callEv.Seq); err != nil {
 					return proto.StopError, err
+				}
+				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
+				// recorded, so it is durable before any sync that makes that event durable.
+				if full != nil {
+					if _, err := s.cfg.Blobs.Put(full); err != nil {
+						return proto.StopError, err
+					}
 				}
 			}
 			if _, err := s.record(proto.EvToolFinished, callEv.Seq, fin); err != nil {
@@ -226,33 +234,31 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 }
 
 // runTool records tool.started (fsynced by the store, so a crash leaves the call marked started), runs the tool and
-// returns its tool.finished payload.
-func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64) (proto.ToolFinished, error) {
+// returns its tool.finished payload. When the output is too long for the model, the payload names a blob by handle
+// and full holds the bytes; the caller stores them before recording the payload (ADR-004).
+func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64) (fin proto.ToolFinished, full []byte, err error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
 	if !ok { // checked by the client already; kept so a server that skipped the check cannot reach a nil tool
-		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil
+		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil, nil
 	}
 	if _, err := s.record(proto.EvToolStarted, callSeq, proto.ToolStarted{ID: b.ID}); err != nil {
-		return proto.ToolFinished{}, err
+		return proto.ToolFinished{}, nil, err
 	}
-	r, err := t.Run(ctx, s.cfg.WS, b.Input)
-	if err != nil {
-		r = tools.Result{Text: "error: " + err.Error(), IsError: true}
+	r, rerr := t.Run(ctx, s.cfg.WS, b.Input)
+	if rerr != nil {
+		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true}
 	}
-	fin := proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text}
+	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
 	}
 	if len(r.Text) > s.cfg.MaxResultBytes {
-		handle, err := s.cfg.Blobs.Put([]byte(r.Text))
-		if err != nil {
-			return proto.ToolFinished{}, err
-		}
+		full = []byte(r.Text)
 		head, tail := s.cfg.MaxResultBytes*3/4, s.cfg.MaxResultBytes/4
 		fin.Result = r.Text[:head] + fmt.Sprintf("\n[… %d bytes omitted …]\n", len(r.Text)-head-tail) + r.Text[len(r.Text)-tail:]
-		fin.Truncated, fin.Blob = true, handle
+		fin.Truncated, fin.Blob = true, store.HandleOf(full)
 	}
-	return fin, nil
+	return fin, full, nil
 }
 
 // stream sends the conversation's next request, emitting deltas live, and retries a full server queue up to three

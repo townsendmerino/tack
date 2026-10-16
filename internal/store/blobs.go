@@ -18,6 +18,8 @@ type Blobs struct {
 	// mu serialises Put, so a caller that finds a blob already present cannot see it between its rename and the sync
 	// of its directory.
 	mu sync.Mutex
+	// OnPut, when set, is told each handle Put returns, once the blob and its directory entry are durable.
+	OnPut func(handle string)
 }
 
 // ErrCorrupt is returned by Get when a blob's bytes no longer match its handle.
@@ -39,6 +41,7 @@ func (b *Blobs) Put(data []byte) (string, error) {
 	hexsum := sha256Hex(data)
 	p := b.path(hexsum)
 	if _, err := os.Stat(p); err == nil {
+		b.durable(hexsum)
 		return handlePrefix + hexsum, nil
 	}
 	if err := mkdirAllSynced(filepath.Dir(p), 0o700); err != nil {
@@ -66,6 +69,7 @@ func (b *Blobs) Put(data []byte) (string, error) {
 	if err := syncDir(filepath.Dir(p)); err != nil {
 		return "", err
 	}
+	b.durable(hexsum)
 	return handlePrefix + hexsum, nil
 }
 
@@ -99,4 +103,13 @@ func parseHandle(h string) (string, error) {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// HandleOf is the handle Put returns for data, computed without storing it.
+func HandleOf(data []byte) string { return handlePrefix + sha256Hex(data) }
+
+func (b *Blobs) durable(hexsum string) {
+	if b.OnPut != nil {
+		b.OnPut(handlePrefix + hexsum)
+	}
 }
