@@ -1,13 +1,43 @@
-// Command tack is the single binary for tack's CLI, TUI, daemon and ACP adapter
-// (docs/design/DESIGN.md §4.1, §10). Nothing is built yet; P0 starts here.
+// Command tack is the single binary for tack's CLI, TUI, daemon and ACP adapter (DESIGN §4.1, §10). P0 has `tack run`
+// with --no-daemon only.
 package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
+// version is set at build time with -ldflags "-X main.version=…".
+var version = "0.0.0-dev"
+
 func main() {
-	fmt.Fprintln(os.Stderr, "tack: nothing is built yet (P0); see docs/design/DESIGN.md")
-	os.Exit(1)
+	os.Exit(dispatch(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func dispatch(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stderr)
+		return 2
+	}
+	switch args[0] {
+	case "run":
+		return runCmd(args[1:], stdout, stderr)
+	case "version", "--version":
+		fmt.Fprintln(stdout, "tack", version)
+		return 0
+	case "help", "-h", "--help":
+		usage(stdout)
+		return 0
+	}
+	fmt.Fprintf(stderr, "tack: unknown command %q\n", args[0])
+	usage(stderr)
+	return 2
+}
+
+func usage(w io.Writer) {
+	fmt.Fprint(w, `usage:
+  tack run [flags] "<question>"   answer a question about a repository (read-only tools)
+  tack version
+`)
 }

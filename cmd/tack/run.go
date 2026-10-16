@@ -1,0 +1,242 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/townsendmerino/tack/internal/config"
+	"github.com/townsendmerino/tack/internal/core"
+	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server/cassette"
+	"github.com/townsendmerino/tack/internal/store"
+)
+
+// Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
+// hit max_tokens.
+const (
+	exitOK        = 0
+	exitError     = 1
+	exitUsage     = 2
+	exitBudget    = 3
+	exitMaxTokens = 4
+)
+
+func runCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "config file (default ~/.config/tack/config.toml)")
+	wsFlag := fs.String("workspace", "", "repository to work in (default: the git root of the current directory)")
+	serverName := fs.String("server", "", "server from the config to use (default: its main)")
+	jsonOut := fs.Bool("json", false, "stream every event as one JSON line on stdout")
+	fs.Bool("no-daemon", true, "run the core in this process (the only mode until the daemon exists)")
+	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
+	replay := fs.String("replay", "", "development: answer every model request from this cassette instead of a server")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, `tack run: give one question, quoted: tack run "where is X defined?"`)
+		return exitUsage
+	}
+	if *record != "" && *replay != "" {
+		fmt.Fprintln(stderr, "tack run: --record and --replay exclude each other")
+		return exitUsage
+	}
+	question := fs.Arg(0)
+
+	if *cfgPath == "" {
+		p, err := config.Path()
+		if err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
+		}
+		*cfgPath = p
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	name := cfg.Main
+	if *serverName != "" {
+		name = *serverName
+	}
+	stateDir := cfg.StateDir
+	if stateDir == "" {
+		if stateDir, err = config.StateDir(); err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
+		}
+	}
+	ws := *wsFlag
+	if ws == "" {
+		ws = gitRoot()
+	}
+	st, err := store.Open(stateDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+
+	var hc *http.Client
+	var rec *cassette.Recorder
+	var rep *cassette.Replayer
+	switch {
+	case *record != "":
+		rec = cassette.NewRecorder("tack run "+fmt.Sprintf("%q", question)+" against server "+name, nil)
+		hc = rec.Client()
+	case *replay != "":
+		c, err := cassette.Load(*replay)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
+		}
+		rep = cassette.NewReplayer(c)
+		hc = rep.Client()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var servers []string
+	for n := range cfg.Servers {
+		servers = append(servers, "goinfer@"+n)
+	}
+	sort.Strings(servers)
+	c := core.New(ctx, core.Options{Store: st, Version: version, Servers: servers,
+		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
+			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens},
+		Source: func(model string) (models.Source, error) {
+			if model != "main" {
+				return nil, fmt.Errorf("model %q: only the main role is configured", model)
+			}
+			return models.Open(cfg, name, stateDir, hc)
+		}})
+	defer c.Close()
+
+	code := drive(ctx, c, ws, question, *jsonOut, stdout, stderr)
+
+	if rec != nil {
+		if err := rec.C.Save(*record); err != nil {
+			fmt.Fprintln(stderr, "tack run: saving the cassette:", err)
+			return exitError
+		}
+		fmt.Fprintf(stderr, "tack run: recorded %d interactions to %s\n", len(rec.C.Interactions), *record)
+	}
+	if rep != nil {
+		if err := rep.Done(); err != nil {
+			fmt.Fprintln(stderr, "tack run: replay:", err)
+			return exitError
+		}
+	}
+	return code
+}
+
+// drive runs one turn through the protocol, against the Core over an in-memory pipe (--no-daemon, DESIGN §9.1).
+func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool, stdout, stderr io.Writer) int {
+	a, b := net.Pipe()
+	defer a.Close()
+	go func() { _ = c.Serve(ctx, b); b.Close() }()
+	cl := core.NewClient(a)
+
+	var mu sync.Mutex
+	done := make(chan string, 1)
+	var answer strings.Builder
+	cl.OnEvent = func(p proto.SessionEventParams) {
+		mu.Lock()
+		defer mu.Unlock()
+		ev := p.Event
+		if jsonOut {
+			b, _ := json.Marshal(ev)
+			fmt.Fprintf(stdout, "%s\n", b)
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			return
+		}
+		switch e := v.(type) {
+		case proto.AssistantDelta:
+			if e.Kind == "text" && !jsonOut {
+				fmt.Fprint(stdout, e.Text)
+				answer.WriteString(e.Text)
+			}
+		case proto.AssistantMessage:
+			if !jsonOut && answer.Len() > 0 && !strings.HasSuffix(answer.String(), "\n") {
+				fmt.Fprintln(stdout)
+				answer.Reset()
+			}
+		case proto.ToolCall:
+			fmt.Fprintf(stderr, "· %s %s\n", e.Name, e.Input)
+		case proto.ToolFinished:
+			fmt.Fprintf(stderr, "  %s, %d lines\n", e.Outcome, strings.Count(e.Result, "\n"))
+		case proto.ErrorEvent:
+			fmt.Fprintf(stderr, "tack: %s error: %s\n", e.Class, e.Message)
+		case proto.BudgetExceeded:
+			fmt.Fprintf(stderr, "tack: budget exceeded: %s (limit %g)\n", e.Budget, e.Limit)
+		case proto.TurnEnd:
+			select {
+			case done <- e.StopReason:
+			default:
+			}
+		}
+	}
+
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tack-cli", Version: version},
+		Protocol: proto.Version}, nil); err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session,
+		Content: []proto.ContentBlock{proto.Text(question)}}, nil); err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	var reason string
+	select {
+	case reason = <-done:
+	case <-ctx.Done():
+		reason = <-done // the turn records its cancel and ends
+	}
+	switch reason {
+	case proto.StopEndTurn:
+		return exitOK
+	case proto.StopBudget:
+		return exitBudget
+	case proto.StopMaxTokens:
+		return exitMaxTokens
+	}
+	return exitError
+}
+
+// gitRoot is the current directory's git root, or the current directory.
+func gitRoot() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err == nil {
+		return strings.TrimSpace(string(out))
+	}
+	wd, _ := os.Getwd()
+	return filepath.Clean(wd)
+}

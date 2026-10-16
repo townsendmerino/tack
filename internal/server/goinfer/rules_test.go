@@ -12,6 +12,7 @@ import (
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/cassette"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
+	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
 // The message-structure rules of DESIGN §6.3, one cassette test each. Each cassette is a turn with a tool call: the
@@ -63,12 +64,12 @@ func TestRuleEveryToolCallGetsAResult(t *testing.T) {
 	q := msg("user", text("look"))
 	a := msg("assistant", use("t1", "read", map[string]any{"path": "a.go"}), use("t2", "grep", map[string]any{"pattern": "x"}))
 	c, r := synthetic(
-		cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(sse("tool_use",
+		cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(goinfertest.SSE("tool_use",
 			toolUse("t1", "read", `{"path":"a.go"}`), toolUse("t2", "grep", `{"pattern":"x"}`)))},
 		cassette.Interaction{Request: wireReq("disabled", q, a, msg("user",
 			result("t1", "package a", false),
 			result("t2", "error: not run: the user cancelled the turn", true))),
-			Response: sseResp(sse("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
+			Response: sseResp(goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
 	)
 	conv := newConv()
 	_ = conv.BeginTurn("look", false)
@@ -111,9 +112,9 @@ func TestRuleToolResultsFirst(t *testing.T) {
 	q := msg("user", text("look"))
 	a := msg("assistant", use("t1", "read", map[string]any{"path": "a.go"}))
 	c, r := synthetic(
-		cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(sse("tool_use", toolUse("t1", "read", `{"path":"a.go"}`)))},
+		cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(goinfertest.SSE("tool_use", toolUse("t1", "read", `{"path":"a.go"}`)))},
 		cassette.Interaction{Request: wireReq("disabled", q, a, msg("user", result("t1", "package a", false), text("also check b.go"))),
-			Response: sseResp(sse("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
+			Response: sseResp(goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
 	)
 	conv := newConv()
 	_ = conv.BeginTurn("look", false)
@@ -147,10 +148,10 @@ func TestRuleThinkingGoesBackAsReceived(t *testing.T) {
 	a := msg("assistant", map[string]any{"type": "thinking", "thinking": thought, "signature": sig},
 		use("t1", "read", map[string]any{"path": "a.go"}))
 	c, r := synthetic(
-		cassette.Interaction{Request: wireReq("enabled", q), Response: sseResp(sse("tool_use",
+		cassette.Interaction{Request: wireReq("enabled", q), Response: sseResp(goinfertest.SSE("tool_use",
 			proto.ModelBlock{Type: "thinking", Thinking: thought, Signature: sig}, toolUse("t1", "read", `{"path":"a.go"}`)))},
 		cassette.Interaction{Request: wireReq("enabled", q, a, msg("user", result("t1", "package a", false))),
-			Response: sseResp(sse("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
+			Response: sseResp(goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
 	)
 	conv := newConv()
 	_ = conv.BeginTurn("look", true)
@@ -179,10 +180,10 @@ func TestRuleThinkingFixedForTheTurn(t *testing.T) {
 	done := msg("assistant", text("ok"))
 	answer := msg("user", result("t1", "package a", false))
 	c, r := synthetic(
-		cassette.Interaction{Request: wireReq("enabled", q), Response: sseResp(sse("tool_use", toolUse("t1", "read", `{"path":"a.go"}`)))},
-		cassette.Interaction{Request: wireReq("enabled", q, a, answer), Response: sseResp(sse("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
+		cassette.Interaction{Request: wireReq("enabled", q), Response: sseResp(goinfertest.SSE("tool_use", toolUse("t1", "read", `{"path":"a.go"}`)))},
+		cassette.Interaction{Request: wireReq("enabled", q, a, answer), Response: sseResp(goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "ok"}))},
 		cassette.Interaction{Request: wireReq("disabled", q, a, answer, done, msg("user", text("thanks"))),
-			Response: sseResp(sse("end_turn", proto.ModelBlock{Type: "text", Text: "np"}))},
+			Response: sseResp(goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "np"}))},
 	)
 	conv := newConv()
 	_ = conv.BeginTurn("look", true)
@@ -211,7 +212,7 @@ func TestRuleThinkingFixedForTheTurn(t *testing.T) {
 // so this is the other servers' case; the client checks every server's output the same way.)
 func TestRuleMalformedToolCallsCaught(t *testing.T) {
 	q := msg("user", text("look"))
-	c, r := synthetic(cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(sse("tool_use",
+	c, r := synthetic(cassette.Interaction{Request: wireReq("disabled", q), Response: sseResp(goinfertest.SSE("tool_use",
 		toolUse("t1", "rm", `{"path":"/"}`), toolUse("t2", "read", `"a.go"`), toolUse("t3", "read", `{"path":"a.go"}`)))})
 	conv := newConv()
 	_ = conv.BeginTurn("look", false)

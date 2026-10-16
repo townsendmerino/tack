@@ -27,8 +27,8 @@ type Source interface {
 }
 
 // Open returns the source for the named server in cfg. stateDir is tack's state directory; a child keeps its files
-// under stateDir/goinfer/<name>.
-func Open(cfg *config.Config, name, stateDir string) (Source, error) {
+// under stateDir/goinfer/<name>. hc, when non-nil, carries the model API requests.
+func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, error) {
 	s, ok := cfg.Servers[name]
 	if !ok {
 		return nil, fmt.Errorf("models: no server %q", name)
@@ -37,7 +37,7 @@ func Open(cfg *config.Config, name, stateDir string) (Source, error) {
 	case config.KindChild:
 		sup, err := NewSupervisor(ChildConfig{Binary: s.Binary, ModelPath: s.ModelPath, Model: s.Model, Ctx: s.Ctx,
 			Args: s.Args, Dir: filepath.Join(stateDir, "goinfer", name), IdleUnload: s.IdleUnload.Duration,
-			IdleExit: s.IdleExit.Duration})
+			IdleExit: s.IdleExit.Duration, HTTPClient: hc})
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +50,7 @@ func Open(cfg *config.Config, name, stateDir string) (Source, error) {
 				return nil, err
 			}
 		}
-		return NewRemote(name, s.URL, tok, s.Model, nil), nil
+		return NewRemote(name, s.URL, tok, s.Model, hc), nil
 	}
 	return nil, fmt.Errorf("models: server %q has kind %q", name, s.Kind)
 }

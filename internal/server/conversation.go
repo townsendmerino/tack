@@ -44,6 +44,12 @@ func (c *Conversation) BeginTurn(text string, thinking bool) error {
 		return fmt.Errorf("conversation: %d tool calls are unanswered", len(c.pending))
 	}
 	c.inTurn, c.thinking = true, thinking
+	if n := len(c.msgs); n > 0 && c.msgs[n-1].Role == User {
+		// The last turn ended without the model answering its tool results (a budget trip or a cancel): the new text
+		// joins that message, after the results, so roles still alternate.
+		c.msgs[n-1].Content = append(c.msgs[n-1].Content, TextBlock(text))
+		return nil
+	}
 	c.msgs = append(c.msgs, Message{Role: User, Content: []Block{TextBlock(text)}})
 	return nil
 }

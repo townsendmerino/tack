@@ -50,6 +50,8 @@ type ChildConfig struct {
 	Dir        string
 	IdleUnload time.Duration
 	IdleExit   time.Duration
+	// HTTPClient, when set, carries the API requests (a cassette recorder in a test or a recording run).
+	HTTPClient *http.Client
 }
 
 // Plan is what goinfer reported about a load: its banner's fit line, and what /v1/models says it serves.
@@ -114,7 +116,7 @@ func (s *Supervisor) Ensure(ctx context.Context) (server.Server, error) {
 		}
 	}
 	s.lastUse = s.now()
-	return goinfer.New("goinfer@local", s.baseURL, s.key, nil), nil
+	return goinfer.New("goinfer@local", s.baseURL, s.key, s.cfg.HTTPClient), nil
 }
 
 // Touch records use, deferring the idle unload. The loop calls it after every request.
