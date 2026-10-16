@@ -21,18 +21,25 @@ import (
 type Stub struct {
 	Funcs   []string          `json:"funcs"`             // file: Recv.Name of each function stubbed
 	Results map[string]string `json:"results,omitempty"` // each oracle test on the stubbed tree
-	// Rejects is true when every oracle test passed on the stubbed tree (the oracle cannot tell the fix from no fix),
-	// or when the check could not be run (Err).
-	Rejects bool   `json:"rejects"`
-	Err     string `json:"err,omitempty"`
+	// Rejected is why the check rejects the candidate, one of the Reject* reasons, or "" when it keeps it.
+	Rejected string `json:"rejected,omitempty"`
+	Err      string `json:"err,omitempty"` // what stopped the check, for RejectNoRun
 }
+
+// The stub check's reasons to reject (amendment 3). A stubbed tree that does not build is not a test telling the fix
+// from no fix; the check did not run, so it rejects as RejectNoRun does.
+const (
+	RejectPassed  = "passed while stubbed"
+	RejectNoRun   = "could not run"
+	RejectNoBuild = "did not build"
+)
 
 // StubCheck runs the stub check for c in work, a PrepareClone clone, against the oracle tests Verify found. A fix
 // that changed no function body (only types, variables or constants) has nothing to stub and is not rejected.
 func StubCheck(ctx context.Context, r Repo, c Candidate, oracle []string, work string) Stub {
 	s := Stub{}
 	fail := func(format string, args ...any) Stub {
-		s.Err, s.Rejects = fmt.Sprintf(format, args...), true
+		s.Err, s.Rejected = fmt.Sprintf(format, args...), RejectNoRun
 		return s
 	}
 	if err := checkout(work, c.Commit); err != nil {
@@ -70,13 +77,26 @@ func StubCheck(ctx context.Context, r Repo, c Candidate, oracle []string, work s
 		return s
 	}
 	s.Results, _ = RunTests(ctx, work, oracle, c.Packages)
-	s.Rejects = true
+	s.Rejected = stubVerdict(oracle, s.Results)
+	return s
+}
+
+// stubVerdict judges the oracle's results on the stubbed tree: any test that did not build rejects as
+// RejectNoBuild, all passing as RejectPassed, and otherwise the oracle told the fix from no fix.
+func stubVerdict(oracle []string, res map[string]string) string {
+	passed := 0
 	for _, t := range oracle {
-		if s.Results[t] != "pass" {
-			s.Rejects = false
+		switch res[t] {
+		case "build-fail":
+			return RejectNoBuild
+		case "pass":
+			passed++
 		}
 	}
-	return s
+	if passed == len(oracle) {
+		return RejectPassed
+	}
+	return ""
 }
 
 // stubSource replaces, in src (file name, at the fix), the body of every top-level function or method whose
@@ -259,8 +279,11 @@ func packageNames(dir string, paths []string) map[string]string {
 
 // Why is the stage-2 reason a rejecting stub check gives.
 func (s Stub) Why() string {
-	if s.Err != "" {
+	switch s.Rejected {
+	case RejectNoRun:
 		return "stub check could not run: " + s.Err
+	case RejectNoBuild:
+		return fmt.Sprintf("stub check: the tree with the fix's %d functions stubbed did not build", len(s.Funcs))
 	}
 	return fmt.Sprintf("stub check: the named tests pass with the fix's %d functions stubbed", len(s.Funcs))
 }

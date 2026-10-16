@@ -32,7 +32,7 @@ func TestMineChooseNeedsTheStubCheck(t *testing.T) {
 		t.Fatalf("an unchecked record was chosen from: %v", err)
 	}
 	// a's later record carries its stub check, which rejected it.
-	write(rec(a, true, nil), rec(b, true, &mine.Stub{Funcs: []string{"f"}}), rec(a, false, &mine.Stub{Funcs: []string{"f"}, Rejects: true}))
+	write(rec(a, true, nil), rec(b, true, &mine.Stub{Funcs: []string{"f"}}), rec(a, false, &mine.Stub{Funcs: []string{"f"}, Rejected: mine.RejectPassed}))
 	if err := mineChoose(out, io.Discard); err != nil {
 		t.Fatal(err)
 	}

@@ -92,8 +92,8 @@ func Verify(ctx context.Context, r Repo, c Candidate, work string) Verified {
 	}
 	st := StubCheck(ctx, r, c, v.Oracle, work)
 	v.Stub = &st
-	v.OK = !st.Rejects
-	if st.Rejects {
+	v.OK = st.Rejected == ""
+	if !v.OK {
 		v.Why = st.Why()
 	}
 	return v

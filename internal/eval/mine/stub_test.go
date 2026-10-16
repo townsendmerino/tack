@@ -48,7 +48,7 @@ func TestStubCheckRejectsAnOracleThatCannotTellTheFix(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := Verify(context.Background(), r, c, work)
-	if v.OK || v.Stub == nil || !v.Stub.Rejects || v.Stub.Err != "" || v.Stub.Results["TestCheck"] != "pass" ||
+	if v.OK || v.Stub == nil || v.Stub.Rejected != RejectPassed || v.Stub.Err != "" || v.Stub.Results["TestCheck"] != "pass" ||
 		strings.Join(v.Stub.Funcs, ",") != "warn/warn.go: Check" || !strings.Contains(v.Why, "stub check") {
 		t.Fatalf("a no-op oracle must be rejected by the stub check: %+v stub %+v", v, v.Stub)
 	}
@@ -73,5 +73,25 @@ func TestStubSource(t *testing.T) {
 	}
 	if strings.Contains(got, "errors") {
 		t.Errorf("the import only M's old body used was kept:\n%s", got)
+	}
+}
+
+// TestStubVerdict: a stubbed tree that does not build is a check that did not run, and rejects; so does an oracle
+// that passes while stubbed. Only an oracle that fails on the stubbed tree keeps the candidate.
+func TestStubVerdict(t *testing.T) {
+	oracle := []string{"TestA", "TestB"}
+	for _, tc := range []struct {
+		res  map[string]string
+		want string
+	}{
+		{map[string]string{"TestA": "pass", "TestB": "pass"}, RejectPassed},
+		{map[string]string{"TestA": "pass", "TestB": "build-fail"}, RejectNoBuild},
+		{map[string]string{"TestA": "fail", "TestB": "build-fail"}, RejectNoBuild},
+		{map[string]string{"TestA": "pass", "TestB": "fail"}, ""},
+		{map[string]string{"TestA": "skip", "TestB": "pass"}, ""},
+	} {
+		if got := stubVerdict(oracle, tc.res); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.res, got, tc.want)
+		}
 	}
 }

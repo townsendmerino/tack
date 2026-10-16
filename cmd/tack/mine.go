@@ -209,8 +209,8 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 			c = prev
 			v := *c.Verified
 			st := mine.StubCheck(ctx, r, c, v.Oracle, work)
-			v.Stub, v.OK = &st, !st.Rejects
-			if st.Rejects {
+			v.Stub, v.OK = &st, st.Rejected == ""
+			if !v.OK {
 				v.Why = st.Why()
 			}
 			c.Verified = &v
@@ -238,7 +238,7 @@ func mineChoose(out string, log io.Writer) error {
 		return err
 	}
 	var okc []mine.Candidate
-	stubbed := 0
+	stubbed := map[string]int{} // candidates the stub check rejected, by reason
 	for _, c := range latest(all) {
 		v := c.Verified
 		switch {
@@ -247,8 +247,8 @@ func mineChoose(out string, log io.Writer) error {
 			return fmt.Errorf("%s %s passed stage 2 without the stub check (amendment 3): run -stage verify first", c.Repo, c.Commit[:8])
 		case v.OK:
 			okc = append(okc, c)
-		case v.Stub != nil && v.Stub.Rejects:
-			stubbed++
+		case v.Stub != nil && v.Stub.Rejected != "":
+			stubbed[v.Stub.Rejected]++
 		}
 	}
 	pilot, e1 := mine.Choose(okc, 10, 4, 60, 30)
@@ -266,7 +266,9 @@ func mineChoose(out string, log io.Writer) error {
 		}
 		f.Close()
 	}
-	logf(log, "choose: %d verified, %d more removed by the stub check; pilot %d, e1 %d", len(okc), stubbed, len(pilot), len(e1))
+	logf(log, "choose: %d verified; the stub check removed %d (%s %d, %s %d, %s %d); pilot %d, e1 %d", len(okc),
+		stubbed[mine.RejectPassed]+stubbed[mine.RejectNoRun]+stubbed[mine.RejectNoBuild], mine.RejectPassed, stubbed[mine.RejectPassed],
+		mine.RejectNoRun, stubbed[mine.RejectNoRun], mine.RejectNoBuild, stubbed[mine.RejectNoBuild], len(pilot), len(e1))
 	return nil
 }
 

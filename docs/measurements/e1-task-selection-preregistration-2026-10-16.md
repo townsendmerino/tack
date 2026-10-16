@@ -32,9 +32,13 @@ rather than drop task 8 by hand, a rule now applies to all candidates alike:
   differs from the parent's, or is new, has its body replaced by a bare return of zero values: an empty body for no
   results, `return` for named results, `return *new(T1), *new(T2), …` otherwise. Imports left unused are removed so
   the package builds. The named tests stage 2 found (the oracle) then run once.
-- **If every one of them passes, the candidate is rejected:** the oracle cannot tell the fix from no fix. If any fails
-  or does not build, it is kept. A fix that changed no function body (only types, variables or constants) has
-  nothing to stub and is kept. A candidate the check cannot be run on is rejected.
+- **If every one of them passes, the candidate is rejected:** the oracle cannot tell the fix from no fix. **If the
+  stubbed tree does not build, or the check cannot be run, the candidate is also rejected**: the check did not run,
+  and a build failure is not a test telling a fix from no fix (owner, added before the check had run on any
+  candidate). Otherwise (a named test fails or skips on the stubbed tree) the candidate is kept. A fix that changed
+  no function body (only types, variables or constants) has nothing to stub and is kept.
+- Stage 3 reports the rejections by reason: passed while stubbed, could not run, did not build
+  (`internal/eval/mine/stub.go:stubVerdict`).
 - Candidates verified before this amendment are stub-checked in stage 3's order by the same `-stage verify`, and
   stage 3 refuses any verified candidate without the check (`internal/eval/mine/stub.go:StubCheck`). The fixed-order
   choice is then re-run, and how many candidates the check removed is reported. A task that replaces a removed one

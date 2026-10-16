@@ -123,7 +123,7 @@ func TestStaticAndVerify(t *testing.T) {
 		results[c.Subject] = Verify(ctx, r, c, work)
 	}
 	if v := results["fix Add"]; !v.OK || v.OnParent["TestAdd"] != "fail" || v.OnCommit[1]["TestAdd"] != "pass" ||
-		v.Stub == nil || v.Stub.Rejects || v.Stub.Results["TestAdd"] != "fail" || strings.Join(v.Stub.Funcs, ",") != "calc/calc.go: Add" {
+		v.Stub == nil || v.Stub.Rejected != "" || v.Stub.Results["TestAdd"] != "fail" || strings.Join(v.Stub.Funcs, ",") != "calc/calc.go: Add" {
 		t.Errorf("fix Add: %+v", v)
 	}
 	if v := results["add Sub"]; !v.OK || v.OnParent["TestSub"] != "build-fail" {
