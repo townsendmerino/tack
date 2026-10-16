@@ -48,7 +48,7 @@ type Log struct {
 	lastSeq int64
 	now     func() time.Time
 	// sync makes the file durable; tests count calls through it.
-	sync func(*os.File) error
+	sync   func(*os.File) error
 	onSync func(proto.EventType, time.Duration)
 }
 
