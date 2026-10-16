@@ -34,6 +34,8 @@ type Options struct {
 	LockPath string
 	Log      io.Writer     // phases, heartbeats and results as they happen
 	Beat     time.Duration // heartbeat interval (default 30s)
+	// SettleWait is how long an arm waits for memory pressure to return to normal before it is skipped (default 2m).
+	SettleWait time.Duration
 	// Pressure reads memory pressure; nil means models.MemoryPressure.
 	Pressure func() (models.Pressure, error)
 }
@@ -49,6 +51,9 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if o.Pressure == nil {
 		o.Pressure = models.MemoryPressure
+	}
+	if o.SettleWait == 0 {
+		o.SettleWait = 2 * time.Minute
 	}
 	if o.FitOnly {
 		if err := CheckTimingLock(o.LockPath); err != nil {
@@ -175,9 +180,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 	var sup *models.Supervisor
 	var srv server.Server
 	window, admitted := 0, 0
+	skipped := false
 	phase("fit", len(arm.Ctx), func() {
-		if pr, err := r.o.Pressure(); err == nil && pr >= models.PressureWarning {
+		if pr := r.settle(ctx, arm); pr >= models.PressureWarning {
 			r.record(arm, "fit", map[string]any{"skipped": "pressure", "pressure": pr.String()})
+			skipped = true
 			return
 		}
 		for _, n := range arm.Ctx {
@@ -203,9 +210,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 				continue
 			}
 			plan, _ := s.Plan()
-			window, admitted, sup, srv = plan.ContextWindow, n, s, c
-			if window == 0 {
-				window = n
+			// /v1/models reports the model's maximum (32768 for Qwen2.5) even where -ctx caps the resident context, so the
+			// usable window is the smaller of the two.
+			window, admitted, sup, srv = n, n, s, c
+			if plan.ContextWindow > 0 && plan.ContextWindow < n {
+				window = plan.ContextWindow
 			}
 			r.record(arm, "fit", map[string]any{"ctx": n, "admitted": true, "fit_line": plan.FitLine,
 				"context_window": plan.ContextWindow, "load_ms": time.Since(t0).Milliseconds()})
@@ -213,6 +222,10 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			return
 		}
 	})
+	if skipped {
+		r.record(arm, "verdict", map[string]any{"verdict": "skipped", "why": "memory pressure did not return to normal"})
+		return
+	}
 	if sup == nil {
 		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": "no context was admitted"})
 		return
@@ -278,9 +291,10 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 	}
 
 	filler := repoText(r.o.Manifest.Workspace)
+	// 4096, 8192 and the window minus 1024 (the registration's amendment), each at most the window minus 1024.
 	var sizes []int
-	for _, n := range []int{4096, 8192, 16384} {
-		if n <= window-1024 {
+	for _, n := range []int{4096, 8192, window - 1024} {
+		if n <= window-1024 && (len(sizes) == 0 || n > sizes[len(sizes)-1]) {
 			sizes = append(sizes, n)
 		}
 	}
@@ -560,3 +574,24 @@ func (s *sampler) stop() (models.Pressure, int) {
 	defer s.mu.Unlock()
 	return s.pmax, s.vram
 }
+
+// settle waits up to SettleWait for memory pressure to return to normal before an arm loads: the previous arm's child
+// has just exited, and the OS takes a moment to lower its level. It returns the level it ended at.
+func (r *runner) settle(ctx context.Context, arm Arm) models.Pressure {
+	deadline := time.Now().Add(r.o.SettleWait)
+	for {
+		pr, err := r.o.Pressure()
+		if err != nil || pr < models.PressureWarning || time.Now().After(deadline) || ctx.Err() != nil {
+			return pr
+		}
+		r.logf("  %s: memory pressure is %s; waiting up to %s for normal", arm.Name, pr, time.Until(deadline).Round(time.Second))
+		select {
+		case <-time.After(settlePoll):
+		case <-ctx.Done():
+			return pr
+		}
+	}
+}
+
+// settlePoll is how often settle re-reads memory pressure.
+var settlePoll = 2 * time.Second

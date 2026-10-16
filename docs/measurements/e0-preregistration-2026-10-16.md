@@ -2,7 +2,13 @@
 
 <!-- citations-at: written before the runner; the runner's commit is cited in each result record -->
 
-**Registered 2026-10-16, before any E0 run.** DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
+**Registered 2026-10-16, before any E0 run.**
+
+**Amendment 2026-10-16, still before any timed run.** The TTFT sizes were 4096, 8192 and 16384, each skipped above
+the window minus 1024. That never times a 16384-window model above 8192, which is short of the full-window turns P3
+grades. The sizes are now 4096, 8192 and the window minus 1024. No other part changed.
+
+DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
 
@@ -55,8 +61,8 @@ run's output directory and a heartbeat to its log at least every 30 s.
    - **malformed** is counted separately: a call to a tool that was not offered, or input that is not a JSON object.
 
    The whole set runs twice. A task that scores differently across the two runs is reported as unstable.
-4. **ttft.** Time to the first streamed token, at prompts of 4096, 8192 and 16384 tokens, skipping any size above the
-   window minus 1024. Each prompt is tack's system prompt and tools, plus repository text sized with the server's own
+4. **ttft.** Time to the first streamed token, at prompts of 4096 and 8192 tokens and at the window minus 1024 (15360
+   for a 16384 window), skipping any size above the window minus 1024. Each prompt is tack's system prompt and tools, plus repository text sized with the server's own
    `count_tokens`. Two cells per size:
    - **cold**: a unique nonce at the very start of the system prompt, so nothing is reused;
    - **reused**: the same prompt as the previous request except its last 512 tokens, so all but the tail is a cached

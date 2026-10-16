@@ -54,7 +54,7 @@ func fakeServe(args []string) {
 	api.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		var data []any
 		if loaded != "" {
-			data = append(data, map[string]any{"id": loaded, "context_window": *ctxN})
+			data = append(data, map[string]any{"id": loaded, "context_window": 32768}) // the model maximum, as goinfer reports it
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
@@ -297,7 +297,7 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatalf("%d smoke records, want 40", n)
 	}
 	ttft := byPhase["fits-8k/ttft"]
-	if len(ttft) != 6 { // only 4096 fits under 8192-1024: 3 cold + 3 reused
+	if len(ttft) != 12 { // 4096 and 7168 (the window minus 1024), each 3 cold + 3 reused
 		t.Fatalf("%d ttft records: %+v", len(ttft), ttft)
 	}
 	if v := byPhase["fits-8k/verdict"]; len(v) != 1 || v[0].Verdict == "" {
@@ -318,16 +318,46 @@ func TestRunEndToEnd(t *testing.T) {
 
 func TestPressureSkipsAnArm(t *testing.T) {
 	t.Setenv(tokenEnv, "")
+	defer func(p time.Duration) { settlePoll = p }(settlePoll)
+	settlePoll = time.Millisecond
 	out := t.TempDir()
 	m := &Manifest{Box: "test", GoinferServe: "/nonexistent", GoinferRev: "r", Workspace: t.TempDir(),
 		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Ctx: []int{8192}}}}
 	err := Run(context.Background(), Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
-		Pressure: func() (models.Pressure, error) { return models.PressureWarning, nil }})
+		SettleWait: 10 * time.Millisecond, Pressure: func() (models.Pressure, error) { return models.PressureWarning, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
-	if !strings.Contains(string(data), `"skipped":"pressure"`) {
+	if !strings.Contains(string(data), `"skipped":"pressure"`) || !strings.Contains(string(data), `"verdict":"skipped"`) {
+		t.Fatalf("results: %s", data)
+	}
+}
+
+// TestPressureSettlesBeforeAnArm: pressure at warning when the arm starts, normal a moment later (the previous arm's
+// child just exited). The arm waits and runs instead of being skipped.
+func TestPressureSettlesBeforeAnArm(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	t.Setenv(tokenEnv, "")
+	defer func(p time.Duration) { settlePoll = p }(settlePoll)
+	settlePoll = 10 * time.Millisecond
+	calls := 0
+	pressure := func() (models.Pressure, error) {
+		calls++
+		if calls <= 2 {
+			return models.PressureWarning, nil
+		}
+		return models.PressureNormal, nil
+	}
+	out := t.TempDir()
+	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(),
+		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Ctx: []int{8192}}}}
+	if err := Run(context.Background(), Options{Manifest: m, Out: out, FitOnly: true, LockPath: filepath.Join(t.TempDir(), "lock"),
+		SettleWait: 5 * time.Second, Pressure: pressure}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
+	if !strings.Contains(string(data), `"admitted":true`) || strings.Contains(string(data), `"skipped"`) {
 		t.Fatalf("results: %s", data)
 	}
 }
