@@ -204,17 +204,18 @@ func check(r Repo, subs []string, commit, parent, subject string) (Candidate, bo
 	if err != nil || len(tests) == 0 { // rule 5
 		return c, false, err
 	}
-	if hit, err := literalInFix(r, parent, commit, nonTest, literals); err != nil || hit != "" { // rule 8
-		if hit != "" {
-			c.Rejected = "rule 8: " + strconv.Quote(hit)
-		}
-		return c, false, err
-	}
 	for _, p := range pkgs { // rule 7
 		big, err := bigTestdata(r, commit, p)
 		if err != nil || big {
 			return c, false, err
 		}
+	}
+	// Rule 8 last, so Stats.Rule8 counts only candidates that rules 1–7 kept.
+	if hit, err := literalInFix(r, parent, commit, nonTest, literals); err != nil || hit != "" { // rule 8
+		if hit != "" {
+			c.Rejected = "rule 8: " + strconv.Quote(hit)
+		}
+		return c, false, err
 	}
 	c.Tests, c.Packages, c.TestFiles = tests, pkgs, files
 	return c, true, nil
