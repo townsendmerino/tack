@@ -19,11 +19,13 @@ import (
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/core"
+	"github.com/townsendmerino/tack/internal/kensearch"
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/cassette"
 	"github.com/townsendmerino/tack/internal/store"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
@@ -117,7 +119,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		servers = append(servers, "goinfer@"+n)
 	}
 	sort.Strings(servers)
-	c := core.New(ctx, core.Options{Store: st, Version: version, Servers: servers,
+	opts := core.Options{Store: st, Version: version, Servers: servers,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens},
 		Source: func(model string) (models.Source, error) {
@@ -125,7 +127,15 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 				return nil, fmt.Errorf("model %q: only the main role is configured", model)
 			}
 			return models.Open(cfg, name, stateDir, hc)
-		}})
+		}}
+	if k := cfg.Ken; k != nil {
+		// One-shot: build (or load the snapshot of) the index, no watcher. The daemon will watch.
+		opts.OpenSearcher = func(ctx context.Context, root string) (tools.Searcher, error) {
+			fmt.Fprintf(stderr, "tack: opening ken (%s) over %s\n", k.Mode, root)
+			return kensearch.Open(ctx, root, kensearch.Options{Mode: k.Mode, ModelDir: k.ModelDir, Snapshot: true, Log: stderr})
+		}
+	}
+	c := core.New(ctx, opts)
 	defer c.Close()
 
 	code := drive(ctx, c, ws, question, *jsonOut, stdout, stderr)

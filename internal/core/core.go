@@ -32,9 +32,11 @@ type Options struct {
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
 	// per name and keeps the result.
 	Source func(model string) (models.Source, error)
-	// Searcher, when set, gives sessions the search tool (ken's engine, DESIGN §12).
-	Searcher tools.Searcher
-	Budget   loop.Budget
+	// OpenSearcher, when set, opens ken's engine over a workspace root, giving its sessions the search tool (DESIGN
+	// §12). The Core opens one per root, shares it between that root's sessions, and closes it in Close when it is an
+	// io.Closer.
+	OpenSearcher func(ctx context.Context, root string) (tools.Searcher, error)
+	Budget       loop.Budget
 }
 
 // Core hosts sessions. It is safe for concurrent use by any number of connections.
@@ -42,9 +44,10 @@ type Core struct {
 	opt Options
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
-	mu       sync.Mutex
-	sessions map[proto.SessionID]*session
-	sources  map[string]models.Source
+	mu        sync.Mutex
+	sessions  map[proto.SessionID]*session
+	sources   map[string]models.Source
+	searchers map[string]tools.Searcher // by workspace root
 }
 
 type session struct {
@@ -65,7 +68,8 @@ type subscriber struct {
 
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
-	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{}}
+	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
+		searchers: map[string]tools.Searcher{}}
 }
 
 // Close releases the model sources (a supervised child is stopped).
@@ -75,6 +79,11 @@ func (c *Core) Close() error {
 	var errs []error
 	for _, s := range c.sources {
 		errs = append(errs, s.Close())
+	}
+	for _, s := range c.searchers {
+		if cl, ok := s.(io.Closer); ok {
+			errs = append(errs, cl.Close())
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -161,7 +170,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
 		}
 		ken := ""
-		if c.opt.Searcher != nil {
+		if c.opt.OpenSearcher != nil {
 			ken = "engine"
 		}
 		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: proto.Version,
@@ -239,13 +248,17 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
+	searcher, err := c.searcher(ws.Root())
+	if err != nil {
+		return "", fmt.Errorf("ken: %w", err)
+	}
 	id := store.NewSessionID(time.Now())
 	log, err := c.opt.Store.Create(id)
 	if err != nil {
 		return "", err
 	}
 	s := &session{id: id, log: log, subs: map[*subscriber]bool{}}
-	s.loop = loop.New(loop.Config{Source: src, Tools: tools.NewSet(c.opt.Searcher), WS: ws, Log: log,
+	s.loop = loop.New(loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Emit: s.emit})
 	c.mu.Lock()
 	c.sessions[id] = s
@@ -343,4 +356,22 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		s.mu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
+}
+
+// searcher returns the root's search engine, opening it on first use; nil when ken is not configured.
+func (c *Core) searcher(root string) (tools.Searcher, error) {
+	if c.opt.OpenSearcher == nil {
+		return nil, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.searchers[root]; ok {
+		return s, nil
+	}
+	s, err := c.opt.OpenSearcher(c.ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	c.searchers[root] = s
+	return s, nil
 }

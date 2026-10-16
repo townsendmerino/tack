@@ -22,6 +22,8 @@ type Config struct {
 	Main    string            `toml:"main"`
 	Servers map[string]Server `toml:"servers"`
 	Run     Run               `toml:"run"`
+	// Ken turns on ken's engine and the search tool; absent means no search tool (DESIGN §12).
+	Ken *Ken `toml:"ken"`
 	// StateDir overrides where sessions, blobs and the supervised goinfer's files live; empty means the platform's
 	// default (StateDir).
 	StateDir string `toml:"state_dir"`
@@ -51,6 +53,13 @@ type Server struct {
 	URL string `toml:"url"`
 	// TokenFile holds the server's bearer token (mode 0600). The Keychain replaces it (DESIGN §5.3).
 	TokenFile string `toml:"token_file"`
+}
+
+// Ken configures ken's engine (ken v1.9.0, engine.Options). ModelDir is always explicit: tack does not rely on ken's
+// ~/.ken/model default (DESIGN §12).
+type Ken struct {
+	Mode     string `toml:"mode"`      // "bm25", "semantic", "hybrid" (default) or "hybrid-rerank"
+	ModelDir string `toml:"model_dir"` // the Model2Vec directory; required for every mode but bm25
 }
 
 // Run holds a turn's budgets for `tack run` (DESIGN §6.3).
@@ -177,6 +186,20 @@ func (c *Config) validate() error {
 	}
 	if c.Run.MaxTokens == 0 {
 		c.Run.MaxTokens = 2048
+	}
+	if k := c.Ken; k != nil {
+		if k.Mode == "" {
+			k.Mode = "hybrid"
+		}
+		switch k.Mode {
+		case "bm25", "semantic", "hybrid", "hybrid-rerank":
+		default:
+			return fmt.Errorf("ken.mode %q, want bm25, semantic, hybrid or hybrid-rerank", k.Mode)
+		}
+		k.ModelDir = expand(k.ModelDir)
+		if k.Mode != "bm25" && k.ModelDir == "" {
+			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
+		}
 	}
 	c.StateDir = expand(c.StateDir)
 	return nil

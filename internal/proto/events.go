@@ -93,8 +93,8 @@ type AssistantDelta struct {
 	Text  string `json:"text"`
 }
 
-// AssistantMessage is the model's finished response. Content is what goes back to the model; rendered blocks for
-// clients (DESIGN §9.3) are added beside it when the renderer lands, and never replace it.
+// AssistantMessage is the model's finished response: its raw content blocks, exactly as received, which is what goes
+// back to the model. Rendered blocks for clients (DESIGN §9.3) are derived from it, never stored here (Appendix B).
 type AssistantMessage struct {
 	Request    int          `json:"request"`
 	Content    []ModelBlock `json:"content"`

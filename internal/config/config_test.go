@@ -72,3 +72,26 @@ func TestReadTokenRefusesAReadableFile(t *testing.T) {
 		t.Fatalf("ReadToken = %q, %v", tok, err)
 	}
 }
+
+func TestKenSection(t *testing.T) {
+	base := "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	c, err := load(t, base)
+	if err != nil || c.Ken != nil {
+		t.Fatalf("no [ken]: %+v, %v", c.Ken, err)
+	}
+	c, err = load(t, base+"[ken]\nmodel_dir = \"/m/ken\"\n")
+	if err != nil || c.Ken.Mode != "hybrid" || c.Ken.ModelDir != "/m/ken" {
+		t.Fatalf("[ken]: %+v, %v", c.Ken, err)
+	}
+	if c, err = load(t, base+"[ken]\nmode = \"bm25\"\n"); err != nil || c.Ken.ModelDir != "" {
+		t.Fatalf("bm25 needs no model: %+v, %v", c.Ken, err)
+	}
+	for body, want := range map[string]string{
+		"[ken]\n":                   "model_dir is required",
+		"[ken]\nmode = \"fuzzy\"\n": "ken.mode",
+	} {
+		if _, err := load(t, base+body); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", body, err, want)
+		}
+	}
+}
