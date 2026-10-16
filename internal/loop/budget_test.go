@@ -14,10 +14,6 @@ import (
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
-// FixedPromptBudget is the hard budget for tack's fixed prompt, system instructions plus tool schemas, in tokens of
-// the target model's own tokenizer (DESIGN §2.3, proposed at 3,000 for a 16k window).
-const FixedPromptBudget = 3000
-
 var countURL = flag.String("count-url", "", "re-record testdata/fixed-prompt.json with this goinfer-serve's count_tokens "+
 	"(a Qwen2.5 model: the tokenizer and chat template of the default model)")
 
@@ -33,8 +29,8 @@ func fixedPromptRequest(model string) server.Request {
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 
-// TestFixedPromptBudget fails when tack's system prompt plus tool schemas pass FixedPromptBudget, counted by goinfer's
-// count_tokens with the model's own tokenizer, from a cassette. Changing the prompt or a tool's schema changes the
+// TestFixedPromptBudget fails when tack's system prompt plus tool schemas pass FixedPromptBudget(DesignWindow), counted
+// by goinfer's count_tokens with the model's own tokenizer, from a cassette. Changing the prompt or a tool's schema changes the
 // request, so the replay fails until the count is re-recorded with -count-url against a live goinfer.
 func TestFixedPromptBudget(t *testing.T) {
 	path := filepath.Join("testdata", "fixed-prompt.json")
@@ -65,22 +61,23 @@ func TestFixedPromptBudget(t *testing.T) {
 	} else if err := rep.Done(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("fixed prompt: %d tokens of %d", n, FixedPromptBudget)
+	t.Logf("fixed prompt: %d tokens of %d (a fifth of the %d design window)", n, FixedPromptBudget(DesignWindow), DesignWindow)
 	if err := checkBudget(n); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func checkBudget(n int) error {
-	if n > FixedPromptBudget {
-		return fmt.Errorf("the fixed prompt is %d tokens, over its budget of %d (DESIGN §2.3): shorten the system prompt "+
-			"or a tool description, or drop a tool", n, FixedPromptBudget)
+	if b := FixedPromptBudget(DesignWindow); n > b {
+		return fmt.Errorf("the fixed prompt is %d tokens, over its budget of %d, a fifth of the %d design window (DESIGN §2.3, "+
+			"ADR-003): shorten the system prompt or a tool description, or drop a tool", n, b, DesignWindow)
 	}
 	return nil
 }
 
 func TestCheckBudgetFailsOverTheLine(t *testing.T) {
-	if checkBudget(FixedPromptBudget) != nil || checkBudget(FixedPromptBudget+1) == nil {
-		t.Fatal("checkBudget does not hold the line at FixedPromptBudget")
+	b := FixedPromptBudget(DesignWindow)
+	if b != 3276 || checkBudget(b) != nil || checkBudget(b+1) == nil {
+		t.Fatal("checkBudget does not hold the line at a fifth of the design window")
 	}
 }

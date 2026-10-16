@@ -48,3 +48,40 @@ model's view.
 as the server returned them, which is what the loop sends back. Rendered `blocks` for clients are added beside it when
 `internal/render` lands, and never replace it. `tool.finished` likewise carries `result`, the exact text the model
 received, with the full output in the blob store.
+
+## ADR-003 — The fixed-prompt budget is a fifth of the served window; per-turn budgets are larger
+
+**Status:** decided 2026-10-16 by the owner; reconsider as goinfer serves larger windows.
+
+**Context.** DESIGN §2.3 proposed a fixed 3,000-token budget for tack's fixed prompt (system instructions plus tool
+schemas). The owner judged the defaults too tight for real users. Two different budgets were in play:
+
+- The fixed-prompt budget caps tack's own overhead, which every request carries. Raising it does not give the user
+  anything; it shrinks the user's share of the window.
+- The per-turn budgets (`[run]` in `config.toml`) are what a user feels: output per reply, requests and tool calls per
+  turn, wall time.
+
+**Decision.**
+
+- **The fixed-prompt budget is a fifth of the served window** (`internal/loop/budget.go:FixedPromptBudget`): 3,276
+  tokens at the 16k design window, about 6,500 at 32k. The user's share of any window stays at least four fifths, and
+  a larger window from better hardware or a better goinfer raises the cap without a design change.
+  `TestFixedPromptBudget` holds the prompt to the budget at the 16k design window. It measured 447 tokens when this was
+  decided.
+- **Per-turn defaults:**
+
+  | setting | was | now |
+  |---|---|---|
+  | `max_requests` | 12 | 40 |
+  | `max_tool_calls` | 24 | 100 |
+  | `max_wall` | 10m | 30m |
+  | `max_tokens` | 1024 | 2048 |
+
+  `max_tokens` stops at 2048 because output comes out of the same window: 4,096 would leave only 12k of a 16k window
+  for the prompt.
+
+**Why the window stays small.** The only agent setup measured working is Qwen2.5-7B q4_k_m at 16k on nobara's 8 GB
+card, which refuses the model at 24k. On the Mac, E0's fit check on 2026-10-16 admitted the same model at 16k with
+0.2 GB of goinfer's plan left for prefill. Turns are prefill-heavy, and the fixed prompt is re-prefilled on every cache
+break. Small models also follow instructions less well as the context grows. The window is the hardware's limit, not
+a product choice.

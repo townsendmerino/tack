@@ -55,10 +55,10 @@ type Server struct {
 
 // Run holds a turn's budgets for `tack run` (DESIGN §6.3).
 type Run struct {
-	MaxRequests  int      `toml:"max_requests"`   // model requests per turn (default 12)
-	MaxToolCalls int      `toml:"max_tool_calls"` // tool calls per turn (default 24)
-	MaxWall      Duration `toml:"max_wall"`       // wall time per turn (default 10m)
-	MaxTokens    int      `toml:"max_tokens"`     // output tokens per request (default 1024)
+	MaxRequests  int      `toml:"max_requests"`   // model requests per turn (default 40)
+	MaxToolCalls int      `toml:"max_tool_calls"` // tool calls per turn (default 100)
+	MaxWall      Duration `toml:"max_wall"`       // wall time per turn (default 30m)
+	MaxTokens    int      `toml:"max_tokens"`     // output tokens per request (default 2048; it comes out of the window)
 }
 
 // Duration is a time.Duration written as a string ("10m").
@@ -167,16 +167,16 @@ func (c *Config) validate() error {
 		c.Servers[name] = s
 	}
 	if c.Run.MaxRequests == 0 {
-		c.Run.MaxRequests = 12
+		c.Run.MaxRequests = 40
 	}
 	if c.Run.MaxToolCalls == 0 {
-		c.Run.MaxToolCalls = 24
+		c.Run.MaxToolCalls = 100
 	}
 	if c.Run.MaxWall.Duration == 0 {
-		c.Run.MaxWall.Duration = 10 * time.Minute
+		c.Run.MaxWall.Duration = 30 * time.Minute
 	}
 	if c.Run.MaxTokens == 0 {
-		c.Run.MaxTokens = 1024
+		c.Run.MaxTokens = 2048
 	}
 	c.StateDir = expand(c.StateDir)
 	return nil

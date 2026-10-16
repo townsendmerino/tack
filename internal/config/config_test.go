@@ -38,7 +38,7 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 	if mac.Model != "qwen2.5-7b-instruct-q4_k_m" || mac.IdleUnload.Duration != 10*time.Minute || mac.IdleExit.Duration != 30*time.Minute {
 		t.Fatalf("child defaults: %+v", mac)
 	}
-	if c.Run.MaxRequests != 12 || c.Run.MaxTokens != 1024 || c.Run.MaxWall.Duration != 10*time.Minute {
+	if c.Run.MaxRequests != 40 || c.Run.MaxToolCalls != 100 || c.Run.MaxTokens != 2048 || c.Run.MaxWall.Duration != 30*time.Minute {
 		t.Fatalf("run defaults: %+v", c.Run)
 	}
 }

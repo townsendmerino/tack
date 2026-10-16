@@ -138,8 +138,9 @@ and in how much memory, before the loop is built around them.
   `docs/integrations/opencode.md`, "Picking a model").
 - **The window is the constraint everything answers to.** tack is designed for a 16k-token window and must stay useful
   there:
-  - **tack's fixed prompt** — system instructions plus tool schemas — has a hard budget, *proposed* 3,000 tokens. For
-    scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
+  - **tack's fixed prompt** — system instructions plus tool schemas — has a hard budget of a fifth of the served
+    window: 3,276 tokens at 16k, more on a larger window (owner, 2026-10-16, ADR-003; to be reconsidered as goinfer
+    serves larger windows). For scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
     the whole window (`docs/integrations/claude-code.md`).
   - **Long instruction files are read by section.** goinfer's `CLAUDE.md` is 44 KB, about 11,000 tokens: two-thirds of
     the window on its own. ken's is 28 KB. Above a budget (*proposed* 15% of the window), tack loads a file's headings,
