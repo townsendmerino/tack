@@ -32,3 +32,10 @@ jobs:
         run: go run ./tools/touched -all
       - name: lint
         run: go run ./tools/lint
+      # The fixtures pass on both sides (DESIGN §9.3): the generated Swift types decode and re-encode every fixture
+      # event. Go's side is internal/proto's TestFixturesConform; staleness of the Swift file is swiftgen's test.
+      - name: swift fixture check
+        if: runner.os == 'macOS'
+        run: |
+          xcrun swiftc -o "$RUNNER_TEMP/fixturecheck" apps/macos/Sources/TackProto/*.swift apps/macos/Tests/FixtureCheck/main.swift
+          "$RUNNER_TEMP/fixturecheck" proto/fixtures/*.jsonl

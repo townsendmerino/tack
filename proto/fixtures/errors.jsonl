@@ -1,0 +1,8 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"session":"s_01JANOSUCHSESSION000000000","content":[{"type":"text","text":"hello"}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"unknown session s_01JANOSUCHSESSION000000000"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":"str-id","method":"session/fork","params":{"session":"s_01JAFIXTURE0000000000000003","at_seq":4}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":"str-id","error":{"code":-32601,"message":"method not found: session/fork"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":5,"time":"2026-10-16T12:00:00Z","type":"error","cause":4,"payload":{"class":"server","message":"goinfer: 529 overloaded_error: queue full","retrying":true}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":6,"time":"2026-10-16T12:00:30Z","type":"budget.exceeded","cause":1,"payload":{"budget":"tool_calls","limit":20,"value":21}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":7,"time":"2026-10-16T12:00:30Z","type":"tool.finished","cause":6,"payload":{"id":"toolu_09","outcome":"cancelled","result":"error: not run: the turn's tool-call budget (20) was exceeded","truncated":false}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":8,"time":"2026-10-16T12:00:30Z","type":"turn.end","cause":1,"payload":{"stop_reason":"budget"}}}}}

@@ -1,0 +1,10 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-macos","version":"0.1.0"},"protocol":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@nobara"]}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"workspace":"~/tmcode/ken","model":"main","mode":"ask"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"session":"s_01JAFIXTURE0000000000000001"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{"session":"s_01JAFIXTURE0000000000000001","from_seq":0}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"head":0}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"session":"s_01JAFIXTURE0000000000000001","content":[{"type":"text","text":"Why does the watch flush fire twice on a rename?"}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":4,"result":{"seq":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000001","event":{"seq":1,"time":"2026-10-16T12:00:00Z","type":"user.message","payload":{"content":[{"type":"text","text":"Why does the watch flush fire twice on a rename?"}]}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000001","event":{"seq":2,"time":"2026-10-16T12:00:00.25Z","type":"usage","cause":1,"payload":{"request":3,"server":"goinfer@nobara","prompt":11240,"reused":9860,"prefilled":1380,"output":212,"prefill_ms":2140,"decode_tps":41.2,"wall_ms":7311}}}}}
