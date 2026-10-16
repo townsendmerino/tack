@@ -5,6 +5,20 @@ This page fixes how they are found, verified, chosen and stated. A rule changes 
 dated amendment above the first selection record, and never after a pilot or E1 result has been seen, except for the
 one adjustment registered under "Difficulty".
 
+**Amendment 2026-10-16, after stage 1 and the first verification pass, before any statement or agent run.** These are
+procedural. None of them changes which candidates a full run would choose:
+
+- **Verification order.** Stage 2 verifies candidates in stage 3's order, and may stop once a set is full
+  (`-until-pilot`). Every candidate ahead of a chosen one has then been verified, so stopping early yields the same
+  choice as verifying all of them.
+- **Stage 3.** A candidate the pilot skips for its per-repo cap stays in order and is eligible for E1's set. "The next
+  60" is read that way.
+- **Stage 2 environment.** Verification works in a clone that shares the repository's objects (`git clone --shared`),
+  checked out at the parent and then the commit. Later commits are reachable there, which does not matter because no
+  agent runs in it. Agents' task repositories are still built from the parent and its ancestors only.
+- **Check command.** It carries its environment: `GOWORK=off GOFLAGS=-mod=mod CGO_ENABLED=0 go test … -buildvcs=false`,
+  exactly as verified.
+
 ## Population
 
 The first-parent history of each repository's `main` branch, frozen at:
