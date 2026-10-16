@@ -26,12 +26,15 @@ const (
 	smokeStatement = "List the Go files under internal/structural, then tell me which function extracts structure from one file."
 )
 
-// pilotCmd is `tack eval pilot`. With -smoke it runs the smoke task once per arm: a night job that learns opencode's
-// event stream and checks the server, opencode and ken-mcp configuration before the pilot's timed runs.
+// pilotCmd is `tack eval pilot` (docs/measurements/e1-pilot-preregistration-2026-10-16.md). With -smoke it runs the
+// smoke task once per arm. Otherwise it runs tasks -from to -to of -tasks, both arms each, as one night job.
 func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval pilot", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	smoke := fs.Bool("smoke", false, "run the smoke task once per arm")
+	tasks := fs.String("tasks", "", "pilot.jsonl, with approved statements")
+	from := fs.Int("from", 1, "first task (1-based)")
+	to := fs.Int("to", 10, "last task")
 	mirrors := fs.String("mirrors", "", "directory of bare mirrors, <repo>.git")
 	opencode := fs.String("opencode", "", "the opencode binary")
 	kenMCP := fs.String("ken-mcp", "", "the ken-mcp binary (A0k)")
@@ -40,17 +43,34 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	modelPath := fs.String("model-path", "", "the checkpoint, from ~/models")
 	ctxN := fs.Int("ctx", 16384, "the served context")
 	out := fs.String("out", "", "results directory (durable)")
-	capFlag := fs.Duration("cap", 2*time.Minute, "wall-time cap per run")
+	capFlag := fs.Duration("cap", 10*time.Minute, "wall-time cap per run (the registration's is 10m)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if !*smoke || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" || *modelPath == "" || *out == "" {
-		fmt.Fprintln(stderr, "usage: tack eval pilot -smoke -mirrors DIR -opencode BIN -ken-mcp BIN -ken-model DIR -goinfer-serve BIN -model-path FILE -out DIR [-cap 2m]")
+	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
+		*modelPath == "" || *out == "" {
+		fmt.Fprintln(stderr, "usage: tack eval pilot (-smoke | -tasks pilot.jsonl -from N -to M) -mirrors DIR -opencode BIN "+
+			"-ken-mcp BIN -ken-model DIR -goinfer-serve BIN -model-path FILE -out DIR [-cap 10m]")
 		return exitUsage
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := runSmoke(ctx, *mirrors, *opencode, *kenMCP, *kenModel, *serve, *modelPath, *ctxN, *out, *capFlag, stderr); err != nil {
+	a0, a0k := pilot.Arm{Name: "A0"}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel}
+	var err error
+	if *smoke {
+		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, _ string) error {
+			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, *out, *capFlag, stderr)
+		})
+	} else {
+		var ts []pilot.Task
+		if ts, err = pilot.LoadTasks(*tasks, *from, *to); err == nil {
+			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
+				return pilot.RunPilot(ctx, pilot.Options{Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
+					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr})
+			})
+		}
+	}
+	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		if errors.Is(err, eval.ErrHeld) {
 			return exitHeld
@@ -60,12 +80,14 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runSmoke(ctx context.Context, mirrors, opencode, kenMCP, kenModel, serve, modelPath string, ctxN int, out string, capD time.Duration, log io.Writer) error {
+// withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
+// -log-requests, runs fn against it, and saves the server's log into out.
+func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string) error) error {
 	lockPath, err := eval.TimingLockPath()
 	if err != nil {
 		return err
 	}
-	lock, err := eval.AcquireTimingLock(lockPath, "tack eval pilot -smoke")
+	lock, err := eval.AcquireTimingLock(lockPath, "tack eval pilot")
 	if err != nil {
 		return fmt.Errorf("%w: %v", eval.ErrHeld, err)
 	}
@@ -73,8 +95,6 @@ func runSmoke(ctx context.Context, mirrors, opencode, kenMCP, kenModel, serve, m
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
-	start := time.Now()
-	logf(log, "pilot smoke: start %s, cap %s per run", start.Format("15:04 MST"), capD)
 	dir, err := os.MkdirTemp("/tmp", "tkpilot")
 	if err != nil {
 		return err
@@ -85,28 +105,34 @@ func runSmoke(ctx context.Context, mirrors, opencode, kenMCP, kenModel, serve, m
 	if err != nil {
 		return err
 	}
+	serveLog := filepath.Join(dir, "goinfer-serve.log")
 	defer func() {
 		_ = sup.Stop()
-		if b, err := os.ReadFile(filepath.Join(dir, "goinfer-serve.log")); err == nil {
+		if b, err := os.ReadFile(serveLog); err == nil {
 			_ = os.WriteFile(filepath.Join(out, "goinfer-serve.log"), b, 0o644)
 		}
 	}()
+	t0 := time.Now()
 	if _, err := sup.Ensure(ctx); err != nil {
 		return err
 	}
 	plan, _ := sup.Plan()
 	url, key := sup.Endpoint()
-	srv := pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}
-	logf(log, "pilot smoke: server up in %s; %s", time.Since(start).Round(time.Second), plan.FitLine)
+	logf(log, "pilot: server up in %s; %s", time.Since(t0).Round(time.Second), plan.FitLine)
+	return fn(pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}, serveLog)
+}
+
+func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, out string, capD time.Duration, log io.Writer) error {
+	start := time.Now()
+	logf(log, "pilot smoke: start %s, cap %s per run", start.Format("15:04 MST"), capD)
 	var results []pilot.Result
 	kenIndex := map[string]float64{}
-	for _, arm := range []pilot.Arm{{Name: "A0"}, {Name: "A0k", KenMCP: kenMCP, KenModel: kenModel}} {
+	for _, arm := range []pilot.Arm{a0, a0k} {
 		runDir := filepath.Join(out, arm.Name)
 		repo := filepath.Join(runDir, "repo")
 		if err := pilot.PrepareRepo(filepath.Join(mirrors, smokeRepo+".git"), smokeBase, repo); err != nil {
 			return fmt.Errorf("%s: %w", arm.Name, err)
 		}
-		kenSecs := 0.0
 		if arm.KenMCP != "" { // the untimed warm-up (pilot pre-registration, amendment)
 			kl, _ := os.Create(filepath.Join(runDir, "ken-warmup.log"))
 			s, err := pilot.WarmKen(ctx, arm.KenMCP, arm.KenModel, repo, kl, 15*time.Minute)
@@ -114,18 +140,17 @@ func runSmoke(ctx context.Context, mirrors, opencode, kenMCP, kenModel, serve, m
 			if err != nil {
 				return fmt.Errorf("%s: ken warm-up: %w", arm.Name, err)
 			}
-			kenSecs = s
+			kenIndex[arm.Name] = s
 			logf(log, "pilot smoke: %s: ken index built in %.1f s (untimed)", arm.Name, s)
 		}
 		logf(log, "pilot smoke: %s: opencode, cap %s", arm.Name, capD)
 		r := pilot.RunOpencode(ctx, opencode, srv, arm, repo, smokeStatement, runDir, capD)
 		_ = os.WriteFile(filepath.Join(runDir, "diff.patch"), []byte(pilot.Diff(repo, smokeBase)), 0o644)
 		results = append(results, r)
-		kenIndex[arm.Name] = kenSecs
 		logf(log, "pilot smoke: %s: exit %d, cap hit %v, %.0f s %s", arm.Name, r.Exit, r.CapHit, r.WallSecs, r.Err)
 	}
 	b, _ := json.MarshalIndent(map[string]any{"statement": smokeStatement, "repo": smokeRepo, "base": smokeBase,
-		"fit_line": plan.FitLine, "results": results, "ken_index_secs": kenIndex}, "", "  ")
+		"results": results, "ken_index_secs": kenIndex}, "", "  ")
 	if err := os.WriteFile(filepath.Join(out, "summary.json"), b, 0o644); err != nil {
 		return err
 	}

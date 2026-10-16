@@ -60,7 +60,7 @@ func Verify(ctx context.Context, r Repo, c Candidate, work string) Verified {
 			return fail("write %s: %v", f, err)
 		}
 	}
-	v.OnParent, _ = runTests(ctx, work, c.Tests, c.Packages)
+	v.OnParent, _ = RunTests(ctx, work, c.Tests, c.Packages)
 	for _, t := range c.Tests { // rule 2
 		switch v.OnParent[t] {
 		case "skip":
@@ -77,7 +77,7 @@ func Verify(ctx context.Context, r Repo, c Candidate, work string) Verified {
 		return fail("checkout commit: %v", err)
 	}
 	for run := 0; run < 2; run++ { // rule 3
-		res, secs := runTests(ctx, work, v.Oracle, c.Packages)
+		res, secs := RunTests(ctx, work, v.Oracle, c.Packages)
 		v.OnCommit[run], v.CommitSecs[run] = res, secs
 		for _, t := range v.Oracle {
 			if res[t] != "pass" {
@@ -121,9 +121,10 @@ func checkCmd(tests, pkgs []string) string {
 		strings.Join(pkgs, " "))
 }
 
-// runTests runs the named tests with go test -json and returns each one's result and the wall time. A test with no
-// result in a package that failed to build is "build-fail".
-func runTests(ctx context.Context, dir string, tests, pkgs []string) (map[string]string, float64) {
+// RunTests runs the named tests with go test -json, in the environment the check command names, and returns each one's
+// result and the wall time. A test with no result in a package that failed to build is "build-fail". The pilot's oracle
+// calls it too, so tasks are graded exactly as they were verified.
+func RunTests(ctx context.Context, dir string, tests, pkgs []string) (map[string]string, float64) {
 	args := append([]string{"test", "-json", "-count=1", "-timeout", testTimeout, "-buildvcs=false",
 		"-run", "^(" + strings.Join(tests, "|") + ")$"}, pkgs...)
 	cmd := exec.CommandContext(ctx, "go", args...)

@@ -82,7 +82,7 @@ and in how much memory, before the loop is built around them.
 | # | decision | answer | where | status |
 |---|---|---|---|---|
 | D1 | build tack, or extend an existing agent | build tack | §2.4 | **decided** 2026-10-16 |
-| D2 | repo layout | one new repo for the daemon, CLI and both apps | §4 | open; cheap to change before P4 |
+| D2 | repo layout | one new repo for the daemon, CLI and both apps | §4 | **decided** 2026-10-16 |
 | D3 | name | tack | — | **decided** 2026-10-16 |
 | D4 | visibility and license | private until P2's exit, then public, MIT | §4.4 | **decided** 2026-10-16 |
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |

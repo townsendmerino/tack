@@ -18,7 +18,9 @@ import (
 // With TACK_FAKE_OPENCODE set, this test binary is opencode: it records its args, cwd and XDG dirs, prints two JSON
 // events, and then either exits or (TACK_FAKE_OPENCODE=hang) starts a child and sleeps, so the cap must kill a group.
 func TestMain(m *testing.M) {
-	if os.Getenv("TACK_FAKE_KENMCP") == "1" {
+	// opencode is invoked as `opencode run …`; ken-mcp with no arguments. Both fakes can be armed in one test.
+	isOpencode := len(os.Args) > 1 && os.Args[1] == "run"
+	if !isOpencode && os.Getenv("TACK_FAKE_KENMCP") == "1" {
 		fakeKenMCP()
 		return
 	}
@@ -34,6 +36,15 @@ func TestMain(m *testing.M) {
 		"data": os.Getenv("XDG_DATA_HOME")})
 	fmt.Println(`{"type":"step_start"}`)
 	fmt.Println(string(rec))
+	if src := os.Getenv("TACK_FAKE_OPENCODE_FIX"); src != "" && os.Getenv("TACK_FAKE_OPENCODE_FIX_ARM_HAS_MCP") == fmt.Sprint(hasMCP(wd)) {
+		// "Fix" the task: copy the fixed file over the repository's, and log a tool call.
+		b, _ := os.ReadFile(src)
+		_ = os.WriteFile(filepath.Join(wd, os.Getenv("TACK_FAKE_OPENCODE_FIX_DEST")), b, 0o644)
+		fmt.Println(`{"type":"tool_use","part":{"tool":"edit","state":{"input":{"filePath":"` + filepath.Join(wd, os.Getenv("TACK_FAKE_OPENCODE_FIX_DEST")) + `"}}}}`)
+	}
+	if os.Getenv("TACK_FAKE_OPENCODE_LEAK") == "1" {
+		fmt.Println(`{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"/home/someone/mycode/ken/x.go"}}}}`)
+	}
 	if os.Getenv("TACK_FAKE_OPENCODE") == "hang" {
 		child := exec.Command(os.Args[0])
 		child.Env = append(os.Environ(), "TACK_FAKE_OPENCODE=child")
@@ -227,4 +238,10 @@ func TestGradedDiffLeavesOutHarnessFiles(t *testing.T) {
 	if !strings.Contains(d, "+func F() {}") || !strings.Contains(d, "b/b.go") {
 		t.Fatalf("the agent's committed and uncommitted edits are missing:\n%s", d)
 	}
+}
+
+// hasMCP reports whether the repository's opencode.json configures an MCP server: the A0k arm.
+func hasMCP(repo string) bool {
+	b, _ := os.ReadFile(filepath.Join(repo, "opencode.json"))
+	return strings.Contains(string(b), `"mcp"`)
 }
