@@ -22,6 +22,10 @@
 > hashes (§7.5), the shell checks commands as they run (§6.6), and the client token is checked once per connection
 > (§9.2).
 >
+> **And again (owner's direction):** the macOS app is one install. It bundles goinfer's server built for Metal and
+> ken's embedding model, and downloads a model sized to the Mac on first run; Ollama, LM Studio or a remote goinfer are
+> optional (D7, §8.1, §11.11, §11.12).
+>
 > Facts about ken, goinfer and aikit were read from the trees on 2026-10-16 (ken `611e12c`, goinfer `74716eb4b`).
 > Facts about the field are dated and sourced at the end. Anything marked *proposed* is a number or rule to be
 > registered before it is measured, not a measurement.
@@ -58,6 +62,10 @@ Mac, 3B models were too small, and a 7B did not fit the memory actually availabl
 default is tack on the Mac with its model served from nobara over the tailnet, until E0 finds a Mac configuration that
 works (§8).
 
+**For everyone else, one install (D7).** The macOS app carries goinfer's server built for Metal and ken's embedding
+model inside it, and on first run downloads a model sized to the Mac's memory (§11.12). Nobody installs goinfer, ken or
+anything else separately; Ollama, LM Studio and a remote goinfer are optional.
+
 **Order.** Daemon and CLI first (P0–P3), then the macOS app (P4–P5), then research (P6). Each phase ends on a measured
 exit criterion, and each can be dropped without stranding the ones before it (§16).
 
@@ -79,7 +87,7 @@ and in how much memory, before the loop is built around them.
 | D4 | visibility and license | private until P2's exit, then public, MIT | §4.4 | **decided** 2026-10-16 |
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |
 | D6 | how the daemon reaches ken | in-process, through a public ken engine package, from the start | §12 | **decided** 2026-10-16 |
-| D7 | how the daemon reaches goinfer | both are built in P0 — a supervised `goinfer-serve` child on the Mac, and a `goinfer-serve` on nobara; the default per machine comes from E0 | §8 | open until E0 |
+| D7 | how tack gets its model server | the app bundles `goinfer-serve` (Metal) and runs it as a supervised child: one install, nothing else to set up. A remote `goinfer-serve` (nobara) and other local servers are optional; the owner's own default is nobara until E0 finds a Mac setup that works | §8 | **decided** 2026-10-16 |
 | D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter | §9 | open; needed before P0's protocol work |
 | D9 | Apple Developer Program | the owner is a paid member with Xcode; signing and notarization from P4 | §11.11 | **decided** 2026-10-16 |
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
@@ -317,7 +325,7 @@ flowchart LR
 | process | count | lifetime | owns |
 |---|---|---|---|
 | `tack daemon` | one per user | LaunchAgent (app) or auto-spawned (CLI) | sessions, loops, tools, ken engines, the store |
-| `goinfer-serve` on the Mac | zero or one | child of the daemon; starts on demand, stops after idle | the local model and its KV |
+| `goinfer-serve` on the Mac | zero or one | bundled in the app (and in the CLI install); a child of the daemon; starts on demand, stops after idle | the local model and its KV |
 | `goinfer-serve` on nobara | zero or one | a service on nobara, outside tack's control | the model and its KV on the GPU |
 | other local servers | as the owner runs them | outside tack's control | their models |
 | user-configured MCP servers (P5) | per config | children of the daemon | their tools |
@@ -749,7 +757,12 @@ that led to this doc, where re-prefilling "only the stale spans" was floated.)
 
 ## 8. Running the model
 
-### 8.1 goinfer on the Mac, as a child
+### 8.1 goinfer on the Mac: bundled, run as a child
+
+- **One install (D7).** The app carries `goinfer-serve` built for darwin/arm64 with Metal, beside `tackd` (§11.1), and
+  ken's embedding model in its resources; the CLI install (the Homebrew cask) uses the same binaries. A user installs
+  nothing else, and a first run needs no network beyond the model download (§11.12). Each tack release pins one goinfer
+  version, and the daemon refuses a mismatched helper.
 
 - tack runs `goinfer-serve` as a supervised child on loopback with a random per-start `-api-key`, an `-admin-socket` for
   load and unload, and a `-session-dir` under tack's state directory.
@@ -904,7 +917,8 @@ inspector, changes and todos. Approvals appear inline with one-key answers: allo
   `project.pbxproj`. `make app` builds the Go binary for arm64 and hands it to the Xcode build, which copies it in as
   `Contents/MacOS/tackd` with code-sign-on-copy under the app's identity. A binary copied in after signing would break the
   bundle's signature, and the name `tackd` keeps it from colliding with the app's own `Tack` executable on a
-  case-insensitive disk.
+  case-insensitive disk. `goinfer-serve` (Metal, from the pinned goinfer release, G9) is copied into `Contents/MacOS/`
+  the same way, and ken's embedding model into `Contents/Resources/` (§11.11).
 - SwiftPM dependencies: Sparkle 2 for updates. No markdown or highlighting libraries; the daemon sends blocks and spans.
 
 ### 11.2 Anatomy
@@ -1005,6 +1019,22 @@ As in §7.7, plus a per-day usage chart (Swift Charts: tokens, prefill and decod
   signing identity, which the Keychain items' access rules depend on; notarized with `notarytool` and stapled.
 - A DMG and a Homebrew cask in `townsendmerino/tap` (ken's tap); a Sparkle 2 appcast with EdDSA signatures, hosted on
   GitHub Releases.
+- **What is in the bundle:** the app, `tackd`, `goinfer-serve` (Metal), and ken's embedding model (about 60 MB), each
+  executable signed under the same identity with Hardened Runtime and notarized together. Model weights are not in the
+  bundle (§11.12). The licences of everything bundled ship in the app's resources, as goinfer's and ken's releases ship
+  theirs.
+
+### 11.12 First run
+
+- The app checks the Mac's memory and offers the model E0 measured as the best fit for that size (the registry, §6.4),
+  with its download size, speed on comparable hardware, and window. Choosing it downloads it through goinfer's own
+  downloader (`hf:` references, sha256-checked, with progress), into the models directory goinfer uses.
+- No model fits, or the owner prefers another server: the same screen connects Ollama, LM Studio, llama.cpp's server, or
+  a remote goinfer by URL. Nothing about tack requires the bundled server to be the one in use.
+- ken indexes the first workspace with the bundled embedding model, offline, while the model downloads.
+- **The open question is the 16 GB Mac** (risk R12): goinfer has no agent setup measured working there yet. E0 decides
+  what the first-run screen says to a 16 GB owner — a smaller model with clear limits, or a recommendation to use a
+  remote server — and it says that plainly rather than letting a model that does not fit fail later.
 
 ---
 
@@ -1066,6 +1096,8 @@ constrained tool calls with several tools; `serve check`; KV0–KV3 shipped in v
 | G5 | whatever P6's span-reuse experiments need from the KV manager | research | P6 |
 | G6 | the night queue stops the tack-facing `goinfer-serve` on nobara before timed jobs and starts it after | no tack traffic on the GPU during a timed run (§8.2) | P1 |
 | G7 | a way to pin a session's KV blocks while its turn is open (or a slot reserved for side jobs), so other requests cannot evict them; verify first what the slot design already guarantees | side jobs without evicting an open turn (§8.3) | P3 |
+| G8 | model download (`pull`) on the admin socket, with progress as JSON events and sha256 verification | the first-run screen (§11.12) | P4 |
+| G9 | a release artifact tack can bundle: a darwin/arm64 Metal `goinfer-serve` with a version tack can check at start | one install (§8.1) | P4 |
 
 **Dependencies, not asks.** goinfer's Metal prefill work (the open gap its `red-october` doc tracks) is the biggest single
 lever on tack's turn time on the Mac. E0's model rows (§15.1) also feed goinfer's own "Picking a model" table, since they
@@ -1185,7 +1217,7 @@ run faster; the app's review loop is the part more agent throughput does not com
 | **P2** context engine | ken K3–K8 (in ken); the ledger; staleness; `symbol`; auto-context; prefix-aware assembly measured; TUI inspector; transcripts corpus | 4–6 wk | the P2 rule: ship, park or fail | a fail parks features, not the product |
 | **P3** fast turns, no swap | reuse tuning and residency; the small jobs with their gates; admission and the memory guard on the Mac; the nobara server hardened | 3–4 wk | the P3 rule plus E2 | yes |
 | **P4** macOS app | §11.1–§11.7, the notifications of §11.8, §11.9, §11.10; signed and notarized from the first build | 6–8 wk | the owner uses the app as primary for a week; §11.9 budgets met | — |
-| **P5** polish and distribution | the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run (a cold-user protocol like goinfer's); the update path exercised | parts |
+| **P5** polish and distribution | the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
 | **P6** research | exact-prefix measurements on goinfer's KV tiers; approximate span reuse behind fidelity gates | open | its own pre-registration | yes |
 
 Through P5 that is roughly 23–32 weeks. **Worktree-parallel sessions** — each session in its own `git worktree`, merged
@@ -1209,6 +1241,7 @@ chafes. On one local model, parallel sessions share one decoder, so worktrees bu
 | R9 | prompt injection through retrieved content leads to a harmful command | medium | high | content never changes permissions; tack's controls and the config paths that run later are out of the sandbox's reach; network off by default; a repo's own config needs the owner's trust; halt |
 | R10 | chat-template and tool-format differences across model families and servers | high | low–medium | goinfer first-class; per-server capability flags; cassette tests per server and model family |
 | R11 | a 16k window is too small for real work in the owner's repos, even with ken | medium | high | the fixed-prompt budget; instruction files by section; routine compaction; E1 measures it; larger windows where memory allows (nobara's card refuses a 7B beyond about 20k) |
+| R12 | the one-install promise fails on 16 GB Macs: no agent-capable model fits beside the owner's other apps | high | high | E0 on Metal before the app; memory-tiered model offers on first run; a plain message and the remote-server path where nothing fits; goinfer's never-swap and paging work |
 
 ---
 
