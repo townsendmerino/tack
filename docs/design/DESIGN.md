@@ -14,6 +14,18 @@
 > the evaluation's statistics and leakage (§15), daemon start-up (§6.1) and packaging (§11.1). The owner's decisions so
 > far are marked in §1.
 >
+> **Revised again, 2026-10-16:** a second review's findings folded in, with the owner's picks — retrieved context
+> counts against a cumulative budget, not a per-turn one (§7.2, §7.4); the structural tools fold into `symbol` and
+> `read` (§6.5); speed is compared as capped time per task (§15). Also: the log keeps the model's exact output (§6.2),
+> compaction never touches the system prompt (§7.6), the ledger counts dead weight (§7.1), rule sections load on the
+> first tool of their kind (§2.3), side jobs never evict an open turn's KV (§8.3), `bash` edits are attributed by
+> hashes (§7.5), the shell checks commands as they run (§6.6), and the client token is checked once per connection
+> (§9.2).
+>
+> **And again (owner's direction):** the macOS app is one install. It bundles goinfer's server built for Metal and
+> ken's embedding model, and downloads a model sized to the Mac on first run; Ollama, LM Studio or a remote goinfer are
+> optional (D7, §8.1, §11.11, §11.12).
+>
 > Facts about ken, goinfer and aikit were read from the trees on 2026-10-16 (ken `611e12c`, goinfer `74716eb4b`).
 > Facts about the field are dated and sourced at the end. Anything marked *proposed* is a number or rule to be
 > registered before it is measured, not a measurement.
@@ -50,6 +62,10 @@ Mac, 3B models were too small, and a 7B did not fit the memory actually availabl
 default is tack on the Mac with its model served from nobara over the tailnet, until E0 finds a Mac configuration that
 works (§8).
 
+**For everyone else, one install (D7).** The macOS app carries goinfer's server built for Metal and ken's embedding
+model inside it, and on first run downloads a model sized to the Mac's memory (§11.12). Nobody installs goinfer, ken or
+anything else separately; Ollama, LM Studio and a remote goinfer are optional.
+
 **Order.** Daemon and CLI first (P0–P3), then the macOS app (P4–P5), then research (P6). Each phase ends on a measured
 exit criterion, and each can be dropped without stranding the ones before it (§16).
 
@@ -71,11 +87,11 @@ and in how much memory, before the loop is built around them.
 | D4 | visibility and license | private until P2's exit, then public, MIT | §4.4 | **decided** 2026-10-16 |
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |
 | D6 | how the daemon reaches ken | in-process, through a public ken engine package, from the start | §12 | **decided** 2026-10-16 |
-| D7 | how the daemon reaches goinfer | a supervised `goinfer-serve` child on the Mac, or a `goinfer-serve` on nobara | §8 | open |
+| D7 | how tack gets its model server | the app bundles `goinfer-serve` (Metal) and runs it as a supervised child: one install, nothing else to set up. A remote `goinfer-serve` (nobara) and other local servers are optional; the owner's own default is nobara until E0 finds a Mac setup that works | §8 | **decided** 2026-10-16 |
 | D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter; WebSocket for a remote daemon later | §9 | **decided** 2026-10-16 |
 | D9 | Apple Developer Program | the owner is a paid member with Xcode; signing and notarization from P4 | §11.11 | **decided** 2026-10-16 |
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
-| D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | open |
+| D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | open; needed before P1 |
 | D12 | model servers | local only: goinfer first-class; Ollama, LM Studio and llama.cpp's server through one OpenAI-compatible adapter | §6.4 | **decided** 2026-10-16 |
 | D13 | E1 size | 60 tasks with a pass-rate margin of about 14 points, or about 120 for about 10; decided after the pilot | §15.3 | open |
 
@@ -143,10 +159,14 @@ and in how much memory, before the loop is built around them.
     serves larger windows). For scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
     the whole window (`docs/integrations/claude-code.md`).
   - **Long instruction files are read by section.** goinfer's `CLAUDE.md` is 44 KB, about 11,000 tokens: two-thirds of
-    the window on its own. ken's is 28 KB. Above a budget (*proposed* 15% of the window), tack loads a file's headings,
-    its first section and any section marked `<!-- tack:always -->`, and retrieves the other sections through ken each
-    turn. The inspector shows which sections are in. Whether a local model still follows the rules is measured: E1
-    counts instruction violations.
+    the window on its own. ken's is 28 KB. Above a budget (*proposed* 15% of the window, cumulative until the next
+    compaction), tack loads a file's headings, its first section and any section marked `<!-- tack:always -->`. Other
+    sections arrive two ways, and only if they are not already in the window: through ken, from the user's message; and
+    deterministically, when the first tool call of a matching kind is about to run — a `git` command brings in the
+    sections on staging and committing, `go test` the sections on testing, an edit to `*_test.go` the same. Matching
+    uses headings by default and a `<!-- tack:on bash:git -->` style marker where a file wants to be exact, since a
+    semantic search over "fix the rename bug" will not find the rules about `git add`. The inspector shows which sections
+    are in. Whether a local model still follows the rules is measured: E1 counts instruction violations.
   - **Every retrieval is budgeted** as a share of the window, not as a fixed count (§7.3, §7.4).
 - **Time is the cost.** With no bill, the measure of a run is time. Agent turns are prefill-heavy: the two opencode
   turns goinfer measured had 7,165 and 7,399 input tokens against 44 and 16 output. So prefix reuse (§7.2) matters more
@@ -306,7 +326,7 @@ flowchart LR
 | process | count | lifetime | owns |
 |---|---|---|---|
 | `tack daemon` | one per user | LaunchAgent (app) or auto-spawned (CLI) | sessions, loops, tools, ken engines, the store |
-| `goinfer-serve` on the Mac | zero or one | child of the daemon; starts on demand, stops after idle | the local model and its KV |
+| `goinfer-serve` on the Mac | zero or one | bundled in the app (and in the CLI install); a child of the daemon; starts on demand, stops after idle | the local model and its KV |
 | `goinfer-serve` on nobara | zero or one | a service on nobara, outside tack's control | the model and its KV on the GPU |
 | other local servers | as the owner runs them | outside tack's control | their models |
 | user-configured MCP servers (P5) | per config | children of the daemon | their tools |
@@ -361,7 +381,10 @@ macOS paths; Linux uses the XDG equivalents.
 - **A session** has an id, a workspace root, a model and server, a mode, a parent (for forks and subagents), a title,
   timestamps and a status.
 - **Events** (Appendix B) carry a dense per-session `seq`, a timestamp, a type, a payload and a `cause` (the seq they
-  answer). Token-level `assistant.delta` events are live-only; the finished blocks are persisted as `assistant.message`.
+  answer). Token-level `assistant.delta` events are live-only. `assistant.message` persists the model's **exact raw
+  content blocks**, byte for byte: rebuilding a session's history from the log must reproduce the prompt exactly, or
+  goinfer's cached prefix for it is lost. Parsed blocks and highlight spans are derived by `internal/render` when
+  clients ask, and cached in `index.db`, so the log never depends on a lexer or a theme.
   Every change a client can make — mode, model, pins, excludes, evictions, steering, halts, repo trust — is an event, so
   replaying the log rebuilds the state (principle 4).
 - **Durability.** Append to `events.jsonl`; fsync at turn boundaries and before every tool starts — enough for the
@@ -451,22 +474,24 @@ the OpenAI-compatible adapter — each with a cassette test:
 
 ### 6.5 Tools
 
-Every tool's schema counts against the fixed-prompt budget (§2.3), so the set is small and the descriptions are short.
+Every tool's schema counts against the fixed-prompt budget (§2.3), and a 7B model chooses worse among overlapping
+tools, so the set is small, each tool has one job, and the descriptions are short. ken's structural queries
+(references, callers, outline, symbol lists) are folded into `symbol` and `read` rather than exposed one by one; E0's
+tool-use smoke set compares this merged set against the split one before it is fixed.
 
 | tool | backed by | effect | default |
 |---|---|---|---|
 | `search` | ken hybrid search; results packed to a share of the window | read | allow |
 | `find_related` | ken | read | allow |
-| `symbol` | ken structural: a definition, with callers, callees or tests on request (§7.3) | read | allow |
-| `references`, `callers`, `outline`, `symbols` | ken structural | read | allow |
+| `symbol` | ken structural: a definition, with callers, callees, references or tests on request; given a path instead of a name, the symbols defined there (§7.3) | read | allow |
 | `recently_changed` | ken (git history) | read | allow |
-| `read` | file ranges with line numbers; large files return an outline first (§7.3) | read | allow inside the workspace |
+| `read` | file ranges with line numbers; large files return ken's outline first (§7.3) | read | allow inside the workspace |
 | `glob`, `grep` | Go implementations; exhaustive enumeration stays grep's job | read | allow |
 | `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5) | write | by mode |
 | `write` | create or overwrite | write | ask |
 | `bash` | tack's own sandboxed shell (§6.6); the working directory and exported variables persist per session; background jobs | exec | ask, or a matching allow rule |
 | `read_output` | pages a truncated output out of the blob store | read | allow |
-| `web_fetch` | tack's own fetch; off by default | network | ask |
+| `web_fetch` | tack's own fetch; off by default, and absent from the tool list unless turned on when the session starts (the list is fixed for a session, §7.2) | network | ask |
 | `todo`, `ask_user`, `task` | the loop | none | allow |
 | MCP tools (P5) | user configuration, after the repo trust step | per server | ask |
 
@@ -483,6 +508,10 @@ Every tool's schema counts against the fixed-prompt budget (§2.3), so the set i
   approval time, and a rule matches the resolved path and its flags. An allow rule for `go test` therefore does not cover
   `go test ./... && curl … | sh`: every simple command in a pipeline, list, subshell or substitution must be allowed on
   its own, and a redirect to a path outside the workspace asks.
+- **Checked again as it runs.** Approval reads the parsed text, but `$GOBIN/tool` or `for f in …; do … > "$f"; done`
+  only show their real program and paths after expansion. So `tackd shell` also checks every command and every file it
+  opens at the moment the interpreter runs it (the interpreter's exec and open handlers), against the same rules. A
+  command whose expansion differs from what was approved stops and asks.
 - **Sandbox on macOS.** `sandbox-exec` with a generated profile that starts from `(deny default)` and allows what builds
   need: reading the system, toolchains and the workspace; writing the workspace (with the exceptions below), the
   session's temp directory and tack's own Go build cache. Claude Code (through Anthropic's sandbox runtime) and Codex use
@@ -509,7 +538,12 @@ Every tool's schema counts against the fixed-prompt budget (§2.3), so the set i
   `.tack/config.toml` take effect only after a trust step, recorded as an event; MCP servers then run under a sandbox
   profile of their own.
 - **Secrets.** A default read deny-list (`.env*`, `*.pem`, `*.key`, `~/.ssh`, `~/.aws`, `~/.config/gh`, keychain files),
-  plus a redaction pass over tool output for well-known key formats before it reaches the model, logged when it fires.
+  compiled into the sandbox profile as `file-read*` denials, so `cat .env` in a shell command is stopped by the kernel,
+  not only by tack's own file tools; plus a redaction pass over tool output for well-known key formats before it
+  reaches the model, logged when it fires.
+- **No sandbox inside the sandbox.** macOS refuses `sandbox-exec` inside an already sandboxed process. Tests that start
+  `sandbox-exec` (the profile and escape tests) therefore cannot run from tack's own `bash` tool when tack is used to
+  develop tack; they carry a build tag and run from the day-loop checker or CI, outside tack's sandbox.
 - **Confinement.** File tools stay inside the workspace roots plus paths the user adds. ken-mcp's
   `KEN_MCP_ALLOWED_REPO_ROOTS` (`mcp/confine.go`) is the same idea one layer down.
 - **Content never grants anything.** Files, search hits and web pages are data. Nothing in them changes a permission or
@@ -571,6 +605,11 @@ type Item struct {
 }
 ```
 
+- **Every token in the prompt is accounted for.** Between compactions history is append-only, so a stale or superseded
+  item still occupies the prompt until compaction removes it. The ledger keeps three totals: **live** tokens, **dead
+  weight** (stale and superseded items still in the prompt), and **framing** (the chat template's role and turn
+  tokens). Live plus dead weight plus framing equals the prompt's token count; on goinfer that is exact, and a tier-0
+  test holds it. The dead-weight share is what triggers compaction (§7.6).
 - Per request, a `context.assembled` event records the composition (tokens by kind); after the response it records the
   server's usage: prompt tokens, how many were reused from the cached prefix, how many were prefilled, output tokens,
   prefill time and decode rate.
@@ -584,10 +623,18 @@ type Item struct {
 ### 7.2 Prefix-aware assembly
 
 ```
-[tool schemas][system: tack instructions, instruction-file headings and always-load sections]   ← stable for the session
-[history: every earlier request's messages, append-only]
-[tail: context updates · retrieved instruction sections · auto-context · session facts · message n]
+[tool schemas][system: tack instructions, instruction-file headings and always-load sections]   ← never changes in a session
+[compacted: summaries · folded-in instruction updates]                                           ← rewritten only at compaction
+[history: every request's messages since the last compaction, append-only]
+[tail: context updates · new instruction sections · new auto-context · session facts · message n]
 ```
+
+- **Retrieved context is a cumulative budget, not a per-turn one** (owner's pick). Whatever enters at the tail stays in
+  history until compaction, so a per-turn allowance would pile up: four turns of 1,600 tokens of auto-context is 6,400
+  tokens of a 16k window. So the auto-context and instruction-section budgets (§2.3, §7.4) count everything of their
+  kind currently in the prompt since the last compaction, live or dead, and a turn adds only items not already there.
+  The other choice, stripping each turn's retrieved context when the turn ends, was rejected: it would re-prefill the
+  whole previous turn, tool loop included, at the start of every new one.
 
 - **A turn prefills only its tail.** goinfer reuses the longest cached prefix that matches (`sessionLRU`), across
   conversations too (KV2), and in whole blocks (KV3). If nothing before the tail changed, a turn prefills only its new
@@ -599,8 +646,9 @@ type Item struct {
   (goinfer `docs/integrations/claude-code.md`, measured in `docs/measurements/kv0-traffic-2026-10-13.md`). tack puts the
   date, session id and workspace facts in the tail, so a new session's prefix hits what the last one left in goinfer's
   cache.
-- **Instruction files that change mid-session** arrive as a context update at the tail and are folded into the system
-  prompt at the next compaction.
+- **Instruction files that change mid-session** arrive as a context update at the tail and are folded into the
+  compacted block at the next compaction — never into the system prompt, which stays byte-identical for the whole
+  session so that it keeps its cached prefix and can be shared across sessions (KV2).
 - **What else breaks reuse.** Changing the tool list (the chat template renders tool schemas into the prompt), the
   system prompt or the thinking setting, adding or removing an image, or switching models. So the tool list is fixed for
   a session: plan mode is enforced when a tool runs, and skills load through a tool instead of adding tools. Every break
@@ -617,9 +665,10 @@ type Item struct {
 
 - **`search(query or queries[], k, max_tokens, path)`** returns hits with file, lines, score and text, packed by ken's
   `applyTokenBudget` to a budget that defaults to a share of the window (*proposed* 15%).
-- **`symbol(name, with: callers, callees, tests)`** returns the definition's text, plus caller, callee and test sites as
-  `file:line` and one line of context each, not their full text. Next to search, this is the main token lever: a function
-  instead of a 2,000-line file, which in a 16k window is the difference between fitting and not.
+- **`symbol(name or path, with: callers, callees, references, tests)`** given a name, returns the definition's text,
+  plus the requested sites as `file:line` and one line of context each, not their full text; given a path, the symbols
+  defined there. Next to search, this is the main token lever: a function instead of a 2,000-line file, which in a 16k
+  window is the difference between fitting and not.
 - **`read(path, lines?)`.** Over a size threshold (*proposed* 200 lines, set by E1), a whole-file read returns ken's
   outline and the first screen, with a hint to read a range or a symbol. Explicit ranges always work.
 - **`grep` stays.** Exhaustive enumeration (renames, audits) is grep's job, as ken's README says.
@@ -633,8 +682,8 @@ Before a turn the daemon can run ken over the user's message (and the previous t
 - **Modes:** `off`; `suggest` (the default until E1 decides: candidates appear in the inspector and one click adds them);
   `auto` (the top items under a token budget go into the tail).
 - **Selection:** ken hybrid search, k = 8; drop items already live at the same hash; drop those under a score floor;
-  pack to the budget (*proposed* 10% of the window, about 1,600 tokens at 16k, an E1 parameter); expand to `symbol` when
-  the message names an identifier ken knows.
+  pack to the budget (*proposed* 10% of the window, about 1,600 tokens at 16k, cumulative until the next compaction as
+  §7.2 explains, an E1 parameter); expand to `symbol` when the message names an identifier ken knows.
 - Every auto item records why it was chosen, and the inspector shows it. `off` is a competing arm in E1.
 
 ### 7.5 Staleness and external edits
@@ -644,9 +693,13 @@ Before a turn the daemon can run ken over the user's message (and the previous t
   near its old place, since lines inserted above an item move its line range onto unrelated text. Same hash: nothing
   happens. New hash: the item turns `stale`. Not found: the item turns `moved`, and the model is told.
 - **Self-edits and external edits differ.** The daemon knows which writes its own tools made and records their
-  post-image hashes, so a change that matches one is not news to the model. Changes made while one of the session's
-  approved commands was running (a `gofmt -w`, a code generator) also count as the session's own: the model asked for
-  them. Anything else — the owner editing in VS Code, another session, a `git checkout` — is external.
+  post-image hashes, so a change that matches one is not news to the model. Changes made by one of the session's
+  approved commands (a `gofmt -w`, a code generator) also count as the session's own: the model asked for them. They
+  are attributed by content, not timing: before `bash` reports `tool.finished`, it compares the workspace against the
+  snapshot taken before the command (§6.8) and records the post-image hashes of every file it changed. ken's watcher
+  republishes about 2 s after a change, long after a fast command has exited, so asking "was a command running?" when
+  ken's event arrives would misfile most of them. Anything else — the owner editing in VS Code, another session, a
+  `git checkout` — is external.
 - For an external change to an item the model used in the last few turns, or a pinned one, the next request's tail
   carries a `context_update`: a unified diff from the text the model saw to the current text, or the current text if the
   diff is larger.
@@ -658,13 +711,14 @@ Before a turn the daemon can run ken over the user's message (and the previous t
 ### 7.6 Compaction with re-retrieval
 
 With a 16k window, compaction is routine rather than rare, and it breaks the cached prefix after the system part, so it
-runs in steps sized to pay for the re-prefill: *proposed*, when the history reaches 70% of its budget, the oldest half is
-summarized.
+runs in steps sized to pay for the re-prefill. *Proposed* trigger: dead weight (§7.1) passes a share of the window, or
+the history reaches 70% of its budget, whichever comes first; the oldest half is then summarized.
 
 1. Summarize the oldest turns with the main model's `-fast` alias, in chunks of about 4,000 tokens, so no single call
    reads the whole history.
-2. Rebuild: the system prefix with any instruction updates folded in, the summaries, pinned items at their current
-   hashes, and the most recent turns verbatim. Stale and superseded items are dropped, not carried.
+2. Rebuild: the system prefix exactly as it was; then the compacted block (the summaries, with any instruction updates
+   folded in); pinned items at their current hashes; and the most recent turns verbatim. Stale and superseded items are
+   dropped, not carried.
 3. Re-retrieve: run ken over the summaries' open threads, so current code comes back instead of old dumps.
 4. Record a `compaction` event with the before and after composition; the inspector shows what left the window.
 
@@ -704,7 +758,12 @@ that led to this doc, where re-prefilling "only the stale spans" was floated.)
 
 ## 8. Running the model
 
-### 8.1 goinfer on the Mac, as a child
+### 8.1 goinfer on the Mac: bundled, run as a child
+
+- **One install (D7).** The app carries `goinfer-serve` built for darwin/arm64 with Metal, beside `tackd` (§11.1), and
+  ken's embedding model in its resources; the CLI install (the Homebrew cask) uses the same binaries. A user installs
+  nothing else, and a first run needs no network beyond the model download (§11.12). Each tack release pins one goinfer
+  version, and the daemon refuses a mismatched helper.
 
 - tack runs `goinfer-serve` as a supervised child on loopback with a random per-start `-api-key`, an `-admin-socket` for
   load and unload, and a `-session-dir` under tack's state directory.
@@ -738,6 +797,13 @@ that led to this doc, where re-prefilling "only the stale spans" was floated.)
 
 ### 8.3 Small jobs
 
+**A side job never costs an open turn its cache.** On the 8 GB card the 7B at a 16k window leaves little room, and a
+side job on the same model (`-fast` shares its weights and slots) brings a different prefix into goinfer's KV. If that
+evicts the open turn's blocks, the turn re-prefills its whole prompt right after the owner clicks Allow. So while a turn
+is open, a side job on the same model runs only if goinfer reports a free slot; otherwise it waits for the turn to end
+or is skipped (a permission prompt shows the command without the model's explanation). goinfer's G7 (§13) would let
+tack pin the open turn's blocks instead.
+
 | job | model | gate |
 |---|---|---|
 | session titles, commit-message drafts | a small model if memory allows, otherwise the main model's `-fast` alias | E2 (§15.1) |
@@ -761,13 +827,19 @@ measures the candidates on both machines, Metal included, and picks the default 
 
 - JSON-RPC 2.0, newline-delimited (ACP's framing), over a Unix domain socket. Besides the file mode, the daemon checks
   the peer's uid (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on Linux).
+- **Socket paths are short.** macOS limits a Unix socket path to 104 bytes. `~/Library/Application Support/tack/`
+  paths fit, but test directories under `/var/folders/…` often do not, and `bind` then fails with `EINVAL`. Tests make
+  their sockets through a helper that uses a short `/tmp/tack-…` directory, and the daemon checks every socket path's
+  length at startup with a clear error.
 - `--no-daemon` hosts the core in-process over an in-memory transport, for CI and scripts.
 - Later, not v1: the same protocol over WebSocket and TLS for a remote daemon (the app on the Mac, the daemon on nobara),
   with bearer auth and rate limiting. ken's HTTP transport (ADR-041) is the template.
 
 ### 9.2 Methods (sketch; Appendix A has examples)
 
-- `initialize` — versions and capabilities.
+- `initialize` — versions and capabilities, and the client token from `client.token` when the client has one. The token
+  is checked once and marks the connection as privileged; it never travels in any other method's parameters, so a debug
+  log or a fixture recorder cannot capture it.
 - `workspace/open {root}`, `workspace/trust {root}`, `workspace/list`, `workspace/status` (index warming or ready, file
   count, ken generation); notification `workspace/indexing`.
 - `session/new {workspace, model, mode}`, `session/list`, `session/get`, `session/subscribe {session, from_seq}`,
@@ -775,7 +847,8 @@ measures the candidates on both machines, Metal included, and picks the default 
   `session/fork {session, at_seq}`, `session/rewind {session, to_seq}`, `session/setMode`, `session/setModel`,
   `session/archive`.
 - `permission/respond {request, decision, scope, rule}` — decision allow or deny; scope once, session or rule. This and
-  every other method that changes permissions, mode, trust or halt state needs the client token (§6.6).
+  every other method that changes permissions, mode, trust or halt state is refused on a connection that did not
+  present the client token at `initialize` (§6.6).
 - `context/get {session}`, `context/pin`, `context/exclude`, `context/evict`, `context/suggestions`.
 - `files/read {workspace, path, lines}` for previews (clients never read the filesystem), `files/diff {session, from, to}`.
 - `usage/summary {range, group_by}`.
@@ -792,7 +865,8 @@ measures the candidates on both machines, Metal included, and picks the default 
 - **Fixtures.** `proto/fixtures/` holds golden transcripts: requests, responses and events. Go tests replay them against
   the daemon; Swift tests decode, re-encode and compare after normalization. A change that breaks a fixture fails both
   sides in the same CI run.
-- **Clients never parse markdown or diffs.** `assistant.message` carries blocks — paragraph (inline runs of text, code,
+- **Clients never parse markdown or diffs.** The log stores the model's raw output (§6.2); what clients receive in
+  `session/event` is rendered from it by `internal/render`: blocks — paragraph (inline runs of text, code,
   emphasis, links), heading, list, code (language, text, highlight spans), table, quote, rule, image, diagram. Highlight
   spans are `(start, end, class)`, with classes from chroma's token types. Every text position in the protocol —
   highlight spans, intra-line diff ranges — counts UTF-16 code units, the unit both Swift's `NSString` and Qt's
@@ -844,7 +918,8 @@ inspector, changes and todos. Approvals appear inline with one-key answers: allo
   `project.pbxproj`. `make app` builds the Go binary for arm64 and hands it to the Xcode build, which copies it in as
   `Contents/MacOS/tackd` with code-sign-on-copy under the app's identity. A binary copied in after signing would break the
   bundle's signature, and the name `tackd` keeps it from colliding with the app's own `Tack` executable on a
-  case-insensitive disk.
+  case-insensitive disk. `goinfer-serve` (Metal, from the pinned goinfer release, G9) is copied into `Contents/MacOS/`
+  the same way, and ken's embedding model into `Contents/Resources/` (§11.11).
 - SwiftPM dependencies: Sparkle 2 for updates. No markdown or highlighting libraries; the daemon sends blocks and spans.
 
 ### 11.2 Anatomy
@@ -945,6 +1020,22 @@ As in §7.7, plus a per-day usage chart (Swift Charts: tokens, prefill and decod
   signing identity, which the Keychain items' access rules depend on; notarized with `notarytool` and stapled.
 - A DMG and a Homebrew cask in `townsendmerino/tap` (ken's tap); a Sparkle 2 appcast with EdDSA signatures, hosted on
   GitHub Releases.
+- **What is in the bundle:** the app, `tackd`, `goinfer-serve` (Metal), and ken's embedding model (about 60 MB), each
+  executable signed under the same identity with Hardened Runtime and notarized together. Model weights are not in the
+  bundle (§11.12). The licences of everything bundled ship in the app's resources, as goinfer's and ken's releases ship
+  theirs.
+
+### 11.12 First run
+
+- The app checks the Mac's memory and offers the model E0 measured as the best fit for that size (the registry, §6.4),
+  with its download size, speed on comparable hardware, and window. Choosing it downloads it through goinfer's own
+  downloader (`hf:` references, sha256-checked, with progress), into the models directory goinfer uses.
+- No model fits, or the owner prefers another server: the same screen connects Ollama, LM Studio, llama.cpp's server, or
+  a remote goinfer by URL. Nothing about tack requires the bundled server to be the one in use.
+- ken indexes the first workspace with the bundled embedding model, offline, while the model downloads.
+- **The open question is the 16 GB Mac** (risk R12): goinfer has no agent setup measured working there yet. E0 decides
+  what the first-run screen says to a 16 GB owner — a smaller model with clear limits, or a recommendation to use a
+  remote server — and it says that plainly rather than letting a model that does not fit fail later.
 
 ---
 
@@ -987,6 +1078,28 @@ serving every other agent.
   ken-mcp is its first client").
 - **Not asked:** ranking changes. E1 measures ken as it is; ranking stays ken's own measured work.
 
+**Delivered in ken v1.9.0** (2026-10-16, ken ADR-046; tagged at `2853c7b`):
+
+- **K1:** `engine.Open(ctx, root, Options)` returns a `*Workspace` with `Search`, `SearchMode`, `FindRelated`,
+  `Definition`, `References`, `Callers`, `Outline`, `Status` and `Close`. `Options` covers mode, chunker, model
+  directory, watch, snapshot, mmap, enrichment (eager or lazy), staged embedding and the dense retriever.
+  `ErrStructuralBuilding` and `ErrNoStructuralIndex` tell "not ready yet" from "no index for this repo".
+- **K2:** `Hit{File, StartLine, EndLine, Text, Hash, Score, Rank, Gen, BM25Rank, DenseRank}`; `Hash` is the sha256 of
+  `Text`, and the per-arm ranks are best effort (0 where an arm did not run or did not find the chunk).
+- **K4, the counter half:** `Gen` on every hit and in `Status`, from `WatchedIndex.Generation()`.
+- **K6:** `engine.ApproxTokens`.
+- ken-mcp now opens its workspaces through `engine.Open`, so the two faces share one path.
+- Not re-verified at the tag: ken's full semble NDCG benchmark (the change touches no ranking code).
+
+**Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements), K9 (markdown sections).
+
+**How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
+(`WatchedIndex()`, `StructuralIfBuilt()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's internal packages
+are for ken's own binaries; tack does not touch them, so ken stays free to change what sits behind them. Two
+consequences of ken's defaults: the tree-sitter chunker is registered by the importing binary (`tackd` must import it,
+as `ken` and `ken-mcp` do), and `ModelDir` defaults to `~/.ken/model`, so the app passes the bundled model's path in
+`Contents/Resources/` (§11.11).
+
 ---
 
 ## 13. Changes in goinfer
@@ -1005,6 +1118,9 @@ constrained tool calls with several tools; `serve check`; KV0–KV3 shipped in v
 | G4 | KV7, the disk tier | sessions resumed after a restart start warm | P6, on goinfer's schedule |
 | G5 | whatever P6's span-reuse experiments need from the KV manager | research | P6 |
 | G6 | the night queue stops the tack-facing `goinfer-serve` on nobara before timed jobs and starts it after | no tack traffic on the GPU during a timed run (§8.2) | P1 |
+| G7 | a way to pin a session's KV blocks while its turn is open (or a slot reserved for side jobs), so other requests cannot evict them; verify first what the slot design already guarantees | side jobs without evicting an open turn (§8.3) | P3 |
+| G8 | model download (`pull`) on the admin socket, with progress as JSON events and sha256 verification | the first-run screen (§11.12) | P4 |
+| G9 | a release artifact tack can bundle: a darwin/arm64 Metal `goinfer-serve` with a version tack can check at start | one install (§8.1) | P4 |
 
 **Dependencies, not asks.** goinfer's Metal prefill work (the open gap its `red-october` doc tracks) is the biggest single
 lever on tack's turn time on the Mac. E0's model rows (§15.1) also feed goinfer's own "Picking a model" table, since they
@@ -1044,20 +1160,26 @@ arm.
   - *Arms:* **A0** opencode on the same model and server — the established local agent, at a pinned version with its own
     clean configuration; **A0k** A0 with ken-mcp attached; **A1** tack with `grep` and `read` only — the do-nothing arm
     for ken; **A2** tack with ken's tools; **A3** A2 plus auto-context. Reported only: A3 on Ollama with the same
-    weights, which shows what goinfer's constrained calls and prefix reuse add. A0 and A0k need nothing from tack but the
+    weights, which shows what goinfer's constrained calls and prefix reuse add. A0 and A0k see each repo's instruction
+    files unmodified, as a user's setup would: goinfer's 11,000-token `CLAUDE.md` with opencode's own tool schemas may
+    not fit a 16k window, and that is part of the gap §2.2 describes. A run that overflows the window or compacts away
+    its instructions is recorded as what happened, and every result is broken down per repo, so goinfer's tasks cannot
+    hide the others. A0 and A0k need nothing from tack but the
     eval runner, so a small A0-against-A0k pilot runs in P0: a first read on whether ken helps a local agent on real
     tasks, before tack exists. It informs; it decides nothing.
   - *Runs:* a fixed number per task per arm, set before the run from the pilot's variance (two by default). No runs are
     added after seeing results.
-  - *Metrics:* pass (the oracle tests); **time per solved task** — an arm's total wall time over its solved tasks — as
-    the primary efficiency metric, because a failing run can be quick (it gave up) or capped (it hit its budget), so raw
-    time can favour a worse arm; prompt, reused, prefilled and output tokens; time to first token per turn; decode rate;
+  - *Metrics:* pass (the oracle tests); **capped time** (owner's pick) as the primary efficiency metric: each run's wall
+    time, with every failed run counted as the full registered cap however early it stopped (PAR-1, the convention in
+    solver benchmarks). A run that gives up after 15 seconds therefore cannot look faster than one that worked for six
+    minutes, and every task keeps its pair. Reported beside it: the paired time ratio on the tasks both arms solved;
+    prompt, reused, prefilled and output tokens; time to first token per turn; decode rate;
     tool calls; malformed tool calls per hundred; violations of the repo's instruction file, from a per-repo checklist
     the owner writes; subagents; peak memory and memory-pressure events. For the context arms also: whether the files the
     oracle's diff touches entered the window and when (retrieval recall at the edit site), and the share of window tokens
     never referred to again.
-  - *Analysis:* per task, paired against the reference arm, with bootstrap intervals over tasks for the pass-rate
-    difference and for the ratio of times per solved task. Compared arms run in the same window on the same build and
+  - *Analysis:* per task, paired against the reference arm across all tasks, with bootstrap intervals over tasks for the
+    pass-rate difference and for the ratio of mean capped times. Compared arms run in the same window on the same build and
     the same machine. A1 is tack's own loop and changes between phases, so it is re-run at every decision point rather
     than reused.
 - **E2:** the owner rates 60 samples per small job (titles, commit messages). A job ships if the one-sided 95% lower
@@ -1088,14 +1210,14 @@ nobara's 7B, so 50–100 hours: roughly 7–14 nights on one box at goinfer's th
 half-width passes an arm that is truly equal only about half the time — the trap goinfer's L1 prefill gate fell into
 when its thresholds turned out to have no resolving power (goinfer `docs/completed/task-prefill-gap.md` §3.2). For 80%
 power the margin has to be about 2.5 standard errors: roughly 14 points at 60 tasks, or about 10 at 120. Which to buy
-is D13, decided from the pilot's variance. **Time per solved task carries the decisions; pass rate is the guardrail**,
+is D13, decided from the pilot's variance. **Capped time carries the decisions; pass rate is the guardrail**,
 at that margin *m*. Each rule names one primary comparison, and the number of runs is fixed before it starts.
 
 - **P1 exit — is the loop competent?** A1 against A0 on the full task set (the pilot only sizes it): the lower bound of
   the pass-rate interval ≥ −m. If not, the loop is fixed and the rule runs once more on the next full run; a second miss
   stops P2 until the owner decides.
 - **P2 exit — the context bet.** Primary: A3 against A1, run in the same window (A2 is reported, not decided on). Pass
-  rate non-inferior at −m, and a ratio of times per solved task with a point estimate ≤ 0.80 and an interval whose upper
+  rate non-inferior at −m, and a ratio of mean capped times with a point estimate ≤ 0.80 and an interval whose upper
   bound is ≤ 0.95 → ship as default. A point estimate ≤ 0.95 that misses that → parked: keep it opt-in and re-test after
   the ken changes. A point estimate above 0.95, or a pass rate that is not non-inferior → the bet failed on this task
   mix: record it, keep ken's tools opt-in, revisit the thesis.
@@ -1118,7 +1240,7 @@ run faster; the app's review loop is the part more agent throughput does not com
 | **P2** context engine | ken K3–K8 (in ken); the ledger; staleness; `symbol`; auto-context; prefix-aware assembly measured; TUI inspector; transcripts corpus | 4–6 wk | the P2 rule: ship, park or fail | a fail parks features, not the product |
 | **P3** fast turns, no swap | reuse tuning and residency; the small jobs with their gates; admission and the memory guard on the Mac; the nobara server hardened | 3–4 wk | the P3 rule plus E2 | yes |
 | **P4** macOS app | §11.1–§11.7, the notifications of §11.8, §11.9, §11.10; signed and notarized from the first build | 6–8 wk | the owner uses the app as primary for a week; §11.9 budgets met | — |
-| **P5** polish and distribution | the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run (a cold-user protocol like goinfer's); the update path exercised | parts |
+| **P5** polish and distribution | the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
 | **P6** research | exact-prefix measurements on goinfer's KV tiers; approximate span reuse behind fidelity gates | open | its own pre-registration | yes |
 
 Through P5 that is roughly 23–32 weeks. **Worktree-parallel sessions** — each session in its own `git worktree`, merged
@@ -1142,6 +1264,7 @@ chafes. On one local model, parallel sessions share one decoder, so worktrees bu
 | R9 | prompt injection through retrieved content leads to a harmful command | medium | high | content never changes permissions; tack's controls and the config paths that run later are out of the sandbox's reach; network off by default; a repo's own config needs the owner's trust; halt |
 | R10 | chat-template and tool-format differences across model families and servers | high | low–medium | goinfer first-class; per-server capability flags; cassette tests per server and model family |
 | R11 | a 16k window is too small for real work in the owner's repos, even with ken | medium | high | the fixed-prompt budget; instruction files by section; routine compaction; E1 measures it; larger windows where memory allows (nobara's card refuses a 7B beyond about 20k) |
+| R12 | the one-install promise fails on 16 GB Macs: no agent-capable model fits beside the owner's other apps | high | high | E0 on Metal before the app; memory-tiered model offers on first run; a plain message and the remote-server path where nothing fits; goinfer's never-swap and paging work |
 
 ---
 
@@ -1164,7 +1287,7 @@ App Store.
 ## Appendix A — protocol examples
 
 ```json
-→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-macos","version":"0.1.0"},"protocol":1}}
+→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-macos","version":"0.1.0"},"protocol":1,"token":"…"}}
 ← {"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@nobara"]}}}
 
 → {"jsonrpc":"2.0","id":2,"method":"session/new","params":{"workspace":"~/tmcode/ken","model":"main","mode":"ask"}}
@@ -1175,7 +1298,7 @@ App Store.
 
 ← {"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JA…","event":{"seq":7,"type":"tool.call","payload":{"id":"tu_1","name":"search","input":{"query":"watch flush rename","k":8}}}}}
 ← {"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JA…","event":{"seq":12,"type":"permission.requested","payload":{"request":"p_3","tool":"bash","command":"go test ./internal/search/ -run TestWatch","parsed":[["/usr/local/go/bin/go","test","./internal/search/","-run","TestWatch"]],"asked_because":"no rule allows go test","sandbox":"workspace write, network off"}}}}
-→ {"jsonrpc":"2.0","id":5,"method":"permission/respond","params":{"request":"p_3","decision":"allow","scope":"session","token":"…"}}
+→ {"jsonrpc":"2.0","id":5,"method":"permission/respond","params":{"request":"p_3","decision":"allow","scope":"session"}}
 
 ← {"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JA…","event":{"seq":19,"type":"usage","payload":{"request":3,"server":"goinfer@nobara","prompt":11240,"reused":9860,"prefilled":1380,"output":212,"prefill_ms":2140,"decode_tps":41.2}}}}
 ```
@@ -1189,7 +1312,7 @@ App Store.
 | `request.sent` | yes | server, model, request seq |
 | `assistant.delta` | no (live only) | raw text for the open block |
 | `assistant.block` | no (live only; folded into `assistant.message`) | one parsed block |
-| `assistant.message` | yes | final blocks, including thinking |
+| `assistant.message` | yes | the model's exact raw content blocks, thinking included; rendered blocks are derived, not stored here |
 | `tool.call` | yes | id, name, input |
 | `permission.requested` | yes | request id, tool, command, parsed form, reason asked, sandbox state |
 | `permission.resolved` | yes | decision, scope, rule added |
