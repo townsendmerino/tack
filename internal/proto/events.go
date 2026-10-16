@@ -39,7 +39,7 @@ const (
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
-// dropped), and whether the store fsyncs after appending it (DESIGN §6.2: before every tool starts and at turn
+// dropped), and whether the store fsyncs after appending it (DESIGN §6.2: before every tool starts, and at turn
 // boundaries).
 type EventSpec struct {
 	Payload   reflect.Type
@@ -50,7 +50,7 @@ type EventSpec struct {
 // EventTypes is every event type this build emits. The store, the fixtures' conformance test and the Swift generator
 // read it.
 var EventTypes = map[EventType]EventSpec{
-	EvUserMessage:      {reflect.TypeFor[UserMessage](), true, false},
+	EvUserMessage:      {reflect.TypeFor[UserMessage](), true, true}, // opens a turn
 	EvContextAssembled: {reflect.TypeFor[ContextAssembled](), true, false},
 	EvRequestSent:      {reflect.TypeFor[RequestSent](), true, false},
 	EvAssistantDelta:   {reflect.TypeFor[AssistantDelta](), false, false},
