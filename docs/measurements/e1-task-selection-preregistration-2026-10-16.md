@@ -24,6 +24,22 @@ procedural. None of them changes which candidates a full run would choose:
  list. Three of the first pilot set were exact-text tasks: their tests asserted literal strings that the fix adds, so
  any statement would have to quote the fix. The rule is mechanical, so the selection stays blind to outcomes.
 
+**Amendment 3, 2026-10-16, after the owner's statement review and before any agent task run** (owner). Stage 2 gains
+the **stub check**. Task 8's oracle only checked that a call does not panic, so a fix that does nothing would pass it;
+rather than drop task 8 by hand, a rule now applies to all candidates alike:
+
+- At the fix, in every non-test Go file the commit changed, each top-level function or method whose declaration
+  differs from the parent's, or is new, has its body replaced by a bare return of zero values: an empty body for no
+  results, `return` for named results, `return *new(T1), *new(T2), …` otherwise. Imports left unused are removed so
+  the package builds. The named tests stage 2 found (the oracle) then run once.
+- **If every one of them passes, the candidate is rejected:** the oracle cannot tell the fix from no fix. If any fails
+  or does not build, it is kept. A fix that changed no function body (only types, variables or constants) has
+  nothing to stub and is kept. A candidate the check cannot be run on is rejected.
+- Candidates verified before this amendment are stub-checked in stage 3's order by the same `-stage verify`, and
+  stage 3 refuses any verified candidate without the check (`internal/eval/mine/stub.go:StubCheck`). The fixed-order
+  choice is then re-run, and how many candidates the check removed is reported. A task that replaces a removed one
+  gets a drafted statement and the owner's review, as the others did.
+
 ## Population
 
 The first-parent history of each repository's `main` branch, frozen at:

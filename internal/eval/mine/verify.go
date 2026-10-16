@@ -25,6 +25,8 @@ type Verified struct {
 	OnCommit   [2]map[string]string `json:"on_commit"`
 	CommitSecs [2]float64           `json:"commit_secs"`
 	CheckCmd   string               `json:"check_cmd"`
+	// Stub is the stub check (amendment 3), run once the rest of stage 2 passes; nil on a record made before it.
+	Stub *Stub `json:"stub,omitempty"`
 }
 
 // Stage-2 limits (rules 1 and 3).
@@ -88,7 +90,12 @@ func Verify(ctx context.Context, r Repo, c Candidate, work string) Verified {
 			return fail("commit run %d took %.0f s", run+1, secs)
 		}
 	}
-	v.OK = true
+	st := StubCheck(ctx, r, c, v.Oracle, work)
+	v.Stub = &st
+	v.OK = !st.Rejects
+	if st.Rejects {
+		v.Why = st.Why()
+	}
 	return v
 }
 

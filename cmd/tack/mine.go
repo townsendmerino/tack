@@ -134,11 +134,11 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 	cs = mine.Order(cs) // stage 3's order, so a run stopped early has verified a prefix of it
 	var okSoFar []mine.Candidate
 	vp := filepath.Join(out, "verified.jsonl")
-	done := map[string]bool{}
+	done := map[string]mine.Candidate{} // each candidate's latest record
 	if prev, err := readCandidates(vp); err == nil {
-		for _, c := range prev {
-			done[c.Repo+"/"+c.Commit] = true
-			if c.Verified != nil && c.Verified.OK {
+		for _, c := range latest(prev) {
+			done[c.Repo+"/"+c.Commit] = c
+			if c.Verified != nil && c.Verified.OK && c.Verified.Stub != nil {
 				okSoFar = append(okSoFar, c)
 			}
 		}
@@ -156,7 +156,7 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 	start := time.Now()
 	todo := 0
 	for _, c := range cs {
-		if !done[c.Repo+"/"+c.Commit] {
+		if needsWork(done, c) {
 			todo++
 		}
 	}
@@ -178,7 +178,7 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 	}()
 	i, ok := 0, 0
 	for _, c := range cs {
-		if done[c.Repo+"/"+c.Commit] {
+		if !needsWork(done, c) {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -205,8 +205,20 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 			return err
 		}
 		t0 := time.Now()
-		v := mine.Verify(ctx, r, c, work)
-		c.Verified = &v
+		if prev, ok := done[c.Repo+"/"+c.Commit]; ok { // verified before the stub check existed: add it (amendment 3)
+			c = prev
+			v := *c.Verified
+			st := mine.StubCheck(ctx, r, c, v.Oracle, work)
+			v.Stub, v.OK = &st, !st.Rejects
+			if st.Rejects {
+				v.Why = st.Why()
+			}
+			c.Verified = &v
+		} else {
+			v := mine.Verify(ctx, r, c, work)
+			c.Verified = &v
+		}
+		v := *c.Verified
 		if err := enc.Encode(c); err != nil {
 			return err
 		}
@@ -226,9 +238,17 @@ func mineChoose(out string, log io.Writer) error {
 		return err
 	}
 	var okc []mine.Candidate
-	for _, c := range all {
-		if c.Verified != nil && c.Verified.OK {
+	stubbed := 0
+	for _, c := range latest(all) {
+		v := c.Verified
+		switch {
+		case v == nil:
+		case v.OK && v.Stub == nil:
+			return fmt.Errorf("%s %s passed stage 2 without the stub check (amendment 3): run -stage verify first", c.Repo, c.Commit[:8])
+		case v.OK:
 			okc = append(okc, c)
+		case v.Stub != nil && v.Stub.Rejects:
+			stubbed++
 		}
 	}
 	pilot, e1 := mine.Choose(okc, 10, 4, 60, 30)
@@ -246,6 +266,30 @@ func mineChoose(out string, log io.Writer) error {
 		}
 		f.Close()
 	}
-	logf(log, "choose: %d verified; pilot %d, e1 %d", len(okc), len(pilot), len(e1))
+	logf(log, "choose: %d verified, %d more removed by the stub check; pilot %d, e1 %d", len(okc), stubbed, len(pilot), len(e1))
 	return nil
+}
+
+// latest keeps each candidate's last record: verified.jsonl is appended to, and a stub check appends a candidate's
+// record again with its result.
+func latest(cs []mine.Candidate) []mine.Candidate {
+	idx := map[string]int{}
+	var out []mine.Candidate
+	for _, c := range cs {
+		k := c.Repo + "/" + c.Commit
+		if i, ok := idx[k]; ok {
+			out[i] = c
+			continue
+		}
+		idx[k] = len(out)
+		out = append(out, c)
+	}
+	return out
+}
+
+// needsWork reports whether stage 2 still has something to do for c: no record yet, or one that passed without the
+// stub check.
+func needsWork(done map[string]mine.Candidate, c mine.Candidate) bool {
+	prev, ok := done[c.Repo+"/"+c.Commit]
+	return !ok || (prev.Verified != nil && prev.Verified.OK && prev.Verified.Stub == nil)
 }

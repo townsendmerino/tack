@@ -148,4 +148,8 @@ pilot then runs with 9, and records that.
 - Whether ken helps. E1 decides that, with A2 and A3 against A1, at a margin sized from variance this pilot supplies.
 - Whether retrieval helps opencode. A0k carries about 3,500 more fixed-prompt tokens than A0, ken-mcp's tool schemas,
   so the pilot compares opencode with and without ken-mcp as shipped (amendment 3).
+- Whether ken finds code. Eight of the ten statements name the function to change, because the tests call it directly.
+  So the pilot measures ken on tasks where the location is mostly given, and is expected to understate it. A small or
+  zero A0k-A0 gap is not evidence that ken does not help. E1's task mix should include tasks where finding the code is
+  part of the work (owner, 2026-10-16).
 - Anything about tack's loop, which is not an arm here.
