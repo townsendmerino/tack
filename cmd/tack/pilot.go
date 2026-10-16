@@ -99,20 +99,33 @@ func runSmoke(ctx context.Context, mirrors, opencode, kenMCP, kenModel, serve, m
 	srv := pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}
 	logf(log, "pilot smoke: server up in %s; %s", time.Since(start).Round(time.Second), plan.FitLine)
 	var results []pilot.Result
+	kenIndex := map[string]float64{}
 	for _, arm := range []pilot.Arm{{Name: "A0"}, {Name: "A0k", KenMCP: kenMCP, KenModel: kenModel}} {
 		runDir := filepath.Join(out, arm.Name)
 		repo := filepath.Join(runDir, "repo")
 		if err := pilot.PrepareRepo(filepath.Join(mirrors, smokeRepo+".git"), smokeBase, repo); err != nil {
 			return fmt.Errorf("%s: %w", arm.Name, err)
 		}
+		kenSecs := 0.0
+		if arm.KenMCP != "" { // the untimed warm-up (pilot pre-registration, amendment)
+			kl, _ := os.Create(filepath.Join(runDir, "ken-warmup.log"))
+			s, err := pilot.WarmKen(ctx, arm.KenMCP, arm.KenModel, repo, kl, 15*time.Minute)
+			kl.Close()
+			if err != nil {
+				return fmt.Errorf("%s: ken warm-up: %w", arm.Name, err)
+			}
+			kenSecs = s
+			logf(log, "pilot smoke: %s: ken index built in %.1f s (untimed)", arm.Name, s)
+		}
 		logf(log, "pilot smoke: %s: opencode, cap %s", arm.Name, capD)
 		r := pilot.RunOpencode(ctx, opencode, srv, arm, repo, smokeStatement, runDir, capD)
-		_ = os.WriteFile(filepath.Join(runDir, "diff.patch"), []byte(pilot.Diff(repo)), 0o644)
+		_ = os.WriteFile(filepath.Join(runDir, "diff.patch"), []byte(pilot.Diff(repo, smokeBase)), 0o644)
 		results = append(results, r)
+		kenIndex[arm.Name] = kenSecs
 		logf(log, "pilot smoke: %s: exit %d, cap hit %v, %.0f s %s", arm.Name, r.Exit, r.CapHit, r.WallSecs, r.Err)
 	}
 	b, _ := json.MarshalIndent(map[string]any{"statement": smokeStatement, "repo": smokeRepo, "base": smokeBase,
-		"fit_line": plan.FitLine, "results": results}, "", "  ")
+		"fit_line": plan.FitLine, "results": results, "ken_index_secs": kenIndex}, "", "  ")
 	if err := os.WriteFile(filepath.Join(out, "summary.json"), b, 0o644); err != nil {
 		return err
 	}

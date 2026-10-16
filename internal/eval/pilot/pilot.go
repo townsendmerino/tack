@@ -66,19 +66,28 @@ func Config(s Server, a Arm, repo string) ([]byte, error) {
 	}
 	if a.KenMCP != "" {
 		cfg["mcp"] = map[string]any{"ken": map[string]any{
-			"type":    "local",
-			"command": []string{a.KenMCP},
-			"enabled": true,
-			"environment": map[string]string{
-				"KEN_MCP_DEFAULT_REPO":       repo,
-				"KEN_MCP_ALLOWED_REPO_ROOTS": repo,
-				"KEN_MCP_AUTO_FETCH":         "0",
-				"KEN_MCP_MODEL_DIR":          a.KenModel,
-				"KEN_NO_USAGE_STATS":         "1",
-			},
+			"type":        "local",
+			"command":     []string{a.KenMCP},
+			"enabled":     true,
+			"environment": KenEnv(repo, a.KenModel),
 		}}
 	}
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// KenEnv is ken-mcp's environment for a task repository, shared by the warm-up and by the ken-mcp opencode starts so
+// both see the same index: confined to the repository, the model directory explicit, no auto-fetch, no usage
+// records, and the snapshot persisted under the repository's .ken/ (ken-mcp's default, stated).
+func KenEnv(repo, model string) map[string]string {
+	repo = resolved(repo)
+	return map[string]string{
+		"KEN_MCP_DEFAULT_REPO":       repo,
+		"KEN_MCP_ALLOWED_REPO_ROOTS": repo,
+		"KEN_MCP_AUTO_FETCH":         "0",
+		"KEN_MCP_MODEL_DIR":          model,
+		"KEN_NO_USAGE_STATS":         "1",
+		"KEN_MCP_SNAPSHOT":           "1",
+	}
 }
 
 // Result is one run of opencode.
@@ -160,9 +169,24 @@ func RunOpencode(ctx context.Context, opencode string, s Server, a Arm, repo, st
 	return r
 }
 
-// Diff is the working tree's change against the base, untracked files included, for the run record.
-func Diff(repo string) string {
-	_ = exec.Command("git", "-C", repo, "add", "-A", "--", ".", ":!opencode.json").Run()
-	out, _ := exec.Command("git", "-C", repo, "diff", "--cached", "HEAD").Output()
+// resolved is path with symlinks resolved, or path itself if that fails: ken-mcp is confined to the repository by
+// path, and the directory it runs in reports the resolved form (macOS's /var is /private/var).
+func resolved(path string) string {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		return r
+	}
+	return path
+}
+
+// notGraded is what the graded diff leaves out: ken's index and opencode's config are the harness's files, not the
+// agent's change (pilot pre-registration, amendment).
+var notGraded = []string{":(exclude).ken", ":(exclude)opencode.json"}
+
+// Diff is the repository's change against base (a commit, not HEAD: the agent may commit its own work), untracked
+// files included, without the harness's files even if the agent staged or committed them: the diff the run record
+// grades.
+func Diff(repo, base string) string {
+	_ = exec.Command("git", append([]string{"-C", repo, "add", "-A", "--", "."}, notGraded...)...).Run()
+	out, _ := exec.Command("git", append([]string{"-C", repo, "diff", "--cached", base, "--", "."}, notGraded...)...).Output()
 	return string(out)
 }

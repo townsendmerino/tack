@@ -1,9 +1,11 @@
 package pilot
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +18,10 @@ import (
 // With TACK_FAKE_OPENCODE set, this test binary is opencode: it records its args, cwd and XDG dirs, prints two JSON
 // events, and then either exits or (TACK_FAKE_OPENCODE=hang) starts a child and sleeps, so the cap must kill a group.
 func TestMain(m *testing.M) {
+	if os.Getenv("TACK_FAKE_KENMCP") == "1" {
+		fakeKenMCP()
+		return
+	}
 	switch os.Getenv("TACK_FAKE_OPENCODE") {
 	case "":
 		os.Exit(m.Run())
@@ -144,5 +150,81 @@ func TestCapKillsTheGroup(t *testing.T) {
 	if err := syscall.Kill(pid, 0); err == nil {
 		syscall.Kill(pid, syscall.SIGKILL)
 		t.Fatalf("child %d survived the cap", pid)
+	}
+}
+
+// fakeKenMCP answers initialize and one tools/call over stdio, writing .ken/snapshot.manifest in its working directory
+// before answering the call, as ken-mcp persists its index. It refuses to start unless it is confined to that directory.
+func fakeKenMCP() {
+	wd, _ := os.Getwd()
+	if os.Getenv("KEN_MCP_ALLOWED_REPO_ROOTS") != wd || os.Getenv("KEN_MCP_AUTO_FETCH") != "0" {
+		fmt.Fprintln(os.Stderr, "fake ken-mcp: not confined to", wd)
+		os.Exit(2)
+	}
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		var m map[string]any
+		if json.Unmarshal(sc.Bytes(), &m) != nil || m["id"] == nil {
+			continue
+		}
+		if m["method"] == "tools/call" {
+			time.Sleep(50 * time.Millisecond) // the "build"
+			os.MkdirAll(filepath.Join(wd, ".ken"), 0o755)
+			os.WriteFile(filepath.Join(wd, ".ken", "snapshot.manifest"), []byte("{}"), 0o644)
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m["id"], "result": map[string]any{}})
+		fmt.Println(string(b))
+	}
+}
+
+func TestWarmKenBuildsTheSnapshotOutsideTheRun(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("TACK_FAKE_KENMCP", "1")
+	secs, err := WarmKen(context.Background(), os.Args[0], "/m", repo, io.Discard, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secs < 0.05 {
+		t.Fatalf("ken_index_secs %.3f does not cover the build", secs)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".ken", "snapshot.manifest")); err != nil {
+		t.Fatal("no snapshot after the warm-up")
+	}
+}
+
+// TestGradedDiffLeavesOutHarnessFiles: ken's index and opencode.json never appear in the graded diff, even when the agent
+// commits them, while the agent's own edit (committed or not) does.
+func TestGradedDiffLeavesOutHarnessFiles(t *testing.T) {
+	repo := t.TempDir()
+	gitDo := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	gitDo("init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o644)
+	gitDo("add", "a.go")
+	gitDo("commit", "-q", "-m", "base")
+	base := gitDo("rev-parse", "HEAD")
+
+	os.MkdirAll(filepath.Join(repo, ".ken"), 0o755)
+	os.WriteFile(filepath.Join(repo, ".ken", "snapshot.bin"), []byte("index"), 0o644)
+	os.WriteFile(filepath.Join(repo, "opencode.json"), []byte("{}"), 0o644)
+	os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n\nfunc F() {}\n"), 0o644)
+	gitDo("add", "-A") // the agent commits everything, harness files included
+	gitDo("commit", "-q", "-m", "agent")
+	os.WriteFile(filepath.Join(repo, "b.go"), []byte("package a\n"), 0o644) // and leaves one file uncommitted
+
+	d := Diff(repo, base)
+	if strings.Contains(d, ".ken/") || strings.Contains(d, "opencode.json") {
+		t.Fatalf("harness files in the graded diff:\n%s", d)
+	}
+	if !strings.Contains(d, "+func F() {}") || !strings.Contains(d, "b/b.go") {
+		t.Fatalf("the agent's committed and uncommitted edits are missing:\n%s", d)
 	}
 }

@@ -5,6 +5,19 @@ pilot: a first read on whether ken helps a local agent on real tasks, before tac
 nothing.** Its other job is to size E1: minutes per run, A0's pass rate (the difficulty band of
 `e1-task-selection-preregistration-2026-10-16.md`), and the spread D13 needs.
 
+**Amendment 2026-10-16, before any agent run** (owner). ken's index stays outside both the clock and the grade:
+
+- **Warm-up, untimed.** For A0k, ken's index for the task's base commit is built before the timed run starts. The
+  runner starts the same ken-mcp binary with the same configuration, sends one `search` call over MCP, waits for its
+  answer, and stops it. ken-mcp has then built the index and written its snapshot under the task repository's
+  `.ken/`, which the ken-mcp opencode starts loads instead of rebuilding. The build time is recorded separately
+  (`ken_index_secs`) and is never part of the run's wall time or capped time.
+- **A fresh index per task.** Every A0k task repository is new, so its index is built at its own base. No index is
+  reused across commits.
+- **Out of the grade.** ken's index directory (`.ken/`) and `opencode.json` are excluded from the graded diff, and
+  paths under `.ken/` are excluded from the `left_repo` check. Go's tools ignore dot-directories, so the oracle's
+  `go test` never sees them.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
