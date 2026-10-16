@@ -155,6 +155,7 @@ public struct ModelBlock: Codable, Equatable, Sendable {
     public var text: String?
     public var thinking: String?
     public var signature: String?
+    public var data: String?
     public var id: String?
     public var name: String?
     public var input: JSONValue?
@@ -164,6 +165,7 @@ public struct ModelBlock: Codable, Equatable, Sendable {
         case text = "text"
         case thinking = "thinking"
         case signature = "signature"
+        case data = "data"
         case id = "id"
         case name = "name"
         case input = "input"

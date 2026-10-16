@@ -1,0 +1,171 @@
+{
+  "note": "goinfer f44ba5eb goinfer-serve (metal build, -backend cpu -quant int8int8), committed llama-tiny fixture as built by goinfer sdktest tinyClient with a 4096 window: replies are noise, the wire format is real; recorded 2026-10-16",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "body": {
+          "model": "tiny",
+          "max_tokens": 1024,
+          "system": "You answer questions about a Go repository. Use the tools.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Use grep to find where func main is defined, then tell me the file."
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "name": "grep",
+              "description": "Search file contents with a regular expression.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "enum": [
+                      "func main"
+                    ]
+                  }
+                },
+                "required": [
+                  "pattern"
+                ]
+              }
+            },
+            {
+              "name": "read",
+              "description": "Read a file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "enum": [
+                      "cmd/tack/main.go"
+                    ]
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ],
+          "thinking": {
+            "type": "disabled"
+          },
+          "temperature": 0,
+          "tool_choice": {
+            "type": "any"
+          },
+          "stream": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "text/event-stream",
+        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_4452a33bd509a0f8dd080dbf4775a503\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":949,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"id\":\"toolu_dec47ea00a45d8f5612c781498b03e9e\",\"input\":{},\"name\":\"grep\",\"type\":\"tool_use\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"partial_json\":\"{ \\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\\"pattern\\\"\\n:\\n\\\"func main\\\"\\n}\",\"type\":\"input_json_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":278}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "body": {
+          "model": "tiny",
+          "max_tokens": 32,
+          "system": "You answer questions about a Go repository. Use the tools.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Use grep to find where func main is defined, then tell me the file."
+                }
+              ]
+            },
+            {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "tool_use",
+                  "id": "toolu_dec47ea00a45d8f5612c781498b03e9e",
+                  "name": "grep",
+                  "input": {
+                    "pattern": "func main"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "tool_result",
+                  "tool_use_id": "toolu_dec47ea00a45d8f5612c781498b03e9e",
+                  "content": "cmd/tack/main.go:10:func main() {"
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "name": "grep",
+              "description": "Search file contents with a regular expression.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "enum": [
+                      "func main"
+                    ]
+                  }
+                },
+                "required": [
+                  "pattern"
+                ]
+              }
+            },
+            {
+              "name": "read",
+              "description": "Read a file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "enum": [
+                      "cmd/tack/main.go"
+                    ]
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ],
+          "thinking": {
+            "type": "disabled"
+          },
+          "temperature": 0,
+          "stream": true
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "text/event-stream",
+        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_28dc965fb1bd038c6c897d0b05229ea9\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":1116,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"7\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"V\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":32}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+      }
+    }
+  ]
+}

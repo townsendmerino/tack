@@ -1,0 +1,73 @@
+{
+  "note": "goinfer f44ba5eb goinfer-serve (metal build, -backend cpu -quant int8int8), committed llama-tiny fixture as built by goinfer sdktest tinyClient with a 4096 window: replies are noise, the wire format is real; recorded 2026-10-16",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages/count_tokens",
+        "body": {
+          "model": "tiny",
+          "max_tokens": 1024,
+          "system": "You answer questions about a Go repository. Use the tools.",
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Use grep to find where func main is defined, then tell me the file."
+                }
+              ]
+            }
+          ],
+          "tools": [
+            {
+              "name": "grep",
+              "description": "Search file contents with a regular expression.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "enum": [
+                      "func main"
+                    ]
+                  }
+                },
+                "required": [
+                  "pattern"
+                ]
+              }
+            },
+            {
+              "name": "read",
+              "description": "Read a file.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "enum": [
+                      "cmd/tack/main.go"
+                    ]
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          ],
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"input_tokens\":949}\n"
+      }
+    }
+  ]
+}
