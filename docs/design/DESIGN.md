@@ -91,7 +91,7 @@ and in how much memory, before the loop is built around them.
 | D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter; WebSocket for a remote daemon later | §9 | **decided** 2026-10-16 |
 | D9 | Apple Developer Program | the owner is a paid member with Xcode; signing and notarization from P4 | §11.11 | **decided** 2026-10-16 |
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
-| D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | open; needed before P1 |
+| D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | **decided** 2026-10-16 |
 | D12 | model servers | local only: goinfer first-class; Ollama, LM Studio and llama.cpp's server through one OpenAI-compatible adapter | §6.4 | **decided** 2026-10-16 |
 | D13 | E1 size | 60 tasks with a pass-rate margin of about 14 points, or about 120 for about 10; decided after the pilot | §15.3 | open |
 
