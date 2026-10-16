@@ -72,7 +72,7 @@ and in how much memory, before the loop is built around them.
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |
 | D6 | how the daemon reaches ken | in-process, through a public ken engine package, from the start | §12 | **decided** 2026-10-16 |
 | D7 | how the daemon reaches goinfer | a supervised `goinfer-serve` child on the Mac, or a `goinfer-serve` on nobara | §8 | open |
-| D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter | §9 | open; before P4 |
+| D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter; WebSocket for a remote daemon later | §9 | **decided** 2026-10-16 |
 | D9 | Apple Developer Program | the owner is a paid member with Xcode; signing and notarization from P4 | §11.11 | **decided** 2026-10-16 |
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
 | D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | open |
@@ -1000,7 +1000,7 @@ constrained tool calls with several tools; `serve check`; KV0–KV3 shipped in v
 |---|---|---|---|
 | G1 | `-addr unix:/path` for the API | no TCP port on the Mac; the same user boundary as the admin socket | P0, nice to have |
 | G2 | the fit answer as JSON on the admin socket ("could model M load now?") without loading — the banner's `fit:` and `KV plan:` lines | tack's admission (§8.1) | P1 |
-| G3 | Messages usage that separates reused-prefix tokens from prefilled ones, with prefill time (verify first; it may exist) | the ledger's reuse column and the P3 rule | P1 |
+| G3 | Messages usage that separates reused-prefix tokens from prefilled ones, with prefill time. Verified 2026-10-16: `/v1/messages` usage has only `input_tokens` and `output_tokens`, while `/v1/responses` already reports `usage.input_tokens_details.cached_tokens` (goinfer `internal/serveapp/responses.go`). The ask is that field on Messages usage (owner, 2026-10-16: tack stays on Messages) | the ledger's reuse column and the P3 rule | P1 |
 | G4 | KV7, the disk tier | sessions resumed after a restart start warm | P6, on goinfer's schedule |
 | G5 | whatever P6's span-reuse experiments need from the KV manager | research | P6 |
 | G6 | the night queue stops the tack-facing `goinfer-serve` on nobara before timed jobs and starts it after | no tack traffic on the GPU during a timed run (§8.2) | P1 |
