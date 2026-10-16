@@ -8,7 +8,10 @@ from the named tests' bodies, the signatures those tests call, and the commit me
 The agent sees only the statement, in a repository holding the base commit and its ancestors; the tests are applied
 after its run.
 
-**Review state:** every statement is a draft. A rejected one is rewritten once, and a second rejection drops the task.
+**Review state:** the owner approved 1, 2, 3, 4, 5, 6, 7, 9 and 10 as written (2026-10-16); they are in
+`eval/e1/pilot.jsonl` with `reviewed_by`. Task 6 is kept because its test checks real skip, count and log behaviour
+through the seam, so a do-nothing seam fails it. Task 8 waits on the stub check (selection amendment 3) rather than
+being dropped by hand. A rejected statement is rewritten once, and a second rejection drops the task.
 **Notes** flag a weak oracle, or a "what is wanted" that sits close to the fix.
 
 The check command for every task is
