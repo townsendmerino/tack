@@ -18,6 +18,23 @@ nothing.** Its other job is to size E1: minutes per run, A0's pass rate (the dif
   paths under `.ken/` are excluded from the `left_repo` check. Go's tools ignore dot-directories, so the oracle's
   `go test` never sees them.
 
+**Amendment 2, 2026-10-16, after the smoke and before any task run** (owner). **The window is 32768.** The
+night smoke stopped both arms on their first request: goinfer refused it before decoding
+(`~/tack-runs/e1/smoke-night-2026-10-16` on nobara, each arm's `events.jsonl`). opencode 1.19.0's system prompt and
+tool definitions take **16,494 tokens for A0 and 20,008 for A0k**, which already exceeds the 16384 the pilot served,
+before any task text or a reply. A smaller model does not help: the 1.5B and 0.5B use the same tokenizer. So:
+
+- the server is `-ctx 32768 -kv-sessions 1`, one KV slot, so that the 7B's weights and one 32768 window share the
+  8 GB card (fit-checked again with these flags before the smoke is re-queued);
+- opencode's `limit.context` is the served 32768, and `limit.output` is 2048 instead of 4096
+  (`internal/eval/pilot/pilot.go:replyLimit`), leaving A0k about 10,700 tokens of conversation;
+- the server is goinfer main `0e598d3f`, as for E0 (its amendment 3).
+
+With one slot, a request on opencode's `small_model` (its title call) takes the slot from the task's conversation,
+which then re-prefills unless goinfer restores a prefix snapshot. The `reused` field of `-log-requests` records which
+happened, and the smoke is re-run before any task run to read it. A0 is still stock opencode. Both figures are a finding
+in their own right: the incumbent harness's fixed prompt alone does not fit the window tack is built for.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
@@ -27,7 +44,8 @@ pilot then runs with 9, and records that.
 ## Box, server and model
 
 - **nobara** (RTX 2070 SUPER 8 GB). Its night queue (goinfer's `scripts/night.py`) runs the job under the timing lock.
-- **`goinfer-serve` CUDA 41e13b26**, cross-built (`eval/e0/nobara.toml`): `-backend cuda -ctx 16384 -log-requests`.
+- **`goinfer-serve` CUDA 0e598d3f** (main), cross-built (`eval/e0/nobara.toml`): `-backend cuda -ctx 32768
+  -kv-sessions 1 -log-requests` (amendment 2; it was 41e13b26 at `-ctx 16384`).
 - **Qwen2.5-7B-Instruct `q4_k_m`** from `~/models/qwen2.5-7b-instruct-q4_k_m.gguf`. It was fit-checked on 2026-10-16
   at 13:33 (`~/tack-runs/e0/fitcheck-2026-10-16-nobara`), admitted at 16384, `cuda-resident (int4)`, using 6.3 GB of
   VRAM.
@@ -38,7 +56,7 @@ pilot then runs with 9, and records that.
 - **A0: opencode 1.19.0**, as installed in `~/harnesses` on nobara, with a clean configuration. Its project-local
   `opencode.json` is the one goinfer's `connect opencode` writes:
   - the `@ai-sdk/openai-compatible` provider at the server;
-  - `limit.context` set to the served 16384;
+  - `limit.context` set to the served window, and `limit.output` 2048 (amendment 2);
   - `small_model` set to the `-fast` alias.
 
   It runs as `opencode run --format json --auto -m goinfer/<model> --dir <task repo> "<statement>"`. opencode's own

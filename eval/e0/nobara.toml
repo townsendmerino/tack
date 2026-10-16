@@ -2,10 +2,11 @@
 # in run order. Run by goinfer's scripts/night.py on nobara, one job per arm, never by day except -fit-only.
 
 box = "nobara"
-# Cross-built on the Mac from a git archive of goinfer 41e13b26: `go work init . ./cuda`, GOOS=linux GOARCH=amd64
-# CGO_ENABLED=0, -tags cuda, ./cuda/cmd/serve.
-goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-41e13b26"
-goinfer_rev = "41e13b26"
+# Cross-built on the Mac from a git archive of goinfer main 0e598d3f: `go work init . ./cuda ./metal`, GOOS=linux
+# GOARCH=amd64 CGO_ENABLED=0, -tags cuda, ./cuda/cmd/serve. Before amendment 3 this was 41e13b26 (the unmerged
+# op3-seams-2026-10 branch); those runs are kept and superseded.
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-0e598d3f"
+goinfer_rev = "0e598d3f"
 # The same snapshot of tack at ea9d411 the Mac's jobs size their prompts from.
 workspace = "~/tack-runs/e0/workspace/tack"
 
@@ -15,10 +16,38 @@ model_path = "~/models/qwen2.5-7b-instruct-q4_k_m.gguf"
 args = ["-backend", "cuda"]
 
 [[arm]]
+name = "gemma4-e4b-q40-cuda"
+model_path = "~/models/gemma-4-e4b-gguf/gemma-4-E4B_q4_0-it.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "qwen2.5-coder-1.5b-q4km-cuda"
+model_path = "~/models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "gemma4-e2b-q40-cuda"
+model_path = "~/models/gemma-4-e2b-gguf/gemma-4-E2B_q4_0-it.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "qwen2.5-coder-0.5b-q4km-cuda" # goinfer's demo:0.5b, and the floor
+model_path = "~/models/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
 name = "granite-4.0-h-tiny-q8-cuda"
 model_path = "~/models/granite/granite-4.0-h-tiny-Q8_0.gguf"
 args = ["-backend", "cuda"]
 
+[[arm]]
+name = "phi3-mini-4k-q4-cuda"
+model_path = "~/models/phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf"
+args = ["-backend", "cuda"]
+ctx = [4096]
+
+# The two that do not fit 8 GB of VRAM run last and stop at the fit (amendment 3): goinfer serves each on the CPU,
+# and the arm records that fallback as its fail verdict instead of timing it.
 [[arm]]
 name = "gpt-oss-20b-mxfp4-cuda"
 model_path = "~/models/gpt-oss-20b-MXFP4.gguf"
@@ -28,9 +57,3 @@ args = ["-backend", "cuda"]
 name = "gemma4-26b-q4km-cuda"
 model_path = "~/models/gemma4-26b-q4_k_m.gguf"
 args = ["-backend", "cuda"]
-
-[[arm]]
-name = "phi3-mini-4k-q4-cuda"
-model_path = "~/models/phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf"
-args = ["-backend", "cuda"]
-ctx = [4096]

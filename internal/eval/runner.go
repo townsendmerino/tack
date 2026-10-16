@@ -178,6 +178,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 		}
 	}()
 	var sup *models.Supervisor
+	var fellBack string // why the arm runs on another backend than it asked for, or ""
 	var srv server.Server
 	window, admitted := 0, 0
 	skipped := false
@@ -216,9 +217,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			if plan.ContextWindow > 0 && plan.ContextWindow < n {
 				window = plan.ContextWindow
 			}
+			fellBack = fellBackFrom(arm.Args, plan.DecodePath)
 			r.record(arm, "fit", map[string]any{"ctx": n, "admitted": true, "fit_line": plan.FitLine,
-				"context_window": plan.ContextWindow, "load_ms": time.Since(t0).Milliseconds()})
-			r.logf("  %s: -ctx %d admitted, window %d; %s", arm.Name, n, window, plan.FitLine)
+				"decode_path": plan.DecodePath, "fell_back": fellBack, "context_window": plan.ContextWindow,
+				"load_ms": time.Since(t0).Milliseconds()})
+			r.logf("  %s: -ctx %d admitted, window %d, decode path %q; %s", arm.Name, n, window, plan.DecodePath, plan.FitLine)
 			return
 		}
 	})
@@ -228,6 +231,12 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 	}
 	if sup == nil {
 		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": "no context was admitted"})
+		return
+	}
+	if fellBack != "" { // amendment 3: the arm asked for a GPU and goinfer served it elsewhere
+		_ = sup.Stop()
+		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": fellBack})
+		r.logf("  %s: %s; nothing else is measured for this arm", arm.Name, fellBack)
 		return
 	}
 	defer func() {
@@ -595,3 +604,19 @@ func (r *runner) settle(ctx context.Context, arm Arm) models.Pressure {
 
 // settlePoll is how often settle re-reads memory pressure.
 var settlePoll = 2 * time.Second
+
+// fellBackFrom reports, when an arm asked for a GPU backend (-backend cuda or metal) and goinfer's banner says the
+// model is decoding somewhere else (a load that ran out of device memory and fell back to the CPU), why the arm is not
+// the arm registered; "" otherwise, including when the decode path is unknown.
+func fellBackFrom(args []string, decodePath string) string {
+	want := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-backend" || args[i] == "--backend" {
+			want = args[i+1]
+		}
+	}
+	if (want != "cuda" && want != "metal") || decodePath == "" || strings.HasPrefix(decodePath, want) {
+		return ""
+	}
+	return fmt.Sprintf("asked for -backend %s, goinfer is decoding on %q", want, decodePath)
+}

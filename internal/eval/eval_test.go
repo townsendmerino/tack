@@ -104,7 +104,11 @@ func fakeServe(args []string) {
 			return
 		}
 		loaded = req.Name
-		fmt.Fprintf(os.Stderr, "  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB)\n", *ctxN)
+		decode := os.Getenv("TACK_FAKE_DECODE")
+		if decode == "" {
+			decode = "cpu (int4)"
+		}
+		fmt.Fprintf(os.Stderr, "  decode path: %s\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB)\n", decode, *ctxN)
 		json.NewEncoder(w).Encode(map[string]any{"status": "loaded"})
 	})
 	al, err := net.Listen("unix", *sock)
@@ -359,5 +363,52 @@ func TestPressureSettlesBeforeAnArm(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
 	if !strings.Contains(string(data), `"admitted":true`) || strings.Contains(string(data), `"skipped"`) {
 		t.Fatalf("results: %s", data)
+	}
+}
+
+func TestFellBackFrom(t *testing.T) {
+	cases := []struct {
+		args   []string
+		decode string
+		fell   bool
+	}{
+		{[]string{"-backend", "cuda"}, "cuda-resident (int4)", false},
+		{[]string{"-backend", "cuda"}, "cpu (int4)", true},
+		{[]string{"-backend", "metal"}, "metal-resident (int4)", false},
+		{[]string{"-backend", "metal"}, "cpu (int8int8)", true},
+		{[]string{"-backend", "cpu"}, "cpu (int4)", false},
+		{nil, "cpu (int4)", false},                // no backend asked for
+		{[]string{"-backend", "cuda"}, "", false}, // unknown decode path: not judged
+	}
+	for _, tc := range cases {
+		if got := fellBackFrom(tc.args, tc.decode) != ""; got != tc.fell {
+			t.Errorf("fellBackFrom(%v, %q) fell=%v, want %v", tc.args, tc.decode, got, tc.fell)
+		}
+	}
+}
+
+// TestFallbackStopsTheArm: an arm that asked for CUDA and was served on the CPU records its fit and a fail verdict
+// naming the fallback, and nothing else: no check, no smoke, no timing.
+func TestFallbackStopsTheArm(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	t.Setenv("TACK_FAKE_DECODE", "cpu (int4)")
+	t.Setenv(tokenEnv, "")
+	out := t.TempDir()
+	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(),
+		Arms: []Arm{{Name: "big", ModelPath: "/m/big.gguf", Args: []string{"-backend", "cuda"}, Ctx: []int{8192}}}}
+	if err := Run(context.Background(), Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
+		Pressure: func() (models.Pressure, error) { return models.PressureNormal, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
+	s := string(data)
+	if !strings.Contains(s, `"fell_back":"asked for -backend cuda, goinfer is decoding on \"cpu (int4)\""`) ||
+		!strings.Contains(s, `"verdict":"fail"`) {
+		t.Fatalf("results:\n%s", s)
+	}
+	for _, phase := range []string{`"phase":"check"`, `"phase":"smoke"`, `"phase":"ttft"`, `"phase":"decode"`} {
+		if strings.Contains(s, phase) {
+			t.Errorf("a fallen-back arm ran %s", phase)
+		}
 	}
 }

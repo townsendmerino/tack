@@ -41,7 +41,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	kenModel := fs.String("ken-model", "", "ken's embedding model directory")
 	serve := fs.String("goinfer-serve", "", "the goinfer-serve binary")
 	modelPath := fs.String("model-path", "", "the checkpoint, from ~/models")
-	ctxN := fs.Int("ctx", 16384, "the served context")
+	ctxN := fs.Int("ctx", 32768, "the served context (the registration's is 32768: opencode's fixed prompt alone exceeds 16384)")
 	out := fs.String("out", "", "results directory (durable)")
 	capFlag := fs.Duration("cap", 10*time.Minute, "wall-time cap per run (the registration's is 10m)")
 	if err := fs.Parse(args); err != nil {
@@ -101,7 +101,7 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	}
 	defer os.RemoveAll(dir)
 	sup, err := models.NewSupervisor(models.ChildConfig{Binary: serve, ModelPath: modelPath, Model: "qwen", Ctx: ctxN,
-		Args: []string{"-backend", "cuda", "-log-requests"}, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
+		Args: []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
 	if err != nil {
 		return err
 	}

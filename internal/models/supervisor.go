@@ -57,7 +57,10 @@ type ChildConfig struct {
 
 // Plan is what goinfer reported about a load: its banner's fit line, and what /v1/models says it serves.
 type Plan struct {
-	FitLine       string // e.g. "fit: 16384-token cap needs 0.9 GB KV (weights 4.4 GB, budget 9.1 GB, …)"; empty if none was printed
+	FitLine string // e.g. "fit: 16384-token cap needs 0.9 GB KV (weights 4.4 GB, budget 9.1 GB, …)"; empty if none was printed
+	// DecodePath is the banner's "decode path:" value, e.g. "cuda-resident (int4)" or "cpu (int4)": where goinfer actually
+	// runs the model, which can differ from the -backend asked for when a GPU load falls back.
+	DecodePath    string
 	ContextWindow int
 	ResidentBytes int64
 }
@@ -237,9 +240,19 @@ func (s *Supervisor) load(ctx context.Context) error {
 			}
 		}
 	}
-	select {
-	case s.plan.FitLine = <-s.fitLines:
-	case <-time.After(200 * time.Millisecond):
+	// The banner prints "decode path:" then "fit:"; take whichever arrive within half a second.
+	deadline := time.After(500 * time.Millisecond)
+	for s.plan.FitLine == "" || s.plan.DecodePath == "" {
+		select {
+		case line := <-s.fitLines:
+			if rest, ok := strings.CutPrefix(line, "decode path: "); ok {
+				s.plan.DecodePath = rest
+			} else {
+				s.plan.FitLine = line
+			}
+		case <-deadline:
+			return nil
+		}
 	}
 	return nil
 }
@@ -347,11 +360,11 @@ func (s *Supervisor) admin(ctx context.Context, method, path string, body, out a
 	return nil
 }
 
-// scanFit forwards each banner "fit:" line from the child's stderr.
+// scanFit forwards each banner "fit:" and "decode path:" line from the child's stderr.
 func scanFit(r io.Reader, out chan<- string) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); strings.HasPrefix(line, "fit: ") {
+		if line := strings.TrimSpace(sc.Text()); strings.HasPrefix(line, "fit: ") || strings.HasPrefix(line, "decode path: ") {
 			select {
 			case out <- line:
 			default:

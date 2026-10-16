@@ -50,11 +50,15 @@ type Arm struct {
 	KenModel string
 }
 
+// replyLimit is opencode's limit.output: the tokens a reply may take, and so what goinfer reserves beyond the prompt
+// (docs/measurements/e1-pilot-preregistration-2026-10-16.md, amendment 2).
+const replyLimit = 2048
+
 // Config is the opencode.json the run's repository gets: goinfer's `connect opencode` shape (the
 // @ai-sdk/openai-compatible provider at the server, limit.context the served window, small_model the -fast alias),
 // plus ken-mcp as a local MCP server confined to the repository for A0k.
 func Config(s Server, a Arm, repo string) ([]byte, error) {
-	model := map[string]any{"limit": map[string]any{"context": s.Context, "output": 4096}}
+	model := map[string]any{"limit": map[string]any{"context": s.Context, "output": replyLimit}}
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": map[string]any{"goinfer": map[string]any{

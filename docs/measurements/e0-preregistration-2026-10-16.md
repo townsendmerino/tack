@@ -13,6 +13,24 @@ grades. The sizes are now 4096, 8192 and the window minus 1024. No other part ch
 0.5B, the model least likely to pass. With the 1.5B as the floor, a good 1.5B result would have voided the smoke set
 rather than counted. The 1.5B (`demo:1.5b`) is now an ordinary candidate.
 
+**Amendment 3, 2026-10-16, after nobara's first four arms and before any Mac run.** Three changes, each with its
+mechanism:
+
+- **The goinfer build is main.** Every arm is now served by goinfer main `0e598d3f`. The binaries until now were
+  `41e13b26`, the head of the unmerged `op3-seams-2026-10` branch (merge-base with main `c0a3cc1c`). That branch rewrites
+  the forward pass of Granite-4.0-H and Gemma 4, both E0 arms, and lacks 25 of main's commits. It was used because
+  that is where the checkout happened to be, not by choice. nobara's runs on it (the 7B, granite, phi3 and the
+  killed gpt-oss) are kept in `~/tack-runs/e0/2026-10-16-night` on nobara, named as superseded, and graded against nothing.
+- **A GPU arm served on another backend fails at fit.** goinfer's planner admitted gpt-oss-20b at 16384 on the
+  8 GB card. goinfer then hit a CUDA out-of-memory error and fell back to the CPU, decoding at 7.8 tok/s, and had
+  produced no TTFT cell after 29 minutes when the owner had it stopped. The fit phase now also records the
+  banner's `decode path:`. When an arm asked for `-backend cuda` or `metal` and the decode path names another
+  backend, the arm records `fell_back` and a **fail** verdict, and nothing else is measured for it
+  (`internal/eval/runner.go:fellBackFrom`).
+- **nobara gets the Mac's small arms.** gemma-4-E4B, Qwen2.5-Coder-1.5B, gemma-4-E2B and the 0.5B floor are added
+  on CUDA, so each box's default is chosen from the same candidates. gpt-oss-20b and gemma-4-26b stay in the
+  manifest but run last, where the fallback rule records them in minutes.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
@@ -42,7 +60,8 @@ storage"). Every arm is served by `goinfer-serve` from one pinned goinfer revisi
 | Mac | metal | `phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf` | DESIGN §8.4 candidate. A 4,096 window, so fit, check and smoke only: reported, never eligible |
 | Mac | cpu | `qwen2.5-7b-instruct-q4_k_m.gguf` | the CPU path that did not fit at q3_k_m (opencode.md); fit decides again |
 | nobara (RTX 2070 SUPER 8 GB) | cuda | `qwen2.5-7b-instruct-q4_k_m.gguf` | **the incumbent**: the one configuration measured working |
-| nobara | cuda | `phi3-mini-4k-gguf`, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf`, the granite checkpoint | DESIGN §8.4 candidates; fit decides which load |
+| nobara | cuda | `gemma-4-E4B`, `qwen2.5-coder-1.5b`, `gemma-4-E2B`, `qwen2.5-coder-0.5b` (the floor), as on the Mac | amendment 3: the same small candidates on both boxes |
+| nobara | cuda | `phi3-mini-4k-gguf`, the granite checkpoint, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf` | DESIGN §8.4 candidates; fit decides which load, and an arm goinfer serves on the CPU fails there (amendment 3) |
 
 The **do-nothing arm** is the incumbent: keep the model on nobara. A Mac model replaces it only under the rule below.
 
@@ -56,7 +75,8 @@ run's output directory and a heartbeat to its log at least every 30 s.
 
 1. **fit.** Start `goinfer-serve` with an explicit `-ctx`, first 16384 and then 8192, and load the model. goinfer's
    own planner admits the load or refuses it; this is goinfer's plan, not arithmetic. Recorded per arm: the largest
-   admitted `-ctx`, the banner's `fit:` line, and `/v1/models` `context_window`. If both are refused, or the window is
+   admitted `-ctx`, the banner's `fit:` line, its `decode path:`, and `/v1/models` `context_window`. An arm that asked for a GPU and is decoding
+   elsewhere fails here and stops (amendment 3). If both are refused, or the window is
    under 8192, the arm stops after smoke.
 2. **check.** `goinfer-serve check` against the running server. Recorded: its exit status and full output.
 3. **smoke.** 20 tasks built from tack's own tool schemas: P0's `read`, `glob` and `grep`, with `loop.SystemPrompt`,

@@ -89,7 +89,7 @@ func fakeGoinfer(args []string) {
 		loaded[req.Name] = true
 		rep.Loads++
 		save()
-		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, *ctxN)
+		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  decode path: cpu (int4)\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, *ctxN)
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "loaded"})
 	})
 	admin.HandleFunc("POST /admin/models/unload", func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +197,7 @@ func TestSupervisorStartsLoadsWithItsOwnKey(t *testing.T) {
 		t.Fatalf("dir mode %v, %v", st.Mode().Perm(), err)
 	}
 	plan, loaded := s.Plan()
-	if !loaded || plan.ContextWindow != 8192 || !strings.HasPrefix(plan.FitLine, "fit: 8192-token cap") {
+	if !loaded || plan.ContextWindow != 8192 || !strings.HasPrefix(plan.FitLine, "fit: 8192-token cap") || plan.DecodePath != "cpu (int4)" {
 		t.Fatalf("plan %+v loaded %v", plan, loaded)
 	}
 	// A second Ensure reuses the child and the load.

@@ -2,10 +2,10 @@
 # Run by goinfer's scripts/night.py, one job per arm, never by day except -fit-only.
 
 box = "mac"
-# Built from goinfer 41e13b26 (metal/cmd/serve). The binary reports vcs.modified=true for one untracked doc
-# (docs/audit-security-2026-10-12.md); no tracked file differed.
-goinfer_serve = "~/tack-runs/bin/goinfer-serve-metal-41e13b26"
-goinfer_rev = "41e13b26"
+# Built from a git archive of goinfer main 0e598d3f (metal/cmd/serve, `go work init . ./cuda ./metal`, CGO_ENABLED=0).
+# Before amendment 3 this was 41e13b26, the head of the unmerged op3-seams-2026-10 branch, by accident of the checkout.
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-metal-0e598d3f"
+goinfer_rev = "0e598d3f"
 # A snapshot of tack at the queued commit (git archive), so "Repository: tack" and the TTFT text are pinned.
 workspace = "~/tack-runs/e0/workspace/tack"
 
