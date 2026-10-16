@@ -88,7 +88,7 @@ and in how much memory, before the loop is built around them.
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |
 | D6 | how the daemon reaches ken | in-process, through a public ken engine package, from the start | §12 | **decided** 2026-10-16 |
 | D7 | how tack gets its model server | the app bundles `goinfer-serve` (Metal) and runs it as a supervised child: one install, nothing else to set up. A remote `goinfer-serve` (nobara) and other local servers are optional; the owner's own default is nobara until E0 finds a Mac setup that works | §8 | **decided** 2026-10-16 |
-| D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter | §9 | open; needed before P0's protocol work |
+| D8 | client protocol | own JSON-RPC over a Unix socket; ACP as an adapter; WebSocket for a remote daemon later | §9 | **decided** 2026-10-16 |
 | D9 | Apple Developer Program | the owner is a paid member with Xcode; signing and notarization from P4 | §11.11 | **decided** 2026-10-16 |
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
 | D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | open; needed before P1 |
@@ -1077,6 +1077,28 @@ serving every other agent.
   ken-mcp is its first client").
 - **Not asked:** ranking changes. E1 measures ken as it is; ranking stays ken's own measured work.
 
+**Delivered in ken v1.9.0** (2026-10-16, ken ADR-046; tagged at `2853c7b`):
+
+- **K1:** `engine.Open(ctx, root, Options)` returns a `*Workspace` with `Search`, `SearchMode`, `FindRelated`,
+  `Definition`, `References`, `Callers`, `Outline`, `Status` and `Close`. `Options` covers mode, chunker, model
+  directory, watch, snapshot, mmap, enrichment (eager or lazy), staged embedding and the dense retriever.
+  `ErrStructuralBuilding` and `ErrNoStructuralIndex` tell "not ready yet" from "no index for this repo".
+- **K2:** `Hit{File, StartLine, EndLine, Text, Hash, Score, Rank, Gen, BM25Rank, DenseRank}`; `Hash` is the sha256 of
+  `Text`, and the per-arm ranks are best effort (0 where an arm did not run or did not find the chunk).
+- **K4, the counter half:** `Gen` on every hit and in `Status`, from `WatchedIndex.Generation()`.
+- **K6:** `engine.ApproxTokens`.
+- ken-mcp now opens its workspaces through `engine.Open`, so the two faces share one path.
+- Not re-verified at the tag: ken's full semble NDCG benchmark (the change touches no ranking code).
+
+**Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements), K9 (markdown sections).
+
+**How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
+(`WatchedIndex()`, `StructuralIfBuilt()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's internal packages
+are for ken's own binaries; tack does not touch them, so ken stays free to change what sits behind them. Two
+consequences of ken's defaults: the tree-sitter chunker is registered by the importing binary (`tackd` must import it,
+as `ken` and `ken-mcp` do), and `ModelDir` defaults to `~/.ken/model`, so the app passes the bundled model's path in
+`Contents/Resources/` (§11.11).
+
 ---
 
 ## 13. Changes in goinfer
@@ -1091,7 +1113,7 @@ constrained tool calls with several tools; `serve check`; KV0–KV3 shipped in v
 |---|---|---|---|
 | G1 | `-addr unix:/path` for the API | no TCP port on the Mac; the same user boundary as the admin socket | P0, nice to have |
 | G2 | the fit answer as JSON on the admin socket ("could model M load now?") without loading — the banner's `fit:` and `KV plan:` lines | tack's admission (§8.1) | P1 |
-| G3 | Messages usage that separates reused-prefix tokens from prefilled ones, with prefill time (verify first; it may exist) | the ledger's reuse column and the P3 rule | P1 |
+| G3 | Messages usage that separates reused-prefix tokens from prefilled ones, with prefill time. Verified 2026-10-16: `/v1/messages` usage has only `input_tokens` and `output_tokens`, while `/v1/responses` already reports `usage.input_tokens_details.cached_tokens` (goinfer `internal/serveapp/responses.go`). The ask is that field on Messages usage (owner, 2026-10-16: tack stays on Messages) | the ledger's reuse column and the P3 rule | P1 |
 | G4 | KV7, the disk tier | sessions resumed after a restart start warm | P6, on goinfer's schedule |
 | G5 | whatever P6's span-reuse experiments need from the KV manager | research | P6 |
 | G6 | the night queue stops the tack-facing `goinfer-serve` on nobara before timed jobs and starts it after | no tack traffic on the GPU during a timed run (§8.2) | P1 |
