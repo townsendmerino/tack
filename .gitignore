@@ -1,0 +1,15 @@
+# Handoffs between Cowork and vscode-claude, written on request
+HANDOFF.md
+
+# A local workspace across tack, ken, goinfer and aikit checkouts
+go.work
+go.work.sum
+
+/bin/
+/dist/
+.DS_Store
+
+# The Xcode project is generated from apps/macos/project.yml (XcodeGen)
+apps/macos/*.xcodeproj/
+DerivedData/
+xcuserdata/
