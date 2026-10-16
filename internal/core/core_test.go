@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -121,8 +122,10 @@ func (f *fixture) waitTurnEnd(t *testing.T) []proto.Event {
 			if ev.Type == proto.EvTurnEnd {
 				return got
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("no turn.end; got %d events", len(got))
+		case <-time.After(30 * time.Second):
+			// Every goroutine's stack, so a stall shows where it is (a macOS CI run once saw only the first event).
+			buf := make([]byte, 1<<20)
+			t.Fatalf("no turn.end within 30s of the last event; got %d events: %v\n%s", len(got), types(got), buf[:runtime.Stack(buf, true)])
 		}
 	}
 }
@@ -240,4 +243,12 @@ func TestSecondPromptWhileRunningIsBusy(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Code != proto.CodeBusy {
 		t.Fatalf("second prompt: %v", err)
 	}
+}
+
+func types(evs []proto.Event) []proto.EventType {
+	out := make([]proto.EventType, len(evs))
+	for i, ev := range evs {
+		out[i] = ev.Type
+	}
+	return out
 }

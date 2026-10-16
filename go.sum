@@ -1,5 +1,7 @@
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
+github.com/fsnotify/fsnotify v1.10.1/go.mod h1:TLheqan6HD6GBK6PrDWyDPBaEV8LspOxvPSjC+bVfgo=
 github.com/odvcencio/gotreesitter v0.55.1 h1:/UabDnEwB4usEs/bd6UqRfxh5tf+ByWr3iGt+JjwS2I=
 github.com/odvcencio/gotreesitter v0.55.1/go.mod h1:hBVkghd0paaYAVwd2087vfwdeU984bQbMo9LvpE0moo=
 github.com/townsendmerino/aikit v1.70.1 h1:f0xrvXRkcKhyw0Ygv9CXtj4xUNhjmMwqU5GhS29iwSM=
@@ -8,3 +10,9 @@ github.com/townsendmerino/aikit/chunk/treesitter v1.2.0 h1:pqwRl3cIfadQ1aixraw60
 github.com/townsendmerino/aikit/chunk/treesitter v1.2.0/go.mod h1:+bzbmxKoUhtazBqzxs7CFJiFmyj+qubUo41LHpQS2Ao=
 github.com/townsendmerino/ken v1.9.0 h1:5UOnYugoVmNWHPjD2kqYwwdMeU/6J+DxEsNKVLFtorg=
 github.com/townsendmerino/ken v1.9.0/go.mod h1:qc9Noho8vlTKJAdeGnN/yHYowWAjS5SHxaLGsyXXoGw=
+go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
+golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=

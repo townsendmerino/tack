@@ -79,6 +79,7 @@ func Run(o Options) ([]gate.Cell, plan, error) {
 
 	var cells []gate.Cell
 	cells = append(cells, checkGofmt(o.Root, pl.GoFiles))
+	cells = append(cells, checkModules(o.Root, len(pl.Build) > 0)...)
 	for _, goos := range goosTargets {
 		cells = append(cells, checkGo(o.Root, goos, "build", pl.Build)...)
 		cells = append(cells, checkGo(o.Root, goos, "vet", pl.Build)...)
@@ -394,4 +395,36 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// checkModules resolves every package and its test dependencies with no workspace and a read-only go.mod, as CI
+// does. A local go.work keeps its own sums in go.work.sum, so a build that passes here can still fail in CI on a
+// go.sum that lacks a dependency's transitive modules; this cell catches that by day.
+func checkModules(root string, touched bool) []gate.Cell {
+	var cells []gate.Cell
+	for _, goos := range goosTargets {
+		c := gate.Cell{Name: "modules/" + goos}
+		if !touched {
+			c.Outcome = gate.NA
+			cells = append(cells, c)
+			continue
+		}
+		out, err := run(root, []string{"GOWORK=off", "GOFLAGS=-mod=readonly", "CGO_ENABLED=0", "GOOS=" + goos},
+			"go", "list", "-deps", "-test", "./...")
+		if err != nil {
+			c.Outcome, c.Detail = gate.Fail, "with no go.work, as CI builds:\n"+lastLines(out, 12)+"\nfix: GOWORK=off go mod tidy"
+		} else {
+			c.Outcome = gate.OK
+		}
+		cells = append(cells, c)
+	}
+	return cells
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
