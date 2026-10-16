@@ -8,8 +8,9 @@ macOS app (SwiftUI), later a Qt Linux app. It is built on ken (code search and c
 touches before changing it. The owner's decisions are its §1 table; new decisions go in `docs/design/DECISIONS.md` as
 `ADR-NNN`. Do not restate the design here — this file is how to work in the repo.
 
-**Status: nothing is built. P0 is next** (DESIGN §16). The packages under `internal/` are placeholders whose doc comments
-say what each will hold.
+**Status: P0 foundations are built** (DESIGN §16): protocol, store, goinfer client and supervisor, ken search, `tack run`
+and the E0 runner. `acp`, `daemon`, `perms`, `render`, `tui` and `window` are still placeholders whose doc comments say
+what each will hold.
 
 ## Rules the product never breaks
 

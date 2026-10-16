@@ -4,4 +4,5 @@ A coding agent for the Mac that runs entirely on local models: a Go daemon with 
 built on [ken](https://github.com/townsendmerino/ken) for code search and
 [goinfer](https://github.com/townsendmerino/goinfer) for inference.
 
-Nothing is built yet. The design is [`docs/design/DESIGN.md`](docs/design/DESIGN.md).
+P0 foundations are built: `tack run "<question>"` answers questions about a repository on a local model, read-only.
+The design is [`docs/design/DESIGN.md`](docs/design/DESIGN.md).
