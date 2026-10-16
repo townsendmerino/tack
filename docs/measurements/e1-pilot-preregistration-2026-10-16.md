@@ -27,13 +27,38 @@ before any task text or a reply. A smaller model does not help: the 1.5B and 0.5
 - the server is `-ctx 32768 -kv-sessions 1`, one KV slot, so that the 7B's weights and one 32768 window share the
   8 GB card (fit-checked again with these flags before the smoke is re-queued);
 - opencode's `limit.context` is the served 32768, and `limit.output` is 2048 instead of 4096
-  (`internal/eval/pilot/pilot.go:replyLimit`), leaving A0k about 10,700 tokens of conversation;
+  (`internal/eval/pilot/pilot.go:replyLimit`), leaving A0k about 10,700 tokens of conversation on the smoke task (amendment 3 has the
+  per-task picture);
 - the server is goinfer main `0e598d3f`, as for E0 (its amendment 3).
 
 With one slot, a request on opencode's `small_model` (its title call) takes the slot from the task's conversation,
 which then re-prefills unless goinfer restores a prefix snapshot. The `reused` field of `-log-requests` records which
 happened, and the smoke is re-run before any task run to read it. A0 is still stock opencode. Both figures are a finding
 in their own right: the incumbent harness's fixed prompt alone does not fit the window tack is built for.
+
+**Amendment 3, 2026-10-16, before any task run** (owner). What the arms carry, and the title calls:
+
+- **A0k is "opencode + ken-mcp as shipped".** On the smoke task A0k's first request was 3,514 tokens longer than
+  A0's (20,008 against 16,494): ken-mcp's tool schemas. A0k pays for them in the window on every task, so the pilot
+  measures the shipped combination, not whether retrieval helps (see "What it does not decide").
+- **opencode's fixed prompt includes the repository's instruction file.** opencode reads the first of `AGENTS.md`,
+  `CLAUDE.md` and `CONTEXT.md` it finds at the task repository's root into its system prompt (no global file exists
+  on nobara). So the smoke's 16,494 is opencode's own prompt plus ken's 19,199-byte `CLAUDE.md`. Across the ten
+  task bases: the three aikit bases and three of the four goinfer bases have none; goinfer `a9b6b190` has a 32,375-byte
+  `CLAUDE.md`; the ken bases have 11,750 to 24,503 bytes. Every run is fit-checked by goinfer itself: a run whose fixed
+  prompt and 2048-token reply exceed 32768 is refused, as the smoke was, and counts as a fail, listed separately.
+- **Recorded per run** (`internal/eval/pilot/run.go:PromptStats`), from the run's `-log-requests` window and the
+  server's `count_tokens`: the first prompt on the task's model; the statement's tokens; their difference, the
+  arm's **fixed-prompt tokens**; the instruction file's tokens; and the fixed prompt less the instruction file, which
+  is opencode's own prompt (plus ken-mcp's schemas for A0k) and is what compares with tack's. Also: requests on the
+  task's model and on the `-fast` alias, **re-prefills** (a request on the task's model that reused less than half of
+  the previous one's prompt), and how many reused rows came from a host snapshot.
+- **Title calls.** opencode names each session with a request on `small_model`. On one KV slot that request can
+  evict the task's conversation. opencode's own switch, `"agent": {"title": {"disable": true}}`, removes the call
+  (`internal/eval/pilot/pilot.go:Arm.NoTitle`, `tack eval pilot -title=false`). The smoke runs twice in one
+  night, stock and with titles off, and the re-prefill counts of both are reported. **Decision rule:** if the stock
+  smoke has more re-prefills than the title-off smoke, summed over both arms, every task run has titles off, on both
+  arms; otherwise the pilot runs stock. The cap stays 10 minutes either way.
 
 ## Tasks
 
@@ -91,6 +116,8 @@ pilot then runs with 9, and records that.
   token and total time;
 - the number of tool calls by tool name;
 - the edit's diff against the base;
+- the prompt figures of amendment 3: fixed-prompt, instruction-file and own-prompt tokens; requests per alias;
+  re-prefills and snapshot restores;
 - **any tool call that reads or writes a path outside the task repository.** opencode runs unsandboxed as the owner's
   user, and nobara's clones of goinfer, ken and aikit hold the fixes, so such a call is a possible leak. A run that
   makes one is marked `left_repo` and reported both ways: counted, and excluded.
@@ -119,4 +146,6 @@ pilot then runs with 9, and records that.
 ## What it does not decide
 
 - Whether ken helps. E1 decides that, with A2 and A3 against A1, at a margin sized from variance this pilot supplies.
+- Whether retrieval helps opencode. A0k carries about 3,500 more fixed-prompt tokens than A0, ken-mcp's tool schemas,
+  so the pilot compares opencode with and without ken-mcp as shipped (amendment 3).
 - Anything about tack's loop, which is not an arm here.

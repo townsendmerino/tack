@@ -43,6 +43,8 @@ func newFixture(t *testing.T) fixture {
 	gitDo("init", "-q", "-b", "main")
 	write("go.mod", "module m\n\ngo 1.22\n")
 	write("calc/calc.go", "package calc\n\nfunc Add(a, b int) int { return a - b }\n")
+	write("AGENTS.md", "a b\n")           // opencode reads this one
+	write("CLAUDE.md", "one two three\n") // and not this
 	gitDo("add", "-A")
 	gitDo("commit", "-q", "-m", "base")
 	base := gitDo("rev-parse", "HEAD")
@@ -160,10 +162,12 @@ func TestRunPilotEndToEnd(t *testing.T) {
 	out := t.TempDir()
 	serveLog := filepath.Join(out, "serve.log")
 	os.WriteFile(serveLog, nil, 0o644)
+	t.Setenv("TACK_FAKE_SERVE_LOG", serveLog)
+	count := func(_ context.Context, text string) (int, error) { return len(strings.Fields(text)) + 20, nil } // 20: the template
 	err := RunPilot(context.Background(), Options{Tasks: []Task{f.task}, Mirrors: mirrors, Opencode: os.Args[0],
 		A0: Arm{Name: "A0"}, A0k: Arm{Name: "A0k", KenMCP: os.Args[0], KenModel: "/m"},
 		Server: Server{BaseURL: "http://x", Model: "qwen", Context: 16384}, ServeLog: serveLog, Out: out,
-		Cap: time.Minute, KenWarmup: 30 * time.Second, Log: io.Discard})
+		Cap: time.Minute, KenWarmup: 30 * time.Second, Log: io.Discard, CountTokens: count})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +189,15 @@ func TestRunPilotEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(mustRead(t, filepath.Join(out, "task-01", "A0k", "diff.patch")), ".ken") {
 		t.Error("ken's index reached A0k's graded diff")
+	}
+	// Each arm's fixed prompt, and the title call and re-prefill counts, come through runOne from the run's log window.
+	for arm, fixed := range map[string]int{"A0": 1000, "A0k": 4500} {
+		p := recs[arm].Prompt
+		if p.Statement != 5 || p.FirstPrompt != fixed+5 || p.Fixed != fixed || p.Main != 4 || p.FastRequests != 1 ||
+			p.Reprefills != 1 || p.SnapRestores != 1 || len(p.Instructions) != 1 || p.Instructions["AGENTS.md"] != 2 ||
+			p.Own != fixed-2 {
+			t.Errorf("%s prompt %+v, want fixed %d", arm, p, fixed)
+		}
 	}
 }
 

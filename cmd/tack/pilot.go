@@ -16,6 +16,8 @@ import (
 	"github.com/townsendmerino/tack/internal/eval"
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
 
 // The smoke task: ken at the pilot's task-2 base, a read-only question, so both arms exercise the server, opencode's
@@ -44,6 +46,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	ctxN := fs.Int("ctx", 32768, "the served context (the registration's is 32768: opencode's fixed prompt alone exceeds 16384)")
 	out := fs.String("out", "", "results directory (durable)")
 	capFlag := fs.Duration("cap", 10*time.Minute, "wall-time cap per run (the registration's is 10m)")
+	title := fs.Bool("title", true, "leave opencode's title agent on; -title=false turns it off on both arms")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -55,18 +58,19 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	a0, a0k := pilot.Arm{Name: "A0"}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel}
+	a0, a0k := pilot.Arm{Name: "A0", NoTitle: !*title}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel, NoTitle: !*title}
 	var err error
 	if *smoke {
-		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, _ string) error {
-			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, *out, *capFlag, stderr)
+		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
+			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, *out, *capFlag, stderr)
 		})
 	} else {
 		var ts []pilot.Task
 		if ts, err = pilot.LoadTasks(*tasks, *from, *to); err == nil {
 			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
 				return pilot.RunPilot(ctx, pilot.Options{Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
-					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr})
+					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr,
+					CountTokens: counter(srv)})
 			})
 		}
 	}
@@ -122,11 +126,12 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	return fn(pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}, serveLog)
 }
 
-func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, out string, capD time.Duration, log io.Writer) error {
+func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog, out string, capD time.Duration, log io.Writer) error {
 	start := time.Now()
 	logf(log, "pilot smoke: start %s, cap %s per run", start.Format("15:04 MST"), capD)
 	var results []pilot.Result
 	kenIndex := map[string]float64{}
+	prompts := map[string]pilot.PromptStats{}
 	for _, arm := range []pilot.Arm{a0, a0k} {
 		runDir := filepath.Join(out, arm.Name)
 		repo := filepath.Join(runDir, "repo")
@@ -143,17 +148,38 @@ func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, 
 			kenIndex[arm.Name] = s
 			logf(log, "pilot smoke: %s: ken index built in %.1f s (untimed)", arm.Name, s)
 		}
+		stmt := pilot.StatementTokens(ctx, counter(srv), smokeStatement)
+		from := fileSize(serveLog)
 		logf(log, "pilot smoke: %s: opencode, cap %s", arm.Name, capD)
 		r := pilot.RunOpencode(ctx, opencode, srv, arm, repo, smokeStatement, runDir, capD)
+		prompts[arm.Name] = pilot.Prompts(pilot.Requests(serveLog, from, fileSize(serveLog)), stmt).WithInstructions(ctx, counter(srv), repo)
+		logf(log, "pilot smoke: %s: prompt %+v", arm.Name, prompts[arm.Name])
 		_ = os.WriteFile(filepath.Join(runDir, "diff.patch"), []byte(pilot.Diff(repo, smokeBase)), 0o644)
 		results = append(results, r)
 		logf(log, "pilot smoke: %s: exit %d, cap hit %v, %.0f s %s", arm.Name, r.Exit, r.CapHit, r.WallSecs, r.Err)
 	}
 	b, _ := json.MarshalIndent(map[string]any{"statement": smokeStatement, "repo": smokeRepo, "base": smokeBase,
-		"results": results, "ken_index_secs": kenIndex}, "", "  ")
+		"results": results, "ken_index_secs": kenIndex, "prompt": prompts}, "", "  ")
 	if err := os.WriteFile(filepath.Join(out, "summary.json"), b, 0o644); err != nil {
 		return err
 	}
 	logf(log, "pilot smoke: done in %s (started %s)", time.Since(start).Round(time.Second), start.Format("15:04"))
 	return nil
+}
+
+// counter counts a lone user message on the pilot's server, for pilot.StatementTokens.
+func counter(srv pilot.Server) func(context.Context, string) (int, error) {
+	c := goinfer.New("pilot", srv.BaseURL, srv.APIKey, nil)
+	return func(ctx context.Context, text string) (int, error) {
+		return c.CountTokens(ctx, server.Request{Model: srv.Model, MaxTokens: 1,
+			Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(text)}}}})
+	}
+}
+
+func fileSize(p string) int64 {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }

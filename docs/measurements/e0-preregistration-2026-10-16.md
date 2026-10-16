@@ -30,6 +30,14 @@ mechanism:
 - **nobara gets the Mac's small arms.** gemma-4-E4B, Qwen2.5-Coder-1.5B, gemma-4-E2B and the 0.5B floor are added
   on CUDA, so each box's default is chosen from the same candidates. gpt-oss-20b and gemma-4-26b stay in the
   manifest but run last, where the fallback rule records them in minutes.
+- **Order.** On the Mac, the 7B, coder-1.5B and phi3 jobs on 41e13b26 had finished (14:58, 15:07 and 15:18) and
+  gemma-4-E4B was mid-run when this amendment was committed (15:29:53, `352fba0`). When the build question was put to
+  the owner, the Mac was said, wrongly, to have run nothing; the queue status listing those jobs was first read at 15:30,
+  after the commit, and no Mac result file has been opened. Before the amendment, on nobara, only the queue's status
+  lines (job, exit, minutes) were read, plus the owner's report of the gpt-oss run (CUDA out of memory, the CPU at
+  7.8 tok/s, no TTFT cell in 29 minutes), which is the fallback rule's mechanism. After it, at 15:35, granite's
+  decode-phase heartbeats on 41e13b26 were read to see which backend it had used. The amendment's reason is the
+  clean build of main, not any result. The superseded E4B run on 41e13b26 was left to its timeout.
 
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above

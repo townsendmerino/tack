@@ -48,6 +48,9 @@ type Arm struct {
 	KenMCP string // ken-mcp's path for A0k; empty for A0
 	// KenModel is ken's embedding model directory, passed to ken-mcp explicitly.
 	KenModel string
+	// NoTitle turns off opencode's title agent, so opencode makes no title request on small_model; the pilot sets it the same on
+	// both arms (pre-registration, amendment 3).
+	NoTitle bool
 }
 
 // replyLimit is opencode's limit.output: the tokens a reply may take, and so what goinfer reserves beyond the prompt
@@ -67,6 +70,9 @@ func Config(s Server, a Arm, repo string) ([]byte, error) {
 			"models":  map[string]any{s.Model: model, s.Model + "-fast": model},
 		}},
 		"small_model": "goinfer/" + s.Model + "-fast",
+	}
+	if a.NoTitle {
+		cfg["agent"] = map[string]any{"title": map[string]any{"disable": true}}
 	}
 	if a.KenMCP != "" {
 		cfg["mcp"] = map[string]any{"ken": map[string]any{

@@ -85,14 +85,102 @@ func Oracle(ctx context.Context, mirror string, t Task, repo string) (bool, map[
 	return pass, res, nil
 }
 
-// Request is one line of goinfer-serve's -log-requests output.
+// Request is one line of goinfer-serve's -log-requests output. Reused counts every prompt row the request did not
+// prefill, Snap those of them a host snapshot restored. Fast marks a request on the -fast alias, which opencode's
+// small_model (its title call) uses; the task's conversation is on the plain alias.
 type Request struct {
 	Prompt, Completion, Reused int
 	TTFTms, Totalms            int
+	Snap                       int
+	Fast                       bool
 	Raw                        string
 }
 
-var reqField = regexp.MustCompile(`(prompt_tokens|completion_tokens|reused|ttft|total)=(\d+)`)
+var reqField = regexp.MustCompile(`(prompt_tokens|completion_tokens|reused|ttft|total|snap|fast)=(\d+)`)
+
+// PromptStats is what one run's requests say about its prompt (pilot pre-registration, amendments 2 and 3).
+type PromptStats struct {
+	// FirstPrompt is the first plain-alias request's prompt: the arm's fixed prompt (system prompt, instruction files,
+	// tool schemas) plus the statement.
+	FirstPrompt int `json:"first_prompt_tokens"`
+	// Statement is the statement's own tokens: the server's count of it as a lone user message, less the count of a
+	// one-character message, so the chat template's framing cancels to within a token.
+	Statement int `json:"statement_tokens,omitempty"`
+	// Fixed is FirstPrompt less Statement, when both are known: the arm's fixed-prompt token count.
+	Fixed int `json:"fixed_prompt_tokens,omitempty"`
+	// Instructions counts, as Statement is counted, the instruction file opencode puts in its system prompt. Own is Fixed less their sum: opencode's own system prompt and tool schemas, plus ken-mcp's
+	// for A0k, which is what compares with tack's fixed prompt.
+	Instructions map[string]int `json:"instruction_tokens,omitempty"`
+	Own          int            `json:"own_prompt_tokens,omitempty"`
+	// Main and FastRequests count the plain-alias and -fast requests.
+	Main         int `json:"main_requests"`
+	FastRequests int `json:"fast_requests"`
+	// Reprefills counts plain-alias requests after the first that reused less than half of the previous plain-alias
+	// request's prompt: the conversation lost its cached prefix and was prefilled again. SnapRestores counts those
+	// whose reuse came in part from a host snapshot, which is a copy, not a prefill.
+	Reprefills   int `json:"reprefills"`
+	SnapRestores int `json:"snap_restores"`
+}
+
+// Prompts computes a run's PromptStats from its requests; statement is the statement's token count, or 0 if unknown.
+func Prompts(reqs []Request, statement int) PromptStats {
+	s := PromptStats{Statement: statement}
+	prev := 0
+	for _, r := range reqs {
+		if r.Fast {
+			s.FastRequests++
+			continue
+		}
+		if r.Prompt == 0 { // refused before it was tokenized
+			continue
+		}
+		s.Main++
+		if s.Main == 1 {
+			s.FirstPrompt = r.Prompt
+		} else if 2*r.Reused < prev {
+			s.Reprefills++
+		}
+		if r.Snap > 0 {
+			s.SnapRestores++
+		}
+		prev = r.Prompt
+	}
+	if s.FirstPrompt > 0 && statement > 0 {
+		s.Fixed = s.FirstPrompt - statement
+	}
+	return s
+}
+
+// instructionFiles are the project instruction files opencode 1.19.0 looks for, in its order; it reads the first one found
+// (its Instruction.systemPaths). The run's directory is the worktree root, so the root is the only place it looks.
+var instructionFiles = []string{"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
+
+// WithInstructions sets s.Instructions from the instruction file opencode reads in repo and, when its count is known,
+// s.Own.
+func (s PromptStats) WithInstructions(ctx context.Context, count func(context.Context, string) (int, error), repo string) PromptStats {
+	sum, known := 0, count != nil
+	for _, name := range instructionFiles {
+		b, err := os.ReadFile(filepath.Join(repo, name))
+		if err != nil {
+			continue
+		}
+		n := StatementTokens(ctx, count, string(b))
+		if n == 0 {
+			known = false
+			break
+		}
+		if s.Instructions == nil {
+			s.Instructions = map[string]int{}
+		}
+		s.Instructions[name] = n
+		sum += n
+		break
+	}
+	if known && s.Fixed > 0 {
+		s.Own = s.Fixed - sum
+	}
+	return s
+}
 
 // Requests reads the request lines goinfer-serve logged between two offsets of its log: one run's window.
 func Requests(log string, from, to int64) []Request {
@@ -126,6 +214,10 @@ func Requests(log string, from, to int64) []Request {
 				r.TTFTms = v
 			case "total":
 				r.Totalms = v
+			case "snap":
+				r.Snap = v
+			case "fast":
+				r.Fast = v == 1
 			}
 		}
 		out = append(out, r)
@@ -244,6 +336,8 @@ type Options struct {
 	Cap       time.Duration
 	KenWarmup time.Duration // the warm-up's own limit, outside the clock
 	Log       io.Writer
+	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
+	CountTokens func(ctx context.Context, text string) (int, error)
 }
 
 // Record is one run's line in results.jsonl.
@@ -259,6 +353,7 @@ type Record struct {
 	OracleErr    string            `json:"oracle_err,omitempty"`
 	KenIndexSecs float64           `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
 	Requests     []Request         `json:"requests"`
+	Prompt       PromptStats       `json:"prompt"`
 	Events       EventSummary      `json:"events"`
 	DiffBytes    int               `json:"diff_bytes"`
 	At           string            `json:"at"`
@@ -322,9 +417,11 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		}
 		rec.KenIndexSecs = secs
 	}
+	stmt := StatementTokens(ctx, o.CountTokens, t.Statement) // before the window, so its request is not the run's
 	from := size(o.ServeLog)
 	rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
 	rec.Requests = Requests(o.ServeLog, from, size(o.ServeLog))
+	rec.Prompt = Prompts(rec.Requests, stmt).WithInstructions(ctx, o.CountTokens, repo)
 	rec.Events = SummarizeEvents(filepath.Join(dir, "events.jsonl"), repo)
 	diff := Diff(repo, t.Base)
 	rec.DiffBytes = len(diff)
@@ -340,4 +437,17 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		rec.CappedSecs = o.Cap.Seconds()
 	}
 	return rec
+}
+
+// StatementTokens is the statement's token count as PromptStats.Statement defines it, or 0 when count is nil or fails.
+func StatementTokens(ctx context.Context, count func(context.Context, string) (int, error), statement string) int {
+	if count == nil {
+		return 0
+	}
+	n, err := count(ctx, statement)
+	one, err2 := count(ctx, "x")
+	if err != nil || err2 != nil {
+		return 0
+	}
+	return n - one + 1
 }

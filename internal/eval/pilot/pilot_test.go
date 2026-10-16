@@ -42,6 +42,22 @@ func TestMain(m *testing.M) {
 		_ = os.WriteFile(filepath.Join(wd, os.Getenv("TACK_FAKE_OPENCODE_FIX_DEST")), b, 0o644)
 		fmt.Println(`{"type":"tool_use","part":{"tool":"edit","state":{"input":{"filePath":"` + filepath.Join(wd, os.Getenv("TACK_FAKE_OPENCODE_FIX_DEST")) + `"}}}}`)
 	}
+	if p := os.Getenv("TACK_FAKE_SERVE_LOG"); p != "" {
+		// What goinfer-serve -log-requests would write for this run: a title call on the -fast alias, then the task's
+		// conversation, whose fixed prompt is 1000 tokens (4500 with ken-mcp's tools) and whose statement is 5. The
+		// third request lost its prefix; the fourth got it back from a host snapshot.
+		fixed := 1000
+		if hasMCP(wd) {
+			fixed = 4500
+		}
+		line := func(prompt, reused int, tail string) string {
+			return fmt.Sprintf("request: POST /v1/chat/completions model=qwen status=200 prompt_tokens=%d completion_tokens=9 ttft=10ms total=20ms reused=%d slot=0 div=- canon=1 ids=- ids_fallback=-%s\n", prompt, reused, tail)
+		}
+		f, _ := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprint(f, line(553, 0, " fast=1"), line(fixed+5, 0, ""), line(fixed+300, fixed+5, ""), line(fixed+600, 10, ""),
+			line(fixed+900, fixed+600, " snap=800"))
+		f.Close()
+	}
 	if os.Getenv("TACK_FAKE_OPENCODE_LEAK") == "1" {
 		fmt.Println(`{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"/home/someone/mycode/ken/x.go"}}}}`)
 	}
@@ -77,6 +93,18 @@ func TestConfig(t *testing.T) {
 	lim := prov["models"].(map[string]any)["qwen"].(map[string]any)["limit"].(map[string]any)
 	if lim["context"] != float64(16384) {
 		t.Fatalf("limit.context %v: without it opencode never compacts", lim["context"])
+	}
+	if lim["output"] != float64(replyLimit) {
+		t.Fatalf("limit.output %v", lim["output"])
+	}
+	if _, ok := a0["agent"]; ok {
+		t.Fatal("the title agent is off without NoTitle")
+	}
+	var quiet map[string]any
+	b, _ = Config(s, Arm{Name: "A0", NoTitle: true}, "/r")
+	json.Unmarshal(b, &quiet)
+	if quiet["agent"].(map[string]any)["title"].(map[string]any)["disable"] != true {
+		t.Fatalf("NoTitle: agent %v", quiet["agent"])
 	}
 }
 
