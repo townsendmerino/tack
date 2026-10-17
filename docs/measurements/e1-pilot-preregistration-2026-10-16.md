@@ -149,6 +149,9 @@ goinfer-serve built from main at or after `31418112`, so it has the tool-call co
   `~/tack-runs/e1/pilot-server-31418112.toml`, about 15 s under the timing lock) runs when the box is free, before the
   queue starts. If it does not admit `-ctx 32768` on `cuda-resident`, both jobs are dropped. Its result goes in
   `~/tack-runs/e1/fitcheck-pilot-server-31418112`.
+  - **Done 13:03, by day.** The timing lock was free, no runner was going and the GPU was idle. Verdict `admitted`:
+    `-ctx 32768`, window 32768, decode path `cuda-resident (int4)`. KV is 1.8 GB beside 4.0 GB of weights, against a
+    budget of 38.5 GB. The check took 14 s, and afterwards the server was gone and the lock free.
 
 ## Tasks
 
