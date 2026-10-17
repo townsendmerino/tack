@@ -353,7 +353,10 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if rerr != nil {
 		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true}
 	}
-	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text}
+	// Redaction comes first, so neither the model, the log nor the blob store ever holds a credential it caught.
+	var kinds []string
+	r.Text, kinds = perms.Redact(r.Text)
+	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
 	}

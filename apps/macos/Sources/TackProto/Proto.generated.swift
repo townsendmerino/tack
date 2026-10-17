@@ -304,6 +304,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
     public var result: String
     public var truncated: Bool
     public var blob: String?
+    public var redacted: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -311,6 +312,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
         case result = "result"
         case truncated = "truncated"
         case blob = "blob"
+        case redacted = "redacted"
     }
 }
 

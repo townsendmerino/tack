@@ -171,6 +171,9 @@ type ToolFinished struct {
 	Result    string `json:"result"`
 	Truncated bool   `json:"truncated"`
 	Blob      string `json:"blob,omitempty"`
+	// Redacted names the kinds of credential the redaction pass replaced in the output before anyone saw it
+	// (perms.Redact): the log of it firing.
+	Redacted []string `json:"redacted,omitempty"`
 }
 
 // Usage is a request's measured cost. A nil field is one the server did not report; it is never shown as zero

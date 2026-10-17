@@ -197,3 +197,30 @@ func TestBashThroughTheLoop(t *testing.T) {
 		t.Fatal("the refused command ran")
 	}
 }
+
+// TestToolOutputIsRedacted: a credential in a tool's output is replaced before the model, the log or the blob store
+// sees it, and tool.finished names its kind. (The token is made up, in GitHub's shape.)
+func TestToolOutputIsRedacted(t *testing.T) {
+	token := "ghp_" + strings.Repeat("a1B2", 9)
+	h := newHarness(t, Budget{}, goinfertest.Calls("", "g1", "grep", `{"pattern":"TOKEN"}`), goinfertest.Says("ok"))
+	os.WriteFile(filepath.Join(h.ws.Root(), "config.go"), []byte("const TOKEN = \""+token+"\"\n"+strings.Repeat("// filler TOKEN line\n", 50)), 0o644)
+	h.sess.cfg.MaxResultBytes = 200 // long enough to go to the blob store too
+	h.sess.Turn(context.Background(), "find the token")
+	f := h.finished("g1")
+	if strings.Contains(f.Result, token) || !strings.Contains(f.Result, "[redacted: GitHub token]") ||
+		len(f.Redacted) != 1 || f.Redacted[0] != "GitHub token" {
+		t.Fatalf("result %+v", f)
+	}
+	if !f.Truncated {
+		t.Fatal("the output was not long enough to reach the blob store")
+	}
+	if full, _ := h.st.Blobs.Get(f.Blob); strings.Contains(string(full), token) {
+		t.Fatal("the blob store holds the token")
+	}
+	evs, _ := h.st.Events("s_test", 0)
+	for _, ev := range evs {
+		if strings.Contains(string(ev.Payload), token) {
+			t.Fatalf("the log holds the token in %s", ev.Type)
+		}
+	}
+}
