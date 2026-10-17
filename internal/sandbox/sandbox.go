@@ -45,6 +45,21 @@ const (
 	SecSecrets = "secrets" // the secrets deny-list, enforced by the kernel
 )
 
+// Secrets are the paths under the owner's home that no sandboxed command may read or write: credentials, tokens and
+// keys, the keychains, and personal data. Section secrets also denies .env files and key and certificate files
+// anywhere, and the keychain's command-line and git front ends and the Security server they reach.
+var Secrets = []string{
+	// credentials, tokens and keys
+	".ssh", ".gnupg", ".netrc", ".git-credentials", ".config/git/credentials",
+	".config/gh", ".config/hub", ".config/gcloud", ".aws", ".azure", ".docker/config.json", ".kube",
+	".npmrc", ".pypirc", ".cargo/credentials", ".cargo/credentials.toml",
+	// the keychains
+	"Library/Keychains",
+	// personal data
+	"Library/Mail", "Library/Messages", "Library/Safari", "Library/Containers/com.apple.Safari", "Library/Cookies",
+	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
+}
+
 func real(p string) string {
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
@@ -123,9 +138,16 @@ func Profile(c Config) string {
 		later = append(later, fmt.Sprintf("(literal %q)", filepath.Join(home, f)))
 	}
 	sec(SecLater, fmt.Sprintf("(deny file-write* %s)", strings.Join(later, " ")))
-	sec(SecSecrets, fmt.Sprintf(`(deny file-read* file-write* (regex #"/\.env($|\.)") (regex #"\.(pem|key|p12|pfx)$") (subpath %q) (subpath %q) (subpath %q) (subpath %q) (subpath %q))`,
-		filepath.Join(home, ".ssh"), filepath.Join(home, ".aws"), filepath.Join(home, ".gnupg"),
-		filepath.Join(home, ".config/gh"), filepath.Join(home, "Library/Keychains")))
+	var secrets []string
+	for _, p := range Secrets {
+		secrets = append(secrets, fmt.Sprintf("(subpath %q)", filepath.Join(home, p)))
+	}
+	sec(SecSecrets,
+		fmt.Sprintf(`(deny file-read* file-write* (regex #"/\.env($|\.)") (regex #"\.(pem|key|p12|pfx)$") %s)`, strings.Join(secrets, " ")),
+		// The keychain's own front ends: the CLI, git's credential helper, and the Security server they talk to.
+		`(deny process-exec (literal "/usr/bin/security") (regex #"/git-credential-osxkeychain$"))`,
+		`(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc"))`,
+	)
 	return b.String()
 }
 

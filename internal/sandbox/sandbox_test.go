@@ -46,6 +46,12 @@ func setup(t *testing.T) fixture {
 	write(filepath.Join(f.ws, "x_test.go"), "package x\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n")
 	write(filepath.Join(f.ws, ".env"), "SECRET=ws-dotenv\n")
 	write(filepath.Join(f.home, ".ssh", "id_test"), "SECRET=ssh-key\n")
+	write(filepath.Join(f.home, ".config", "gh", "hosts.yml"), "github.com:\n    oauth_token: SECRET=gh-token\n")
+	write(filepath.Join(f.home, "Library", "Keychains", "login.keychain-db"), "SECRET=keychain\n")
+	write(filepath.Join(f.home, ".git-credentials"), "https://x:SECRET=git-cred.com\n")
+	write(filepath.Join(f.home, ".netrc"), "machine x password SECRET=netrc\n")
+	write(filepath.Join(f.home, ".docker", "config.json"), "{\"auths\":\"SECRET=docker\"}\n")
+	write(filepath.Join(f.home, "Library", "Messages", "chat.db"), "SECRET=messages\n")
 	write(filepath.Join(f.home, ".zshrc"), "# owner's\n")
 	write(filepath.Join(f.state, "token"), "SECRET=tack-token\n")
 	f.ownerGoCache = filepath.Join(f.home, "Library", "Caches", "go-build")
@@ -113,6 +119,13 @@ func TestEscapes(t *testing.T) {
 		{"planting in the owner's module cache", secs(SecWrite), `echo x > "$HOME/go/pkg/mod/planted" && echo ESCAPED-modcache`, "ESCAPED-modcache"},
 		{"reading .env", secs(SecSecrets), `cat .env`, "ws-dotenv"},
 		{"reading an ssh key", secs(SecSecrets), `cat "$HOME/.ssh/id_test"`, "ssh-key"},
+		{"reading gh's token", secs(SecSecrets), `cat "$HOME/.config/gh/hosts.yml"`, "gh-token"},
+		{"reading a keychain file", secs(SecSecrets), `cat "$HOME/Library/Keychains/login.keychain-db"`, "SECRET=keychain"},
+		{"listing the keychain with security", secs(SecSecrets), `/usr/bin/security list-keychains && echo ESCAPED-security`, "ESCAPED-security"},
+		{"reading git credentials", secs(SecSecrets), `cat "$HOME/.git-credentials"`, "SECRET=git-cred"},
+		{"reading .netrc", secs(SecSecrets), `cat "$HOME/.netrc"`, "SECRET=netrc"},
+		{"reading docker's config", secs(SecSecrets), `cat "$HOME/.docker/config.json"`, "SECRET=docker"},
+		{"reading Messages", secs(SecSecrets), `cat "$HOME/Library/Messages/chat.db"`, "SECRET=messages"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
