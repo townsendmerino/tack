@@ -67,6 +67,14 @@ with `cuda-resident`, no task starts, both arms are void, and `tack eval pilot` 
 a non-zero exit (`internal/eval/runner.go:VoidPath`). The pilot's server was `cuda-resident (int4)` at its nobara fit
 check on 2026-10-16, so no run so far is affected.
 
+**Amendment 5, 2026-10-16, before any task run** (owner). **Every result is reported twice:** over all tasks, and
+over the tasks without a **weak-oracle** note in `eval/e1/pilot-statements.md`. A weak oracle is a named test that a
+shortcut implementation can pass, so a pass on it must not carry the result alone. Today one task has the note: task
+11 (goinfer `e9b76046`), whose test's one-byte-per-token vocabulary lets a wrapper around `ForcedRun` pass. Task 8,
+the other task with the note, was removed by the stub check. The set is fixed by the notes as they stand now; a note
+added after a run does not move a task out of it. Task 11 is the stub check's replacement for task 8, and the owner
+approved its statement as drafted.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
@@ -135,6 +143,7 @@ pilot then runs with 9, and records that.
 
 - A0's and A0k's pass rates over the tasks, with their paired difference. Bootstrap intervals are shown, but at 10
   tasks they are wide, and no claim is made from them.
+- Each figure in this list twice: over all tasks, and over the tasks without a weak-oracle note (amendment 5).
 - Mean capped time per arm, and the paired ratio on the tasks both solved.
 - Minutes per run, which replace DESIGN §15.2's 5–10-minute placeholder for E1's machine-time plan (D10).
 - Whether A0's pass rate falls inside 20–80%. Outside it, the selection rules' single registered difficulty adjustment

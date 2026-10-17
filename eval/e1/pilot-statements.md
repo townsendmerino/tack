@@ -13,9 +13,9 @@ after its run.
 through the seam, so a do-nothing seam fails it. The stub check (selection amendment 3; night job
 `tack-e1-mine-stub-pilot`, 2026-10-16) **removed task 8**: its named test passes with the fix's 2 functions stubbed.
 It stays in `eval/e1/pilot.jsonl`, marked `removed`, so the other tasks keep their numbers. Its replacement, the next
-candidate in stage-3 order to verify and pass the stub check, is **task 11** (goinfer `e9b76046`). Its statement is a
-draft awaiting review and is not yet in `pilot.jsonl`. A rejected statement is rewritten once, and a second rejection
-drops the task.
+candidate in stage-3 order to verify and pass the stub check, is **task 11** (goinfer `e9b76046`). The owner approved
+it as drafted (2026-10-16), and it is in `pilot.jsonl` with `reviewed_by`. A rejected statement is rewritten once,
+and a second rejection drops the task.
 **Notes** flag a weak oracle, or a "what is wanted" that sits close to the fix.
 
 The check command for every task is
@@ -180,17 +180,17 @@ change of the ten (65 non-test lines).
 
 ## 11. goinfer `e9b76046` — base `3d208325`
 
-**Draft, awaiting review.** This task replaces task 8, which the stub check removed.
+**Approved by the owner as drafted (2026-10-16).** This task replaces task 8, which the stub check removed.
 
 Tests: `TestForcedBytesRun` in `./constrain`.
 
 > `(m *Masker) ForcedRun(max int) []int` in `constrain` returns the tokens the grammar forces from the masker's
 > current state: successive positions where exactly one token is legal and the document cannot yet end. On a real
 > BPE vocabulary it almost never fires. Many tokens are legal byte-prefixes of a forced continuation, so no single
-> token is forced even where the bytes are. Add its byte-level counterpart, `(m *Masker) ForcedBytesRun(max int)
-> []byte`. It returns up to `max` bytes the grammar forces from the current state, one byte per position, and stops
-> at the first position where more than one byte is legal or the document could end. Like `ForcedRun`, it must leave
-> the masker's state unchanged.
+> token is forced even where the bytes are. Add its byte-level counterpart,
+> `(m *Masker) ForcedBytesRun(max int) []byte`. It returns up to `max` bytes the grammar forces from the current
+> state, one byte per position, and stops at the first position where more than one byte is legal or the document
+> could end. Like `ForcedRun`, it must leave the masker's state unchanged.
 
 Notes: **weak oracle.** The one named test uses only `fullByteVocab`, one token per byte, where forcing a token and
 forcing a byte are the same thing. So a `ForcedBytesRun` that calls `ForcedRun` and maps each token id to its bytes
