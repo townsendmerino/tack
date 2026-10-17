@@ -198,6 +198,15 @@ type sseEvent struct {
 	} `json:"delta"`
 	Usage struct {
 		OutputTokens int `json:"output_tokens"`
+		// InputTokens and CacheReadInputTokens are pointers so a server that doesn't report them (pre-G3 goinfer:
+		// message_delta's usage carries only output_tokens) leaves message_start's whole-prompt InputTokens and a
+		// nil Reused untouched, rather than zeroing them. goinfer's G3 (tack's brief,
+		// docs/briefs/goinfer-g3-messages-cached-tokens.md) reports both here on every message_delta: input_tokens
+		// is now only the tokens this request prefilled, cache_read_input_tokens the leading ones a prior turn's
+		// KV held, and the whole prompt is their sum — message_delta's usage replaces message_start's (how the
+		// Anthropic SDK accumulates it), so this is the one place that carries the split.
+		InputTokens          *int `json:"input_tokens"`
+		CacheReadInputTokens *int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
 	Error struct {
 		Type    string `json:"type"`
@@ -233,6 +242,9 @@ func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, 
 		}
 		switch ev.Type {
 		case "message_start":
+			// Pre-reuse-decided: goinfer sends this before the prefill decides how much of the prefix it reused, so
+			// it is the whole prompt and carries no cache_read_input_tokens. message_delta's usage (above) replaces
+			// this once the reuse is known, on a server new enough to report it.
 			out.Usage.InputTokens = ev.Message.Usage.InputTokens
 		case "content_block_start":
 			b := ev.ContentBlock
@@ -272,6 +284,12 @@ func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, 
 		case "message_delta":
 			out.StopReason = ev.Delta.StopReason
 			out.Usage.OutputTokens = ev.Usage.OutputTokens
+			if ev.Usage.InputTokens != nil {
+				out.Usage.InputTokens = *ev.Usage.InputTokens
+			}
+			if ev.Usage.CacheReadInputTokens != nil {
+				out.Usage.Reused = ev.Usage.CacheReadInputTokens
+			}
 		case "message_stop":
 			finished = true
 		case "error":

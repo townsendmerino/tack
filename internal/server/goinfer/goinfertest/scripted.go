@@ -12,8 +12,21 @@ import (
 
 // SSE builds a /v1/messages stream in goinfer's framing (internal/serveapp/anthropic_stream.go, as recorded in
 // internal/server/goinfer/testdata/tools.json): one block per ModelBlock, a tool call's input in one
-// input_json_delta, then message_delta with stop and message_stop.
+// input_json_delta, then message_delta with stop and message_stop. message_delta's usage is output_tokens only, the
+// pre-G3 shape (docs/briefs/goinfer-g3-messages-cached-tokens.md) most cassettes were recorded against; use
+// SSEWithReuse for a stream reporting goinfer's G3 prefilled/reused split.
 func SSE(stop string, blocks ...proto.ModelBlock) string {
+	return sse(stop, map[string]any{"output_tokens": 20}, blocks...)
+}
+
+// SSEWithReuse is SSE, but message_delta's usage carries goinfer's G3 split
+// (docs/briefs/goinfer-g3-messages-cached-tokens.md): input is the tokens this request prefilled, reused the leading
+// ones a prior turn's KV held, so input+reused is the whole prompt.
+func SSEWithReuse(stop string, input, reused, output int, blocks ...proto.ModelBlock) string {
+	return sse(stop, map[string]any{"input_tokens": input, "cache_read_input_tokens": reused, "output_tokens": output}, blocks...)
+}
+
+func sse(stop string, deltaUsage map[string]any, blocks ...proto.ModelBlock) string {
 	var b strings.Builder
 	ev := func(name string, v any) {
 		j, _ := json.Marshal(v)
@@ -38,7 +51,7 @@ func SSE(stop string, blocks ...proto.ModelBlock) string {
 		}
 		ev("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
-	ev("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": 20}})
+	ev("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": deltaUsage})
 	ev("message_stop", map[string]any{"type": "message_stop"})
 	return b.String()
 }

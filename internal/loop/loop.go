@@ -167,7 +167,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if err != nil {
 			return proto.StopError, err
 		}
-		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens, Reused: resp.Usage.Reused,
+		// Prompt is the whole prompt. Under goinfer's G3 (docs/briefs/goinfer-g3-messages-cached-tokens.md),
+		// resp.Usage.InputTokens is only the tokens this request prefilled; the reused leading tokens are
+		// separate, in Reused. A pre-G3 server never sets Reused, so reused is 0 and Prompt is InputTokens alone,
+		// unchanged from before G3.
+		reused := 0
+		if resp.Usage.Reused != nil {
+			reused = *resp.Usage.Reused
+		}
+		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused,
 			Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err

@@ -153,6 +153,30 @@ func TestTurnWithTools(t *testing.T) {
 	h.checkRebuild(t)
 }
 
+// TestUsagePromptIsPrefilledPlusReused is the ledger-level check for goinfer's G3 split
+// (docs/briefs/goinfer-g3-messages-cached-tokens.md): once the goinfer client reports InputTokens as the prefilled
+// share alone, the recorded Usage.Prompt must still be the whole prompt (prefilled + reused), since that is what
+// the context ledger and the P3 exit rule's reuse share both need it to mean.
+func TestUsagePromptIsPrefilledPlusReused(t *testing.T) {
+	h := newHarness(t, Budget{},
+		goinfertest.Reply{Body: goinfertest.SSEWithReuse("end_turn", 35, 59, 16, proto.ModelBlock{Type: "text", Text: "hi"})})
+	stop, err := h.sess.Turn(context.Background(), "hello")
+	if err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("stop %q, %v", stop, err)
+	}
+	us := h.payloads(proto.EvUsage)
+	if len(us) != 1 {
+		t.Fatalf("usage events = %d, want 1", len(us))
+	}
+	u := us[0].(proto.Usage)
+	if u.Prompt != 94 {
+		t.Errorf("Prompt = %d, want 94 (35 prefilled + 59 reused)", u.Prompt)
+	}
+	if u.Reused == nil || *u.Reused != 59 {
+		t.Fatalf("Reused = %v, want a pointer to 59", u.Reused)
+	}
+}
+
 func TestToolCallBudget(t *testing.T) {
 	h := newHarness(t, Budget{MaxRequests: 8, MaxToolCalls: 1, MaxWall: time.Minute, MaxTokens: 256},
 		goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`, "t2", "glob", `{"pattern":"*.md"}`))
