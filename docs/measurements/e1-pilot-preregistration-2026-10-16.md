@@ -116,6 +116,12 @@ jobs alike.
 - **The goinfer build.** goinfer main `d5dd01ef`, which holds the tool-call fix (`8abd8057`): a tool list with
   schemas the call grammar cannot fully hold no longer drops the constraint for the whole list. The binary's sha256
   goes in each job's record.
+  - **Timings from this build form their own series** (goinfer, 2026-10-17). `d5dd01ef` predates goinfer's masker
+    prefilter. On nobara it adds about 940 ms of decode to each 19-tool call: for the 7B and a 121-token call,
+    66.3 → 43.8 tok/s, constraint on vs off. On `e0b1a966` / main `31418112` and later the cost is about 207 ms.
+  - So the re-run's timings (turn latency, task wall time, tok/s) cannot be compared with any later build's.
+  - Its pass count is unaffected. The mask, and so every greedy output, is identical with and without the prefilter,
+    by construction and by test (goinfer's `TestMasker_firstBytePrefilterExact`).
 
 ## Tasks
 
