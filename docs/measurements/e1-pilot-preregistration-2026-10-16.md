@@ -75,6 +75,30 @@ the other task with the note, was removed by the stub check. The set is fixed by
 added after a run does not move a task out of it. Task 11 is the stub check's replacement for task 8, and the owner
 approved its statement as drafted.
 
+**Correction, 2026-10-17, after job 1** (not a rule change). The `left_repo` check now matches the registered
+definition, "any tool call that reads or writes a path outside the task repository" ("Recorded per run").
+
+- **What was wrong.** It scanned every string in opencode's events, tool outputs included. In job 1 it flagged task
+  5's runs for `/v1/chat/completions`, `/tmp/a` and `/admin/models`. Those are names in the contents of files read
+  from inside the repository, not paths any call touched.
+- **The fix.** The check now looks only at a call's arguments (tack `e778e26`,
+  `internal/eval/pilot/run.go:SummarizeEvents`).
+- **Effect on job 1.** It was found after job 1. Job 1's ten runs were re-scanned with the corrected check: no flags,
+  and the same tool counts.
+
+**Re-run plan, 2026-10-17** (owner).
+
+- **The first run.** Job 1 ran on 2026-10-17 from 08:06 to 08:17, by day, on goinfer `0e598d3f` and tack `95ed38c`
+  (`~/tack-runs/e1/pilot-2026-10-17-job1` on nobara).
+- **Why it is re-run.** In 3 of its 10 runs the model's tool call came back as text, so the run ended on goinfer's
+  tool-call parsing rather than on the agent
+  (`~/tack-runs/e1/NOTE-for-goinfer-2026-10-17-tool-calls-as-text.md`). Job 2 was stopped about 30 s after it started
+  and has no result.
+- **The re-run.** Both jobs, tasks 1–5 and 6–11, run again on one goinfer build, the one with the tool-call fix, and
+  one tack revision.
+- **The first run's place.** This morning's job 1 stays as a recorded first run on `0e598d3f`, superseded by the
+  re-run. It is reported alongside the re-run as such, and is never pooled into its results.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
