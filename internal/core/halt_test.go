@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
@@ -83,4 +84,37 @@ func TestHalt(t *testing.T) {
 	<-inRequest
 	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByFile})
 	f.waitTurnEnd(t)
+}
+
+// TestHaltRecordsARefusedSweep: Halt sweeps each session's own target, and a refused sweep is recorded in that
+// session's log as daemon.halt_refused with the processes it listed. The sweep here is a stand-in; nothing is signalled.
+func TestHaltRecordsARefusedSweep(t *testing.T) {
+	f := newFixture(t)
+	sid := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	var swept []sandbox.Target
+	f.core.opt.Sweep = func(tg sandbox.Target, dryRun bool) (sandbox.Report, error) {
+		swept = append(swept, tg)
+		if dryRun {
+			t.Error("Halt asked for a dry run")
+		}
+		return sandbox.Report{Older: []sandbox.Proc{{PID: 4242, Name: "icdd", Start: old}}, Refused: "1 process(es) carry mark …"}, nil
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	if len(swept) != 1 || !strings.HasPrefix(swept[0].Mark, "s-") || swept[0].Since.IsZero() || time.Since(swept[0].Since) > time.Minute {
+		t.Fatalf("swept %+v; want the session's own target", swept)
+	}
+	select {
+	case ev := <-f.events:
+		v, _ := ev.Decode()
+		r, ok := v.(proto.DaemonHaltRefused)
+		if !ok || len(r.Processes) != 1 || r.Processes[0].PID != 4242 || !r.Processes[0].Start.Equal(old) || r.Reason == "" {
+			t.Fatalf("event %s %+v", ev.Type, v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no daemon.halt_refused")
+	}
 }

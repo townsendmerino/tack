@@ -8,12 +8,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 )
 
 // FileName is the HALT file's name in the state directory.
@@ -109,4 +112,63 @@ func (h *Halted) Error() string {
 		return "tack was halted: " + h.Reason
 	}
 	return "tack was halted"
+}
+
+// The sweep registry: each live session's sweep target, one file per session under stateDir/sweep, so that tack halt
+// can sweep a session's sandbox even when the process hosting the session is gone. Sandboxed commands cannot write
+// tack's state directory (internal/sandbox, section tack), so they cannot add or change a target.
+const sweepDir = "sweep"
+
+// Register records session's sweep target.
+func Register(stateDir, session string, t sandbox.Target) error {
+	dir := filepath.Join(stateDir, sweepDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, session+".json.tmp")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, session+".json"))
+}
+
+// Unregister removes session's target.
+func Unregister(stateDir, session string) error {
+	err := os.Remove(filepath.Join(stateDir, sweepDir, session+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// Targets returns every registered target, by session. A file it cannot read is an error, not skipped.
+func Targets(stateDir string) (map[string]sandbox.Target, error) {
+	ents, err := os.ReadDir(filepath.Join(stateDir, sweepDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]sandbox.Target{}
+	for _, e := range ents {
+		session, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(stateDir, sweepDir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var t sandbox.Target
+		if err := json.Unmarshal(b, &t); err != nil || t.Mark == "" || t.Since.IsZero() {
+			return nil, fmt.Errorf("halt: %s is not a sweep target", e.Name())
+		}
+		out[session] = t
+	}
+	return out, nil
 }

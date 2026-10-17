@@ -14,8 +14,6 @@ package shell
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +29,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/perms"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
@@ -81,13 +80,16 @@ type Session struct {
 	Args []string
 	// Engine supplies the analysis, the rules and whether commands run inside the sandbox.
 	Engine *perms.Engine
-	// Wrap puts the child inside the sandbox under mark, a name unique to the command (internal/sandbox.Wrap with
-	// Config.Mark, on macOS). Sweep kills every process still inside the sandbox with that mark (internal/sandbox.Sweep):
-	// when Run kills a command it sweeps too, so a process that left the process group (setsid, setpgid) dies with
-	// it. Env adds what the sandbox expects: tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true
-	// exactly when Wrap is set, and Wrap needs Sweep.
-	Wrap  func(cmd *exec.Cmd, mark string) *exec.Cmd
-	Sweep func(mark string) (int, error)
+	// Wrap puts the child inside the sandbox with the session's mark, group, and the command's own, mark
+	// (internal/sandbox.Wrap with Config.Group and Config.Mark, on macOS). Group is the session's sweep target, made
+	// with sandbox.NewMark when the session begins; halt sweeps it. Sweep kills what is still inside the sandbox for a
+	// target (internal/sandbox.Sweep): when Run kills a command it sweeps the command's mark from when the command
+	// started, so a process that left the process group (setsid, setpgid) dies with it. Env adds what the sandbox
+	// expects: tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true exactly when Wrap is set, and
+	// Wrap needs Sweep and Group.
+	Wrap  func(cmd *exec.Cmd, group, mark string) *exec.Cmd
+	Sweep func(sandbox.Target) (sandbox.Report, error)
+	Group sandbox.Target
 	Env   []string
 
 	mu    sync.Mutex
@@ -103,8 +105,8 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 		return Result{}, fmt.Errorf("shell: the engine says sandboxed=%v, but the shell %s sandbox", s.Engine.Sandboxed,
 			map[bool]string{true: "has a", false: "has no"}[s.Wrap != nil])
 	}
-	if s.Wrap != nil && s.Sweep == nil {
-		return Result{}, errors.New("shell: a sandboxed shell needs Sweep, or a cancel would miss detached processes")
+	if s.Wrap != nil && (s.Sweep == nil || s.Group.Mark == "" || s.Group.Since.IsZero()) {
+		return Result{}, errors.New("shell: a sandboxed shell needs Sweep and a Group, or a cancel or halt would miss detached processes")
 	}
 	if s.state.Dir == "" {
 		s.state.Dir = s.Engine.Root
@@ -143,9 +145,9 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	cmd.ExtraFiles = []*os.File{wr}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(), s.Env...)
-	mark := newMark()
+	target := sandbox.Target{Mark: sandbox.NewMark("c"), Since: time.Now()} // before the child exists
 	if s.Wrap != nil {
-		cmd = s.Wrap(cmd, mark)
+		cmd = s.Wrap(cmd, s.Group.Mark, target.Mark)
 	}
 	if err := cmd.Start(); err != nil {
 		wr.Close()
@@ -162,10 +164,13 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 			if s.Sweep != nil {
 				// A detached process may hold the reply pipe or the output open, so this sweep is also what lets the
 				// reads below finish.
-				if n, err := s.Sweep(mark); err != nil {
+				switch r, err := s.Sweep(target); {
+				case err != nil:
 					note = "; killing what it left running failed: " + err.Error()
-				} else if n > 0 {
-					note = fmt.Sprintf("; %d process(es) it had detached from its process group were killed too", n)
+				case r.Refused != "":
+					note = "; killing what it left running was refused: " + r.Refused
+				case r.Killed > 0:
+					note = fmt.Sprintf("; %d process(es) it had detached from its process group were killed too", r.Killed)
 				}
 			}
 			killed <- note
@@ -424,11 +429,4 @@ func approvedBy(ctx context.Context) string {
 		return by
 	}
 	return perms.ByRule
-}
-
-// newMark names one command's sandbox: "run-" and 16 random hex digits.
-func newMark() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24)
-	return "run-" + hex.EncodeToString(b)
 }

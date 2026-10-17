@@ -3,10 +3,12 @@ package halt
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 )
 
 func TestHaltCheckResume(t *testing.T) {
@@ -70,5 +72,32 @@ func TestWatch(t *testing.T) {
 	case got := <-events:
 		t.Fatalf("a standing halt was reported again: %q", got)
 	default:
+	}
+}
+
+func TestSweepRegistry(t *testing.T) {
+	dir := t.TempDir()
+	if ts, err := Targets(dir); err != nil || len(ts) != 0 {
+		t.Fatalf("empty: %v %v", ts, err)
+	}
+	a := sandbox.Target{Mark: "s-aaaa", Since: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	if err := Register(dir, "s_1", a); err != nil {
+		t.Fatal(err)
+	}
+	Register(dir, "s_2", sandbox.Target{Mark: "s-bbbb", Since: a.Since})
+	ts, err := Targets(dir)
+	if err != nil || len(ts) != 2 || !ts["s_1"].Since.Equal(a.Since) || ts["s_1"].Mark != a.Mark {
+		t.Fatalf("targets %v %v", ts, err)
+	}
+	if err := Unregister(dir, "s_2"); err != nil {
+		t.Fatal(err)
+	}
+	if ts, _ := Targets(dir); len(ts) != 1 {
+		t.Fatalf("after unregister: %v", ts)
+	}
+	// A target without a start time would sweep without the start-time condition: refused.
+	os.WriteFile(filepath.Join(dir, sweepDir, "s_3.json"), []byte(`{"mark":"s-cccc"}`), 0o600)
+	if _, err := Targets(dir); err == nil {
+		t.Fatal("a target with no start time was accepted")
 	}
 }

@@ -560,11 +560,20 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **Halt**, after goinfer's kill-switch design (`docs/tasks/task-halt-2026-09.md`): `tack halt` (in the app, Stop All in
   the menu bar) cancels every running turn and tool, cancels generation on the model server, and refuses new turns until
   `tack resume`; creating the `HALT` file does the same from a script. A command cannot leave its sandbox, so halt
-  reaches everything commands started: every profile carries a mark (a `mach-lookup` name only tack's profiles allow),
-  and halt kills every process whose sandbox carries it, asked of the kernel with `sandbox_check`, whatever the process
-  did to its session, process group, parent or environment. Cancelling one command does the same with that command's
-  own mark. A process that leaves through `posix_spawn` with `POSIX_SPAWN_SETSID` is caught the same way; denying
-  `setsid` in the profile would not catch it. Every permission decision is in the event log.
+  reaches everything commands started, whatever a process did to its session, process group, parent or environment.
+  A sweep kills a process only when two independent conditions hold:
+  - its sandbox carries the session's mark, a random `mach-lookup` name only that session's profiles allow, which the
+    kernel reports through `sandbox_check`;
+  - it started after the session did.
+
+  Boot-time services and anything else already running can never match. A sweep kills nothing, records
+  `daemon.halt_refused` with the processes it found, and says so when either:
+  - a process carrying the mark started before its session, which means the mark check is wrong;
+  - it selects more than a small number of processes (32).
+
+  `tack halt -dry-run` lists what each session's sweep would kill. Cancelling one command sweeps that command's own
+  mark from when it started. A process that leaves through `posix_spawn` with `POSIX_SPAWN_SETSID` is caught the same
+  way; denying `setsid` in the profile would not catch it. Every permission decision is in the event log.
 
 ### 6.7 Instructions and extensions
 
@@ -1370,6 +1379,7 @@ App Store.
 | `cache.broken` | yes | cause (tools, system prompt, thinking, image, model, eviction, compaction, residency), tokens re-prefilled |
 | `repo.trusted` | yes | workspace; what was trusted (hooks, MCP servers, config) |
 | `daemon.halted`, `daemon.resumed` | yes, in every running session's log | which client, and whether by command or `HALT` file |
+| `daemon.halt_refused` | yes, in the session's log | why the sweep killed nothing, and the processes it listed |
 
 ---
 

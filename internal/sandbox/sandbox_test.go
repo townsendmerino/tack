@@ -234,65 +234,81 @@ func gone(pid int) bool {
 
 // TestDetachedProcessesAreSwept is halt's escape test (DESIGN §6.6: "halt reaches everything they started"). A command
 // can call setsid() or setpgid() and leave the process group the shell kills on cancel. It gets out of a group kill with
-// no sandbox and inside the profile alike; Sweep catches it by its sandbox's mark; with section mark removed, Sweep
-// cannot find it and it gets out again.
+// no sandbox and inside the profile alike. A sweep of the command's mark, or of its session's, catches it; with section
+// mark removed, the sweep cannot find it and it gets out again.
 func TestDetachedProcessesAreSwept(t *testing.T) {
 	f := setup(t)
-	cfg := f.cfg
-	cfg.Mark, cfg.Group = fmt.Sprintf("run-test-%d", os.Getpid()), fmt.Sprintf("group-test-%d", os.Getpid())
-	noMark := cfg
-	noMark.Without = []string{SecMark}
+	session := Target{Mark: NewMark("s"), Since: time.Now()}
 	for _, how := range []string{"setsid", "setpgid"} {
 		t.Run(how, func(t *testing.T) {
 			f.detach(t, nil, how) // with no sandbox, the group kill misses it: the escape this test watches for
 
+			cmd := Target{Mark: NewMark("c"), Since: time.Now()}
+			cfg := f.cfg
+			cfg.Group, cfg.Mark = session.Mark, cmd.Mark
 			pid := f.detach(t, &cfg, how)
-			if n, err := Sweep(cfg.Mark); err != nil || n != 1 {
-				t.Errorf("Sweep(%q) killed %d, err %v; want the one detached process", cfg.Mark, n, err)
+			if r, err := Sweep(cmd, true); err != nil || r.Killed != 0 || len(r.Kill) != 1 || r.Kill[0].PID != pid || !alive(pid) {
+				t.Errorf("a dry run must list the process and kill nothing: %+v, err %v, alive %v", r, err, alive(pid))
 			}
-			if !gone(pid) {
-				t.Errorf("the detached process %d survived the sweep", pid)
+			if r, err := Sweep(cmd, false); err != nil || r.Killed != 1 || !gone(pid) {
+				t.Errorf("the command's sweep: %+v, err %v; want the one detached process killed", r, err)
 			}
 
+			noMark := cfg
+			noMark.Without = []string{SecMark}
 			pid = f.detach(t, &noMark, how)
-			if n, err := Sweep(cfg.Mark); err != nil || n != 0 {
-				t.Errorf("with section mark removed, Sweep killed %d, err %v", n, err)
+			if r, err := Sweep(cmd, false); err != nil || len(r.Kill) != 0 || r.Killed != 0 {
+				t.Errorf("with section mark removed, the sweep selected %+v, err %v", r, err)
 			}
 			if !alive(pid) {
 				t.Errorf("with section mark removed the process %d was still found, so the section is not what marks it", pid)
 			}
 
 			pid = f.detach(t, &cfg, how)
-			if n, err := Sweep(cfg.Group); err != nil || n != 1 || !gone(pid) {
-				t.Errorf("Sweep of the group, as tack halt sweeps MarkAll: killed %d, err %v", n, err)
+			if r, err := Sweep(session, false); err != nil || r.Killed != 1 || !gone(pid) {
+				t.Errorf("the session's sweep, as tack halt runs it: %+v, err %v", r, err)
 			}
 		})
 	}
 }
 
-// TestSweepTouchesNothingElse: a sweep kills only its own mark's processes, never an unsandboxed process or one in a
-// sandbox with another mark; the group's sweep (tack halt's, with a test group) never reaches an unsandboxed one.
+// TestSweepRefusesAProcessOlderThanItsTarget: a process carrying the mark that started before the target's start time
+// means something is wrong, so the sweep kills nothing and lists it. The process is checked alive, and the sweep sends
+// no signal.
+func TestSweepRefusesAProcessOlderThanItsTarget(t *testing.T) {
+	f := setup(t)
+	cfg := f.cfg
+	cfg.Group, cfg.Mark = NewMark("s"), NewMark("c")
+	pid := f.detach(t, &cfg, "setsid")
+	time.Sleep(10 * time.Millisecond)
+	r, err := Sweep(Target{Mark: cfg.Mark, Since: time.Now()}, false)
+	if err != nil || r.Refused == "" || r.Killed != 0 || len(r.Older) != 1 || r.Older[0].PID != pid {
+		t.Fatalf("sweep %+v, err %v", r, err)
+	}
+	if !alive(pid) {
+		t.Fatal("a refused sweep killed the process")
+	}
+}
+
+// TestSweepTouchesNothingElse: a sweep kills only its own target's processes: never an unsandboxed process, nor one in
+// another session's sandbox.
 func TestSweepTouchesNothingElse(t *testing.T) {
 	f := setup(t)
-	mine, other := f.cfg, f.cfg
-	group := fmt.Sprintf("group-test-%d", os.Getpid())
-	mine.Mark, other.Mark = fmt.Sprintf("run-mine-%d", os.Getpid()), fmt.Sprintf("run-other-%d", os.Getpid())
-	mine.Group, other.Group = group, group
+	mine, other := Target{Mark: NewMark("s"), Since: time.Now()}, Target{Mark: NewMark("s"), Since: time.Now()}
+	otherCfg := f.cfg
+	otherCfg.Group, otherCfg.Mark = other.Mark, NewMark("c")
 	plain := f.detach(t, nil, "setsid")
-	neighbour := f.detach(t, &other, "setsid")
-	if n, err := Sweep(mine.Mark); err != nil || n != 0 {
-		t.Fatalf("Sweep(%q) with none of its own running killed %d, err %v", mine.Mark, n, err)
+	neighbour := f.detach(t, &otherCfg, "setsid")
+	if r, err := Sweep(mine, false); err != nil || len(r.Kill) != 0 || r.Killed != 0 {
+		t.Fatalf("a session with none of its own running selected %+v, err %v", r, err)
 	}
 	if !alive(plain) || !alive(neighbour) {
-		t.Fatalf("a sweep killed what was not its own: unsandboxed alive %v, other mark alive %v", alive(plain), alive(neighbour))
+		t.Fatalf("a sweep killed what was not its own: unsandboxed alive %v, other session alive %v", alive(plain), alive(neighbour))
 	}
-	if _, err := Sweep(group); err != nil {
-		t.Fatal(err)
+	if r, err := Sweep(other, false); err != nil || r.Killed != 1 || !gone(neighbour) {
+		t.Fatalf("the other session's sweep: %+v, err %v", r, err)
 	}
 	if !alive(plain) {
-		t.Fatal("the group's sweep killed an unsandboxed process")
-	}
-	if !gone(neighbour) {
-		t.Fatal("the group's sweep missed a process inside its sandbox")
+		t.Fatal("a session's sweep killed an unsandboxed process")
 	}
 }

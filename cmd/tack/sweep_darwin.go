@@ -4,5 +4,7 @@ package main
 
 import "github.com/townsendmerino/tack/internal/sandbox"
 
-// sweepAll kills every process inside any of tack's sandboxes.
-func sweepAll() (int, error) { return sandbox.Sweep(sandbox.MarkAll) }
+// sweepTarget sweeps one session's sandbox.
+func sweepTarget(t sandbox.Target, dryRun bool) (sandbox.Report, error) {
+	return sandbox.Sweep(t, dryRun)
+}

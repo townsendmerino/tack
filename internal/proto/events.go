@@ -39,6 +39,7 @@ const (
 	EvTurnEnd             EventType = "turn.end"
 	EvError               EventType = "error"
 	EvDaemonHalted        EventType = "daemon.halted"
+	EvDaemonHaltRefused   EventType = "daemon.halt_refused"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -68,6 +69,7 @@ var EventTypes = map[EventType]EventSpec{
 	EvTurnEnd:             {reflect.TypeFor[TurnEnd](), true, true},
 	EvError:               {reflect.TypeFor[ErrorEvent](), true, false},
 	EvDaemonHalted:        {reflect.TypeFor[DaemonHalted](), true, false},
+	EvDaemonHaltRefused:   {reflect.TypeFor[DaemonHaltRefused](), true, false},
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -268,4 +270,20 @@ type DaemonHalted struct {
 	Trigger string `json:"trigger"`          // HaltByCommand or HaltByFile
 	By      string `json:"by,omitempty"`     // the client that halted, for a command
 	Reason  string `json:"reason,omitempty"` // what the owner gave, if anything
+}
+
+// DaemonHaltRefused is recorded in a session's log when a halt's sweep of the session's sandbox kills nothing because
+// its selection looked wrong (DESIGN §6.6): a process carrying the session's mark started before the session did, or
+// the selection was larger than one sweep may kill. Processes lists the suspect processes in the first case and the
+// selection in the second.
+type DaemonHaltRefused struct {
+	Reason    string        `json:"reason"`
+	Processes []HaltProcess `json:"processes"`
+}
+
+// HaltProcess is one process a sweep considered.
+type HaltProcess struct {
+	PID   int       `json:"pid"`
+	Name  string    `json:"name"`
+	Start time.Time `json:"start"`
 }

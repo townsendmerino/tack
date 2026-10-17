@@ -136,11 +136,23 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
   Every running turn is cancelled, records `daemon.halted` and ends with stop reason `halted`; new prompts get
   `CodeHalted` until `tack resume`. `tack run` exits 5 when halted.
 - **Finding what a command detached.** Every sandbox profile allows `mach-lookup` of two names under `dev.tack.mark.`
-  and denies the rest of that prefix: `dev.tack.mark.all` in every profile, and one name per command. `sandbox_check`
-  (libsystem, reached through purego) asks the kernel what a process's profile decides for a name. A process is tack's
-  when its profile allows the mark and denies a control name under the same prefix. That control check is what keeps a
-  sandbox that allows every lookup from matching. A cancelled command sweeps its own mark; `tack halt` sweeps
-  `dev.tack.mark.all`.
+  and denies the rest of that prefix: the session's mark and the command's, each random (`sandbox.NewMark`); nothing
+  is shared between sessions. `sandbox_check` (libsystem, reached through purego) asks the kernel what a process's
+  profile decides for a name. A process carries a mark when its profile allows the mark and denies a control name
+  under the same prefix; the control check keeps a sandbox that allows every lookup from matching.
+- **A sweep cannot kill outside its session, even with a bug in the mark check** (owner, 2026-10-17). `sandbox.Plan`
+  selects a process only if it carries the mark **and** started at or after the target's start: the session's start
+  for a halt, the command's for a cancel. It refuses, killing nothing, when a process carrying the mark started
+  earlier, or when more than `sandbox.MaxSweep` (32) are selected. A refusal is recorded as `daemon.halt_refused` with
+  the list (`core.Halt`) and printed by `tack halt`. `tack halt -dry-run` lists each session's selection and changes
+  nothing.
+  - Sessions register their targets under the state directory's `sweep/` (`halt.Register`), so that `tack halt` can
+    sweep a session whose host has gone. Sandboxed commands cannot write there.
+  - **Tests assert on lists and never signal** (the break-it-first runs too):
+    - `TestStartTimeAloneKeepsPreexistingProcessesOut` runs `Plan` over the real process table with the mark check
+      replaced by "everything carries it". It selects none of the running processes, and the plan is refused.
+    - `TestPlanSanityLimit` and `TestPlanRefusesAMarkedOlderProcess` cover the two refusals.
+    - Each went red when its condition was removed from `Plan`.
   - `sandbox_check` is variadic, and on darwin/arm64 a variadic argument goes on the stack: the call pads five
     registers so purego places the name in the first stack slot. Other architectures are refused.
   - **Measured on macOS 26 (M1 Pro), 2026-10-17:**
@@ -151,6 +163,8 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
     - `TestDetachedProcessesAreSwept`: a process that calls `setsid()` or `setpgid()`, clears its environment and
       closes its files survives a process-group kill with no sandbox and inside the profile alike. The sweep kills it;
       with section `mark` removed, the sweep cannot find it.
-    - `TestSweepTouchesNothingElse`: a sweep spares unsandboxed processes and other marks.
+    - `TestSweepRefusesAProcessOlderThanItsTarget`: a real marked process older than the target is listed and left
+      running.
+    - `TestSweepTouchesNothingElse`: a sweep spares unsandboxed processes and other sessions.
     - `TestCancelReachesDetachedProcesses`: the same escape through the real shell child.
 - **Open:** `daemon.resumed` waits for the daemon; until then no session is running to record it in.

@@ -145,6 +145,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			return kensearch.Open(ctx, root, kensearch.Options{Mode: k.Mode, ModelDir: k.ModelDir, Snapshot: true, Log: stderr})
 		}
 	}
+	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
 	c := core.New(ctx, opts)
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)

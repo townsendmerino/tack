@@ -28,8 +28,13 @@ func TestShellInsideTheSandbox(t *testing.T) {
 	cfg := sandbox.Config{Workspace: ws, Temp: tmp, GoCache: cache, Home: home}
 	e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
 	s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
-		Wrap:  func(c *exec.Cmd, mark string) *exec.Cmd { cfg := cfg; cfg.Mark = mark; return sandbox.Wrap(cfg, c) },
-		Sweep: sandbox.Sweep}
+		Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
+			cfg := cfg
+			cfg.Group, cfg.Mark = group, mark
+			return sandbox.Wrap(cfg, c)
+		},
+		Sweep: func(t sandbox.Target) (sandbox.Report, error) { return sandbox.Sweep(t, false) },
+		Group: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()}}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -69,12 +74,18 @@ func TestCancelReachesDetachedProcesses(t *testing.T) {
 	cfg := sandbox.Config{Workspace: ws, Temp: tmp, GoCache: cache, Home: home}
 	detach := `/usr/bin/perl -MPOSIX -e 'exit if fork; POSIX::setsid() or die "setsid: $!"; open(my $p, ">", $ARGV[0]) or die; ` +
 		`print $p $$; close $p; POSIX::close($_) for 0..9; exec "/usr/bin/env", "-i", "/bin/sleep", "300"' detached.pid; sleep 60`
-	run := func(sweep func(string) (int, error)) (Result, int) {
+	sweep := func(t sandbox.Target) (sandbox.Report, error) { return sandbox.Sweep(t, false) }
+	noSweep := func(sandbox.Target) (sandbox.Report, error) { return sandbox.Report{}, nil }
+	run := func(sweep func(sandbox.Target) (sandbox.Report, error)) (Result, int) {
 		os.Remove(filepath.Join(ws, "detached.pid"))
 		e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
 		s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
-			Wrap:  func(c *exec.Cmd, mark string) *exec.Cmd { cfg := cfg; cfg.Mark = mark; return sandbox.Wrap(cfg, c) },
-			Sweep: sweep}
+			Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
+				cfg := cfg
+				cfg.Group, cfg.Mark = group, mark
+				return sandbox.Wrap(cfg, c)
+			},
+			Sweep: sweep, Group: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()}}
 		r, err := s.Run(context.Background(), detach, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -101,11 +112,11 @@ func TestCancelReachesDetachedProcesses(t *testing.T) {
 	}
 
 	// A sweep that kills nothing leaves only the process-group kill: the detached process gets out.
-	r, pid := run(func(string) (int, error) { return 0, nil })
+	r, pid := run(noSweep)
 	if r.Stopped == "" || gone(pid) {
 		t.Fatalf("with the process-group kill alone the detached process did not get out, so this test cannot see it: %+v", r)
 	}
-	r, pid = run(sandbox.Sweep)
+	r, pid = run(sweep)
 	if !gone(pid) {
 		t.Fatalf("the detached process %d outlived the cancelled command: %+v", pid, r)
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
 )
@@ -38,6 +39,11 @@ type Options struct {
 	// io.Closer.
 	OpenSearcher func(ctx context.Context, root string) (tools.Searcher, error)
 	Budget       loop.Budget
+	// Each session gets its own sweep target, a random sandbox mark and its start time. Halt sweeps every session's
+	// target with Sweep (internal/sandbox.Sweep on macOS; nil where commands cannot run). HaltDir, when set, is the
+	// state directory where the targets are registered for tack halt (internal/halt.Register).
+	Sweep   func(t sandbox.Target, dryRun bool) (sandbox.Report, error)
+	HaltDir string
 }
 
 // Core hosts sessions. It is safe for concurrent use by any number of connections.
@@ -60,6 +66,7 @@ type session struct {
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
 	subs    map[*subscriber]bool
+	target  sandbox.Target // what Halt sweeps for this session
 }
 
 // subscriber is one connection's subscription to one session. last is the highest persisted seq it has been sent, so
@@ -86,6 +93,11 @@ func (c *Core) Close() error {
 	for _, s := range c.searchers {
 		if cl, ok := s.(io.Closer); ok {
 			errs = append(errs, cl.Close())
+		}
+	}
+	if c.opt.HaltDir != "" {
+		for id := range c.sessions {
+			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
 	return errors.Join(errs...)
@@ -260,7 +272,12 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
-	s := &session{id: id, log: log, subs: map[*subscriber]bool{}}
+	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()}}
+	if c.opt.HaltDir != "" {
+		if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {
+			return "", err
+		}
+	}
 	s.loop = loop.New(loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Emit: s.emit})
 	c.mu.Lock()
@@ -391,17 +408,43 @@ func (c *Core) searcher(root string) (tools.Searcher, error) {
 }
 
 // Halt cancels every running turn, each recording daemon.halted, and refuses new turns until Resume (DESIGN §6.6).
-// Killing what the turns' commands left running is the shell's on cancel, and `tack halt`'s sweep beyond that.
+// Then it sweeps each session's sandbox for what its commands left running. A sweep that refuses kills nothing, and
+// the session's log records daemon.halt_refused with the processes it listed.
 func (c *Core) Halt(h proto.DaemonHalted) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.halted = &h
+	ss := make([]*session, 0, len(c.sessions))
 	for _, s := range c.sessions {
+		ss = append(ss, s)
 		s.mu.Lock()
 		if s.cancel != nil {
 			s.cancel(&halt.Halted{DaemonHalted: h})
 		}
 		s.mu.Unlock()
+	}
+	c.mu.Unlock()
+	if c.opt.Sweep == nil {
+		return
+	}
+	for _, s := range ss {
+		r, err := c.opt.Sweep(s.target, false)
+		if err != nil {
+			r.Refused = "the sweep failed: " + err.Error()
+		}
+		if r.Refused == "" {
+			continue
+		}
+		listed := r.Older
+		if len(listed) == 0 {
+			listed = r.Kill
+		}
+		ev := proto.DaemonHaltRefused{Reason: r.Refused}
+		for _, p := range listed {
+			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
+		}
+		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
+			s.emit(e)
+		}
 	}
 }
 

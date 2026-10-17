@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/perms"
+	"github.com/townsendmerino/tack/internal/sandbox"
 )
 
 // With TACK_SHELL_CHILD=1 this test binary is `tack shell`.
@@ -40,16 +41,18 @@ func session(t *testing.T, sandboxed bool, rules ...string) *Session {
 	}
 	s := &Session{Exe: os.Args[0], Engine: e}
 	if sandboxed {
-		s.Wrap, s.Sweep = pretendSandbox, pretendSweep
+		s.Wrap, s.Sweep, s.Group = pretendSandbox, pretendSweep, pretendGroup
 	}
 	return s
 }
 
 // pretendSandbox stands in for the sandbox in tests of the run-time check; confinement itself is tested by
 // internal/sandbox's escape tests and TestShellInsideTheSandbox (build tag sandboxtest).
-func pretendSandbox(c *exec.Cmd, _ string) *exec.Cmd { return c }
+func pretendSandbox(c *exec.Cmd, _, _ string) *exec.Cmd { return c }
 
-func pretendSweep(string) (int, error) { return 0, nil }
+func pretendSweep(sandbox.Target) (sandbox.Report, error) { return sandbox.Report{}, nil }
+
+var pretendGroup = sandbox.Target{Mark: "s-test", Since: time.Unix(1, 0)}
 
 func runOK(t *testing.T, s *Session, cmd string) Result {
 	t.Helper()
@@ -196,13 +199,18 @@ func TestEngineAndSandboxMustAgree(t *testing.T) {
 		t.Fatalf("sandboxed engine, no sandbox: %v", err)
 	}
 	s = session(t, false)
-	s.Wrap, s.Sweep = pretendSandbox, pretendSweep
+	s.Wrap, s.Sweep, s.Group = pretendSandbox, pretendSweep, pretendGroup
 	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil {
 		t.Fatal("a sandbox the engine does not know about ran")
 	}
 	s = session(t, true)
 	s.Sweep = nil
-	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil || !strings.Contains(err.Error(), "needs Sweep") {
+	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil || !strings.Contains(err.Error(), "needs Sweep and a Group") {
 		t.Fatalf("a sandboxed shell with no sweep ran: %v", err)
+	}
+	s = session(t, true)
+	s.Group = sandbox.Target{}
+	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil || !strings.Contains(err.Error(), "a Group") {
+		t.Fatalf("a sandboxed shell with no session group ran: %v", err)
 	}
 }

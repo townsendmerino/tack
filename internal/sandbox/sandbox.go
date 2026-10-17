@@ -28,12 +28,11 @@ type Config struct {
 	GoCache   string   // tack's own GOCACHE, writable; the owner's caches are not
 	Home      string   // the owner's home, for the secrets deny-list and shell startup files
 	Tack      []string // tack's own socket, lock, token, state directory and config: neither read nor written
-	// Mark names this command's sandbox, so Find and Sweep reach every process it started (sweep_darwin.go). Empty
-	// gives the profile only the Group mark.
-	Mark string
-	// Group is the mark every command of one tack shares, swept by tack halt: MarkAll when empty. Tests set their own,
-	// so that their sweeps never reach the owner's real commands or another package's tests.
+	// Group is the session's mark and Mark the command's, each from NewMark, so that a halt's sweep of the session and
+	// a cancel's sweep of the command reach every process it started (sweep.go, sweep_darwin.go). Nothing is shared
+	// between sessions.
 	Group string
+	Mark  string
 	// Without drops named sections. Only the escape tests use it, to show each section is what catches its escape.
 	Without []string
 }
@@ -108,18 +107,13 @@ func Profile(c Config) string {
 		// only, not the directory.
 		`(allow file-write* (regex #"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db"))`,
 	)
-	group := c.Group
-	if group == "" {
-		group = MarkAll
+	marks := []string{fmt.Sprintf("(deny mach-lookup (global-name-prefix %q))", markPrefix)}
+	for _, m := range []string{c.Group, c.Mark} {
+		if m != "" {
+			marks = append(marks, fmt.Sprintf("(allow mach-lookup (global-name %q))", markPrefix+m))
+		}
 	}
-	marks := fmt.Sprintf("(global-name %q)", markPrefix+group)
-	if c.Mark != "" {
-		marks += fmt.Sprintf(" (global-name %q)", markPrefix+c.Mark)
-	}
-	sec(SecMark,
-		fmt.Sprintf("(deny mach-lookup (global-name-prefix %q))", markPrefix),
-		"(allow mach-lookup "+marks+")",
-	)
+	sec(SecMark, marks...)
 	sec(SecRead, "(allow file-read*)")
 	if skip[SecWrite] {
 		b.WriteString("(allow file-write*)\n") // the hole the write allowlist closes, for its escape tests

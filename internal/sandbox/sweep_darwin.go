@@ -17,14 +17,12 @@ import (
 
 // A process cannot leave its sandbox, so the sandbox is what identifies the processes a command started, whatever they
 // did to their session, process group, parent or environment. Every profile allows mach-lookup of two names under
-// markPrefix that every other name under it is denied: Config.Group (MarkAll unless a test sets its own), shared
-// by every command, and the command's own Config.Mark. sandbox_check asks the kernel what a process's profile decides for a name, so Find can tell tack's
-// processes from every other process, sandboxed or not.
+// markPrefix that every other name under it is denied: the session's Config.Group and the command's own Config.Mark,
+// both random. sandbox_check asks the kernel what a process's profile decides for a name, so Carries can tell a
+// session's processes from every other process, sandboxed or not. Plan adds the second, independent condition: the
+// process started after its session or command did.
 const (
 	markPrefix = "dev.tack.mark."
-	// MarkAll is the default Config.Group: Sweep(MarkAll) reaches every process tack's commands started (tack halt).
-	// Tests never sweep it.
-	MarkAll = "all"
 	// markControl is a name under the prefix that no profile allows. A profile that allows it (one without section
 	// mark, or one allowing all lookups) is not tack's.
 	markControl = "control"
@@ -76,51 +74,62 @@ func check(pid int, name string) (int32, error) {
 	return int32(r), nil
 }
 
-// Find returns the live processes of this user whose sandbox carries mark: a Config.Group (MarkAll for every process
-// inside any sandbox tack made), or a Config.Mark for one command's.
-func Find(mark string) ([]int, error) {
-	procs, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Getuid())
+// Processes returns this user's live processes, except this one.
+func Processes() ([]Proc, error) {
+	kps, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Getuid())
 	if err != nil {
 		return nil, err
 	}
-	var out []int
-	for _, p := range procs {
-		pid := int(p.Proc.P_pid)
-		if pid == os.Getpid() || p.Proc.P_stat == zombie {
+	var out []Proc
+	for _, kp := range kps {
+		pid := int(kp.Proc.P_pid)
+		if pid == os.Getpid() || kp.Proc.P_stat == zombie {
 			continue
 		}
-		if r, err := check(pid, ""); err != nil {
-			return nil, err
-		} else if r != 1 {
-			continue // not sandboxed, or gone
-		}
-		ours, _ := check(pid, markPrefix+mark)
-		control, _ := check(pid, markPrefix+markControl)
-		if ours == 0 && control == 1 {
-			out = append(out, pid)
-		}
+		st := kp.Proc.P_starttime
+		out = append(out, Proc{PID: pid, Name: unix.ByteSliceToString(kp.Proc.P_comm[:]),
+			Start: time.Unix(st.Sec, int64(st.Usec)*1000)})
 	}
 	return out, nil
 }
 
-// Sweep kills every process Find(mark) returns, and repeats until none is left, so a process forking as it is swept
-// is caught on a later pass. It returns how many distinct processes it killed.
-func Sweep(mark string) (int, error) {
+// Carries reports whether p is sandboxed and its profile allows mark and denies the control name.
+func Carries(p Proc, mark string) bool {
+	if r, err := check(p.PID, ""); err != nil || r != 1 {
+		return false // not sandboxed, gone, or the check is unavailable
+	}
+	ours, _ := check(p.PID, markPrefix+mark)
+	control, _ := check(p.PID, markPrefix+markControl)
+	return ours == 0 && control == 1
+}
+
+// Sweep kills what Plan selects for t, and repeats until nothing is left, so a process forking as it is swept is
+// caught on a later pass. A refused plan kills nothing: the report says why and lists the processes. With dryRun it
+// plans once and kills nothing.
+func Sweep(t Target, dryRun bool) (Report, error) {
+	if t.Mark == "" || t.Since.IsZero() {
+		return Report{}, errors.New("sandbox: a sweep needs a mark and a start time")
+	}
+	if _, err := check(os.Getpid(), ""); err != nil {
+		return Report{}, err
+	}
 	killed := map[int]bool{}
 	for range 100 {
-		pids, err := Find(mark)
+		procs, err := Processes()
 		if err != nil {
-			return len(killed), err
+			return Report{Killed: len(killed)}, err
 		}
-		if len(pids) == 0 {
-			return len(killed), nil
+		r := Plan(t, procs, Carries)
+		r.Killed = len(killed)
+		if r.Refused != "" || dryRun || len(r.Kill) == 0 {
+			return r, nil
 		}
-		for _, pid := range pids {
-			if unix.Kill(pid, unix.SIGKILL) == nil {
-				killed[pid] = true
+		for _, p := range r.Kill {
+			if unix.Kill(p.PID, unix.SIGKILL) == nil {
+				killed[p.PID] = true
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return len(killed), fmt.Errorf("sandbox: processes marked %q were still running after 100 sweeps", mark)
+	return Report{Killed: len(killed)}, fmt.Errorf("sandbox: processes marked %q were still running after 100 sweeps", t.Mark)
 }
