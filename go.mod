@@ -7,6 +7,7 @@ require (
 	github.com/townsendmerino/aikit v1.70.1
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
 	github.com/townsendmerino/ken v1.9.0
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (

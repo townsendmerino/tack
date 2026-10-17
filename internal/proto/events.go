@@ -24,18 +24,20 @@ type EventType string
 
 // The event types P0's loop emits. The rest of Appendix B arrives with the features that emit them.
 const (
-	EvUserMessage      EventType = "user.message"
-	EvContextAssembled EventType = "context.assembled"
-	EvRequestSent      EventType = "request.sent"
-	EvAssistantDelta   EventType = "assistant.delta"
-	EvAssistantMessage EventType = "assistant.message"
-	EvToolCall         EventType = "tool.call"
-	EvToolStarted      EventType = "tool.started"
-	EvToolFinished     EventType = "tool.finished"
-	EvUsage            EventType = "usage"
-	EvBudgetExceeded   EventType = "budget.exceeded"
-	EvTurnEnd          EventType = "turn.end"
-	EvError            EventType = "error"
+	EvUserMessage         EventType = "user.message"
+	EvContextAssembled    EventType = "context.assembled"
+	EvRequestSent         EventType = "request.sent"
+	EvAssistantDelta      EventType = "assistant.delta"
+	EvAssistantMessage    EventType = "assistant.message"
+	EvToolCall            EventType = "tool.call"
+	EvPermissionRequested EventType = "permission.requested"
+	EvPermissionResolved  EventType = "permission.resolved"
+	EvToolStarted         EventType = "tool.started"
+	EvToolFinished        EventType = "tool.finished"
+	EvUsage               EventType = "usage"
+	EvBudgetExceeded      EventType = "budget.exceeded"
+	EvTurnEnd             EventType = "turn.end"
+	EvError               EventType = "error"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -50,18 +52,20 @@ type EventSpec struct {
 // EventTypes is every event type this build emits. The store, the fixtures' conformance test and the Swift generator
 // read it.
 var EventTypes = map[EventType]EventSpec{
-	EvUserMessage:      {reflect.TypeFor[UserMessage](), true, true}, // opens a turn
-	EvContextAssembled: {reflect.TypeFor[ContextAssembled](), true, false},
-	EvRequestSent:      {reflect.TypeFor[RequestSent](), true, false},
-	EvAssistantDelta:   {reflect.TypeFor[AssistantDelta](), false, false},
-	EvAssistantMessage: {reflect.TypeFor[AssistantMessage](), true, false},
-	EvToolCall:         {reflect.TypeFor[ToolCall](), true, false},
-	EvToolStarted:      {reflect.TypeFor[ToolStarted](), true, true},
-	EvToolFinished:     {reflect.TypeFor[ToolFinished](), true, false},
-	EvUsage:            {reflect.TypeFor[Usage](), true, false},
-	EvBudgetExceeded:   {reflect.TypeFor[BudgetExceeded](), true, false},
-	EvTurnEnd:          {reflect.TypeFor[TurnEnd](), true, true},
-	EvError:            {reflect.TypeFor[ErrorEvent](), true, false},
+	EvUserMessage:         {reflect.TypeFor[UserMessage](), true, true}, // opens a turn
+	EvContextAssembled:    {reflect.TypeFor[ContextAssembled](), true, false},
+	EvRequestSent:         {reflect.TypeFor[RequestSent](), true, false},
+	EvAssistantDelta:      {reflect.TypeFor[AssistantDelta](), false, false},
+	EvAssistantMessage:    {reflect.TypeFor[AssistantMessage](), true, false},
+	EvToolCall:            {reflect.TypeFor[ToolCall](), true, false},
+	EvPermissionRequested: {reflect.TypeFor[PermissionRequested](), true, false},
+	EvPermissionResolved:  {reflect.TypeFor[PermissionResolved](), true, false},
+	EvToolStarted:         {reflect.TypeFor[ToolStarted](), true, true},
+	EvToolFinished:        {reflect.TypeFor[ToolFinished](), true, false},
+	EvUsage:               {reflect.TypeFor[Usage](), true, false},
+	EvBudgetExceeded:      {reflect.TypeFor[BudgetExceeded](), true, false},
+	EvTurnEnd:             {reflect.TypeFor[TurnEnd](), true, true},
+	EvError:               {reflect.TypeFor[ErrorEvent](), true, false},
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -106,6 +110,41 @@ type ToolCall struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
+}
+
+// PermissionRequested records a tool call that waits for the user (DESIGN §6.6). For a shell command, Command is the
+// line as the model wrote it and Parsed each simple command as approval saw it, its program resolved to an absolute
+// path. Reasons says why it asks, one line per cause.
+type PermissionRequested struct {
+	ID      string   `json:"id"`
+	Tool    string   `json:"tool"`
+	Mode    Mode     `json:"mode"`
+	Command string   `json:"command,omitempty"`
+	Parsed  []string `json:"parsed,omitempty"`
+	Reasons []string `json:"reasons"`
+}
+
+// Permission decisions, and who made them.
+const (
+	DecisionAllow = "allow"
+	DecisionDeny  = "deny"
+
+	DecidedByMode   = "mode"    // the session's mode
+	DecidedByRule   = "rule"    // an allow rule covered every command
+	DecidedByUser   = "user"    // the user answered
+	DecidedByNoUser = "no_user" // it needed the user, and no one was attached
+)
+
+// PermissionResolved records the decision on a tool call that changes something: every such call gets one, whether a
+// mode, a rule or the user decided (DESIGN §6.6, "Every permission decision is in the event log"). Scope is how far a
+// user's allow reaches: once, or the session, which adds RuleAdded for the rest of it. Reasons repeats why, for a deny.
+type PermissionResolved struct {
+	ID        string   `json:"id"`
+	Decision  string   `json:"decision"`
+	By        string   `json:"by"`
+	Scope     string   `json:"scope,omitempty"`
+	RuleAdded string   `json:"rule_added,omitempty"`
+	Reasons   []string `json:"reasons,omitempty"`
 }
 
 // ToolStarted records that a tool call began executing. The store fsyncs after it, so a crash leaves a call either

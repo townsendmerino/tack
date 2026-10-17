@@ -2,11 +2,14 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
@@ -34,6 +37,12 @@ type Config struct {
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
 	// the blob store. Default 16 KiB.
 	MaxResultBytes int
+	// Perms decides every tool call that changes something, in Mode (DESIGN §6.6). Without it such a call is refused:
+	// a session whose tools can write must have an engine. Approve asks the user when the engine asks; nil means no one
+	// is attached, and a call that needs the user is refused.
+	Perms   *perms.Engine
+	Mode    proto.Mode
+	Approve Approver
 	// Now and Sleep are replaced by tests.
 	Now   func() time.Time
 	Sleep func(context.Context, time.Duration) error
@@ -212,6 +221,14 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					Result: fmt.Sprintf("error: not run: the turn's tool-call budget (%d) was exceeded", s.cfg.Budget.MaxToolCalls)}
 			default:
 				calls++
+				refused, err := s.permit(ctx, b, callEv.Seq)
+				if err != nil {
+					return proto.StopError, err
+				}
+				if refused != nil {
+					fin = *refused
+					break
+				}
 				var full []byte
 				if fin, full, err = s.runTool(ctx, b, callEv.Seq); err != nil {
 					return proto.StopError, err
@@ -239,6 +256,84 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			return end(proto.StopCancelled)
 		}
 	}
+}
+
+// Approver asks the user about a tool call the permission engine would not allow alone.
+type Approver interface {
+	Approve(ctx context.Context, req proto.PermissionRequested) (Approval, error)
+}
+
+// Approval is the user's answer. Session extends an allow to the rest of the session: for a shell command, each simple
+// command it held becomes a rule (its program and first argument); for another tool, the tool itself.
+type Approval struct {
+	Allow   bool
+	Session bool
+}
+
+// permit decides a call that changes something, records the decision, and returns the call's refused result when it
+// may not run, or nil when it may. A read-only tool needs no decision and records none.
+func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64) (*proto.ToolFinished, error) {
+	t, ok := s.cfg.Tools.Get(b.Name)
+	if !ok || t.ReadOnly() {
+		return nil, nil
+	}
+	resolve := func(r proto.PermissionResolved) (*proto.ToolFinished, error) {
+		r.ID = b.ID
+		if _, err := s.record(proto.EvPermissionResolved, callSeq, r); err != nil {
+			return nil, err
+		}
+		if r.Decision == proto.DecisionAllow {
+			return nil, nil
+		}
+		text := "error: not run: " + strings.Join(r.Reasons, "; ")
+		if r.By == proto.DecidedByNoUser {
+			text = "error: not run: it needs the user's approval, and no one is attached to answer (" +
+				strings.Join(r.Reasons, "; ") + "). Find a way that needs no approval, or say what you would run and why."
+		}
+		return &proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: text}, nil
+	}
+	if s.cfg.Perms == nil {
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByMode,
+			Reasons: []string{"this session has no permission engine, so nothing that changes files or runs commands may run"}})
+	}
+	v := s.cfg.Perms.Decide(s.cfg.Mode, b.Name, false, b.Input)
+	switch v.Action {
+	case perms.Allow:
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionAllow, By: v.By})
+	case perms.Deny:
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: v.By, Reasons: v.Reasons})
+	}
+	req := proto.PermissionRequested{ID: b.ID, Tool: b.Name, Mode: s.cfg.Mode, Reasons: v.Reasons}
+	if b.Name == "bash" {
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(b.Input, &in)
+		req.Command = in.Command
+		for _, c := range v.Parsed {
+			req.Parsed = append(req.Parsed, c.String())
+		}
+	}
+	if _, err := s.record(proto.EvPermissionRequested, callSeq, req); err != nil {
+		return nil, err
+	}
+	if s.cfg.Approve == nil {
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByNoUser, Reasons: v.Reasons})
+	}
+	a, err := s.cfg.Approve.Approve(ctx, req)
+	if err != nil {
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByNoUser,
+			Reasons: append(v.Reasons, "the question was not answered: "+err.Error())})
+	}
+	if !a.Allow {
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByUser, Scope: "once",
+			Reasons: []string{"the user declined"}})
+	}
+	r := proto.PermissionResolved{Decision: proto.DecisionAllow, By: proto.DecidedByUser, Scope: "once"}
+	if a.Session {
+		r.Scope, r.RuleAdded = "session", strings.Join(s.cfg.Perms.AllowForSession(b.Name, v.Parsed), "; ")
+	}
+	return resolve(r)
 }
 
 // runTool records tool.started (fsynced by the store, so a crash leaves the call marked started), runs the tool and

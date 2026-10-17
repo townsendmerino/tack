@@ -172,6 +172,42 @@ public struct ModelBlock: Codable, Equatable, Sendable {
     }
 }
 
+public struct PermissionRequested: Codable, Equatable, Sendable {
+    public var id: String
+    public var tool: String
+    public var mode: Mode
+    public var command: String?
+    public var parsed: [String]?
+    public var reasons: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case tool = "tool"
+        case mode = "mode"
+        case command = "command"
+        case parsed = "parsed"
+        case reasons = "reasons"
+    }
+}
+
+public struct PermissionResolved: Codable, Equatable, Sendable {
+    public var id: String
+    public var decision: String
+    public var by: String
+    public var scope: String?
+    public var ruleAdded: String?
+    public var reasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case decision = "decision"
+        case by = "by"
+        case scope = "scope"
+        case ruleAdded = "rule_added"
+        case reasons = "reasons"
+    }
+}
+
 public struct RequestSent: Codable, Equatable, Sendable {
     public var request: Int
     public var server: String
@@ -332,6 +368,8 @@ public enum EventPayload: Equatable, Sendable {
     case budgetExceeded(BudgetExceeded)
     case contextAssembled(ContextAssembled)
     case error(ErrorEvent)
+    case permissionRequested(PermissionRequested)
+    case permissionResolved(PermissionResolved)
     case requestSent(RequestSent)
     case toolCall(ToolCall)
     case toolFinished(ToolFinished)
@@ -369,6 +407,8 @@ public struct Event: Codable, Equatable, Sendable {
         case "budget.exceeded": payload = .budgetExceeded(try c.decode(BudgetExceeded.self, forKey: .payload))
         case "context.assembled": payload = .contextAssembled(try c.decode(ContextAssembled.self, forKey: .payload))
         case "error": payload = .error(try c.decode(ErrorEvent.self, forKey: .payload))
+        case "permission.requested": payload = .permissionRequested(try c.decode(PermissionRequested.self, forKey: .payload))
+        case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
         case "request.sent": payload = .requestSent(try c.decode(RequestSent.self, forKey: .payload))
         case "tool.call": payload = .toolCall(try c.decode(ToolCall.self, forKey: .payload))
         case "tool.finished": payload = .toolFinished(try c.decode(ToolFinished.self, forKey: .payload))
@@ -392,6 +432,8 @@ public struct Event: Codable, Equatable, Sendable {
         case .budgetExceeded(let p): try c.encode(p, forKey: .payload)
         case .contextAssembled(let p): try c.encode(p, forKey: .payload)
         case .error(let p): try c.encode(p, forKey: .payload)
+        case .permissionRequested(let p): try c.encode(p, forKey: .payload)
+        case .permissionResolved(let p): try c.encode(p, forKey: .payload)
         case .requestSent(let p): try c.encode(p, forKey: .payload)
         case .toolCall(let p): try c.encode(p, forKey: .payload)
         case .toolFinished(let p): try c.encode(p, forKey: .payload)
