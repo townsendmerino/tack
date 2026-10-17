@@ -18,10 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/server"
-	"github.com/townsendmerino/tack/internal/tools"
 	"github.com/townsendmerino/tack/tools/gate"
 )
 
@@ -496,9 +494,9 @@ func (r *runner) serveCheck(ctx context.Context, url, key, model string) (string
 
 func smokeRequest(model, workspace string, i int) server.Request {
 	zero := 0.0
-	return server.Request{Model: model, System: loop.SystemPrompt, Tools: tools.NewSet(nil).Specs(), MaxTokens: 256,
+	return server.Request{Model: model, System: p0SystemPrompt, Tools: p0Tools, MaxTokens: 256,
 		Temperature: &zero, Messages: []server.Message{{Role: server.User,
-			Content: []server.Block{server.TextBlock(loop.UserText(true, workspace, SmokeTasks[i].Prompt))}}}}
+			Content: []server.Block{server.TextBlock(p0UserText(workspace, SmokeTasks[i].Prompt))}}}}
 }
 
 func (r *runner) smokeOne(ctx context.Context, srv server.Server, arm Arm, i int) (SmokeResult, error) {
@@ -543,10 +541,10 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 	}
 	nonce := func() string { return fmt.Sprintf("run %d\n\n", time.Now().UnixNano()) }
 	for rep := 0; rep <= 3; rep++ { // rep 0 is the warm-up
-		measure("cold", rep, nonce()+loop.SystemPrompt, prefix+tailAt(rep))
+		measure("cold", rep, nonce()+p0SystemPrompt, prefix+tailAt(rep))
 	}
 	for rep := 0; rep <= 3; rep++ {
-		measure("reused", rep, loop.SystemPrompt, prefix+tailAt(10+rep))
+		measure("reused", rep, p0SystemPrompt, prefix+tailAt(10+rep))
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of 8 requests failed, first %w", failed, firstErr)
@@ -559,7 +557,7 @@ func sizeFiller(ctx context.Context, srv server.Server, model, filler string, n 
 	lo, hi := 0, len(filler)
 	for lo < hi && hi-lo > 64 {
 		mid := (lo + hi) / 2
-		c, err := srv.CountTokens(ctx, ttftRequest(model, loop.SystemPrompt, filler[:mid]))
+		c, err := srv.CountTokens(ctx, ttftRequest(model, p0SystemPrompt, filler[:mid]))
 		if err != nil {
 			return 0, 0, err
 		}
@@ -577,7 +575,7 @@ func sizeFiller(ctx context.Context, srv server.Server, model, filler string, n 
 
 func ttftRequest(model, system, user string) server.Request {
 	zero := 0.0
-	return server.Request{Model: model, System: system, Tools: tools.NewSet(nil).Specs(), MaxTokens: 1, Temperature: &zero,
+	return server.Request{Model: model, System: system, Tools: p0Tools, MaxTokens: 1, Temperature: &zero,
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(user)}}}}
 }
 

@@ -21,7 +21,6 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
-	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // With TACK_FAKE_GOINFER=1 this test binary is a small goinfer-serve: it refuses an -ctx above TACK_FAKE_MAX_CTX,
@@ -141,7 +140,7 @@ func TestSmokeTasksAreWellFormed(t *testing.T) {
 	if len(SmokeTasks) != 20 {
 		t.Fatalf("%d smoke tasks; the registration says 20", len(SmokeTasks))
 	}
-	set := tools.NewSet(nil)
+
 	noTool := 0
 	for i, task := range SmokeTasks {
 		if task.NoTool {
@@ -149,12 +148,12 @@ func TestSmokeTasksAreWellFormed(t *testing.T) {
 			continue
 		}
 		for _, name := range task.Tools {
-			tl, ok := set.Get(name)
+			tl, ok := p0Tool(name)
 			if !ok {
 				t.Errorf("task %d expects %s, which tack does not offer", i, name)
 				continue
 			}
-			if !strings.Contains(string(tl.Spec().InputSchema), `"`+task.Arg+`"`) {
+			if !strings.Contains(string(tl.InputSchema), `"`+task.Arg+`"`) {
 				t.Errorf("task %d checks argument %q, which %s does not take", i, task.Arg, name)
 			}
 		}
