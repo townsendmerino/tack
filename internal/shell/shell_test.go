@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,8 +38,16 @@ func session(t *testing.T, sandboxed bool, rules ...string) *Session {
 		}
 		e.Rules = append(e.Rules, r)
 	}
-	return &Session{Exe: os.Args[0], Engine: e}
+	s := &Session{Exe: os.Args[0], Engine: e}
+	if sandboxed {
+		s.Wrap = pretendSandbox
+	}
+	return s
 }
+
+// pretendSandbox stands in for the sandbox in tests of the run-time check; confinement itself is tested by
+// internal/sandbox's escape tests and TestShellInsideTheSandbox (build tag sandboxtest).
+func pretendSandbox(c *exec.Cmd) *exec.Cmd { return c }
 
 func runOK(t *testing.T, s *Session, cmd string) Result {
 	t.Helper()
@@ -174,4 +183,19 @@ func runWith(t *testing.T, s *Session, ctx context.Context, cmd string) Result {
 		t.Fatalf("%q: %v", cmd, err)
 	}
 	return r
+}
+
+// TestEngineAndSandboxMustAgree: an engine that trusts a sandbox the shell does not have, or a sandbox the engine does
+// not know about, refuses to run anything.
+func TestEngineAndSandboxMustAgree(t *testing.T) {
+	s := session(t, true)
+	s.Wrap = nil
+	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil || !strings.Contains(err.Error(), "has no sandbox") {
+		t.Fatalf("sandboxed engine, no sandbox: %v", err)
+	}
+	s = session(t, false)
+	s.Wrap = pretendSandbox
+	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil {
+		t.Fatal("a sandbox the engine does not know about ran")
+	}
 }

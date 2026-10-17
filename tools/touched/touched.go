@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -269,7 +270,17 @@ func checkTests(root string, pkgs []string, timeout string, log io.Writer) []gat
 	if len(pkgs) == 0 {
 		return []gate.Cell{{Name: "test", Outcome: gate.NA}}
 	}
-	cmd := exec.Command("go", append([]string{"test", "-json", "-timeout", timeout}, pkgs...)...)
+	args := []string{"test", "-json", "-timeout", timeout}
+	var extra []gate.Cell
+	if runtime.GOOS == "darwin" {
+		if canSandbox() {
+			args = append(args, "-tags", "sandboxtest") // the escape tests (internal/sandbox, internal/shell)
+		} else if needsSandbox(pkgs) {
+			extra = append(extra, gate.Cell{Name: "test sandbox escapes", Outcome: gate.Inconclusive,
+				Detail: "sandbox-exec cannot start here (already inside a sandbox?): the escape tests did not run; run touched outside tack's sandbox"})
+		}
+	}
+	cmd := exec.Command("go", append(args, pkgs...)...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	var stderr bytes.Buffer
@@ -345,7 +356,22 @@ func checkTests(root string, pkgs []string, timeout string, log io.Writer) []gat
 		}
 		cells = append(cells, c)
 	}
-	return cells
+	return append(cells, extra...)
+}
+
+// canSandbox reports whether sandbox-exec can start a process here: it cannot inside an already sandboxed process.
+func canSandbox() bool {
+	return exec.Command("/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true").Run() == nil
+}
+
+// needsSandbox reports whether pkgs include one with escape tests (build tag sandboxtest).
+func needsSandbox(pkgs []string) bool {
+	for _, p := range pkgs {
+		if strings.HasSuffix(p, "/internal/sandbox") || strings.HasSuffix(p, "/internal/shell") {
+			return true
+		}
+	}
+	return false
 }
 
 // listPackages runs `go list -e -json ./...` with GOOS set when goos is non-empty.

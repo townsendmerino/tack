@@ -32,6 +32,12 @@ jobs:
         run: go run ./tools/touched -all
       - name: lint
         run: go run ./tools/lint
+      # The sandbox escape tests (DESIGN §6.6): each escape gets out with no sandbox, is stopped by the profile, and gets
+      # out again with only its own section removed. They start sandbox-exec, so they carry a build tag and run here and
+      # from the day-loop checker, never inside tack's own sandbox. touched -all above also runs them on macOS.
+      - name: sandbox escape tests
+        if: runner.os == 'macOS'
+        run: go test -count=1 -v -tags sandboxtest ./internal/sandbox/ ./internal/shell/
       # The store's fsync timings and the gap between a turn's first two events, printed even on a pass: a macOS run once
       # stalled after the first event, and darwin's File.Sync is F_FULLFSYNC (a drive-cache flush). Evidence for the
       # log's durability decision, which is pending with the owner.

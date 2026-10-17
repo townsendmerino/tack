@@ -78,6 +78,10 @@ type Session struct {
 	Args []string
 	// Engine supplies the analysis, the rules and whether commands run inside the sandbox.
 	Engine *perms.Engine
+	// Wrap puts the child inside the sandbox (internal/sandbox.Wrap on macOS), and Env adds what the sandbox expects:
+	// tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true exactly when Wrap is set.
+	Wrap func(*exec.Cmd) *exec.Cmd
+	Env  []string
 
 	mu    sync.Mutex
 	state State
@@ -88,6 +92,10 @@ type Session struct {
 func (s *Session) Run(ctx context.Context, command string, timeout time.Duration) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.Engine.Sandboxed != (s.Wrap != nil) { // the engine's rules trust the sandbox: never without one
+		return Result{}, fmt.Errorf("shell: the engine says sandboxed=%v, but the shell %s sandbox", s.Engine.Sandboxed,
+			map[bool]string{true: "has a", false: "has no"}[s.Wrap != nil])
+	}
 	if s.state.Dir == "" {
 		s.state.Dir = s.Engine.Root
 	}
@@ -124,6 +132,10 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.ExtraFiles = []*os.File{wr}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = append(os.Environ(), s.Env...)
+	if s.Wrap != nil {
+		cmd = s.Wrap(cmd)
+	}
 	if err := cmd.Start(); err != nil {
 		wr.Close()
 		return Result{}, fmt.Errorf("shell: starting the child: %w", err)

@@ -97,3 +97,29 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
   the user re-issues the command with the program written out, which approval then sees.
 - **Not wired in yet.** `tack run` keeps the read-only tool set. `edit`, `write` and `bash` reach a session with the
   daemon (step 4), where the permission engine and an approver exist.
+
+## Step 2's sandbox slice (2026-10-17)
+
+- **What it does.** `internal/sandbox` (macOS) builds a Seatbelt profile from `(deny default)` in named sections. It
+  allows reading the file system and running programs. It allows writing only the workspace, the session's temp
+  directory and tack's own Go cache. It denies:
+  - `open`, `launchctl`, `osascript` and LaunchServices;
+  - mounting;
+  - all network;
+  - tack's own files;
+  - workspace files that would run later outside the sandbox (git hooks and config, `.claude/`, `.tack/`, `.vscode/`,
+    `.mcp.json`) and shell startup files;
+  - the secrets deny-list.
+
+  `shell.Session.Wrap` runs `tack shell` inside it, and a session refuses to run if the engine's `Sandboxed` and the
+  shell's sandbox disagree.
+- **Escape tests** (build tag `sandboxtest`; CI's macOS job, and `touched` when `sandbox-exec` can start). Each escape
+  gets out with no sandbox, is stopped by the profile, and gets out again with only its own section removed, so each
+  section is shown to be what stops its escape. Network denial is among them. A shell test runs the real child under
+  the real profile: a program writing outside the workspace is refused by the kernel. Skipping the wrap let it write.
+- **Open: detaching.** DESIGN §6.6 says commands cannot detach, so halt reaches everything they started. The profile
+  stops `open`, `launchctl` and LaunchServices, but a program can still call `setsid()` and leave the process group.
+  It stays inside the sandbox, but a process-group kill misses it. Halt (step 2d) has to find such descendants, and an
+  escape test has to show it.
+- **Not wired in yet.** The daemon (step 4) sets `Engine.Sandboxed` and `Session.Wrap` together on macOS. On a
+  platform without a sandbox, the engine fails closed.
