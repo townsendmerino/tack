@@ -34,3 +34,38 @@ func TestPilotRefusesWithoutGo(t *testing.T) {
 		}
 	}
 }
+
+// TestPilotE0Gate: a gated job whose E0 arm did not meet the smoke rule does not run. It records why in NOT-RUN.txt,
+// says so in its verdict and exits exitNotRun before anything else starts. One that met it records its score in
+// GATE.txt and goes on (here to the next refusal, the tack revision, since this test binary has none).
+func TestPilotE0Gate(t *testing.T) {
+	dir := t.TempDir()
+	results := filepath.Join(dir, "results.jsonl")
+	run := func(summary string) (int, string, string, string) {
+		os.WriteFile(results, []byte(summary+"\n"), 0o644)
+		out := t.TempDir()
+		var stdout, stderr bytes.Buffer
+		code := dispatch([]string{"eval", "pilot", "-e0-results", results, "-e0-arm", "coder", "-tasks", filepath.Join(dir, "p.jsonl"),
+			"-mirrors", dir, "-opencode", "x", "-ken-mcp", "x", "-ken-model", "x", "-goinfer-serve", "x", "-model-path", "x",
+			"-out", out}, &stdout, &stderr)
+		return code, out, stdout.String(), stderr.String()
+	}
+	code, out, stdout, stderr := run(`{"arm":"coder","phase":"smoke_summary","pass":[18,16],"malformed":0}`)
+	notRun, _ := os.ReadFile(filepath.Join(out, "NOT-RUN.txt"))
+	if code != exitNotRun || !strings.Contains(string(notRun), "smoke 18/16") || !strings.HasPrefix(stdout, "VERDICT: INCONCLUSIVE") ||
+		!strings.Contains(stdout, "not run: E0 gate") {
+		t.Fatalf("refused gate: exit %d, NOT-RUN.txt %q\nstdout %s\nstderr %s", code, notRun, stdout, stderr)
+	}
+	code, out, _, stderr = run(`{"arm":"coder","phase":"smoke_summary","pass":[18,17],"malformed":0}`)
+	gateTxt, _ := os.ReadFile(filepath.Join(out, "GATE.txt"))
+	if code == exitNotRun || !strings.Contains(string(gateTxt), "smoke 18/17 of 20, malformed 0") || !strings.Contains(stderr, "the E0 gate passed") {
+		t.Fatalf("passed gate: exit %d, GATE.txt %q\nstderr %s", code, gateTxt, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, "NOT-RUN.txt")); err == nil {
+		t.Fatal("a passed gate wrote NOT-RUN.txt")
+	}
+	var stdout2, stderr2 bytes.Buffer
+	if code := dispatch([]string{"eval", "pilot", "-e0-results", results, "-out", dir}, &stdout2, &stderr2); code != exitUsage {
+		t.Fatalf("-e0-results without -e0-arm: exit %d", code)
+	}
+}

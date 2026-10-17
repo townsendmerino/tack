@@ -51,6 +51,8 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	title := fs.Bool("title", true, "leave opencode's title agent on; -title=false turns it off on both arms")
 	rev := fs.String("tack-rev", "", "the tack commit this binary must have been built from (checked against its build info)")
 	oracleCheck := fs.Bool("oracle-check", false, "no model: run each task's oracle at its fix commit, as a run grades it; every task must pass")
+	e0Results := fs.String("e0-results", "", "gate: run only if this E0 results.jsonl shows -e0-arm meeting E0's smoke rule")
+	e0Arm := fs.String("e0-arm", "", "gate: the E0 arm whose smoke must pass (with -e0-results)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -58,6 +60,15 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))
 		return exitError
+	}
+	if (*e0Results == "") != (*e0Arm == "") {
+		fmt.Fprintln(stderr, "tack eval pilot: -e0-results and -e0-arm go together")
+		return exitUsage
+	}
+	if *e0Results != "" {
+		if code, ok := e0Gate(*e0Results, *e0Arm, *out, stdout, stderr); !ok {
+			return code
+		}
 	}
 	if *oracleCheck {
 		return oracleCheckCmd(*tasks, *from, *to, *mirrors, *out, *rev, stdout, stderr)
@@ -291,4 +302,31 @@ func goOnPath() error {
 			"every test would read build-fail. Start the job with Go on its PATH (on nobara: export PATH=/usr/local/go/bin:$PATH)", err)
 	}
 	return nil
+}
+
+// exitNotRun is a gated job that did not run because its gate refused (e0Gate).
+const exitNotRun = 6
+
+// e0Gate holds a pilot job to an E0 arm's smoke (eval.SmokeGate), before anything starts. A refusal writes out/NOT-RUN.txt
+// with the reason and returns exitNotRun; a pass writes out/GATE.txt with the score and lets the job go on.
+func e0Gate(results, arm, out string, stdout, stderr io.Writer) (int, bool) {
+	if out == "" {
+		fmt.Fprintln(stderr, "tack eval pilot: a gated job needs -out, where it records whether it ran")
+		return exitUsage, false
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		return exitError, false
+	}
+	at := time.Now().Format(time.RFC3339)
+	score, err := eval.SmokeGate(results, arm)
+	if err != nil {
+		_ = os.WriteFile(filepath.Join(out, "NOT-RUN.txt"), []byte(fmt.Sprintf("not run (%s): the E0 gate refused: %v\n", at, err)), 0o644)
+		fmt.Fprintln(stderr, "tack eval pilot: not run: the E0 gate refused:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not run: E0 gate: "+err.Error()))
+		return exitNotRun, false
+	}
+	_ = os.WriteFile(filepath.Join(out, "GATE.txt"), []byte(fmt.Sprintf("ran (%s): arm %s in %s: %s\n", at, arm, results, score)), 0o644)
+	fmt.Fprintf(stderr, "tack eval pilot: the E0 gate passed: arm %s, %s\n", arm, score)
+	return 0, true
 }
