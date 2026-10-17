@@ -80,8 +80,10 @@ there teaches everyone to ignore INCONCLUSIVE. A manifest can now mark an arm as
 (`expect_fallback = "cpu"`): the arm stops at the fit, and falling back to that path is its measurement, recorded as
 `fallback`, so the run passes. Anything else is reported and the run is INCONCLUSIVE: a crash, a timeout, a refusal of
 every load, another decode path, or a load that now fits the GPU. The last is good news and is labelled so; it means
-the arm can become a measured one. Both nobara arms are probes; granite, which falls back because goinfer's resident
-runner gates its architecture, is not, and stays void until that gate opens.
+the arm can become a measured one. Three nobara arms are probes. gpt-oss and gemma-26b are probes because of memory.
+granite is a probe because of goinfer's gate, not memory: goinfer's resident runner excludes its architecture
+("bring-up gate (GOINFER_SSM_RESIDENT unset)"), so it falls back although it fits. An `unexpected` on granite means
+the gate has opened; check goinfer's change log, then make it a measured arm.
 
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
@@ -113,7 +115,7 @@ storage"). Every arm is served by `goinfer-serve` from one pinned goinfer revisi
 | Mac | cpu | `qwen2.5-7b-instruct-q4_k_m.gguf` | the CPU path that did not fit at q3_k_m (opencode.md); fit decides again |
 | nobara (RTX 2070 SUPER 8 GB) | cuda | `qwen2.5-7b-instruct-q4_k_m.gguf` | **the incumbent**: the one configuration measured working |
 | nobara | cuda | `gemma-4-E4B`, `qwen2.5-coder-1.5b`, `gemma-4-E2B`, `qwen2.5-coder-0.5b` (the floor), as on the Mac | amendment 3: the same small candidates on both boxes |
-| nobara | cuda | the granite checkpoint, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf` (`phi3-mini-4k-gguf` retired, amendment 5) | DESIGN §8.4 candidates; fit decides which load. An arm goinfer serves on the CPU is void (amendment 4), except gpt-oss and gemma-26b, fit probes expected to fall back (amendment 6) |
+| nobara | cuda | the granite checkpoint, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf` (`phi3-mini-4k-gguf` retired, amendment 5) | DESIGN §8.4 candidates; fit decides which load. An arm goinfer serves on the CPU is void (amendment 4), except a fit probe expected to fall back: all three, gpt-oss and gemma-26b for memory, granite for goinfer's architecture gate (amendment 6) |
 
 The **do-nothing arm** is the incumbent: keep the model on nobara. A Mac model replaces it only under the rule below.
 

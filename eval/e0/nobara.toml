@@ -39,6 +39,9 @@ args = ["-backend", "cuda"]
 name = "granite-4.0-h-tiny-q8-cuda"
 model_path = "~/models/granite/granite-4.0-h-tiny-Q8_0.gguf"
 args = ["-backend", "cuda"]
+# A fit probe because goinfer gates its architecture out of the resident runner, not because of memory (amendment 6).
+# "unexpected" here means the gate has opened: check goinfer's change log, then make this a measured arm.
+expect_fallback = "cpu"
 
 # phi3-mini-4k is retired (the preregistration's amendment 5): goinfer has no tool-calling template for it.
 
