@@ -85,6 +85,19 @@ granite is a probe because of goinfer's gate, not memory: goinfer's resident run
 ("bring-up gate (GOINFER_SSM_RESIDENT unset)"), so it falls back although it fits. An `unexpected` on granite means
 the gate has opened; check goinfer's change log, then make it a measured arm.
 
+**Clarification, 2026-10-17, before the Gemma 4 re-run** (not a rule change). **E0's prompt and tool schemas are
+frozen as they were sent.**
+
+- **Why.** The smoke and TTFT requests sent tack's own `loop.SystemPrompt`, its `read`/`glob`/`grep` schemas and
+  `loop.UserText` "exactly as `tack run` sends them". P1 changes those, starting with the tool-path rules in its step
+  1. Re-running an arm after that would grade it against a different instrument from the arms already run.
+- **What changed.** The three are now frozen copies in `internal/eval/instrument.go`, byte-identical to what every E0
+  run so far sent (tack `352fba0`).
+- **How that was checked.** A test at the freezing commit (`c4b9457`) compared them with tack's own, and
+  `TestInstrumentIsFrozen` holds them to their sha256 from then on.
+- **What it does not change.** The tasks, the scoring and the rule. "As `tack run` sends them" now means as it sent
+  them when E0 was registered.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
