@@ -68,6 +68,49 @@ func TestStreamTextRecorded(t *testing.T) {
 	}
 }
 
+// TestStreamG3Reuse is a synthetic goinfer G3 stream (docs/briefs/goinfer-g3-messages-cached-tokens.md):
+// message_delta's usage carries the prefilled/reused split, which replaces message_start's whole-prompt figure.
+// InputTokens must come back as the prefilled count alone, not the whole prompt — callers that want the whole
+// prompt sum it with Reused themselves (internal/loop/loop.go does, for the ledger's Usage.Prompt).
+func TestStreamG3Reuse(t *testing.T) {
+	conv := &server.Conversation{Model: "tiny", MaxTokens: 16}
+	_ = conv.BeginTurn("hi", false)
+	req := conv.Request()
+	body := goinfertest.SSEWithReuse("end_turn", 35, 59, 16, proto.ModelBlock{Type: "text", Text: "hello"})
+	c, _ := synthetic(cassette.Interaction{Request: recordedRequest(t, req), Response: sseResp(body)})
+	resp, err := c.Stream(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 35 {
+		t.Errorf("InputTokens = %d, want 35 (prefilled only, not the 100 message_start reported before the reuse was decided)", resp.Usage.InputTokens)
+	}
+	if resp.Usage.Reused == nil || *resp.Usage.Reused != 59 {
+		t.Fatalf("Reused = %v, want a pointer to 59", resp.Usage.Reused)
+	}
+	if resp.Usage.OutputTokens != 16 {
+		t.Errorf("OutputTokens = %d, want 16", resp.Usage.OutputTokens)
+	}
+}
+
+// TestStreamG3ColdRequestReusedIsZeroNotNil is break-it-first for the nil/zero distinction events.go's Usage doc
+// comment requires ("a nil field is one the server did not report; it is never shown as zero"): a cold request
+// under G3 still reports cache_read_input_tokens, as a real 0, so Reused must point at 0, not stay nil.
+func TestStreamG3ColdRequestReusedIsZeroNotNil(t *testing.T) {
+	conv := &server.Conversation{Model: "tiny", MaxTokens: 16}
+	_ = conv.BeginTurn("hi", false)
+	req := conv.Request()
+	body := goinfertest.SSEWithReuse("end_turn", 100, 0, 16, proto.ModelBlock{Type: "text", Text: "hello"})
+	c, _ := synthetic(cassette.Interaction{Request: recordedRequest(t, req), Response: sseResp(body)})
+	resp, err := c.Stream(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.Reused == nil || *resp.Usage.Reused != 0 {
+		t.Fatalf("Reused = %v, want a pointer to 0 (measured, not unknown)", resp.Usage.Reused)
+	}
+}
+
 // TestToolLoopRecorded replays a real constrained tool call and the follow-up request carrying its result. The second
 // request only matches the recording if the client sent back the tool_use as received and the tool_result after it.
 func TestToolLoopRecorded(t *testing.T) {

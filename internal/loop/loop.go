@@ -167,7 +167,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if err != nil {
 			return proto.StopError, err
 		}
-		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens, Reused: resp.Usage.Reused,
+		// Prompt is the whole prompt: InputTokens plus Reused when the server reports reuse (server.Usage), and then
+		// InputTokens is the prefilled share. A server that does not report reuse leaves Reused and Prefilled nil.
+		reused, prefilled := 0, (*int)(nil)
+		if resp.Usage.Reused != nil {
+			reused = *resp.Usage.Reused
+			p := resp.Usage.InputTokens
+			prefilled = &p
+		}
+		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused, Prefilled: prefilled,
 			Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
