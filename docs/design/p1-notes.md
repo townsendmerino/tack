@@ -47,6 +47,21 @@ The order the owner approved, each step with its exit check:
   Until each lands, tack keeps a workaround:
   - **G2:** P0's admission — a pressure check before the load, goinfer's own refusal, and the decode-path check after
     it.
+    - **G2 stage 1 landed** (goinfer main `5851bdef`, route `945e889a`, 2026-10-17). It adds `POST /admin/models/fit`
+      on the admin socket.
+      - **Request:** the load's own body (`path`, `quant`, `lora`).
+      - **Answer:** what the load would do under the server's own flags, with no loading:
+        - `fits` (true, false or null, with `unknown` saying why), `decline` (the load's refusal, verbatim) and
+          `retry`;
+        - `guard`, `ctx`, `need_bytes`, `budget_bytes` and `available_bytes`;
+        - `decode_path`.
+      - **Measured by goinfer:** on the Mac, 18 of 29 models answer `fits: null` (the `.giw` is not built yet); on
+        nobara, 91 of 118. `decode_path` is `unknown` on every model on both boxes.
+      - **Step 4 therefore:** asks `fit` before a load; refuses on `fits: false` with `decline`; treats null as "load
+        to find out"; and keeps the decode-path check after the load.
+      - **Not settled by `fit`:** on Metal the served context can differ from the `ctx` that `fit` priced, so the
+        banner remains the authority.
+      - **Stage 2,** after G6, settles the decode path and the Metal or CUDA residency before the load.
   - **G6** is now a safety net (owner, 2026-10-17). nobara's tack-facing server is on demand and never starts while
     the timing lock is held, so the night queue only stops one that is still running when it starts. No bedtime
     routine: until step 4, nothing runs on nobara by day.
