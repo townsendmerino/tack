@@ -1,0 +1,12 @@
+· grep {"pattern":"applyTokenBudget.*?=.*$","path":"ken"}
+  error, 0 lines
+· grep {"pattern":"^func.*applyTokenBudget.*$","path":"ken"}
+  error, 0 lines
+· glob {"pattern":"**/applyTokenBudget.go"}
+  ok, 0 lines
+· glob {"pattern":"**/*.go"}
+  ok, 1 lines
+· read {"path":"mcp/token_budget.go","offset":1,"limit":20}
+  ok, 20 lines
+· grep {"pattern":"applyTokenBudget.*?=.*$","path":"mcp"}
+  ok, 0 lines

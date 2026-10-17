@@ -1,0 +1,11 @@
+It seems there might be an issue locating the repository or the specific file you're looking for. Let's try again by listing files that might contain the definition of `applyTokenBudget` using a glob pattern.
+It appears that there are no files matching the pattern `applyTokenBudget.go` in the repository. However, let's try another approach by listing all Go files in the repository and then searching within them for the function definition.
+
+Let's list all Go files in the repository and check if any of them define the `applyTokenBudget` function.
+The file `mcp/token_budget.go` contains the definition of `applyTokenBudget`. Let's fetch the relevant lines to see the function signature and its return type.
+The function `applyTokenBudget` is not directly defined in `mcp/token_budget.go`. Based on the context provided, it seems that the `Token-budget` support is described in the comments, but the function itself is not listed.
+
+Let's search for the actual function definition again by grepping for it.
+It appears that the function `applyTokenBudget` is not defined in the `mcp` package based on the search results. This could mean that the function is either defined elsewhere in the repository or there might be a misunderstanding in the function name.
+
+If you have more information or the exact path where you expect `applyTokenBudget` to be defined, please provide it, and I can assist further. Otherwise, it seems that the function might be in a different file or package that was not identified by the current search.

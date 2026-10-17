@@ -1,10 +1,11 @@
-// Command recordrun records cmd/tack's `tack run` cassette against a real model: it starts goinfer-serve with the
+// Command recordrun records a real model's cassette of `tack run`'s exit question: it starts goinfer-serve with the
 // model (a supervised child with a random key), writes a goinfer-remote config pointing at it with a 0600 token file,
 // and runs a pinned tack binary with --record over cmd/tack/testdata/ken, up to -attempts times, until an attempt passes
 // the exit test. An attempt passes only if the recording run and a strict replay of its cassette, made the way the
-// test makes it, both exit 0 and both pass kenrun.Check, the test's own assertions: a recording the test would reject
-// is a failed attempt. Every attempt's cassette, answer and reasons are kept, with a summary in <out>.attempts.json,
-// so the commit adopting the cassette can say how many tries it took. Recording through a remote config matters: the
+// test makes it, both exit 0 and both pass kenrun.CheckModel, the assertions of cmd/tack's
+// TestRunAnswersFromARealModelCassette: a recording that test would reject is a failed attempt. Every attempt's
+// cassette, answer and reasons are kept, with a summary in <out>.attempts.json, so the commit adopting the cassette (as
+// cmd/tack/testdata/run-ken-7b.json) can say how many tries it took. Recording through a remote config matters: the
 // test replays with one, and a remote server is asked /v1/models first, so the cassette must hold that request.
 //
 // It loads the machine, so it runs through the night queue:
@@ -116,8 +117,12 @@ func run(tack, serve, model, backend string, ctxN int, workspace, out string, at
 			break
 		}
 	}
-	b, _ := json.MarshalIndent(map[string]any{"question": kenrun.Question, "answer_must_contain": kenrun.Answer,
-		"trace_must_contain": kenrun.Trace, "attempts": log}, "", "  ")
+	var facts []string
+	for _, f := range kenrun.Facts {
+		facts = append(facts, f.What)
+	}
+	b, _ := json.MarshalIndent(map[string]any{"question": kenrun.Question, "answer_must_state": facts,
+		"and": "no claim that the function is missing; at least one successful tool call", "attempts": log}, "", "  ")
 	if err := os.WriteFile(base+".attempts.json", b, 0o644); err != nil {
 		return err
 	}
@@ -143,7 +148,7 @@ func judge(which, answer, trace string, err error) []string {
 	if err != nil {
 		why = append(why, fmt.Sprintf("%s: exit: %v", which, err))
 	}
-	for _, w := range kenrun.Check(answer, trace) {
+	for _, w := range kenrun.CheckModel(answer, trace) {
 		why = append(why, which+": "+w)
 	}
 	return why

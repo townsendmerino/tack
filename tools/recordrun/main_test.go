@@ -2,35 +2,30 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestJudgeIsTheExitTest: an attempt passes only on the exit test's own assertions. The 2026-10-16 night attempt
-// named mcp/token_budget.go while concluding that applyTokenBudget is not defined there, and the old substring check
-// adopted it; the exit test rejects it, so the judge must too.
-func TestJudgeIsTheExitTest(t *testing.T) {
-	night := `It appears that the function ` + "`applyTokenBudget`" + ` is not defined in the ` + "`mcp`" + ` package based on the
-search results. The file ` + "`mcp/token_budget.go`" + ` contains the definition of ` + "`applyTokenBudget`" + `.`
-	nightTrace := `· grep {"pattern":"applyTokenBudget.*?=.*$","path":"ken"}
-  error, 0 lines
-· glob {"pattern":"**/*.go"}
-  ok, 1 lines
-· read {"path":"mcp/token_budget.go","offset":1,"limit":20}
-  ok, 20 lines
-`
-	if why := judge("recording", night, nightTrace, nil); len(why) == 0 || !strings.Contains(strings.Join(why, ";"), "mcp/token_budget.go:70") {
-		t.Errorf("the night's wrong answer passed: %v", why)
+// TestJudgeIsTheRealModelExitTest: an attempt is judged by kenrun.CheckModel, the real-model cassette test's own
+// assertions. The 2026-10-16 night attempt, verbatim, named mcp/token_budget.go while concluding applyTokenBudget is
+// not defined there, and the old substring check adopted it; the judge rejects it. A correct answer in a real model's
+// words, reached by a grep that missed and a read that worked, passes.
+func TestJudgeIsTheRealModelExitTest(t *testing.T) {
+	night, _ := os.ReadFile(filepath.Join("..", "..", "internal", "kenrun", "testdata", "night-2026-10-16.stdout"))
+	nightTrace, _ := os.ReadFile(filepath.Join("..", "..", "internal", "kenrun", "testdata", "night-2026-10-16.stderr"))
+	if why := judge("recording", string(night), string(nightTrace), nil); !strings.Contains(strings.Join(why, ";"), "recording: the answer claims the function is missing") {
+		t.Errorf("the night's wrong answer was not rejected as missing: %v", why)
 	}
 
-	good := "`applyTokenBudget` is defined at mcp/token_budget.go:70. It returns the kept prefix of the results."
-	goodTrace := `· grep {"pattern":"func applyTokenBudget"}
-  ok, 1 lines
-· read {"path":"mcp/token_budget.go","offset":62,"limit":22}
-  ok, 22 lines
-`
+	good := "It is defined in mcp/token_budget.go. applyTokenBudget keeps ranked results while their estimated token " +
+		"cost stays within maxTokens, and returns the kept prefix, how many results were dropped, and the approximate " +
+		"token total of what it kept."
+	goodTrace := "· grep {\"pattern\":\"applyTokenBudget\",\"path\":\"ken\"}\n  error, 0 lines\n" +
+		"· read {\"path\":\"mcp/token_budget.go\",\"offset\":60,\"limit\":30}\n  ok, 30 lines\n"
 	if why := judge("replay", good, goodTrace, nil); why != nil {
-		t.Errorf("the scripted run failed: %v", why)
+		t.Errorf("a correct answer failed: %v", why)
 	}
 	if why := judge("replay", good, goodTrace, errors.New("exit status 1")); len(why) != 1 || !strings.HasPrefix(why[0], "replay: exit") {
 		t.Errorf("a failing exit passed: %v", why)
