@@ -1,5 +1,5 @@
 {
-  "note": "goinfer f44ba5eb goinfer-serve (metal build, -backend cpu -quant int8int8), committed llama-tiny fixture as built by goinfer sdktest tinyClient with a 4096 window: replies are noise, the wire format is real; recorded 2026-10-16",
+  "note": "goinfer 968c50d6 goinfer-serve (metal build, -backend cpu -quant int8int8, -ctx 4096), committed llama-tiny fixture (decoder/selftestdata/llama-tiny) as built by goinfer sdktest tinyClient, served by tools/cassettes' supervisor: replies are noise, the wire format is real; recorded 2026-10-16",
   "interactions": [
     {
       "request": {
@@ -10,7 +10,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"data\":[{\"context_length\":4096,\"context_window\":4096,\"created\":1792175762,\"decisions\":{\"calibrated\":false,\"endpoint\":\"/v1/systemone\",\"kinds\":[\"noul\",\"choice\",\"score\"],\"route\":\"label\",\"template\":\"chat-v1\"},\"decode_path\":\"cpu (int8int8)\",\"fast_model\":\"tiny-fast\",\"id\":\"tiny\",\"max_model_len\":4096,\"max_positions\":4096,\"object\":\"model\",\"owned_by\":\"goinfer\",\"prefill_batched\":true,\"prefill_path\":\"batched shape (CPU forwardLayersN, one weight stream for the whole prompt) — describes weight streaming, not throughput; this path is single-threaded\",\"quant\":\"int8int8\",\"resident_bytes\":190464,\"vision\":false}],\"object\":\"list\"}\n"
+        "body": "{\"data\":[{\"context_length\":4096,\"context_window\":4096,\"created\":1792209361,\"decisions\":{\"calibrated\":false,\"endpoint\":\"/v1/systemone\",\"kinds\":[\"noul\",\"choice\",\"score\"],\"route\":\"label\",\"template\":\"chat-v1\"},\"decode_path\":\"cpu (int8int8)\",\"fast_model\":\"tiny-fast\",\"id\":\"tiny\",\"max_model_len\":4096,\"max_positions\":4096,\"object\":\"model\",\"owned_by\":\"goinfer\",\"prefill_batched\":true,\"prefill_path\":\"batched shape (CPU forwardLayersN, one weight stream for the whole prompt) — describes weight streaming, not throughput; this path is single-threaded\",\"quant\":\"int8int8\",\"resident_bytes\":190464,\"vision\":false}],\"object\":\"list\"}\n"
       }
     }
   ]

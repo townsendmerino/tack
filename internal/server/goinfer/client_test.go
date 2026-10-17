@@ -60,8 +60,8 @@ func TestStreamTextRecorded(t *testing.T) {
 	if resp.StopReason != "max_tokens" || resp.Usage.InputTokens != 74 || resp.Usage.OutputTokens != 16 {
 		t.Fatalf("stop %q usage %+v", resp.StopReason, resp.Usage)
 	}
-	if resp.Usage.Reused != nil {
-		t.Fatal("goinfer's /v1/messages reports no reuse; Reused must stay unknown, not zero")
+	if resp.Usage.Reused == nil || *resp.Usage.Reused != 0 { // a cold request under G3 reports a measured 0
+		t.Fatalf("Reused = %v, want a pointer to 0", resp.Usage.Reused)
 	}
 	if err := r.Done(); err != nil {
 		t.Fatal(err)
@@ -129,6 +129,15 @@ func TestToolLoopRecorded(t *testing.T) {
 	var in map[string]string
 	if err := json.Unmarshal(first.Content[0].Input, &in); err != nil || in["pattern"] != "func main" {
 		t.Fatalf("tool input %s: %v", first.Content[0].Input, err)
+	}
+	// G3 from a real server: the second request extends the first, so goinfer reused the first's 949-token prompt and
+	// prefilled only the 167 new tokens. message_start said 1116, the whole prompt, before the reuse was decided; the
+	// client reports the split from message_delta.
+	if u := first.Usage; u.InputTokens != 949 || u.Reused == nil || *u.Reused != 0 {
+		t.Errorf("first usage: InputTokens %d, Reused %v; want 949 prefilled, 0 reused", u.InputTokens, u.Reused)
+	}
+	if u := resps[1].Usage; u.InputTokens != 167 || u.Reused == nil || *u.Reused != 949 {
+		t.Errorf("second usage: InputTokens %d, Reused %v; want 167 prefilled, 949 reused", u.InputTokens, u.Reused)
 	}
 }
 

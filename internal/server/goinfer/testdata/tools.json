@@ -1,5 +1,5 @@
 {
-  "note": "goinfer f44ba5eb goinfer-serve (metal build, -backend cpu -quant int8int8), committed llama-tiny fixture as built by goinfer sdktest tinyClient with a 4096 window: replies are noise, the wire format is real; recorded 2026-10-16",
+  "note": "goinfer 968c50d6 goinfer-serve (metal build, -backend cpu -quant int8int8, -ctx 4096), committed llama-tiny fixture (decoder/selftestdata/llama-tiny) as built by goinfer sdktest tinyClient, served by tools/cassettes' supervisor: replies are noise, the wire format is real; recorded 2026-10-16",
   "interactions": [
     {
       "request": {
@@ -71,7 +71,7 @@
       "response": {
         "status": 200,
         "content_type": "text/event-stream",
-        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_4452a33bd509a0f8dd080dbf4775a503\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":949,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"id\":\"toolu_dec47ea00a45d8f5612c781498b03e9e\",\"input\":{},\"name\":\"grep\",\"type\":\"tool_use\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"partial_json\":\"{ \\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\\"pattern\\\"\\n:\\n\\\"func main\\\"\\n}\",\"type\":\"input_json_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":278}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_d65503617324e7fbdad6ddd98a3fdcbf\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":949,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"id\":\"toolu_a77f7975fae23e35823574835d5af30f\",\"input\":{},\"name\":\"grep\",\"type\":\"tool_use\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"partial_json\":\"{ \\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\\"pattern\\\"\\n:\\n\\\"func main\\\"\\n}\",\"type\":\"input_json_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":0,\"input_tokens\":949,\"output_tokens\":278}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       }
     },
     {
@@ -97,7 +97,7 @@
               "content": [
                 {
                   "type": "tool_use",
-                  "id": "toolu_dec47ea00a45d8f5612c781498b03e9e",
+                  "id": "toolu_a77f7975fae23e35823574835d5af30f",
                   "name": "grep",
                   "input": {
                     "pattern": "func main"
@@ -110,7 +110,7 @@
               "content": [
                 {
                   "type": "tool_result",
-                  "tool_use_id": "toolu_dec47ea00a45d8f5612c781498b03e9e",
+                  "tool_use_id": "toolu_a77f7975fae23e35823574835d5af30f",
                   "content": "cmd/tack/main.go:10:func main() {"
                 }
               ]
@@ -164,7 +164,7 @@
       "response": {
         "status": 200,
         "content_type": "text/event-stream",
-        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_28dc965fb1bd038c6c897d0b05229ea9\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":1116,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"7\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"V\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"output_tokens\":32}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        "body": "event: message_start\ndata: {\"message\":{\"content\":[],\"id\":\"msg_d6194a13d88a9d536d60c46375fb775c\",\"model\":\"tiny\",\"role\":\"assistant\",\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"input_tokens\":1116,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_start\ndata: {\"content_block\":{\"text\":\"\",\"type\":\"text\"},\"index\":0,\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"7\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_delta\ndata: {\"delta\":{\"text\":\"V\",\"type\":\"text_delta\"},\"index\":0,\"type\":\"content_block_delta\"}\n\nevent: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\nevent: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"type\":\"message_delta\",\"usage\":{\"cache_read_input_tokens\":949,\"input_tokens\":167,\"output_tokens\":32}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       }
     }
   ]
