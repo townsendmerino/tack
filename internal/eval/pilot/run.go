@@ -254,10 +254,12 @@ func size(path string) int64 {
 	return st.Size()
 }
 
-// EventSummary is what the run record takes from opencode's JSON events. It does not depend on the event schema: any
-// object with a string "tool" field counts as a tool call, and any string that names a path outside the repository
-// (an absolute path, or one climbing out with ..) marks the run left_repo. Over-flagging is the safe direction: a
-// flagged run is reported both counted and excluded (pilot pre-registration, "Recorded per run").
+// EventSummary is what the run record takes from opencode's JSON events. It depends on the event schema only this far:
+// any object with a string "tool" field counts as a tool call, and any string under a call's arguments (a value keyed
+// "input", where opencode keeps them, or "arguments") that names a path outside the repository (an absolute path, or
+// one climbing out with ..) marks the run left_repo. A tool's output is not scanned: file contents and search results
+// name paths the call did not touch. Over-flagging the arguments is the safe direction: a flagged run is reported both
+// counted and excluded (pilot pre-registration, "Recorded per run").
 type EventSummary struct {
 	Events    int            `json:"events"`
 	ToolCalls map[string]int `json:"tool_calls"`
@@ -274,21 +276,24 @@ func SummarizeEvents(path, repo string) EventSummary {
 	defer f.Close()
 	root := resolved(repo)
 	seen := map[string]bool{}
-	var walk func(v any)
-	walk = func(v any) {
+	var walk func(v any, args bool)
+	walk = func(v any, args bool) { // args: v is inside a tool call's arguments
 		switch t := v.(type) {
 		case map[string]any:
 			if name, ok := t["tool"].(string); ok && name != "" {
 				s.ToolCalls[name]++
 			}
-			for _, e := range t {
-				walk(e)
+			for k, e := range t {
+				walk(e, args || k == "input" || k == "arguments")
 			}
 		case []any:
 			for _, e := range t {
-				walk(e)
+				walk(e, args)
 			}
 		case string:
+			if !args {
+				return
+			}
 			if p := outside(t, root); p != "" && !seen[p] {
 				seen[p] = true
 				s.LeftRepo = append(s.LeftRepo, p)
@@ -301,7 +306,7 @@ func SummarizeEvents(path, repo string) EventSummary {
 		var v any
 		if json.Unmarshal(sc.Bytes(), &v) == nil {
 			s.Events++
-			walk(v)
+			walk(v, false)
 		}
 	}
 	return s

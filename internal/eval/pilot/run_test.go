@@ -170,14 +170,18 @@ func TestSummarizeEvents(t *testing.T) {
 		`{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"` + root + `/.ken/snapshot.bin"}}}}`,
 		`{"type":"tool_use","part":{"tool":"bash","state":{"input":{"command":"cat ../../other/secret.go"}}}}`,
 		`{"type":"tool_use","part":{"tool":"glob","state":{"input":{"pattern":"**/*.go"}}}}`,
+		// Job 1 of 2026-10-17 (task 5): a read inside the repo whose output, a file's contents, names URL paths and a
+		// /tmp file, and whose metadata names an outside path. The call touched none of them.
+		`{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"` + root + `/cmd/serve/main.go"},` +
+			`"output":"// It speaks /v1/chat/completions and POST /admin/models/{load,unload}; see /tmp/a","metadata":{"preview":"/etc/hosts"}}}}`,
 	}
 	os.WriteFile(ev, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 	s := SummarizeEvents(ev, repo)
-	if s.Events != 4 || s.ToolCalls["read"] != 2 || s.ToolCalls["bash"] != 1 || s.ToolCalls["glob"] != 1 {
+	if s.Events != 5 || s.ToolCalls["read"] != 3 || s.ToolCalls["bash"] != 1 || s.ToolCalls["glob"] != 1 {
 		t.Fatalf("summary %+v", s)
 	}
 	if len(s.LeftRepo) != 1 || !strings.HasSuffix(s.LeftRepo[0], "other/secret.go") {
-		t.Fatalf("left_repo %v: the climb out must be flagged, the repository and .ken must not", s.LeftRepo)
+		t.Fatalf("left_repo %v: the climb out in a call's input must be flagged; the repository, .ken, and paths a call's output or metadata names must not", s.LeftRepo)
 	}
 }
 
