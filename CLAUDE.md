@@ -41,8 +41,12 @@ what each will hold.
 
 ## Who edits what
 
-- **Cowork and vscode-claude both edit tack.** Work on a branch per track; push and merge only when the track is done.
-  Work moves between them through a gitignored `HANDOFF.md` at the repo root, written only on request.
+- **Cowork and vscode-claude both edit tack, and both push straight to `main`** (owner, 2026-10-17). There are no
+  PRs and no track branches.
+- **Product code waits for the owner's yes before it is pushed.** The no-PR rule removes the PR step, not the review.
+  Docs and measurement records go with the task that produced them.
+- Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
+  request.
 - **ken changes** go to ken's own Claude Code as a brief: ken's `CLAUDE.md` makes it ken's sole editor. Each lands as a
   tagged ken release that tack pins (DESIGN §12).
 - **goinfer changes** go through goinfer's own process and gates (DESIGN §13).
@@ -52,11 +56,17 @@ what each will hold.
 ## Working in the tree
 
 - **Never `git add -A` or `git add .`.** Stage explicit paths.
-- **`main` moves under you** once more than one session works here. `git fetch` and rebase before pushing; if a file you
-  are editing has changes you did not make, they are someone else's in-flight work — commit your hunks, leave theirs.
-- **Push finished work, and read CI; do not watch it** (owner rule, from goinfer). Commit locally; push when the owner
-  asks or a finished track merges. Do not hold a turn open on CI or poll it. Read `gh run list --limit 5` at the next
-  natural point (your next push, the start of the next task, always before a merge or a tag) and report a red at once.
+- **`main` moves under you.** More than one session pushes to it, so `git fetch` and rebase onto `origin/main` before
+  every push. If a file you are editing has changes you did not make, they are someone else's in-flight work: commit
+  your hunks and leave theirs.
+- **Before every push, run what CI runs for what you touched, and push only when it passes by exit code:**
+  - `go run ./tools/touched`, after the rebase;
+  - `go run ./tools/lint`;
+  - for a protocol change, the regenerated Swift types and `proto/fixtures`.
+- **A red CI on `main` is fixed first.** Fix forward or revert before other work, and report it.
+- **Push finished work, and read CI; do not watch it** (owner rule, from goinfer). Do not hold a turn open on CI or poll
+  it. Read `gh run list --limit 5` at the next natural point: your next push, the start of the next task, and always
+  before a tag. Report a red at once.
 - **`go.work` is gitignored.** Use one locally to develop against ken or goinfer checkouts; never commit it. A build
   without it resolves dependencies at their pinned tags, which is what CI sees.
 - **`gofmt -l .` is a gate and nothing auto-formats.** Run it before every commit.
