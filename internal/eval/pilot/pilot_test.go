@@ -58,6 +58,9 @@ func TestMain(m *testing.M) {
 			line(fixed+900, fixed+600, " snap=800"))
 		f.Close()
 	}
+	if os.Getenv("TACK_FAKE_OPENCODE_POST") == "1" {
+		fakeProviderRequest(wd)
+	}
 	if os.Getenv("TACK_FAKE_OPENCODE_LEAK") == "1" {
 		fmt.Println(`{"type":"tool_use","part":{"tool":"read","state":{"input":{"filePath":"/home/someone/mycode/ken/x.go"}}}}`)
 	}

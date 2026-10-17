@@ -68,14 +68,14 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	a0, a0k := pilot.Arm{Name: "A0", NoTitle: !*title}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel, NoTitle: !*title}
 	if *smoke {
-		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
-			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, *out, *capFlag, tackRev, stderr)
+		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
+			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, capture, *out, *capFlag, tackRev, stderr)
 		})
 	} else {
 		var ts []pilot.Task
 		if ts, err = pilot.LoadTasks(*tasks, *from, *to); err == nil {
-			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
-				return pilot.RunPilot(ctx, pilot.Options{Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
+			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
+				return pilot.RunPilot(ctx, pilot.Options{Capture: capture, Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
 					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr,
 					CountTokens: counter(srv), TackRev: tackRev})
 			})
@@ -104,7 +104,7 @@ func (e voidError) Error() string { return "void: " + string(e) }
 
 // withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
 // -log-requests, runs fn against it, and saves the server's log into out.
-func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string) error) error {
+func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string, *pilot.Capture) error) error {
 	lockPath, err := eval.TimingLockPath()
 	if err != nil {
 		return err
@@ -145,10 +145,18 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	if why := eval.VoidPath(eval.DecodePathFor(args), plan.DecodePath); why != "" {
 		return voidError(why)
 	}
-	return fn(pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}, serveLog)
+	// opencode talks to goinfer through the recording proxy, so every request and response is kept raw in the run's
+	// directory (pilot.Capture); tack's own count_tokens calls go to goinfer directly.
+	capture, err := pilot.StartCapture(url)
+	if err != nil {
+		return err
+	}
+	defer capture.Close()
+	logf(log, "pilot: requests are recorded raw through %s; sampling %v", capture.URL, pilot.Sampling)
+	return fn(pilot.Server{BaseURL: capture.URL, APIKey: key, Model: "qwen", Context: ctxN, Direct: url}, serveLog, capture)
 }
 
-func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog, out string, capD time.Duration, tackRev string, log io.Writer) error {
+func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog string, capture *pilot.Capture, out string, capD time.Duration, tackRev string, log io.Writer) error {
 	start := time.Now()
 	logf(log, "pilot smoke: start %s, cap %s per run", start.Format("15:04 MST"), capD)
 	var results []pilot.Result
@@ -173,7 +181,12 @@ func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, 
 		stmt := pilot.StatementTokens(ctx, counter(srv), smokeStatement)
 		from := fileSize(serveLog)
 		logf(log, "pilot smoke: %s: opencode, cap %s", arm.Name, capD)
+		capture.SetDir(filepath.Join(runDir, "requests"))
 		r := pilot.RunOpencode(ctx, opencode, srv, arm, repo, smokeStatement, runDir, capD)
+		capture.SetDir("")
+		if err := pilot.CheckSampling(filepath.Join(runDir, "requests")); err != nil {
+			return fmt.Errorf("%s: %w", arm.Name, err)
+		}
 		prompts[arm.Name] = pilot.Prompts(pilot.Requests(serveLog, from, fileSize(serveLog)), stmt).WithInstructions(ctx, counter(srv), repo)
 		logf(log, "pilot smoke: %s: prompt %+v", arm.Name, prompts[arm.Name])
 		_ = os.WriteFile(filepath.Join(runDir, "diff.patch"), []byte(pilot.Diff(repo, smokeBase)), 0o644)
@@ -191,7 +204,11 @@ func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, 
 
 // counter counts a lone user message on the pilot's server, for pilot.StatementTokens.
 func counter(srv pilot.Server) func(context.Context, string) (int, error) {
-	c := goinfer.New("pilot", srv.BaseURL, srv.APIKey, nil)
+	base := srv.BaseURL
+	if srv.Direct != "" {
+		base = srv.Direct
+	}
+	c := goinfer.New("pilot", base, srv.APIKey, nil)
 	return func(ctx context.Context, text string) (int, error) {
 		return c.CountTokens(ctx, server.Request{Model: srv.Model, MaxTokens: 1,
 			Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(text)}}}})

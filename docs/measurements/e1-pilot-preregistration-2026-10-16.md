@@ -99,6 +99,24 @@ definition, "any tool call that reads or writes a path outside the task reposito
 - **The first run's place.** This morning's job 1 stays as a recorded first run on `0e598d3f`, superseded by the
   re-run. It is reported alongside the re-run as such, and is never pooled into its results.
 
+**Amendment 6, 2026-10-17, before the re-run** (owner). **Sampling, and what each run keeps.** Applied to both re-run
+jobs alike.
+
+- **Sampling.** opencode sends Qwen2.5's own recommended settings with every request: temperature 0.7, top_p 0.8,
+  top_k 20 (`internal/eval/pilot/capture.go:Sampling`, in each model's `options` in `opencode.json`).
+  - **Why.** The first run sent no sampling fields, so goinfer sampled at temperature 1.0 over the whole vocabulary.
+    goinfer's session reproduced task 5's malformed call from its recorded request: 26 of 30 samples parsed at those
+    defaults, and 9 of 10 at Qwen's settings, the tenth hitting the length cap.
+- **The check that the settings arrive.** opencode's provider drops its own `topK` setting, so the run relies on it
+  passing the model's options into the request body as written. The job's first run must show all three in its first
+  recorded request, or the job stops there and nothing after it is measured (`CheckSampling`).
+- **Raw bodies.** Every request opencode sends and every response, the stream as streamed, are recorded under each
+  run's `requests/` directory and kept locally on nobara, never committed (`Capture`). goinfer may replay first
+  requests to check snapshot restore. Headers, and so the API key, are not recorded.
+- **The goinfer build.** goinfer main `d5dd01ef`, which holds the tool-call fix (`8abd8057`): a tool list with
+  schemas the call grammar cannot fully hold no longer drops the constraint for the whole list. The binary's sha256
+  goes in each job's record.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the

@@ -347,6 +347,9 @@ type Options struct {
 	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
 	CountTokens func(ctx context.Context, text string) (int, error)
 	TackRev     string // the tack commit the runner was built from, recorded with every run
+	// Capture records every request and response raw, per run, under the run's requests/ directory; nil records none.
+	// With it, the job's first run must show the registered Sampling reaching goinfer, or the job stops.
+	Capture *Capture
 }
 
 // Record is one run's line in results.jsonl.
@@ -366,6 +369,8 @@ type Record struct {
 	Prompt       PromptStats       `json:"prompt"`
 	Events       EventSummary      `json:"events"`
 	DiffBytes    int               `json:"diff_bytes"`
+	Sampling     map[string]any    `json:"sampling"`                    // what opencode was configured to send
+	Captured     int               `json:"captured_requests,omitempty"` // requests recorded raw in requests/
 	At           string            `json:"at"`
 }
 
@@ -395,6 +400,13 @@ func RunPilot(ctx context.Context, o Options) error {
 			if err := enc.Encode(rec); err != nil {
 				return err
 			}
+			if done == 1 && o.Capture != nil { // amendment 6: the sampling must reach goinfer, or nothing after this measures it
+				if err := CheckSampling(filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name, "requests")); err != nil {
+					logf("stopping the job: %v", err)
+					return err
+				}
+				logf("the first request carries the registered sampling: %v", Sampling)
+			}
 			logf("%d/%d task %d %s %s: pass=%v capped %.0f s, cap hit %v, %d requests (started %s, elapsed %s)",
 				done, total, t.N, t.Repo, arm.Name, rec.Pass, rec.CappedSecs, rec.Run.CapHit, len(rec.Requests),
 				start.Format("15:04"), time.Since(start).Round(time.Second))
@@ -405,7 +417,7 @@ func RunPilot(ctx context.Context, o Options) error {
 }
 
 func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
-	rec := Record{Tack: o.TackRev, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339)}
+	rec := Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339)}
 	rec.Run = Result{Arm: arm.Name, Exit: -1}
 	dir := filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name)
 	repo := filepath.Join(dir, "repo")
@@ -429,7 +441,14 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 	}
 	stmt := StatementTokens(ctx, o.CountTokens, t.Statement) // before the window, so its request is not the run's
 	from := size(o.ServeLog)
+	if o.Capture != nil {
+		o.Capture.SetDir(filepath.Join(dir, "requests"))
+	}
 	rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
+	if o.Capture != nil {
+		rec.Captured = o.Capture.Count()
+		o.Capture.SetDir("")
+	}
 	rec.Requests = Requests(o.ServeLog, from, size(o.ServeLog))
 	rec.Prompt = Prompts(rec.Requests, stmt).WithInstructions(ctx, o.CountTokens, repo)
 	rec.Events = SummarizeEvents(filepath.Join(dir, "events.jsonl"), repo)

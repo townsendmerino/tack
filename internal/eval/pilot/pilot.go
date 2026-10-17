@@ -40,6 +40,9 @@ type Server struct {
 	APIKey  string
 	Model   string // the served model name
 	Context int    // the served window, opencode's limit.context
+	// Direct is goinfer's own URL when BaseURL is the recording proxy: tack's count_tokens calls use it, so they are
+	// neither recorded nor counted as the run's requests.
+	Direct string
 }
 
 // Arm is one configuration of opencode.
@@ -59,9 +62,9 @@ const replyLimit = 2048
 
 // Config is the opencode.json the run's repository gets: goinfer's `connect opencode` shape (the
 // @ai-sdk/openai-compatible provider at the server, limit.context the served window, small_model the -fast alias),
-// plus ken-mcp as a local MCP server confined to the repository for A0k.
+// each model's options the registered Sampling, plus ken-mcp as a local MCP server confined to the repository for A0k.
 func Config(s Server, a Arm, repo string) ([]byte, error) {
-	model := map[string]any{"limit": map[string]any{"context": s.Context, "output": replyLimit}}
+	model := map[string]any{"limit": map[string]any{"context": s.Context, "output": replyLimit}, "options": Sampling}
 	cfg := map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": map[string]any{"goinfer": map[string]any{

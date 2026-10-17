@@ -1,0 +1,148 @@
+package pilot
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeProviderRequest is what @ai-sdk/openai-compatible sends for opencode's first request: the configured model's
+// options spread into the body as written (dist/index.js, getArgs). TACK_FAKE_OPENCODE_DROP names an option it drops,
+// as the provider drops its own topK.
+func fakeProviderRequest(wd string) {
+	b, _ := os.ReadFile(filepath.Join(wd, "opencode.json"))
+	var cfg struct {
+		Provider map[string]struct {
+			Options map[string]string                           `json:"options"`
+			Models  map[string]struct{ Options map[string]any } `json:"models"`
+		} `json:"provider"`
+	}
+	_ = json.Unmarshal(b, &cfg)
+	p := cfg.Provider["goinfer"]
+	body := map[string]any{"model": "qwen", "messages": []any{map[string]string{"role": "user", "content": "hi"}}, "stream": true}
+	for k, v := range p.Models["qwen"].Options {
+		if k != os.Getenv("TACK_FAKE_OPENCODE_DROP") {
+			body[k] = v
+		}
+	}
+	j, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", p.Options["baseURL"]+"/chat/completions", bytes.NewReader(j))
+	req.Header.Set("Authorization", "Bearer "+p.Options["apiKey"])
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
+// fakeGoinfer streams two SSE chunks, and fails a request that does not carry the key.
+func fakeGoinfer(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret-key" {
+			w.WriteHeader(401)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"chunk\":1}\n\n")
+		w.(http.Flusher).Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestCaptureRecordsRawBodies: the request and the streamed response are kept raw, with the method, path and status;
+// the API key, a header, is not; and nothing is recorded while no run's directory is set.
+func TestCaptureRecordsRawBodies(t *testing.T) {
+	up := fakeGoinfer(t)
+	c, err := StartCapture(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	post := func() string {
+		req, _ := http.NewRequest("POST", c.URL+"/v1/chat/completions", strings.NewReader(`{"top_k":20}`))
+		req.Header.Set("Authorization", "Bearer secret-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	post() // no directory yet: passed through, not recorded
+	dir := filepath.Join(t.TempDir(), "requests")
+	c.SetDir(dir)
+	if got := post(); !strings.Contains(got, `{"chunk":1}`) || !strings.Contains(got, "[DONE]") {
+		t.Fatalf("the stream through the proxy: %q", got)
+	}
+	c.SetDir("")
+	req, _ := os.ReadFile(filepath.Join(dir, "0001.req.json"))
+	resp, _ := os.ReadFile(filepath.Join(dir, "0001.resp"))
+	meta, _ := os.ReadFile(filepath.Join(dir, "0001.meta"))
+	if string(req) != `{"top_k":20}` || !strings.Contains(string(resp), "[DONE]") || string(meta) != "POST /v1/chat/completions 200\n" {
+		t.Fatalf("recorded %q / %q / %q", req, resp, meta)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		b, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		if strings.Contains(string(b), "secret-key") {
+			t.Fatalf("%s holds the API key", e.Name())
+		}
+	}
+	if len(entries) != 3 {
+		t.Fatalf("%d files recorded, want 3 (one request)", len(entries))
+	}
+}
+
+// TestSamplingCheckThroughThePilot: with the recording, the job's first run must show every registered sampling
+// field reaching goinfer. The provider-shaped fake passes them; when it drops top_k, the job stops after that run.
+func TestSamplingCheckThroughThePilot(t *testing.T) {
+	for _, drop := range []string{"", "top_k"} {
+		t.Run("drop="+drop, func(t *testing.T) {
+			t.Setenv("GOFLAGS", "")
+			f := newFixture(t)
+			mirrors := t.TempDir()
+			if out, err := exec.Command("git", "clone", "-q", "--mirror", f.src, filepath.Join(mirrors, "m.git")).CombinedOutput(); err != nil {
+				t.Fatalf("%v %s", err, out)
+			}
+			t.Setenv("TACK_FAKE_OPENCODE", "ok")
+			t.Setenv("TACK_FAKE_KENMCP", "1")
+			t.Setenv("TACK_FAKE_OPENCODE_POST", "1")
+			t.Setenv("TACK_FAKE_OPENCODE_DROP", drop)
+			up := fakeGoinfer(t)
+			c, err := StartCapture(up.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			out := t.TempDir()
+			err = RunPilot(context.Background(), Options{Tasks: []Task{f.task}, Mirrors: mirrors, Opencode: os.Args[0],
+				A0: Arm{Name: "A0"}, A0k: Arm{Name: "A0k", KenMCP: os.Args[0], KenModel: "/m"},
+				Server: Server{BaseURL: c.URL, APIKey: "secret-key", Model: "qwen", Context: 32768},
+				Out:    out, Cap: time.Minute, Log: io.Discard, Capture: c})
+			records, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
+			runs := strings.Count(string(records), "\n")
+			switch drop {
+			case "":
+				if err != nil || runs != 2 || !strings.Contains(string(records), `"captured_requests":1`) {
+					t.Fatalf("err %v, %d runs:\n%s", err, runs, records)
+				}
+			default:
+				if err == nil || !strings.Contains(err.Error(), "does not carry top_k") || runs != 1 {
+					t.Fatalf("a dropped top_k: err %v, %d runs", err, runs)
+				}
+			}
+		})
+	}
+}
