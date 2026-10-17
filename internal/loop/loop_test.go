@@ -175,6 +175,17 @@ func TestUsagePromptIsPrefilledPlusReused(t *testing.T) {
 	if u.Reused == nil || *u.Reused != 59 {
 		t.Fatalf("Reused = %v, want a pointer to 59", u.Reused)
 	}
+	if u.Prefilled == nil || *u.Prefilled != 35 {
+		t.Fatalf("Prefilled = %v, want a pointer to 35", u.Prefilled)
+	}
+	// A server that does not report reuse: the prompt is message_start's whole figure, and neither split is invented.
+	h = newHarness(t, Budget{}, goinfertest.Reply{Body: goinfertest.SSE("end_turn", proto.ModelBlock{Type: "text", Text: "hi"})})
+	if _, err := h.sess.Turn(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if u := h.payloads(proto.EvUsage)[0].(proto.Usage); u.Reused != nil || u.Prefilled != nil || u.Prompt == 0 {
+		t.Fatalf("pre-G3 usage %+v: Reused and Prefilled must stay nil, Prompt the whole prompt", u)
+	}
 }
 
 func TestToolCallBudget(t *testing.T) {

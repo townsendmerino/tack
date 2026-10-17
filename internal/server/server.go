@@ -95,6 +95,8 @@ type Response struct {
 
 // Usage is what the server reported about a request. Fields the server does not report are nil.
 type Usage struct {
+	// InputTokens is the prompt tokens this request prefilled when Reused is set; from a server that does not report
+	// reuse it is the whole prompt. The whole prompt is InputTokens plus *Reused.
 	InputTokens  int
 	OutputTokens int
 	Reused       *int // prompt tokens served from the cached prefix
