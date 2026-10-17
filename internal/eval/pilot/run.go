@@ -64,28 +64,41 @@ func ArmOrder(n int, a0, a0k Arm) []Arm {
 	return []Arm{a0k, a0}
 }
 
+// OracleResult is one oracle run. Tests maps each oracle test to pass, fail, skip or build-fail; Output is go test's
+// full output, standard output then standard error; Exit is its exit error, empty when it exited 0.
+type OracleResult struct {
+	Pass   bool
+	Tests  map[string]string
+	Output []byte
+	Exit   string
+}
+
 // Oracle copies the commit's named-test files from the mirror into repo and runs the oracle tests as the miner
-// verified them. Every oracle test must report pass; a skip or a build failure fails the task.
-func Oracle(ctx context.Context, mirror string, t Task, repo string) (bool, map[string]string, error) {
+// verified them. Every oracle test must report pass; a skip or a build failure fails the task. The error is for a
+// failure to set the oracle up; a test that fails is in the result.
+func Oracle(ctx context.Context, mirror string, t Task, repo string) (OracleResult, error) {
 	for _, f := range t.TestFiles {
 		src, err := exec.Command("git", "-C", mirror, "show", t.Commit+":"+f).Output()
 		if err != nil {
-			return false, nil, fmt.Errorf("read %s at %s: %w", f, t.Commit[:8], err)
+			return OracleResult{}, fmt.Errorf("read %s at %s: %w", f, t.Commit[:8], err)
 		}
 		p := filepath.Join(repo, f)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return false, nil, err
+			return OracleResult{}, err
 		}
 		if err := os.WriteFile(p, src, 0o644); err != nil {
-			return false, nil, err
+			return OracleResult{}, err
 		}
 	}
-	res, _ := mine.RunTests(ctx, repo, t.Verified.Oracle, t.Packages)
-	pass := len(t.Verified.Oracle) > 0
-	for _, name := range t.Verified.Oracle {
-		pass = pass && res[name] == "pass"
+	res, _, out, runErr := mine.RunTestsOutput(ctx, repo, t.Verified.Oracle, t.Packages)
+	r := OracleResult{Tests: res, Output: out, Pass: len(t.Verified.Oracle) > 0}
+	if runErr != nil {
+		r.Exit = runErr.Error()
 	}
-	return pass, res, nil
+	for _, name := range t.Verified.Oracle {
+		r.Pass = r.Pass && res[name] == "pass"
+	}
+	return r, nil
 }
 
 // Request is one line of goinfer-serve's -log-requests output. Reused counts every prompt row the request did not
@@ -354,24 +367,26 @@ type Options struct {
 
 // Record is one run's line in results.jsonl.
 type Record struct {
-	Tack         string            `json:"tack"`
-	Task         int               `json:"task"`
-	Repo         string            `json:"repo"`
-	Commit       string            `json:"commit"`
-	Base         string            `json:"base"`
-	Run          Result            `json:"run"`
-	CappedSecs   float64           `json:"capped_secs"` // the wall time, or the full cap for a failed run (PAR-1)
-	Pass         bool              `json:"pass"`
-	Oracle       map[string]string `json:"oracle"`
-	OracleErr    string            `json:"oracle_err,omitempty"`
-	KenIndexSecs float64           `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
-	Requests     []Request         `json:"requests"`
-	Prompt       PromptStats       `json:"prompt"`
-	Events       EventSummary      `json:"events"`
-	DiffBytes    int               `json:"diff_bytes"`
-	Sampling     map[string]any    `json:"sampling"`                    // what opencode was configured to send
-	Captured     int               `json:"captured_requests,omitempty"` // requests recorded raw in requests/
-	At           string            `json:"at"`
+	Tack       string            `json:"tack"`
+	Task       int               `json:"task"`
+	Repo       string            `json:"repo"`
+	Commit     string            `json:"commit"`
+	Base       string            `json:"base"`
+	Run        Result            `json:"run"`
+	CappedSecs float64           `json:"capped_secs"` // the wall time, or the full cap for a failed run (PAR-1)
+	Pass       bool              `json:"pass"`
+	Oracle     map[string]string `json:"oracle"`
+	OracleErr  string            `json:"oracle_err,omitempty"`
+	// OracleExit is go test's exit error under the oracle; its full output is the run's oracle.log.
+	OracleExit   string         `json:"oracle_exit,omitempty"`
+	KenIndexSecs float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
+	Requests     []Request      `json:"requests"`
+	Prompt       PromptStats    `json:"prompt"`
+	Events       EventSummary   `json:"events"`
+	DiffBytes    int            `json:"diff_bytes"`
+	Sampling     map[string]any `json:"sampling"`                    // what opencode was configured to send
+	Captured     int            `json:"captured_requests,omitempty"` // requests recorded raw in requests/
+	At           string         `json:"at"`
 }
 
 // RunPilot runs every task's arms in order and appends a Record per run to Out/results.jsonl. A failure to set up a
@@ -455,8 +470,9 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 	diff := Diff(repo, t.Base)
 	rec.DiffBytes = len(diff)
 	_ = os.WriteFile(filepath.Join(dir, "diff.patch"), []byte(diff), 0o644)
-	pass, res, err := Oracle(ctx, mirror, t, repo)
-	rec.Pass, rec.Oracle = pass && !rec.Run.CapHit, res
+	or, err := Oracle(ctx, mirror, t, repo)
+	rec.Pass, rec.Oracle, rec.OracleExit = or.Pass && !rec.Run.CapHit, or.Tests, or.Exit
+	_ = os.WriteFile(filepath.Join(dir, "oracle.log"), or.Output, 0o644)
 	if err != nil {
 		rec.OracleErr = err.Error()
 		rec.Pass = false
@@ -479,4 +495,59 @@ func StatementTokens(ctx context.Context, count func(context.Context, string) (i
 		return 0
 	}
 	return n - one + 1
+}
+
+// CheckRecord is one task's line in oracle-check.jsonl.
+type CheckRecord struct {
+	Tack   string            `json:"tack"`
+	Task   int               `json:"task"`
+	Repo   string            `json:"repo"`
+	Commit string            `json:"commit"`
+	Pass   bool              `json:"pass"`
+	Oracle map[string]string `json:"oracle"`
+	Exit   string            `json:"oracle_exit,omitempty"`
+	Err    string            `json:"err,omitempty"`
+	Secs   float64           `json:"secs"`
+	At     string            `json:"at"`
+}
+
+// OracleCheck is the grader's own check, with no model. For each task it prepares a repository as a run does
+// (PrepareRepo), but at the fix commit, and calls Oracle exactly as a run does. Every task must pass; one that does not
+// cannot be graded in this environment. It writes out/task-NN/oracle-check/{repo,oracle.log} and a line per task to
+// out/oracle-check.jsonl, and returns how many passed.
+func OracleCheck(ctx context.Context, tasks []Task, mirrors, out, tackRev string, log io.Writer) (int, error) {
+	f, err := os.OpenFile(filepath.Join(out, "oracle-check.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	passed := 0
+	for i, t := range tasks {
+		if ctx.Err() != nil {
+			return passed, ctx.Err()
+		}
+		rec := CheckRecord{Tack: tackRev, Task: t.N, Repo: t.Repo, Commit: t.Commit, At: time.Now().UTC().Format(time.RFC3339)}
+		dir := filepath.Join(out, fmt.Sprintf("task-%02d", t.N), "oracle-check")
+		repo := filepath.Join(dir, "repo")
+		t0 := time.Now()
+		if err := PrepareRepo(filepath.Join(mirrors, t.Repo+".git"), t.Commit, repo); err != nil {
+			rec.Err = "prepare: " + err.Error()
+		} else if or, err := Oracle(ctx, filepath.Join(mirrors, t.Repo+".git"), t, repo); err != nil {
+			rec.Err = "oracle: " + err.Error()
+		} else {
+			rec.Pass, rec.Oracle, rec.Exit = or.Pass, or.Tests, or.Exit
+			_ = os.WriteFile(filepath.Join(dir, "oracle.log"), or.Output, 0o644)
+		}
+		rec.Secs = time.Since(t0).Seconds()
+		if rec.Pass {
+			passed++
+		}
+		if err := enc.Encode(rec); err != nil {
+			return passed, err
+		}
+		fmt.Fprintf(log, "%s oracle-check: %d/%d task %d %s %s: pass=%v %v %s (%.0f s)\n", time.Now().Format("15:04:05"),
+			i+1, len(tasks), t.N, t.Repo, t.Commit[:8], rec.Pass, rec.Oracle, rec.Err, rec.Secs)
+	}
+	return passed, nil
 }

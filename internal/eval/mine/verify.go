@@ -129,17 +129,28 @@ func checkCmd(tests, pkgs []string) string {
 }
 
 // RunTests runs the named tests with go test -json, in the environment the check command names, and returns each one's
-// result and the wall time. A test with no result in a package that failed to build is "build-fail". The pilot's oracle
-// calls it too, so tasks are graded exactly as they were verified.
+// result and the wall time. A test with no result is "build-fail": the package failed to build, or go test failed
+// before running it (RunTestsOutput's output says which). The pilot's oracle calls it too, so tasks are graded exactly
+// as they were verified.
 func RunTests(ctx context.Context, dir string, tests, pkgs []string) (map[string]string, float64) {
+	res, secs, _, _ := RunTestsOutput(ctx, dir, tests, pkgs)
+	return res, secs
+}
+
+// RunTestsOutput is RunTests that also returns go test's full output, its standard output followed by its standard
+// error, and its exit error (nil when it exited 0).
+func RunTestsOutput(ctx context.Context, dir string, tests, pkgs []string) (map[string]string, float64, []byte, error) {
 	args := append([]string{"test", "-json", "-count=1", "-timeout", testTimeout, "-buildvcs=false",
 		"-run", "^(" + strings.Join(tests, "|") + ")$"}, pkgs...)
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	t0 := time.Now()
-	out, _ := cmd.Output()
+	runErr := cmd.Run()
 	secs := time.Since(t0).Seconds()
+	out := stdout.Bytes()
 	res := map[string]string{}
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 1<<20), 1<<26)
@@ -157,7 +168,7 @@ func RunTests(ctx context.Context, dir string, tests, pkgs []string) (map[string
 			res[t] = "build-fail"
 		}
 	}
-	return res, secs
+	return res, secs, append(out, stderr.Bytes()...), runErr
 }
 
 // Order sorts candidates into stage 3's fixed order, sha256(repo + "/" + commit) ascending, in a new slice.

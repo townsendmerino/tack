@@ -70,15 +70,24 @@ func TestOracle(t *testing.T) {
 	if err := PrepareRepo(f.src, f.task.Base, unfixed); err != nil {
 		t.Fatal(err)
 	}
-	if pass, res, err := Oracle(ctx, f.src, f.task, unfixed); err != nil || pass || res["TestAdd"] != "fail" {
-		t.Fatalf("unfixed: pass=%v %v %v", pass, res, err)
+	if r, err := Oracle(ctx, f.src, f.task, unfixed); err != nil || r.Pass || r.Tests["TestAdd"] != "fail" ||
+		!strings.Contains(string(r.Output), `"Action":"fail","Package"`) || r.Exit == "" {
+		t.Fatalf("unfixed: %+v %v", r, err)
 	}
 	fixed := filepath.Join(t.TempDir(), "r2")
 	PrepareRepo(f.src, f.task.Base, fixed)
 	b, _ := os.ReadFile(f.fixedSrc)
 	os.WriteFile(filepath.Join(fixed, "calc", "calc.go"), b, 0o644)
-	if pass, res, err := Oracle(ctx, f.src, f.task, fixed); err != nil || !pass {
-		t.Fatalf("fixed: pass=%v %v %v", pass, res, err)
+	if r, err := Oracle(ctx, f.src, f.task, fixed); err != nil || !r.Pass || r.Exit != "" {
+		t.Fatalf("fixed: %+v %v", r, err)
+	}
+	// A build failure is a test with no result. The output is what says why: here, the compile error.
+	broken := filepath.Join(t.TempDir(), "r3")
+	PrepareRepo(f.src, f.task.Base, broken)
+	os.WriteFile(filepath.Join(broken, "calc", "calc.go"), []byte("package calc\n\nfunc Add(a, b int) int { return undefinedName }\n"), 0o644)
+	if r, err := Oracle(ctx, f.src, f.task, broken); err != nil || r.Pass || r.Tests["TestAdd"] != "build-fail" ||
+		!strings.Contains(string(r.Output), "undefined: undefinedName") {
+		t.Fatalf("broken: %+v %v\n%s", r, err, r.Output)
 	}
 }
 
@@ -231,6 +240,12 @@ func TestRunPilotEndToEnd(t *testing.T) {
 	if strings.Contains(mustRead(t, filepath.Join(out, "task-01", "A0k", "diff.patch")), ".ken") {
 		t.Error("ken's index reached A0k's graded diff")
 	}
+	// Every run keeps the oracle's full output beside its record: the passing run's and the failing run's.
+	if !strings.Contains(mustRead(t, filepath.Join(out, "task-01", "A0", "oracle.log")), `"Action":"pass","Package"`) ||
+		!strings.Contains(mustRead(t, filepath.Join(out, "task-01", "A0k", "oracle.log")), `"Action":"fail","Package"`) ||
+		a0k.OracleExit == "" || a0.OracleExit != "" {
+		t.Errorf("oracle output: A0 exit %q, A0k exit %q", a0.OracleExit, a0k.OracleExit)
+	}
 	// Each arm's fixed prompt, and the title call and re-prefill counts, come through runOne from the run's log window.
 	for arm, fixed := range map[string]int{"A0": 1000, "A0k": 4500} {
 		p := recs[arm].Prompt
@@ -249,4 +264,36 @@ func mustRead(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestOracleCheck: at the fix commit the oracle passes, with its output and record kept. A task whose oracle cannot
+// pass there is reported, not skipped.
+func TestOracleCheck(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	f := newFixture(t)
+	bad := f.task
+	bad.N = 2
+	bad.Verified = &mine.Verified{OK: true, Oracle: []string{"TestNoSuchTest"}}
+	mirrors, out := t.TempDir(), t.TempDir()
+	if b, err := exec.Command("git", "clone", "-q", "--mirror", f.src, filepath.Join(mirrors, f.task.Repo+".git")).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	var log strings.Builder
+	passed, err := OracleCheck(context.Background(), []Task{f.task, bad}, mirrors, out, "rev", &log)
+	if err != nil || passed != 1 {
+		t.Fatalf("passed %d, err %v\n%s", passed, err, log.String())
+	}
+	b, _ := os.ReadFile(filepath.Join(out, "oracle-check.jsonl"))
+	var recs []CheckRecord
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r CheckRecord
+		json.Unmarshal([]byte(l), &r)
+		recs = append(recs, r)
+	}
+	if len(recs) != 2 || !recs[0].Pass || recs[0].Commit != f.task.Commit || recs[1].Pass || recs[1].Oracle["TestNoSuchTest"] != "build-fail" {
+		t.Fatalf("records %+v", recs)
+	}
+	if o, err := os.ReadFile(filepath.Join(out, "task-01", "oracle-check", "oracle.log")); err != nil || !strings.Contains(string(o), `"Test":"TestAdd"`) {
+		t.Fatalf("oracle.log: %v %q", err, o)
+	}
 }

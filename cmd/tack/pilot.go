@@ -49,8 +49,12 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	capFlag := fs.Duration("cap", 10*time.Minute, "wall-time cap per run (the registration's is 10m)")
 	title := fs.Bool("title", true, "leave opencode's title agent on; -title=false turns it off on both arms")
 	rev := fs.String("tack-rev", "", "the tack commit this binary must have been built from (checked against its build info)")
+	oracleCheck := fs.Bool("oracle-check", false, "no model: run each task's oracle at its fix commit, as a run grades it; every task must pass")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *oracleCheck {
+		return oracleCheckCmd(*tasks, *from, *to, *mirrors, *out, *rev, stdout, stderr)
 	}
 	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
 		*modelPath == "" || *out == "" {
@@ -221,4 +225,53 @@ func fileSize(p string) int64 {
 		return 0
 	}
 	return fi.Size()
+}
+
+// oracleCheckCmd is `tack eval pilot -oracle-check`: the grader's own check, with no model (pilot.OracleCheck). It holds
+// the timing lock, as builds and tests load the box, and passes only if every task's oracle passes at its fix commit.
+func oracleCheckCmd(tasks string, from, to int, mirrors, out, rev string, stdout, stderr io.Writer) int {
+	if tasks == "" || mirrors == "" || out == "" {
+		fmt.Fprintln(stderr, "usage: tack eval pilot -oracle-check -tasks pilot.jsonl [-from N -to M] -mirrors DIR -out DIR")
+		return exitUsage
+	}
+	tackRev, err := eval.Revision(rev)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "oracle check: not started: "+err.Error()))
+		return exitError
+	}
+	ts, err := pilot.LoadTasks(tasks, from, to)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		return exitError
+	}
+	lockPath, err := eval.TimingLockPath()
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		return exitError
+	}
+	lock, err := eval.AcquireTimingLock(lockPath, "tack eval pilot -oracle-check")
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		return exitHeld
+	}
+	defer lock.Release()
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		return exitError
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	passed, err := pilot.OracleCheck(ctx, ts, mirrors, out, tackRev, stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, fmt.Sprintf("oracle check: stopped after %d passed: %v", passed, err)))
+		return exitError
+	}
+	if passed != len(ts) {
+		fmt.Fprintln(stdout, gate.Verdict(gate.Fail, fmt.Sprintf("oracle check: %d of %d tasks pass at their fix commit", passed, len(ts))))
+		return exitError
+	}
+	fmt.Fprintln(stdout, gate.Verdict(gate.OK, fmt.Sprintf("oracle check: all %d tasks pass at their fix commit", len(ts))))
+	return exitOK
 }
