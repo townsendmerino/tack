@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -63,6 +64,57 @@ func runFlag(prog, arg string) string {
 	return ""
 }
 
+// changesPrograms are environment variables that change what a covered program runs or loads: go's flags, toolchain
+// and cache program; git's config, ssh, pager, editor and helpers; the shells' startup files; the dynamic loader's
+// preloads. Setting one is never covered by a rule (go test with GOFLAGS=-toolexec=… is go test -toolexec), and a
+// program runs with them only as approved (internal/shell).
+var changesPrograms = map[string]bool{
+	"GOFLAGS": true, "GOENV": true, "GOTOOLCHAIN": true, "GOCACHEPROG": true, "CC": true, "CXX": true,
+	"GIT_CONFIG": true, "GIT_CONFIG_COUNT": true, "GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true,
+	"GIT_CONFIG_PARAMETERS": true, "GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_EXTERNAL_DIFF": true,
+	"GIT_EXEC_PATH": true, "GIT_ASKPASS": true, "SSH_ASKPASS": true, "GIT_EDITOR": true, "GIT_PAGER": true,
+	"PAGER": true, "EDITOR": true, "VISUAL": true, "BASH_ENV": true, "ENV": true,
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
+}
+
+// changesProgramsPrefix are the families of such variables: git's numbered config pairs, and macOS's dynamic loader.
+var changesProgramsPrefix = []string{"GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "DYLD_"}
+
+// ChangesPrograms reports whether the environment variable name changes what a covered program runs or loads.
+func ChangesPrograms(name string) bool {
+	if changesPrograms[name] {
+		return true
+	}
+	for _, p := range changesProgramsPrefix {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func setsVariable(name string) string {
+	return fmt.Sprintf("setting %s changes what programs run, which no rule covers", name)
+}
+
+// assignment checks one assignment, in any of its forms (a prefix, a plain assignment, export, declare, local).
+func assignment(a *syntax.Assign) []string {
+	if a.Name == nil { // a declaration's argument evaluated at run time: an option, or a name from an expansion
+		if a.Value != nil {
+			if v, ok := literal(a.Value); ok && strings.HasPrefix(v, "-") {
+				return nil
+			}
+			return []string{fmt.Sprintf("a declaration of %s expands at run time and could set a variable that "+
+				"changes what programs run", source(a.Value))}
+		}
+		return nil
+	}
+	if ChangesPrograms(a.Name.Value) {
+		return []string{setsVariable(a.Name.Value)}
+	}
+	return nil
+}
+
 // wrappers run the program named by their first argument that is not a flag; approval looks through them.
 var wrappers = map[string]bool{"exec": true, "command": true, "builtin": true, "nohup": true, "time": true}
 
@@ -80,8 +132,20 @@ func (e *Engine) checkShell(command string) ([]Simple, []string) {
 	}
 	var cmds []Simple
 	var why []string
+	for _, name := range sortedKeys(e.SessionEnv) {
+		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != os.Getenv(name) {
+			why = append(why, fmt.Sprintf("%s=%s was set by an earlier command in this session and changes what programs "+
+				"run, which no rule covers", name, v))
+		}
+	}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		switch n := n.(type) {
+		case *syntax.Assign:
+			why = append(why, assignment(n)...)
+		case *syntax.WordIter:
+			if n.Name != nil && ChangesPrograms(n.Name.Value) {
+				why = append(why, setsVariable(n.Name.Value))
+			}
 		case *syntax.CallExpr:
 			if len(n.Args) == 0 { // assignments only
 				return true
@@ -110,7 +174,7 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 		case safeBuiltins[name]:
 			s := Simple{Builtin: name}
 			s.Args, s.Literal = args(words[1:])
-			return &s, nil
+			return &s, namedVariables(name, s)
 		case stringRunners[name]:
 			return nil, []string{fmt.Sprintf("%s runs code from a string, which no rule covers", name)}
 		case wrappers[name]:
@@ -130,6 +194,18 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 		}
 		s := Simple{Program: prog}
 		s.Args, s.Literal = args(words[1:])
+		if filepath.Base(prog) == "env" {
+			for i, a := range s.Args {
+				name, _, isAssign := strings.Cut(a, "=")
+				switch {
+				case !s.Literal[i]:
+					return &s, []string{fmt.Sprintf("env's argument %s expands at run time and could set a variable that "+
+						"changes what programs run", a)}
+				case isAssign && ChangesPrograms(name):
+					return &s, []string{setsVariable(name)}
+				}
+			}
+		}
 		if _, ok := runsPrograms[filepath.Base(prog)]; ok {
 			var why []string
 			for i, a := range s.Args {
@@ -363,4 +439,40 @@ func IsSecret(p string) bool {
 		}
 	}
 	return false
+}
+
+// namedVariables checks the builtins that set a variable named by an argument: read's names, and printf -v's.
+func namedVariables(builtin string, s Simple) []string {
+	var names []string
+	switch builtin {
+	case "read":
+		names = s.Args
+	case "printf":
+		for i := 0; i+1 < len(s.Args); i++ {
+			if s.Args[i] == "-v" {
+				names = append(names, s.Args[i+1])
+			}
+		}
+	default:
+		return nil
+	}
+	var why []string
+	for i, n := range names {
+		if builtin == "read" && !s.Literal[i] {
+			why = append(why, fmt.Sprintf("read's argument %s expands at run time and could name a variable that "+
+				"changes what programs run", n))
+		} else if ChangesPrograms(n) {
+			why = append(why, setsVariable(n))
+		}
+	}
+	return why
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

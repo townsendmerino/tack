@@ -12,6 +12,7 @@ import (
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
 )
@@ -221,7 +222,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					Result: fmt.Sprintf("error: not run: the turn's tool-call budget (%d) was exceeded", s.cfg.Budget.MaxToolCalls)}
 			default:
 				calls++
-				refused, err := s.permit(ctx, b, callEv.Seq)
+				refused, by, err := s.permit(ctx, b, callEv.Seq)
 				if err != nil {
 					return proto.StopError, err
 				}
@@ -230,7 +231,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				if fin, full, err = s.runTool(ctx, b, callEv.Seq); err != nil {
+				if fin, full, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq); err != nil {
 					return proto.StopError, err
 				}
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -271,26 +272,27 @@ type Approval struct {
 }
 
 // permit decides a call that changes something, records the decision, and returns the call's refused result when it
-// may not run, or nil when it may. A read-only tool needs no decision and records none.
-func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64) (*proto.ToolFinished, error) {
+// may not run, or nil and who allowed it (perms.ByUser, ByRule or ByMode) when it may. A read-only tool needs no
+// decision and records none.
+func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64) (*proto.ToolFinished, string, error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
 	if !ok || t.ReadOnly() {
-		return nil, nil
+		return nil, "", nil
 	}
-	resolve := func(r proto.PermissionResolved) (*proto.ToolFinished, error) {
+	resolve := func(r proto.PermissionResolved) (*proto.ToolFinished, string, error) {
 		r.ID = b.ID
 		if _, err := s.record(proto.EvPermissionResolved, callSeq, r); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if r.Decision == proto.DecisionAllow {
-			return nil, nil
+			return nil, r.By, nil
 		}
 		text := "error: not run: " + strings.Join(r.Reasons, "; ")
 		if r.By == proto.DecidedByNoUser {
 			text = "error: not run: it needs the user's approval, and no one is attached to answer (" +
 				strings.Join(r.Reasons, "; ") + "). Find a way that needs no approval, or say what you would run and why."
 		}
-		return &proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: text}, nil
+		return &proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: text}, "", nil
 	}
 	if s.cfg.Perms == nil {
 		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByMode,
@@ -315,7 +317,7 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 		}
 	}
 	if _, err := s.record(proto.EvPermissionRequested, callSeq, req); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if s.cfg.Approve == nil {
 		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByNoUser, Reasons: v.Reasons})

@@ -167,3 +167,42 @@ func TestRunFlagsAreNeverCovered(t *testing.T) {
 		}
 	}
 }
+
+// TestEnvironmentChangesAreNeverCovered: setting a variable that changes what a covered program runs asks, in every
+// form; so does one an earlier command left in the session. A harmless variable does not.
+func TestEnvironmentChangesAreNeverCovered(t *testing.T) {
+	for _, name := range []string{"GOFLAGS", "GOENV", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_SSH", "GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH",
+		"PAGER", "GIT_PAGER", "EDITOR", "VISUAL", "BASH_ENV", "ENV", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
+		"DYLD_LIBRARY_PATH"} {
+		if !ChangesPrograms(name) {
+			t.Errorf("%s is not treated as changing what programs run", name)
+		}
+	}
+	e := engine(t, true)
+	for _, cmd := range []string{
+		"export GOFLAGS=-toolexec=/evil",
+		"GOFLAGS=-toolexec=/evil go test ./...",
+		"declare -x GOFLAGS=-toolexec=/evil; go test",
+		"export GIT_CONFIG_KEY_0=core.fsmonitor",
+		"DYLD_INSERT_LIBRARIES=/evil go test",
+		"for GOFLAGS in -toolexec=/evil; do go test; done",
+		"read GOFLAGS",
+		"printf -v GOFLAGS %s -toolexec=/evil",
+		"export $NAME=x",
+	} {
+		if v := e.Decide(proto.ModeAsk, "bash", false, bash(cmd)); v.Action != Ask ||
+			!(strings.Contains(strings.Join(v.Reasons, ";"), "changes what programs run")) {
+			t.Errorf("%q: %s %v", cmd, v.Action, v.Reasons)
+		}
+	}
+	if v := e.Decide(proto.ModeAsk, "bash", false, bash("export FOO=1 && go test")); v.Action != Allow {
+		t.Errorf("a harmless variable: %s %v", v.Action, v.Reasons)
+	}
+	// Inherited from an earlier command: every command asks, naming it.
+	e.SessionEnv = map[string]string{"GOFLAGS": "-toolexec=/evil", "FOO": "1"}
+	if v := e.Decide(proto.ModeAsk, "bash", false, bash("go test ./...")); v.Action != Ask ||
+		!strings.Contains(strings.Join(v.Reasons, ";"), "GOFLAGS=-toolexec=/evil was set by an earlier command") {
+		t.Errorf("inherited GOFLAGS: %s %v", v.Action, v.Reasons)
+	}
+}

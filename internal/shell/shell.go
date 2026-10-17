@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,14 +42,15 @@ type State struct {
 
 // request is what the session sends the child on stdin.
 type request struct {
-	Command   string   `json:"command"`
-	State     State    `json:"state"`
-	Root      string   `json:"root"`
-	Approved  []string `json:"approved"`  // programs approval saw, absolute and resolved
-	RunFlags  []string `json:"run_flags"` // "<program> <flag>" for run-program flags approval saw literally
-	Rules     []string `json:"rules"`     // the engine's rules, as written
-	Path      string   `json:"path"`      // the PATH the engine resolves rules on
-	Sandboxed bool     `json:"sandboxed"` // rules allow a program approval did not see only inside the sandbox
+	Command    string   `json:"command"`
+	State      State    `json:"state"`
+	Root       string   `json:"root"`
+	Approved   []string `json:"approved"`    // programs approval saw, absolute and resolved
+	RunFlags   []string `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
+	Rules      []string `json:"rules"`       // the engine's rules, as written
+	Path       string   `json:"path"`        // the PATH the engine resolves rules on
+	Sandboxed  bool     `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
+	ApprovedBy string   `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
 }
 
 // reply is what the child writes to fd 3 when the command ends.
@@ -89,7 +91,8 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	if s.state.Dir == "" {
 		s.state.Dir = s.Engine.Root
 	}
-	req := request{Command: command, State: s.state, Root: s.Engine.Root, Path: s.Engine.Path, Sandboxed: s.Engine.Sandboxed}
+	req := request{Command: command, State: s.state, Root: s.Engine.Root, Path: s.Engine.Path, Sandboxed: s.Engine.Sandboxed,
+		ApprovedBy: approvedBy(ctx)}
 	for _, c := range s.Engine.Analyze(command) {
 		if c.Program == "" {
 			continue
@@ -152,6 +155,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 		return res, nil
 	}
 	s.state = rep.State
+	s.Engine.SessionEnv = maps.Clone(rep.State.Env) // approval sees what later commands inherit
 	res.Exit, res.Stopped = rep.Exit, rep.Stopped
 	if out.dropped > 0 {
 		res.Output += fmt.Sprintf("\n[… %d more bytes of output were not kept …]\n", out.dropped)
@@ -297,6 +301,9 @@ func (ck *checker) stop(format string, args ...any) error {
 // exec checks a program as the interpreter is about to run it, after expansion.
 func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
+		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
+			return next(ctx, args)
+		}
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
@@ -321,6 +328,14 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 					path, strings.Join(args, " "))
 			}
 		}
+		// A program runs with the variables that change what programs run (perms.ChangesPrograms) as approved: as in
+		// tack's own environment, unless the user approved this command and saw this program in it.
+		if !(ck.req.ApprovedBy == perms.ByUser && ck.approved[path]) {
+			if changed := changedEnv(hc.Env); changed != "" {
+				return ck.stop("%s would run with %s, which approval did not see; a variable that changes what "+
+					"programs run is approved only by the user, for the command that sets it", filepath.Base(path), changed)
+			}
+		}
 		return next(ctx, args)
 	}
 }
@@ -343,4 +358,33 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 		return nil, ck.stop("a redirection opens %s, which is on the secrets deny-list", path)
 	}
 	return interp.DefaultOpenHandler()(ctx, path, flag, perm)
+}
+
+// changedEnv returns, as NAME=value, the first exported variable that changes what programs run and differs from
+// tack's own environment (the child's, which it inherits from the daemon), or "".
+func changedEnv(env expand.Environ) string {
+	var out string
+	env.Each(func(name string, vr expand.Variable) bool {
+		if vr.Exported && vr.Kind == expand.String && perms.ChangesPrograms(name) && vr.Str != os.Getenv(name) {
+			out = name + "=" + vr.Str
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+type approvalKey struct{}
+
+// WithApproval tells Run who allowed the command: perms.ByUser, perms.ByRule or perms.ByMode. Without it Run treats
+// the command as allowed by a rule, the strictest.
+func WithApproval(ctx context.Context, by string) context.Context {
+	return context.WithValue(ctx, approvalKey{}, by)
+}
+
+func approvedBy(ctx context.Context) string {
+	if by, ok := ctx.Value(approvalKey{}).(string); ok && by != "" {
+		return by
+	}
+	return perms.ByRule
 }

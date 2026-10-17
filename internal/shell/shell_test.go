@@ -126,3 +126,52 @@ func TestLeavingTheRepositoryResetsTheDirectory(t *testing.T) {
 		t.Fatalf("pwd after leaving: %q", r.Output)
 	}
 }
+
+// TestEnvironmentBypass is the bypass the rule exists for: an earlier command exports GOFLAGS=-toolexec=…, and then a
+// rule-covered go test would run another program. Approval must ask, and if the command runs anyway as rule-allowed,
+// the run-time check must stop it before go starts. In one command the user approved, the user saw the export, and it
+// runs; in auto mode inside the sandbox, the sandbox is the boundary, and it runs.
+func TestEnvironmentBypass(t *testing.T) {
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\necho \"go ran with GOFLAGS=$GOFLAGS\"\n"), 0o755)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOFLAGS", "")
+	s := session(t, true, "go test")
+	s.Engine.Path = os.Getenv("PATH")
+	user := WithApproval(context.Background(), perms.ByUser)
+	rule := WithApproval(context.Background(), perms.ByRule)
+
+	if r, err := s.Run(user, "export GOFLAGS=-toolexec=/evil", 10*time.Second); err != nil || r.Exit != 0 {
+		t.Fatalf("the user-approved export: %+v %v", r, err)
+	}
+	if v := s.Engine.Decide("ask", "bash", false, []byte(`{"command":"go test ./..."}`)); v.Action != perms.Ask ||
+		!strings.Contains(strings.Join(v.Reasons, ";"), "GOFLAGS=-toolexec=/evil was set by an earlier command") {
+		t.Fatalf("approval of the later go test: %s %v", v.Action, v.Reasons)
+	}
+	r, err := s.Run(rule, "go test ./...", 10*time.Second)
+	if err != nil || !strings.Contains(r.Stopped, "would run with GOFLAGS=-toolexec=/evil") || strings.Contains(r.Output, "go ran") {
+		t.Fatalf("a rule-allowed go test with the inherited GOFLAGS ran: %+v %v", r, err)
+	}
+
+	s = session(t, true, "go test")
+	s.Engine.Path = os.Getenv("PATH")
+	if r := runWith(t, s, rule, "export GOFLAGS=-toolexec=/evil && go test"); !strings.Contains(r.Stopped, "would run with GOFLAGS") {
+		t.Fatalf("rule-allowed, in one command: %+v", r)
+	}
+	if r := runWith(t, s, user, "export GOFLAGS=-x && go test"); r.Stopped != "" || r.Output != "go ran with GOFLAGS=-x\n" {
+		t.Fatalf("user-approved, in one command: %+v", r)
+	}
+	auto := WithApproval(context.Background(), perms.ByMode)
+	if r := runWith(t, s, auto, "export GOFLAGS=-y && go test"); r.Stopped != "" || r.Output != "go ran with GOFLAGS=-y\n" {
+		t.Fatalf("auto inside the sandbox: %+v", r)
+	}
+}
+
+func runWith(t *testing.T, s *Session, ctx context.Context, cmd string) Result {
+	t.Helper()
+	r, err := s.Run(ctx, cmd, 10*time.Second)
+	if err != nil {
+		t.Fatalf("%q: %v", cmd, err)
+	}
+	return r
+}
