@@ -179,8 +179,9 @@ dropped from the queue before it starts.
     ten tasks.
 - **What is new in tack since the re-run.** The binary is built from main with the oracle's full output kept per run
   (`oracle.log`), the refusal to start without `go` on the PATH, and the gate below.
-  - The job's PATH is set explicitly to nobara's interactive-shell PATH, so `go` resolves whoever starts the queue.
-    opencode is a native binary.
+  - nobara's night queue puts `/usr/local/go/bin` at the front of every job's PATH, and refuses to start if `go`
+    is not found there (`night-hooks.toml` `path_prepend` and `require_on_path`, goinfer main `1afe5976`). The jobs
+    set no PATH of their own. opencode is a native binary.
 - **The gate.** Each job runs only if tonight's E0 run of `qwen2.5-coder-7b-q4km-cuda` meets E0's smoke rule: at least
   17 of 20 on both runs, 0 malformed (`tack eval pilot -e0-results … -e0-arm …`, `eval.SmokeGate`).
   - Otherwise the job records why in `NOT-RUN.txt`, its verdict says "not run: E0 gate", and it exits 6. Nothing is
