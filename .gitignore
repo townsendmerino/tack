@@ -6,6 +6,7 @@ go.work
 go.work.sum
 
 /bin/
+/tack
 /dist/
 .DS_Store
 
