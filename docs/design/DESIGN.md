@@ -817,7 +817,8 @@ tack pin the open turn's blocks instead.
 goinfer's records give one working agent configuration (Qwen2.5-7B-Instruct `q4_k_m` on nobara) and a list of
 checkpoints not yet measured under an agent: `phi3-mini-4k`, `granite-4.0-h-tiny`, `gpt-oss-20b`, `gemma-4-26b-a4b`
 (`docs/integrations/opencode.md`). The Mac attempts used the CPU path; Metal has not been tried for agent use. E0
-measures the candidates on both machines, Metal included, and picks the default per machine (§15.1).
+measures the candidates on both machines, Metal included, and picks the default per machine (§15.1). `phi3-mini-4k`
+is out: goinfer has no tool-calling template for it (E0 pre-registration, amendment 5).
 
 ---
 

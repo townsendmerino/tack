@@ -27,7 +27,8 @@ import (
 // With TACK_FAKE_GOINFER=1 this test binary is a small goinfer-serve: it refuses an -ctx above TACK_FAKE_MAX_CTX,
 // answers smoke prompts by calling grep with the prompt's quoted word, counts a token per four bytes, streams one
 // token per word, and implements `check`. TACK_FAKE_DECODE sets the banner's decode path, TACK_FAKE_CHECK_FAIL=1 makes
-// `check` fail two rows, and TACK_FAKE_CRASH=1 makes the server exit on its first /v1/messages request.
+// `check` fail two rows, TACK_FAKE_CRASH=1 makes the server exit on its first /v1/messages request,
+// TACK_FAKE_CRASH_LOAD=1 makes it exit on the load, and TACK_FAKE_LOAD_DELAY (a duration) holds the load that long.
 func TestMain(m *testing.M) {
 	if os.Getenv("TACK_FAKE_GOINFER") == "1" {
 		fakeServe(os.Args[1:])
@@ -106,6 +107,12 @@ func fakeServe(args []string) {
 	admin.HandleFunc("POST /admin/models/load", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Name, Path string }
 		json.NewDecoder(r.Body).Decode(&req)
+		if os.Getenv("TACK_FAKE_CRASH_LOAD") == "1" {
+			os.Exit(3)
+		}
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_LOAD_DELAY")); err == nil {
+			time.Sleep(d)
+		}
 		if maxCtx > 0 && *ctxN > maxCtx {
 			w.WriteHeader(400)
 			fmt.Fprintf(w, `{"error":{"message":"resident context %d does not fit"}}`, *ctxN)
@@ -326,7 +333,7 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatalf("a 4096 window must fail and skip timing: %+v", byPhase["tiny-window/verdict"])
 	}
 	// Both arms were measured: the fail is a result, and a clean run with timing is not voided by its own phases.
-	if len(results) != 2 || len(results[0].Void) > 0 || len(results[1].Void) > 0 || results[1].Verdict != "fail" {
+	if len(results) != 2 || len(results[0].Reasons) > 0 || len(results[1].Reasons) > 0 || results[1].Verdict != "fail" {
 		t.Fatalf("results %+v", results)
 	}
 	for _, want := range []string{"enter fit", "leave smoke", "heartbeat", "-ctx 16384 refused"} {
@@ -463,7 +470,7 @@ func TestDisqualifiedIsMeasured(t *testing.T) {
 	t.Setenv("TACK_FAKE_CHECK_FAIL", "1")
 	results, s, summary, exit := runFake(t, context.Background(),
 		Arm{Name: "small", ModelPath: "/m/small.gguf", Args: cpu, Ctx: []int{4096}})
-	if len(results) != 1 || results[0].Verdict != "fail" || len(results[0].Void) > 0 || !strings.Contains(s, `"failed_rows":2`) {
+	if len(results) != 1 || results[0].Verdict != "fail" || len(results[0].Reasons) > 0 || !strings.Contains(s, `"failed_rows":2`) {
 		t.Fatalf("results %+v:\n%s", results, s)
 	}
 	if exit != 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: PASS") {
@@ -477,7 +484,7 @@ func TestCrashIsVoid(t *testing.T) {
 	t.Setenv("TACK_FAKE_CRASH", "1")
 	results, _, summary, exit := runFake(t, context.Background(),
 		Arm{Name: "crashes", ModelPath: "/m/c.gguf", Args: cpu, Ctx: []int{8192}})
-	if len(results) != 1 || results[0].Verdict != "void" || !strings.Contains(strings.Join(results[0].Void, ";"), "got no answer") {
+	if len(results) != 1 || results[0].Verdict != "void" || !strings.Contains(strings.Join(results[0].Reasons, ";"), "got no answer") {
 		t.Fatalf("results %+v", results)
 	}
 	if exit == 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: INCONCLUSIVE") {
@@ -492,6 +499,84 @@ func TestInterruptedIsVoid(t *testing.T) {
 	results, _, summary, exit := runFake(t, ctx, Arm{Name: "late", ModelPath: "/m/l.gguf", Args: cpu, Ctx: []int{8192}})
 	if len(results) != 1 || results[0].Verdict != "void" || exit == 0 || !strings.Contains(summary, "not reached") {
 		t.Fatalf("results %+v, exit %d, summary:\n%s", results, exit, summary)
+	}
+}
+
+// probe is a fit probe as nobara's manifest has them: it asks for CUDA and is expected to fall back to the CPU.
+func probe(name string) Arm {
+	return Arm{Name: name, ModelPath: "/m/" + name + ".gguf", Args: []string{"-backend", "cuda"}, ExpectFallback: "cpu",
+		Ctx: []int{16384}}
+}
+
+// TestProbeFallsBackAsExpected: the expected fallback is the probe's measurement. It stops at the fit, and the run
+// passes.
+func TestProbeFallsBackAsExpected(t *testing.T) {
+	t.Setenv("TACK_FAKE_DECODE", "cpu (int4) — requested cuda → running on cpu: CUDA_ERROR_OUT_OF_MEMORY")
+	results, s, summary, exit := runFake(t, context.Background(), probe("gpt-oss"))
+	if len(results) != 1 || results[0].Verdict != "fallback" || len(results[0].Reasons) > 0 {
+		t.Fatalf("results %+v", results)
+	}
+	if strings.Contains(s, `"phase":"check"`) || strings.Contains(s, `"phase":"smoke"`) {
+		t.Errorf("a fit probe ran past the fit:\n%s", s)
+	}
+	if exit != 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: PASS") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestProbeGPUFitIsFlagged: a probe whose GPU load now fits is good news, and is reported, not passed: the arm can
+// become a measured one.
+func TestProbeGPUFitIsFlagged(t *testing.T) {
+	t.Setenv("TACK_FAKE_DECODE", "cuda-resident (int4)")
+	results, s, summary, exit := runFake(t, context.Background(), probe("gpt-oss"))
+	if len(results) != 1 || results[0].Verdict != "unexpected" || !strings.Contains(strings.Join(results[0].Reasons, ";"), "good news") {
+		t.Fatalf("results %+v", results)
+	}
+	if strings.Contains(s, `"phase":"check"`) {
+		t.Errorf("a fit probe ran past the fit:\n%s", s)
+	}
+	if exit == 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: INCONCLUSIVE") || !strings.Contains(summary, "unexpected: gpt-oss") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestProbeCrashIsReported: a probe whose server dies on the load did not fall back; it got no answer.
+func TestProbeCrashIsReported(t *testing.T) {
+	t.Setenv("TACK_FAKE_CRASH_LOAD", "1")
+	results, _, summary, exit := runFake(t, context.Background(), probe("gemma-26b"))
+	if len(results) != 1 || results[0].Verdict != "void" || !strings.Contains(strings.Join(results[0].Reasons, ";"), "no answer") {
+		t.Fatalf("results %+v", results)
+	}
+	if exit == 0 || !strings.Contains(summary, "void: gemma-26b") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestProbeTimeoutIsReported: a probe whose load outlasts the run's deadline (night.py's timeout) is void.
+func TestProbeTimeoutIsReported(t *testing.T) {
+	t.Setenv("TACK_FAKE_LOAD_DELAY", "10s")
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	results, _, _, exit := runFake(t, ctx, probe("gemma-26b"))
+	if len(results) != 1 || results[0].Verdict != "void" || !strings.Contains(strings.Join(results[0].Reasons, ";"), "interrupted") || exit == 0 {
+		t.Fatalf("results %+v, exit %d", results, exit)
+	}
+}
+
+// TestProbeRefusedIsReported: a probe goinfer refuses outright did not fall back either.
+func TestProbeRefusedIsReported(t *testing.T) {
+	t.Setenv("TACK_FAKE_MAX_CTX", "8192")
+	results, _, _, exit := runFake(t, context.Background(), probe("huge"))
+	if len(results) != 1 || results[0].Verdict != "unexpected" || exit == 0 {
+		t.Fatalf("results %+v, exit %d", results, exit)
+	}
+}
+
+func TestManifestRefusesAProbeOfItsOwnPath(t *testing.T) {
+	m := Manifest{Box: "b", GoinferServe: "/b", GoinferRev: "r", Workspace: "/w", Arms: []Arm{{Name: "a",
+		ModelPath: "/Users/x/models/q.gguf", Args: []string{"-backend", "cpu"}, ExpectFallback: "cpu"}}}
+	if err := m.validate("/Users/x/models"); err == nil || !strings.Contains(err.Error(), "which is the path it names") {
+		t.Fatalf("validate = %v", err)
 	}
 }
 

@@ -66,6 +66,23 @@ phi3 arm's records were read; the reason is the exit status, not any arm's numbe
   are re-run only after goinfer reports its P28 fix (goinfer `docs/queue-performance.md`); their prefill on this build is
   a goinfer defect, not a property of the models.
 
+**Amendment 5, 2026-10-16** (owner). **phi3-mini-4k is retired on both boxes.** goinfer answers every tool request
+for it with a 400, "this model has no tool-calling template" (three of its `check` rows on the Mac), so it cannot be
+tack's model on any backend, and its 4,096 window already kept it from being eligible. Its arms leave both manifests.
+Its records stay as observations, graded against nothing: the Mac's run on main (`~/tack-runs/e0/2026-10-16-main/mac`,
+void under amendment 4), the void re-check at tack `f209e4b` (`~/tack-runs/e0/2026-10-16-phi3-void-recheck`), the
+superseded Mac run on 41e13b26 (`~/tack-runs/e0/2026-10-16-night/mac`), and nobara's runs. No Metal support for its
+quantization is sought.
+
+**Amendment 6, 2026-10-16** (owner). **Fit probes.** gpt-oss-20b and gemma-4-26b do not fit nobara's 8 GB, and
+goinfer serves each on the CPU. Under amendment 4 that made both void every night, and an INCONCLUSIVE that is always
+there teaches everyone to ignore INCONCLUSIVE. A manifest can now mark an arm as a fit probe with its expected outcome
+(`expect_fallback = "cpu"`): the arm stops at the fit, and falling back to that path is its measurement, recorded as
+`fallback`, so the run passes. Anything else is reported and the run is INCONCLUSIVE: a crash, a timeout, a refusal of
+every load, another decode path, or a load that now fits the GPU. The last is good news and is labelled so; it means
+the arm can become a measured one. Both nobara arms are probes; granite, which falls back because goinfer's resident
+runner gates its architecture, is not, and stays void until that gate opens.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
@@ -92,11 +109,11 @@ storage"). Every arm is served by `goinfer-serve` from one pinned goinfer revisi
 | Mac | metal | `qwen2.5-coder-1.5b-instruct-q4_k_m.gguf` | goinfer's `demo:1.5b` tier |
 | Mac | metal | `gemma-4-e2b-gguf/gemma-4-E2B_q4_0-it.gguf` | the small gemma `demo/agent` runs |
 | Mac | metal | `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf` | goinfer's `demo:0.5b` tier, and the floor: the model least likely to pass the smoke set. If it passes, the set is too easy |
-| Mac | metal | `phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf` | DESIGN §8.4 candidate. A 4,096 window, so fit, check and smoke only: reported, never eligible |
+| Mac | metal | `phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf` | retired (amendment 5); was a DESIGN §8.4 candidate with a 4,096 window, never eligible |
 | Mac | cpu | `qwen2.5-7b-instruct-q4_k_m.gguf` | the CPU path that did not fit at q3_k_m (opencode.md); fit decides again |
 | nobara (RTX 2070 SUPER 8 GB) | cuda | `qwen2.5-7b-instruct-q4_k_m.gguf` | **the incumbent**: the one configuration measured working |
 | nobara | cuda | `gemma-4-E4B`, `qwen2.5-coder-1.5b`, `gemma-4-E2B`, `qwen2.5-coder-0.5b` (the floor), as on the Mac | amendment 3: the same small candidates on both boxes |
-| nobara | cuda | `phi3-mini-4k-gguf`, the granite checkpoint, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf` | DESIGN §8.4 candidates; fit decides which load, and an arm goinfer serves on the CPU fails there (amendment 3) |
+| nobara | cuda | the granite checkpoint, `gpt-oss-20b-MXFP4.gguf`, `gemma4-26b-q4_k_m.gguf` (`phi3-mini-4k-gguf` retired, amendment 5) | DESIGN §8.4 candidates; fit decides which load. An arm goinfer serves on the CPU is void (amendment 4), except gpt-oss and gemma-26b, fit probes expected to fall back (amendment 6) |
 
 The **do-nothing arm** is the incumbent: keep the model on nobara. A Mac model replaces it only under the rule below.
 

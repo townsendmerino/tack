@@ -34,11 +34,7 @@ name = "qwen2.5-coder-0.5b-q4km-metal" # goinfer's demo:0.5b, and the floor
 model_path = "~/models/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
 args = ["-backend", "metal"]
 
-[[arm]]
-name = "phi3-mini-4k-q4-metal"
-model_path = "~/models/phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf"
-args = ["-backend", "metal"]
-ctx = [4096]
+# phi3-mini-4k is retired (the preregistration's amendment 5): goinfer has no tool-calling template for it.
 
 [[arm]]
 name = "qwen2.5-7b-q4km-cpu"

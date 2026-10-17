@@ -45,12 +45,14 @@ type Options struct {
 var ErrHeld = errors.New("the timing lock is held")
 
 // ArmResult is how one arm ended. Verdict is the pre-registered grade (eligible, parked or fail) of a measured arm,
-// "admitted" for a measured arm of a fit check, and "void" for an arm that was not measured, with one reason per gap
-// in Void. A fail is a result about the model on the decode path the arm names; a void is no result at all.
+// "admitted" for a measured arm of a fit check, "fallback" for a fit probe that fell back as its manifest expects,
+// "void" for an arm that was not measured, and "unexpected" for a fit probe that ended otherwise without a gap (its
+// GPU load now fits, or every load was refused). A fail is a result about the model on the decode path the arm names;
+// a void is no result at all. Reasons is non-empty exactly for void and unexpected arms, one line per cause.
 type ArmResult struct {
 	Name    string
 	Verdict string
-	Void    []string
+	Reasons []string
 }
 
 // Run runs every selected arm of the manifest in order and returns how each ended. A timed run holds the timing lock
@@ -98,7 +100,7 @@ func Run(ctx context.Context, o Options) ([]ArmResult, error) {
 		if ctx.Err() != nil {
 			why := fmt.Sprintf("not reached: %v", ctx.Err())
 			r.record(arm, "verdict", map[string]any{"verdict": "void", "void": []string{why}})
-			results = append(results, ArmResult{Name: arm.Name, Verdict: "void", Void: []string{why}})
+			results = append(results, ArmResult{Name: arm.Name, Verdict: "void", Reasons: []string{why}})
 			continue
 		}
 		r.logf("e0 %s: arm %d/%d %s (started %s, elapsed %s)", o.Manifest.Box, i+1, len(o.Manifest.Arms), arm.Name,
@@ -109,28 +111,30 @@ func Run(ctx context.Context, o Options) ([]ArmResult, error) {
 	return results, nil
 }
 
-// Summarize writes one line per arm, the reasons under each void arm, and the VERDICT line, and returns the exit
-// status: PASS (0) when every arm was measured, whatever its verdict; INCONCLUSIVE (2) when any arm is void or no arm
-// ran.
+// Summarize writes one line per arm, the reasons under each void or unexpected arm, and the VERDICT line, and returns
+// the exit status: PASS (0) when every arm was measured, whatever its grade, and every fit probe fell back as expected;
+// INCONCLUSIVE (2) when any arm is void or unexpected, or no arm ran.
 func Summarize(w io.Writer, name string, results []ArmResult) int {
 	var cells []gate.Cell
-	var void []string
+	flagged := map[string][]string{} // verdict → arm names, for void and unexpected
 	for _, a := range results {
 		c := gate.Cell{Name: a.Name, Outcome: gate.OK, Fields: []gate.Field{gate.F("verdict", a.Verdict)}}
-		fmt.Fprintf(w, "%-9s %s\n", a.Verdict, a.Name)
-		if len(a.Void) > 0 {
+		fmt.Fprintf(w, "%-10s %s\n", a.Verdict, a.Name)
+		if len(a.Reasons) > 0 {
 			c.Outcome = gate.Inconclusive
-			void = append(void, a.Name)
-			for _, why := range a.Void {
+			flagged[a.Verdict] = append(flagged[a.Verdict], a.Name)
+			for _, why := range a.Reasons {
 				fmt.Fprintf(w, "    %s\n", why)
 			}
 		}
 		cells = append(cells, c)
 	}
 	rep := gate.Reconcile(cells)
-	msg := fmt.Sprintf("%s: %d of %d arms measured", name, rep.Pass, len(results))
-	if len(void) > 0 {
-		msg += "; void: " + strings.Join(void, ", ")
+	msg := fmt.Sprintf("%s: %d of %d arms measured or fell back as expected", name, rep.Pass, len(results))
+	for _, v := range []string{"void", "unexpected"} {
+		if len(flagged[v]) > 0 {
+			msg += fmt.Sprintf("; %s: %s", v, strings.Join(flagged[v], ", "))
+		}
 	}
 	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg))
 	return rep.Exit
@@ -193,20 +197,23 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	}
 	grade, why := "", "" // the registered grade, set once fit, check and smoke have run
 	window, admitted := 0, 0
-	void := func(format string, args ...any) { res.Void = append(res.Void, fmt.Sprintf(format, args...)) }
+	flag := func(format string, args ...any) { res.Reasons = append(res.Reasons, fmt.Sprintf(format, args...)) }
 	defer func() { // the first deferred, so it runs last: after the child stops and the footprint is recorded
 		if ctx.Err() != nil {
-			void("interrupted: %v", ctx.Err())
+			flag("interrupted: %v", ctx.Err())
 		}
 		res.Verdict = grade
 		f := map[string]any{"verdict": grade, "why": why, "window": window, "admitted_ctx": admitted}
-		if len(res.Void) > 0 {
+		if len(res.Reasons) > 0 && grade != "unexpected" { // a gap voids whatever grade was reached before it
 			res.Verdict = "void"
-			f["verdict"], f["void"], f["grade"] = "void", res.Void, grade
+			f["verdict"], f["grade"] = "void", grade
+		}
+		if len(res.Reasons) > 0 {
+			f["reasons"] = res.Reasons
 		}
 		r.record(arm, "verdict", f)
-		if len(res.Void) > 0 {
-			r.logf("  %s: verdict void: %s", arm.Name, strings.Join(res.Void, "; "))
+		if len(res.Reasons) > 0 {
+			r.logf("  %s: verdict %s: %s", arm.Name, res.Verdict, strings.Join(res.Reasons, "; "))
 		} else {
 			r.logf("  %s: verdict %s (%s)", arm.Name, grade, why)
 		}
@@ -253,14 +260,14 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	phase("fit", len(arm.Ctx), func() {
 		if pr := r.settle(ctx, arm); pr >= models.PressureWarning {
 			r.record(arm, "fit", map[string]any{"skipped": "pressure", "pressure": pr.String()})
-			void("memory pressure did not return to normal (%s)", pr)
+			flag("memory pressure did not return to normal (%s)", pr)
 			return
 		}
 		for _, n := range arm.Ctx {
 			dir, err := os.MkdirTemp("/tmp", "tke0")
 			if err != nil {
 				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
-				void("-ctx %d: %v", n, err)
+				flag("-ctx %d: %v", n, err)
 				return
 			}
 			dirs = append(dirs, dir)
@@ -268,7 +275,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 				Model: arm.Name, Ctx: n, Args: arm.Args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
 			if err != nil {
 				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
-				void("-ctx %d: %v", n, err)
+				flag("-ctx %d: %v", n, err)
 				return
 			}
 			t0 := time.Now()
@@ -279,7 +286,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 				r.record(arm, "fit", map[string]any{"ctx": n, "admitted": false, "error": err.Error(), "log_tail": tail(filepath.Join(dir, "goinfer-serve.log"), 20)})
 				r.logf("  %s: -ctx %d refused: %v", arm.Name, n, err)
 				if refused := (*models.RefusedError)(nil); !errors.As(err, &refused) {
-					void("-ctx %d: the load got no answer from goinfer: %v", n, err)
+					flag("-ctx %d: the load got no answer from goinfer: %v", n, err)
 				}
 				continue
 			}
@@ -294,19 +301,39 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 				"decode_path": plan.DecodePath, "want_decode_path": arm.DecodePath, "context_window": plan.ContextWindow,
 				"load_ms": time.Since(t0).Milliseconds()})
 			r.logf("  %s: -ctx %d admitted, window %d, decode path %q; %s", arm.Name, n, window, plan.DecodePath, plan.FitLine)
-			if v := VoidPath(arm.DecodePath, plan.DecodePath); v != "" {
-				void("%s", v)
+			switch fb := arm.ExpectFallback; {
+			case fb == "":
+				if v := VoidPath(arm.DecodePath, plan.DecodePath); v != "" {
+					flag("%s", v)
+				}
+			case plan.DecodePath != "" && strings.HasPrefix(plan.DecodePath, fb):
+				grade, why = "fallback", fmt.Sprintf("fit probe: fell back to %s as expected", fb)
+			case VoidPath(arm.DecodePath, plan.DecodePath) == "":
+				grade = "unexpected"
+				flag("good news: the load now fits %s at -ctx %d (%s); the manifest expects a fallback to %s, "+
+					"so this arm can become a measured one", arm.DecodePath, n, plan.FitLine, fb)
+			default:
+				flag("%s", VoidPath(fb, plan.DecodePath))
 			}
 			return
 		}
 	})
+	if arm.ExpectFallback != "" { // a fit probe stops at the fit, whatever it found
+		if sup != nil {
+			_ = sup.Stop()
+		} else if len(res.Reasons) == 0 {
+			grade = "unexpected"
+			flag("goinfer refused every load; the manifest expects a fallback to %s", arm.ExpectFallback)
+		}
+		return
+	}
 	if sup == nil {
-		if len(res.Void) == 0 { // goinfer answered every load, and refused each: a result
+		if len(res.Reasons) == 0 { // goinfer answered every load, and refused each: a result
 			grade, why = "fail", "no context was admitted"
 		}
 		return
 	}
-	if len(res.Void) > 0 { // the wrong decode path, or a larger -ctx with no answer: nothing measured would be this arm's
+	if len(res.Reasons) > 0 { // the wrong decode path, or a larger -ctx with no answer: nothing measured would be this arm's
 		_ = sup.Stop()
 		r.logf("  %s: void at fit; nothing else is measured for this arm", arm.Name)
 		return
@@ -334,7 +361,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 		checkOK = code == 0
 		r.record(arm, "check", map[string]any{"exit": code, "failed_rows": checkFails, "output": path})
 		if code < 0 {
-			void("goinfer-serve check did not finish (see %s)", path)
+			flag("goinfer-serve check did not finish (see %s)", path)
 		}
 	})
 
@@ -375,10 +402,10 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 		r.record(arm, "smoke_summary", map[string]any{"pass": smoke, "malformed": malformed, "unstable_tasks": unstable})
 	})
 	if unanswered > 0 {
-		void("%d of %d smoke requests got no answer from goinfer: %v", unanswered, 2*len(SmokeTasks), firstUnanswered)
+		flag("%d of %d smoke requests got no answer from goinfer: %v", unanswered, 2*len(SmokeTasks), firstUnanswered)
 	}
 	grade, why = gradeArm(admitted > 0 && window >= 8192, checkOK, checkFails, smoke, malformed)
-	if window < 8192 || len(res.Void) > 0 {
+	if window < 8192 || len(res.Reasons) > 0 {
 		return
 	}
 
@@ -396,7 +423,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 				return
 			}
 			if err := r.ttft(ctx, srv, arm, n, filler, p); err != nil {
-				void("TTFT at %d tokens: %v", n, err)
+				flag("TTFT at %d tokens: %v", n, err)
 			}
 		}
 	})
@@ -408,7 +435,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 			f := map[string]any{"rep": i + 1, "tok_per_s": rate, "tokens": toks}
 			if err != nil {
 				f["error"] = err.Error()
-				void("decode rep %d: %v", i+1, err)
+				flag("decode rep %d: %v", i+1, err)
 			} else {
 				rates = append(rates, rate)
 			}

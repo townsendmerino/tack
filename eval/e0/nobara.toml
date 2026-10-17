@@ -40,20 +40,18 @@ name = "granite-4.0-h-tiny-q8-cuda"
 model_path = "~/models/granite/granite-4.0-h-tiny-Q8_0.gguf"
 args = ["-backend", "cuda"]
 
-[[arm]]
-name = "phi3-mini-4k-q4-cuda"
-model_path = "~/models/phi3-mini-4k-gguf/Phi-3-mini-4k-instruct-q4.gguf"
-args = ["-backend", "cuda"]
-ctx = [4096]
+# phi3-mini-4k is retired (the preregistration's amendment 5): goinfer has no tool-calling template for it.
 
-# The two that do not fit 8 GB of VRAM run last and stop at the fit (amendment 3): goinfer serves each on the CPU,
-# and the arm records that fallback as void instead of timing it (the preregistration's amendment 4).
+# The two that do not fit 8 GB of VRAM are fit probes (amendment 6): they run last and stop at the fit. goinfer is
+# expected to serve each on the CPU, which passes; a GPU fit, a crash or a timeout is reported.
 [[arm]]
 name = "gpt-oss-20b-mxfp4-cuda"
 model_path = "~/models/gpt-oss-20b-MXFP4.gguf"
 args = ["-backend", "cuda"]
+expect_fallback = "cpu"
 
 [[arm]]
 name = "gemma4-26b-q4km-cuda"
 model_path = "~/models/gemma4-26b-q4_k_m.gguf"
 args = ["-backend", "cuda"]
+expect_fallback = "cpu"

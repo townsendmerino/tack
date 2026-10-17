@@ -32,6 +32,10 @@ type Arm struct {
 	// DecodePath is the decode path the arm measures, which goinfer's banner must name or the arm is void (default
 	// DecodePathFor(Args): metal-resident, cuda-resident or cpu).
 	DecodePath string `toml:"decode_path"`
+	// ExpectFallback makes the arm a fit probe: goinfer is expected to serve it on this decode path instead of
+	// DecodePath (a model too large for the device falls back to cpu). The arm stops at the fit. Falling back as
+	// expected is its measurement; anything else, a GPU fit included, is reported.
+	ExpectFallback string `toml:"expect_fallback"`
 }
 
 // LoadManifest reads and validates a manifest. Every model must be read from ~/models on this machine, never the
@@ -88,6 +92,9 @@ func (m *Manifest) validate(modelsDir string) error {
 		}
 		if a.DecodePath == "" {
 			return fmt.Errorf("manifest: arm %s names no -backend and no decode_path; an arm names the path it measures", a.Name)
+		}
+		if fb := a.ExpectFallback; fb != "" && (strings.HasPrefix(a.DecodePath, fb) || strings.HasPrefix(fb, a.DecodePath)) {
+			return fmt.Errorf("manifest: arm %s expects a fallback to %s, which is the path it names (%s)", a.Name, fb, a.DecodePath)
 		}
 	}
 	return nil
