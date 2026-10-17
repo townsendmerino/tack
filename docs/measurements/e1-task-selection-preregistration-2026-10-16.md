@@ -44,6 +44,18 @@ rather than drop task 8 by hand, a rule now applies to all candidates alike:
   choice is then re-run, and how many candidates the check removed is reported. A task that replaces a removed one
   gets a drafted statement and the owner's review, as the others did.
 
+**Amendment 4, 2026-10-17, after full verification and before any E1 run** (owner). **Stage 3 writes E1's full order,
+not a cut of it.**
+
+- E1's order is every verified candidate in stage 3's order, after the pilot, less every task in the committed pilot
+  set (`eval/e1/pilot.jsonl`). Tasks the stub check removed from the pilot are left out too.
+- It is not cut to 60. **E1 takes the first N** once D13 is decided after the pilot, at most 30 from any one
+  repository, skipping a candidate that would exceed it. This is the rule's "next 60" and D13's "60 more" with N left
+  open (`internal/eval/mine/verify.go:Take`).
+- Stage 3 refuses to write if the pilot it chooses is not the committed pilot's tasks that are not marked removed.
+  A mismatch would mean the order or the verification changed under an approved pilot (`cmd/tack/mine.go:mineChoose`).
+- The order is committed as `eval/e1/e1-order.jsonl`.
+
 ## Population
 
 The first-parent history of each repository's `main` branch, frozen at:

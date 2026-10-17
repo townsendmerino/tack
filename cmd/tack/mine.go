@@ -36,7 +36,7 @@ func (r *repoFlags) Set(s string) error {
 //
 //	tack eval mine -stage static -repo goinfer=~/tmcode/goinfer@5d597aca … -out DIR   writes DIR/candidates.jsonl
 //	tack eval mine -stage verify -repo … -out DIR                                     appends DIR/verified.jsonl
-//	tack eval mine -stage choose -out DIR                                             writes DIR/pilot.jsonl, DIR/e1.jsonl
+//	tack eval mine -stage choose -out DIR [-exclude eval/e1/pilot.jsonl]              writes DIR/pilot.jsonl, DIR/e1.jsonl
 func mineCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("eval mine", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -46,6 +46,7 @@ func mineCmd(args []string, stdout, stderr io.Writer) int {
 	fs.Var(&repos, "repo", "name=path@frozen-commit (repeatable)")
 	untilPilot := fs.Bool("until-pilot", false, "verify: stop once the pilot set (10, at most 4 per repo) is full; candidates are taken in stage 3's order, so stopping early cannot change it")
 	maxN := fs.Int("max", 0, "verify: stop after this many candidates (0: no limit)")
+	exclude := fs.String("exclude", "", "choose: the committed pilot set (eval/e1/pilot.jsonl); its tasks, removed ones included, are left out of E1's order, and the pilot chosen here must match it")
 	if err := fs.Parse(args); err != nil || *out == "" {
 		fmt.Fprintln(stderr, "usage: tack eval mine -stage static|verify|choose -out DIR [-repo name=path@commit ...]")
 		return exitUsage
@@ -63,7 +64,7 @@ func mineCmd(args []string, stdout, stderr io.Writer) int {
 	case "verify":
 		err = mineVerify(ctx, repos, *out, *untilPilot, *maxN, stderr)
 	case "choose":
-		err = mineChoose(*out, stderr)
+		err = mineChoose(*out, *exclude, stderr)
 	default:
 		fmt.Fprintf(stderr, "tack eval mine: -stage %q, want static, verify or choose\n", *stage)
 		return exitUsage
@@ -193,7 +194,7 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 			break
 		}
 		if untilPilot {
-			if pilot, _ := mine.Choose(okSoFar, 10, 4, 0, 0); len(pilot) == 10 {
+			if pilot, _ := mine.Choose(okSoFar, 10, 4, nil); len(pilot) == 10 {
 				logf(log, "verify: the pilot set is full; stopping (-until-pilot)")
 				break
 			}
@@ -232,10 +233,27 @@ func mineVerify(ctx context.Context, repos repoFlags, out string, untilPilot boo
 	return nil
 }
 
-func mineChoose(out string, log io.Writer) error {
+// mineChoose is stage 3. It writes the pilot set and E1's full fixed order, which is not cut to a size (selection
+// pre-registration, amendment 4). With exclude, the committed pilot file, every task in it is left out of E1's order,
+// and the pilot chosen here must be its tasks that are not marked removed: a mismatch means the order or the
+// verification changed under an approved pilot, and nothing is written.
+func mineChoose(out, exclude string, log io.Writer) error {
 	all, err := readCandidates(filepath.Join(out, "verified.jsonl"))
 	if err != nil {
 		return err
+	}
+	excluded, committed := map[string]bool{}, map[string]bool{} // every committed pilot task; those not removed
+	if exclude != "" {
+		cs, err := readCandidates(exclude)
+		if err != nil {
+			return err
+		}
+		for _, c := range cs {
+			excluded[c.Commit] = true
+			if c.Removed == "" {
+				committed[c.Commit] = true
+			}
+		}
 	}
 	var okc []mine.Candidate
 	stubbed := map[string]int{} // candidates the stub check rejected, by reason
@@ -251,7 +269,16 @@ func mineChoose(out string, log io.Writer) error {
 			stubbed[v.Stub.Rejected]++
 		}
 	}
-	pilot, e1 := mine.Choose(okc, 10, 4, 60, 30)
+	pilot, e1 := mine.Choose(okc, 10, 4, excluded)
+	if exclude != "" {
+		same := len(pilot) == len(committed)
+		for _, c := range pilot {
+			same = same && committed[c.Commit]
+		}
+		if !same {
+			return fmt.Errorf("the pilot chosen from verified.jsonl is not the committed pilot in %s (its tasks not marked removed)", exclude)
+		}
+	}
 	for name, set := range map[string][]mine.Candidate{"pilot.jsonl": pilot, "e1.jsonl": e1} {
 		f, err := os.Create(filepath.Join(out, name))
 		if err != nil {
@@ -266,9 +293,14 @@ func mineChoose(out string, log io.Writer) error {
 		}
 		f.Close()
 	}
-	logf(log, "choose: %d verified; the stub check removed %d (%s %d, %s %d, %s %d); pilot %d, e1 %d", len(okc),
-		stubbed[mine.RejectPassed]+stubbed[mine.RejectNoRun]+stubbed[mine.RejectNoBuild], mine.RejectPassed, stubbed[mine.RejectPassed],
-		mine.RejectNoRun, stubbed[mine.RejectNoRun], mine.RejectNoBuild, stubbed[mine.RejectNoBuild], len(pilot), len(e1))
+	perRepo := map[string]int{}
+	for _, c := range e1 {
+		perRepo[c.Repo]++
+	}
+	logf(log, "choose: %d verified; the stub check removed %d (%s %d, %s %d, %s %d); pilot %d; E1's order %d, uncut %v",
+		len(okc), stubbed[mine.RejectPassed]+stubbed[mine.RejectNoRun]+stubbed[mine.RejectNoBuild], mine.RejectPassed,
+		stubbed[mine.RejectPassed], mine.RejectNoRun, stubbed[mine.RejectNoRun], mine.RejectNoBuild, stubbed[mine.RejectNoBuild],
+		len(pilot), len(e1), perRepo)
 	return nil
 }
 

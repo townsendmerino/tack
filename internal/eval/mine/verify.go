@@ -171,24 +171,35 @@ func Order(cs []Candidate) []Candidate {
 	return ordered
 }
 
-// Choose is stage 3: order the verified candidates by sha256(repo/commit), take the pilot (pilotN, at most pilotCap per
-// repo), then E1 (e1N, at most e1Cap per repo) from what follows, a candidate the pilot skipped for its cap included.
-// The sets do not overlap.
-func Choose(verified []Candidate, pilotN, pilotCap, e1N, e1Cap int) (pilot, e1 []Candidate) {
-	ordered := Order(verified)
-	take := func(from []Candidate, n, cap int) (got, rest []Candidate) {
-		per := map[string]int{}
-		for _, c := range from {
-			if len(got) < n && per[c.Repo] < cap {
-				got = append(got, c)
-				per[c.Repo]++
-			} else {
-				rest = append(rest, c)
-			}
+// Choose is stage 3. It orders the verified candidates by sha256(repo/commit) and takes the pilot: the first pilotN, at
+// most pilotCap from any one repository. E1's order is every other candidate in the same order, a candidate the pilot
+// skipped for its cap included, less the commits in exclude. It is not cut: E1 takes its first N with Take once D13
+// sets N (selection pre-registration, amendment 4). The pilot and E1's order do not overlap.
+func Choose(verified []Candidate, pilotN, pilotCap int, exclude map[string]bool) (pilot, e1Order []Candidate) {
+	pilot, rest := take(Order(verified), pilotN, pilotCap)
+	for _, c := range rest {
+		if !exclude[c.Commit] {
+			e1Order = append(e1Order, c)
 		}
-		return got, rest
 	}
-	pilot, rest := take(ordered, pilotN, pilotCap)
-	e1, _ = take(rest, e1N, e1Cap)
-	return pilot, e1
+	return pilot, e1Order
+}
+
+// Take is the first n of an ordered list, at most cap from any one repository, in the list's order.
+func Take(ordered []Candidate, n, cap int) []Candidate {
+	got, _ := take(ordered, n, cap)
+	return got
+}
+
+func take(from []Candidate, n, cap int) (got, rest []Candidate) {
+	per := map[string]int{}
+	for _, c := range from {
+		if len(got) < n && per[c.Repo] < cap {
+			got = append(got, c)
+			per[c.Repo]++
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return got, rest
 }

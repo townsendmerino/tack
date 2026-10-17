@@ -147,9 +147,10 @@ func TestChooseIsFixedDisjointAndCapped(t *testing.T) {
 		}
 		cs = append(cs, Candidate{Repo: repo, Commit: fmt.Sprintf("%040d", i)})
 	}
-	pilot, e1 := Choose(cs, 10, 4, 60, 30)
-	pilot2, _ := Choose(append(cs[20:], cs[:20]...), 10, 4, 60, 30) // input order must not matter
-	if fmt.Sprint(pilot) != fmt.Sprint(pilot2) {
+	excluded := Order(cs)[25].Commit // a pilot task chosen earlier, say, that this set no longer picks
+	pilot, e1 := Choose(cs, 10, 4, map[string]bool{excluded: true})
+	pilot2, e1b := Choose(append(cs[20:], cs[:20]...), 10, 4, map[string]bool{excluded: true}) // input order must not matter
+	if fmt.Sprint(pilot) != fmt.Sprint(pilot2) || fmt.Sprint(e1) != fmt.Sprint(e1b) {
 		t.Fatal("choice depends on input order")
 	}
 	per := map[string]int{}
@@ -161,14 +162,28 @@ func TestChooseIsFixedDisjointAndCapped(t *testing.T) {
 	if per["goinfer"] > 4 {
 		t.Fatalf("pilot has %d goinfer tasks, cap 4", per["goinfer"])
 	}
-	per = map[string]int{}
-	for _, c := range e1 {
-		per[c.Repo]++
+	// E1's order is every other candidate, uncut and uncapped, in stage 3's order, less the excluded one.
+	if len(e1) != len(cs)-len(pilot)-1 {
+		t.Fatalf("e1 order has %d, want %d", len(e1), len(cs)-len(pilot)-1)
+	}
+	ordered := Order(e1)
+	for i, c := range e1 {
 		if seen[c.Commit] {
 			t.Fatalf("%s is in both sets", c.Commit)
 		}
+		if c.Commit == excluded {
+			t.Fatalf("%s was excluded", c.Commit)
+		}
+		if ordered[i].Commit != c.Commit {
+			t.Fatalf("e1 is not in stage 3's order at %d", i)
+		}
 	}
-	if per["goinfer"] > 30 {
-		t.Fatalf("e1 has %d goinfer tasks, cap 30", per["goinfer"])
+	// Take applies E1's cap when N is set.
+	per = map[string]int{}
+	for _, c := range Take(e1, 25, 12) {
+		per[c.Repo]++
+	}
+	if per["goinfer"] != 12 {
+		t.Fatalf("Take gave %d goinfer tasks, cap 12", per["goinfer"])
 	}
 }
