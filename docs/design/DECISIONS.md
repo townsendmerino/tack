@@ -140,5 +140,19 @@ returns only after both syncs, and callers put a blob before appending the event
 - `TestDirectoryEntriesAreSynced` and `TestBlobDirSyncFollowsTheRename` fail if any of the three directory syncs is
   removed.
 
-**Open.** Measure `F_FULLFSYNC` once while goinfer is writing a large cache file. The 9.5 ms p99 is from an idle disk,
-and goinfer's first load of a model writes gigabytes beside it.
+**Closed 2026-10-16: syncs during a goinfer cache write.** The open item was to measure `F_FULLFSYNC` once while
+goinfer wrote a large cache file. The 9.5 ms p99 above is from an idle disk, and goinfer's first load of a model
+writes gigabytes beside it.
+
+`tools/synctime` timed 300 syncs per method while goinfer-serve (Metal, `0e598d3f`) did its one-time transcode of
+gemma-2-2b `Q8_0` into a new Metal cache. All 900 samples fell inside the write. They span its first 1.8 s.
+Records: night job `tack-adr004-synctime`, `~/tack-runs/synctime/synctime-2026-10-16T20-45.json`.
+
+| method | p50 | p99 | max |
+|---|---:|---:|---:|
+| `F_FULLFSYNC` (`File.Sync`) | 4.5 ms | 12.6 ms | 36.8 ms |
+| `fsync(2)` | 0.04 ms | 0.38 ms | 0.76 ms |
+| `F_BARRIERFSYNC` | 0.74 ms | 2.6 ms | 3.5 ms |
+
+Under the owner's rule, tens of milliseconds closes the item, and decision (a) stands. Hundreds of milliseconds would
+have gone to the owner with the barrier figures.
