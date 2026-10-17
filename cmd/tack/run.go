@@ -19,6 +19,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/core"
+	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/kensearch"
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
@@ -29,13 +30,14 @@ import (
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
-// hit max_tokens.
+// hit max_tokens; 5 tack is halted (tack halt).
 const (
 	exitOK        = 0
 	exitError     = 1
 	exitUsage     = 2
 	exitBudget    = 3
 	exitMaxTokens = 4
+	exitHalted    = 5
 )
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
@@ -89,6 +91,13 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if ws == "" {
 		ws = gitRoot()
 	}
+	if h, err := halt.Check(stateDir); err != nil {
+		fmt.Fprintln(stderr, "tack run: reading the HALT file:", err)
+		return exitHalted
+	} else if h != nil {
+		fmt.Fprintf(stderr, "tack run: tack is halted (%s); run tack resume\n", halt.Path(stateDir))
+		return exitHalted
+	}
 	st, err := store.Open(stateDir)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
@@ -121,7 +130,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	sort.Strings(servers)
 	opts := core.Options{Store: st, Version: version, Servers: servers,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
-			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens},
+			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
+			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
 		Source: func(model string) (models.Source, error) {
 			if model != "main" {
 				return nil, fmt.Errorf("model %q: only the main role is configured", model)
@@ -137,6 +147,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	c := core.New(ctx, opts)
 	defer c.Close()
+	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)
 
 	code := drive(ctx, c, ws, question, *jsonOut, stdout, stderr)
 
@@ -195,6 +206,8 @@ func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool,
 			fmt.Fprintf(stderr, "  %s, %d lines\n", e.Outcome, strings.Count(e.Result, "\n"))
 		case proto.ErrorEvent:
 			fmt.Fprintf(stderr, "tack: %s error: %s\n", e.Class, e.Message)
+		case proto.DaemonHalted:
+			fmt.Fprintf(stderr, "tack: halted (%s) %s\n", e.Trigger, e.Reason)
 		case proto.BudgetExceeded:
 			fmt.Fprintf(stderr, "tack: budget exceeded: %s (limit %g)\n", e.Budget, e.Limit)
 		case proto.TurnEnd:
@@ -237,6 +250,8 @@ func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool,
 		return exitBudget
 	case proto.StopMaxTokens:
 		return exitMaxTokens
+	case proto.StopHalted:
+		return exitHalted
 	}
 	return exitError
 }

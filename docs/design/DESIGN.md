@@ -418,10 +418,13 @@ One turn:
 Around the turn:
 
 - **Steering.** A message sent mid-turn is queued and enters at the next request boundary, never inside a tool call.
-- **Cancel.** Stops generation (goinfer's cancel) and kills running tools by process group; partial output is recorded,
-  and each open call gets an error result (below).
+- **Cancel.** Stops generation (goinfer's cancel) and kills running tools: their process group, and every process
+  left inside the command's sandbox (§6.6, "Halt"); partial output is recorded, and each open call gets an error result
+  (below).
 - **Budgets** per session and per turn: tokens, wall time, tool calls, consecutive errors. A trip ends the turn with
-  `budget.exceeded` and asks the user.
+  `budget.exceeded` and asks the user. Tokens are what the server computed (prefilled plus output). *Proposed*
+  defaults, in `config.toml`'s `[run]`: per turn 40 requests, 100 tool calls, 30 minutes, 200,000 tokens, 8 failed
+  calls in a row; per session 2,000,000 tokens and 1,000 tool calls.
 - **Subagents.** A `task` tool starts a child session with its own context, a restricted tool set and its own budget,
   and returns a summary; read-only by default. On one local model, subagents queue rather than run side by side: goinfer
   decodes one request at a time per model (its work-queue design keeps one worker per model,
@@ -524,8 +527,8 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **Nothing launches outside the sandbox.** `open`, `launchctl`, `osascript`, the LaunchServices lookups behind them,
     and file-system mounts are denied. A program started through LaunchServices runs outside the sandbox: an
     allow-by-default Seatbelt profile was escaped exactly that way, through `open` and a mounted volume (Pillar
-    Security, July 2026). The same rule stops `setsid nohup` and `launchctl submit` from detaching work beyond
-    `tack halt`. In a repo with a night queue (goinfer's `night.py`), the queue's directory is declared writable for that
+    Security, July 2026). The same rule stops `launchctl submit` from detaching work beyond `tack halt`;
+    a process that calls `setsid()` or `setpgid()` stays inside the sandbox, where halt finds it (below). In a repo with a night queue (goinfer's `night.py`), the queue's directory is declared writable for that
     workspace, so the agent queues a long run instead of detaching it.
   - **Network** is denied by default; through P4 it is denied outright, with an escape test proving it. From P5, with
     `web_fetch`, opening it per domain goes through a local proxy that enforces the list, because
@@ -556,8 +559,12 @@ tool-use smoke set compares this merged set against the split one before it is f
   stolen data is the network, so the sandbox denies it by default.
 - **Halt**, after goinfer's kill-switch design (`docs/tasks/task-halt-2026-09.md`): `tack halt` (in the app, Stop All in
   the menu bar) cancels every running turn and tool, cancels generation on the model server, and refuses new turns until
-  `tack resume`; creating the `HALT` file does the same from a script. Because commands cannot detach (above), halt
-  reaches everything they started. Every permission decision is in the event log.
+  `tack resume`; creating the `HALT` file does the same from a script. A command cannot leave its sandbox, so halt
+  reaches everything commands started: every profile carries a mark (a `mach-lookup` name only tack's profiles allow),
+  and halt kills every process whose sandbox carries it, asked of the kernel with `sandbox_check`, whatever the process
+  did to its session, process group, parent or environment. Cancelling one command does the same with that command's
+  own mark. A process that leaves through `posix_spawn` with `POSIX_SPAWN_SETSID` is caught the same way; denying
+  `setsid` in the profile would not catch it. Every permission decision is in the event log.
 
 ### 6.7 Instructions and extensions
 

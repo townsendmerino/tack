@@ -117,9 +117,40 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
   gets out with no sandbox, is stopped by the profile, and gets out again with only its own section removed, so each
   section is shown to be what stops its escape. Network denial is among them. A shell test runs the real child under
   the real profile: a program writing outside the workspace is refused by the kernel. Skipping the wrap let it write.
-- **Open: detaching.** DESIGN §6.6 says commands cannot detach, so halt reaches everything they started. The profile
-  stops `open`, `launchctl` and LaunchServices, but a program can still call `setsid()` and leave the process group.
-  It stays inside the sandbox, but a process-group kill misses it. Halt (step 2d) has to find such descendants, and an
-  escape test has to show it.
+- **Detaching: closed in step 2d** (below). A program can call `setsid()` and leave the process group; it stays
+  inside the sandbox, and halt finds it there.
 - **Not wired in yet.** The daemon (step 4) sets `Engine.Sandboxed` and `Session.Wrap` together on macOS. On a
   platform without a sandbox, the engine fails closed.
+
+## Step 2d: redaction, budgets and halt (2026-10-17)
+
+- **Redaction.** `perms.Redact` replaces well-known credential formats in every tool result before the model, the log
+  or the blob store sees it; `tool.finished` names the kinds it replaced.
+- **Budgets** (`loop.Budget`, `config.toml` `[run]`). Per turn: requests, wall time, tool calls, tokens, failed calls in
+  a row. Per session: tokens and tool calls. Tokens are what the server computed, prefilled plus output. A limit of zero
+  is refused, not read as "no limit". The defaults are proposals (DESIGN §6.3).
+  - **Open:** the session counts start at zero when the loop is made. The daemon (step 4) rebuilds them from the log's
+    `usage` and `tool.finished` events when it reopens a session.
+  - **Open:** "asks the user" is only the stop for now; raising a budget mid-session comes with the TUI (step 8).
+- **Halt.** `tack halt` writes the HALT file, which a running `tack run` (and later the daemon) watches every 250 ms.
+  Every running turn is cancelled, records `daemon.halted` and ends with stop reason `halted`; new prompts get
+  `CodeHalted` until `tack resume`. `tack run` exits 5 when halted.
+- **Finding what a command detached.** Every sandbox profile allows `mach-lookup` of two names under `dev.tack.mark.`
+  and denies the rest of that prefix: `dev.tack.mark.all` in every profile, and one name per command. `sandbox_check`
+  (libsystem, reached through purego) asks the kernel what a process's profile decides for a name. A process is tack's
+  when its profile allows the mark and denies a control name under the same prefix. That control check is what keeps a
+  sandbox that allows every lookup from matching. A cancelled command sweeps its own mark; `tack halt` sweeps
+  `dev.tack.mark.all`.
+  - `sandbox_check` is variadic, and on darwin/arm64 a variadic argument goes on the stack: the call pads five
+    registers so purego places the name in the first stack slot. Other architectures are refused.
+  - **Measured on macOS 26 (M1 Pro), 2026-10-17:**
+    - `(deny syscall-unix (syscall-number SYS_setsid))` does make `setsid()` fail with EPERM.
+    - `posix_spawn` with `POSIX_SPAWN_SETSID` still starts a child in a new session. So denying the syscall is not a
+      boundary, and the profile does not deny it.
+  - **Escape tests** (`sandboxtest`):
+    - `TestDetachedProcessesAreSwept`: a process that calls `setsid()` or `setpgid()`, clears its environment and
+      closes its files survives a process-group kill with no sandbox and inside the profile alike. The sweep kills it;
+      with section `mark` removed, the sweep cannot find it.
+    - `TestSweepTouchesNothingElse`: a sweep spares unsandboxed processes and other marks.
+    - `TestCancelReachesDetachedProcesses`: the same escape through the real shell child.
+- **Open:** `daemon.resumed` waits for the daemon; until then no session is running to record it in.

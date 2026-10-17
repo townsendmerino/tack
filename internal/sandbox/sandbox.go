@@ -28,6 +28,12 @@ type Config struct {
 	GoCache   string   // tack's own GOCACHE, writable; the owner's caches are not
 	Home      string   // the owner's home, for the secrets deny-list and shell startup files
 	Tack      []string // tack's own socket, lock, token, state directory and config: neither read nor written
+	// Mark names this command's sandbox, so Find and Sweep reach every process it started (sweep_darwin.go). Empty
+	// gives the profile only the Group mark.
+	Mark string
+	// Group is the mark every command of one tack shares, swept by tack halt: MarkAll when empty. Tests set their own,
+	// so that their sweeps never reach the owner's real commands or another package's tests.
+	Group string
 	// Without drops named sections. Only the escape tests use it, to show each section is what catches its escape.
 	Without []string
 }
@@ -43,6 +49,7 @@ const (
 	SecTack    = "tack"    // tack's own files: a command must not approve its own request or read transcripts
 	SecLater   = "later"   // workspace files that would run later, outside the sandbox: git hooks and config, agent config
 	SecSecrets = "secrets" // the secrets deny-list, enforced by the kernel
+	SecMark    = "mark"    // the names that let halt and cancel find every process inside, detached or not
 )
 
 // Secrets are the paths under the owner's home that no sandboxed command may read or write: credentials, tokens and
@@ -100,6 +107,18 @@ func Profile(c Config) string {
 		// Xcode's xcrun shims (/usr/bin/git and the rest) keep a lookup cache in the per-user temp directory: that file
 		// only, not the directory.
 		`(allow file-write* (regex #"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db"))`,
+	)
+	group := c.Group
+	if group == "" {
+		group = MarkAll
+	}
+	marks := fmt.Sprintf("(global-name %q)", markPrefix+group)
+	if c.Mark != "" {
+		marks += fmt.Sprintf(" (global-name %q)", markPrefix+c.Mark)
+	}
+	sec(SecMark,
+		fmt.Sprintf("(deny mach-lookup (global-name-prefix %q))", markPrefix),
+		"(allow mach-lookup "+marks+")",
 	)
 	sec(SecRead, "(allow file-read*)")
 	if skip[SecWrite] {

@@ -38,6 +38,7 @@ const (
 	EvBudgetExceeded      EventType = "budget.exceeded"
 	EvTurnEnd             EventType = "turn.end"
 	EvError               EventType = "error"
+	EvDaemonHalted        EventType = "daemon.halted"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -66,6 +67,7 @@ var EventTypes = map[EventType]EventSpec{
 	EvBudgetExceeded:      {reflect.TypeFor[BudgetExceeded](), true, false},
 	EvTurnEnd:             {reflect.TypeFor[TurnEnd](), true, true},
 	EvError:               {reflect.TypeFor[ErrorEvent](), true, false},
+	EvDaemonHalted:        {reflect.TypeFor[DaemonHalted](), true, false},
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -192,7 +194,9 @@ type Usage struct {
 
 // BudgetExceeded ends a turn because a budget tripped (DESIGN §6.3).
 type BudgetExceeded struct {
-	Budget string  `json:"budget"` // "tokens", "wall_ms", "tool_calls", "consecutive_errors", "requests"
+	// Per turn: "requests", "wall_ms", "tokens", "tool_calls", "consecutive_errors"; per session: "session_tokens",
+	// "session_tool_calls".
+	Budget string  `json:"budget"`
 	Limit  float64 `json:"limit"`
 	Value  float64 `json:"value"`
 }
@@ -203,6 +207,7 @@ const (
 	StopMaxTokens = "max_tokens" // the model's output hit max_tokens
 	StopBudget    = "budget"     // a budget tripped
 	StopCancelled = "cancelled"
+	StopHalted    = "halted" // tack was halted (daemon.halted precedes it)
 	StopError     = "error"
 )
 
@@ -249,4 +254,18 @@ func (e Event) Decode() (any, error) {
 		return nil, fmt.Errorf("proto: %s payload: %w", e.Type, err)
 	}
 	return v.Elem().Interface(), nil
+}
+
+// Halt triggers.
+const (
+	HaltByCommand = "command" // tack halt, or the app's Stop All
+	HaltByFile    = "file"    // a HALT file a script created
+)
+
+// DaemonHalted is recorded in a session's log when tack's halt stops its running turn (DESIGN §6.6). Turn.end with
+// stop reason halted follows it.
+type DaemonHalted struct {
+	Trigger string `json:"trigger"`          // HaltByCommand or HaltByFile
+	By      string `json:"by,omitempty"`     // the client that halted, for a command
+	Reason  string `json:"reason,omitempty"` // what the owner gave, if anything
 }

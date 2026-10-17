@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -78,6 +79,15 @@ type fixture struct {
 
 func newFixture(t *testing.T, replies ...goinfertest.Reply) *fixture {
 	t.Helper()
+	script := goinfertest.NewScripted("m", 16384, replies...)
+	f := newFixtureOn(t, script)
+	f.script = script
+	return f
+}
+
+// newFixtureOn is newFixture with h as the model server.
+func newFixtureOn(t *testing.T, h http.Handler) *fixture {
+	t.Helper()
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -88,18 +98,18 @@ func newFixture(t *testing.T, replies ...goinfertest.Reply) *fixture {
 		f.syncs = append(f.syncs, fmt.Sprintf("%s %s", typ, took.Round(time.Microsecond)))
 		f.mu.Unlock()
 	}
-	script := goinfertest.NewScripted("m", 16384, replies...)
-	ts := httptest.NewServer(script)
+	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	c := New(ctx, Options{Store: st, Version: "test", Servers: []string{"goinfer@local"},
-		Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64},
+		Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20,
+			MaxErrors: 8, SessionTokens: 1 << 20, SessionToolCalls: 100},
 		Source: func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil }})
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	go c.Serve(ctx, b)
-	f.core, f.script = c, script
+	f.core = c
 	f.client = NewClient(&tapConn{Conn: a, t: f.tap})
 	f.client.OnEvent = func(p proto.SessionEventParams) {
 		f.mu.Lock()

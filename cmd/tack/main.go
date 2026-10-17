@@ -27,6 +27,10 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return runCmd(args[1:], stdout, stderr)
 	case "eval":
 		return evalCmd(args[1:], stdout, stderr)
+	case "halt":
+		return haltCmd(args[1:], stdout, stderr)
+	case "resume":
+		return resumeCmd(args[1:], stdout, stderr)
 	case "shell":
 		// Internal: the child internal/shell.Session starts for each bash command. It reads its request on stdin and
 		// writes its reply to fd 3; it is not for people.
@@ -48,6 +52,8 @@ func usage(w io.Writer) {
   tack run [flags] "<question>"   answer a question about a repository (read-only tools)
   tack eval models -manifest FILE -out DIR [-arm NAME] [-fit-only]
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
+  tack halt [-reason TEXT]        stop every running turn and command; refuse new turns
+  tack resume                     lift a halt
   tack version
 `)
 }

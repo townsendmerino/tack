@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
@@ -17,12 +18,33 @@ import (
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
-// Budget bounds one turn (DESIGN §6.3).
+// Budget bounds each turn and the whole session (DESIGN §6.3). A trip ends the turn with budget.exceeded; a session
+// budget, once tripped, ends every later turn before its first request. Every limit must be positive.
+//
+// Tokens are the ones the server computed: the prefilled share of the prompt plus the output, or the whole prompt
+// plus the output when the server does not report reuse.
 type Budget struct {
 	MaxRequests  int
 	MaxToolCalls int
 	MaxWall      time.Duration
 	MaxTokens    int // output tokens per request
+	TurnTokens   int
+	// MaxErrors caps tool calls in a row that end in an error or a denial; a call that succeeds resets the count.
+	MaxErrors int
+	// SessionTokens and SessionToolCalls count from when the loop is made.
+	SessionTokens    int
+	SessionToolCalls int
+}
+
+func (b Budget) check() error {
+	for name, v := range map[string]int64{"MaxRequests": int64(b.MaxRequests), "MaxToolCalls": int64(b.MaxToolCalls),
+		"MaxWall": int64(b.MaxWall), "MaxTokens": int64(b.MaxTokens), "TurnTokens": int64(b.TurnTokens),
+		"MaxErrors": int64(b.MaxErrors), "SessionTokens": int64(b.SessionTokens), "SessionToolCalls": int64(b.SessionToolCalls)} {
+		if v <= 0 {
+			return fmt.Errorf("loop: budget %s is %d; every budget must be positive", name, v)
+		}
+	}
+	return nil
 }
 
 // Config is what a session's loop runs with.
@@ -54,6 +76,8 @@ type Session struct {
 	cfg      Config
 	conv     *server.Conversation
 	requests int // requests sent in the session so far
+	tokens   int // tokens the server computed in the session so far (Budget)
+	calls    int // tool calls run in the session so far
 	turns    int
 	pending  string // text of the turn Start opened
 	userSeq  int64
@@ -141,7 +165,26 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		return end(proto.StopBudget)
 	}
 
+	// stopped ends a turn whose context was cancelled: by the user, or by tack's halt, which the log records first.
+	stopped := func() (string, error) {
+		var h *halt.Halted
+		if !errors.As(context.Cause(ctx), &h) {
+			return end(proto.StopCancelled)
+		}
+		if _, err := s.record(proto.EvDaemonHalted, cause, h.DaemonHalted); err != nil {
+			return proto.StopHalted, err
+		}
+		return end(proto.StopHalted)
+	}
+
 	if err := s.conv.BeginTurn(UserText(first, s.cfg.WS.Root(), text), false); err != nil {
+		return fail("internal", err)
+	}
+	if ctx.Err() != nil { // halted or cancelled before the turn began
+		return stopped()
+	}
+	bud := s.cfg.Budget
+	if err := bud.check(); err != nil {
 		return fail("internal", err)
 	}
 	srv, err := s.cfg.Source.Ensure(ctx)
@@ -150,13 +193,19 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	}
 	s.conv.Model = s.cfg.Source.Model()
 
-	requests, calls := 0, 0
+	requests, calls, tokens, errorsInARow := 0, 0, 0, 0
 	for {
-		if requests >= s.cfg.Budget.MaxRequests {
-			return trip("requests", float64(s.cfg.Budget.MaxRequests), float64(requests))
-		}
-		if el := s.cfg.Now().Sub(start); el >= s.cfg.Budget.MaxWall {
-			return trip("wall_ms", float64(s.cfg.Budget.MaxWall.Milliseconds()), float64(el.Milliseconds()))
+		switch el := s.cfg.Now().Sub(start); {
+		case requests >= bud.MaxRequests:
+			return trip("requests", float64(bud.MaxRequests), float64(requests))
+		case el >= bud.MaxWall:
+			return trip("wall_ms", float64(bud.MaxWall.Milliseconds()), float64(el.Milliseconds()))
+		case tokens >= bud.TurnTokens:
+			return trip("tokens", float64(bud.TurnTokens), float64(tokens))
+		case s.tokens >= bud.SessionTokens:
+			return trip("session_tokens", float64(bud.SessionTokens), float64(s.tokens))
+		case s.calls >= bud.SessionToolCalls:
+			return trip("session_tool_calls", float64(bud.SessionToolCalls), float64(s.calls))
 		}
 		requests++
 		s.requests++
@@ -168,7 +217,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		resp, err := s.stream(ctx, srv, reqEv.Seq)
 		if err != nil {
 			if ctx.Err() != nil {
-				return end(proto.StopCancelled)
+				return stopped()
 			}
 			return fail("server", err)
 		}
@@ -190,6 +239,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}
+		computed := u.Prompt + u.Output
+		if u.Prefilled != nil {
+			computed = *u.Prefilled + u.Output
+		}
+		tokens += computed
+		s.tokens += computed
 		if err := s.conv.AddResponse(resp.Content); err != nil {
 			return fail("internal", err)
 		}
@@ -201,7 +256,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 
 		var results []server.ToolResult
-		overBudget := false
+		var over *proto.BudgetExceeded // the tool-call budget a call in this response tripped
 		for _, b := range resp.Content {
 			if b.Type != "tool_use" {
 				continue
@@ -215,13 +270,18 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			case resp.Malformed[b.ID] != "":
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: malformed tool call: " + resp.Malformed[b.ID]}
 			case ctx.Err() != nil:
-				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled, Result: "error: not run: the user cancelled the turn"}
-			case calls >= s.cfg.Budget.MaxToolCalls:
-				overBudget = true
+				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled, Result: "error: not run: " + notRun(ctx)}
+			case calls >= bud.MaxToolCalls:
+				over = &proto.BudgetExceeded{Budget: "tool_calls", Limit: float64(bud.MaxToolCalls), Value: float64(calls + 1)}
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled,
-					Result: fmt.Sprintf("error: not run: the turn's tool-call budget (%d) was exceeded", s.cfg.Budget.MaxToolCalls)}
+					Result: fmt.Sprintf("error: not run: the turn's tool-call budget (%d) was exceeded", bud.MaxToolCalls)}
+			case s.calls >= bud.SessionToolCalls:
+				over = &proto.BudgetExceeded{Budget: "session_tool_calls", Limit: float64(bud.SessionToolCalls), Value: float64(s.calls + 1)}
+				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled,
+					Result: fmt.Sprintf("error: not run: the session's tool-call budget (%d) was exceeded", bud.SessionToolCalls)}
 			default:
 				calls++
+				s.calls++
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
 				if err != nil {
 					return proto.StopError, err
@@ -246,15 +306,24 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
+			switch fin.Outcome {
+			case proto.OutcomeOK:
+				errorsInARow = 0
+			case proto.OutcomeError, proto.OutcomeDenied:
+				errorsInARow++
+			}
 		}
 		if err := s.conv.AnswerTools(results); err != nil {
 			return fail("internal", err)
 		}
-		if overBudget {
-			return trip("tool_calls", float64(s.cfg.Budget.MaxToolCalls), float64(calls+1))
+		if over != nil {
+			return trip(over.Budget, over.Limit, over.Value)
+		}
+		if errorsInARow >= bud.MaxErrors {
+			return trip("consecutive_errors", float64(bud.MaxErrors), float64(errorsInARow))
 		}
 		if ctx.Err() != nil {
-			return end(proto.StopCancelled)
+			return stopped()
 		}
 	}
 }
@@ -408,4 +477,13 @@ func sleep(ctx context.Context, d time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// notRun says why a call was not run once the turn's context is cancelled.
+func notRun(ctx context.Context) string {
+	var h *halt.Halted
+	if errors.As(context.Cause(ctx), &h) {
+		return h.Error()
+	}
+	return "the user cancelled the turn"
 }

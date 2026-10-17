@@ -1,6 +1,7 @@
 // Package shell is tack's own shell (DESIGN §6.6, "What is approved is what runs"). One command line is parsed and run
 // by mvdan.cc/sh's interpreter in a child process, `tack shell`, so that the sandbox can confine it (P1 step 2c) and a
-// timeout or cancel can kill everything it started as one process group.
+// timeout or cancel can kill everything it started: its process group, and anything that left the group, found by its
+// sandbox (Session.Sweep).
 //
 // The child checks again, at the moment it happens, every program the interpreter executes and every file a
 // redirection opens, against what was approved: the programs approval saw, plus rules when commands run inside the
@@ -13,6 +14,8 @@ package shell
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,10 +81,14 @@ type Session struct {
 	Args []string
 	// Engine supplies the analysis, the rules and whether commands run inside the sandbox.
 	Engine *perms.Engine
-	// Wrap puts the child inside the sandbox (internal/sandbox.Wrap on macOS), and Env adds what the sandbox expects:
-	// tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true exactly when Wrap is set.
-	Wrap func(*exec.Cmd) *exec.Cmd
-	Env  []string
+	// Wrap puts the child inside the sandbox under mark, a name unique to the command (internal/sandbox.Wrap with
+	// Config.Mark, on macOS). Sweep kills every process still inside the sandbox with that mark (internal/sandbox.Sweep):
+	// when Run kills a command it sweeps too, so a process that left the process group (setsid, setpgid) dies with
+	// it. Env adds what the sandbox expects: tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true
+	// exactly when Wrap is set, and Wrap needs Sweep.
+	Wrap  func(cmd *exec.Cmd, mark string) *exec.Cmd
+	Sweep func(mark string) (int, error)
+	Env   []string
 
 	mu    sync.Mutex
 	state State
@@ -95,6 +102,9 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	if s.Engine.Sandboxed != (s.Wrap != nil) { // the engine's rules trust the sandbox: never without one
 		return Result{}, fmt.Errorf("shell: the engine says sandboxed=%v, but the shell %s sandbox", s.Engine.Sandboxed,
 			map[bool]string{true: "has a", false: "has no"}[s.Wrap != nil])
+	}
+	if s.Wrap != nil && s.Sweep == nil {
+		return Result{}, errors.New("shell: a sandboxed shell needs Sweep, or a cancel would miss detached processes")
 	}
 	if s.state.Dir == "" {
 		s.state.Dir = s.Engine.Root
@@ -133,8 +143,9 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	cmd.ExtraFiles = []*os.File{wr}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(), s.Env...)
+	mark := newMark()
 	if s.Wrap != nil {
-		cmd = s.Wrap(cmd)
+		cmd = s.Wrap(cmd, mark)
 	}
 	if err := cmd.Start(); err != nil {
 		wr.Close()
@@ -142,24 +153,38 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	}
 	wr.Close()
 	done := make(chan struct{})
+	killed := make(chan string, 1) // what the kill adds to Stopped
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the whole process group
+			note := ""
+			if s.Sweep != nil {
+				// A detached process may hold the reply pipe or the output open, so this sweep is also what lets the
+				// reads below finish.
+				if n, err := s.Sweep(mark); err != nil {
+					note = "; killing what it left running failed: " + err.Error()
+				} else if n > 0 {
+					note = fmt.Sprintf("; %d process(es) it had detached from its process group were killed too", n)
+				}
+			}
+			killed <- note
 		case <-done:
+			killed <- ""
 		}
 	}()
 	b, _ := io.ReadAll(rd)
 	werr := cmd.Wait()
 	close(done)
+	note := <-killed
 	res := Result{Output: out.String()}
 	var rep reply
 	if err := json.Unmarshal(b, &rep); err != nil {
 		switch {
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
-			res.Stopped = fmt.Sprintf("the command ran past its timeout (%s) and was killed", timeout)
+			res.Stopped = fmt.Sprintf("the command ran past its timeout (%s) and was killed", timeout) + note
 		case ctx.Err() != nil:
-			res.Stopped = "the command was cancelled and killed"
+			res.Stopped = "the command was cancelled and killed" + note
 		default:
 			return res, fmt.Errorf("shell: the child ended without a reply: %v", werr)
 		}
@@ -399,4 +424,11 @@ func approvedBy(ctx context.Context) string {
 		return by
 	}
 	return perms.ByRule
+}
+
+// newMark names one command's sandbox: "run-" and 16 random hex digits.
+func newMark() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // crypto/rand.Read never fails (Go 1.24)
+	return "run-" + hex.EncodeToString(b)
 }

@@ -13,8 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 type fixture struct {
@@ -170,3 +173,126 @@ func TestWorkStillRuns(t *testing.T) {
 
 // secs splits "a+b" into the sections whose removal together opens an escape.
 func secs(s string) []string { return strings.Split(s, "+") }
+
+// detach starts, under cfg's profile (or none when cfg is nil), a process that leaves the command's process group the
+// way it is told, clears its environment, closes its standard files and sleeps, and returns its pid once it is running.
+// The command itself is killed by process group, as the shell's cancel does, so only the detached process is left.
+func (f fixture) detach(t *testing.T, cfg *Config, how string) int {
+	t.Helper()
+	pidFile := filepath.Join(f.ws, "detached-"+strings.ReplaceAll(how, " ", "-")+".pid")
+	os.Remove(pidFile)
+	leave := map[string]string{
+		"setsid":  `POSIX::setsid() or die "setsid: $!";`,
+		"setpgid": `POSIX::setpgid(0, 0) or die "setpgid: $!";`,
+	}[how]
+	script := `exit if fork; ` + leave + ` open(my $p, ">", $ARGV[0]) or die; print $p $$; close $p; ` +
+		`POSIX::close($_) for 0..9; exec "/usr/bin/env", "-i", "/bin/sleep", "300";`
+	args := []string{"/usr/bin/perl", "-MPOSIX", "-e", script, pidFile}
+	var cmd *exec.Cmd
+	if cfg == nil {
+		cmd = exec.Command(args[0], args[1:]...)
+	} else {
+		cmd = Command(*cfg, args[0], args[1:]...)
+	}
+	cmd.Dir, cmd.Env = f.ws, f.env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("starting the detacher: %v: %s", err, out)
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the group kill the shell does on cancel
+	for range 200 {
+		if b, err := os.ReadFile(pidFile); err == nil && len(b) > 0 {
+			pid, err := strconv.Atoi(string(b))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) })
+			if !alive(pid) {
+				t.Fatalf("the detached process %d is not running after the group kill", pid)
+			}
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the detached process never wrote %s", pidFile)
+	return 0
+}
+
+// alive reports whether pid is running now.
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// gone reports whether pid has ended, waiting up to two seconds for a killed one to be reaped.
+func gone(pid int) bool {
+	for range 200 {
+		if !alive(pid) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestDetachedProcessesAreSwept is halt's escape test (DESIGN §6.6: "halt reaches everything they started"). A command
+// can call setsid() or setpgid() and leave the process group the shell kills on cancel. It gets out of a group kill with
+// no sandbox and inside the profile alike; Sweep catches it by its sandbox's mark; with section mark removed, Sweep
+// cannot find it and it gets out again.
+func TestDetachedProcessesAreSwept(t *testing.T) {
+	f := setup(t)
+	cfg := f.cfg
+	cfg.Mark, cfg.Group = fmt.Sprintf("run-test-%d", os.Getpid()), fmt.Sprintf("group-test-%d", os.Getpid())
+	noMark := cfg
+	noMark.Without = []string{SecMark}
+	for _, how := range []string{"setsid", "setpgid"} {
+		t.Run(how, func(t *testing.T) {
+			f.detach(t, nil, how) // with no sandbox, the group kill misses it: the escape this test watches for
+
+			pid := f.detach(t, &cfg, how)
+			if n, err := Sweep(cfg.Mark); err != nil || n != 1 {
+				t.Errorf("Sweep(%q) killed %d, err %v; want the one detached process", cfg.Mark, n, err)
+			}
+			if !gone(pid) {
+				t.Errorf("the detached process %d survived the sweep", pid)
+			}
+
+			pid = f.detach(t, &noMark, how)
+			if n, err := Sweep(cfg.Mark); err != nil || n != 0 {
+				t.Errorf("with section mark removed, Sweep killed %d, err %v", n, err)
+			}
+			if !alive(pid) {
+				t.Errorf("with section mark removed the process %d was still found, so the section is not what marks it", pid)
+			}
+
+			pid = f.detach(t, &cfg, how)
+			if n, err := Sweep(cfg.Group); err != nil || n != 1 || !gone(pid) {
+				t.Errorf("Sweep of the group, as tack halt sweeps MarkAll: killed %d, err %v", n, err)
+			}
+		})
+	}
+}
+
+// TestSweepTouchesNothingElse: a sweep kills only its own mark's processes, never an unsandboxed process or one in a
+// sandbox with another mark; the group's sweep (tack halt's, with a test group) never reaches an unsandboxed one.
+func TestSweepTouchesNothingElse(t *testing.T) {
+	f := setup(t)
+	mine, other := f.cfg, f.cfg
+	group := fmt.Sprintf("group-test-%d", os.Getpid())
+	mine.Mark, other.Mark = fmt.Sprintf("run-mine-%d", os.Getpid()), fmt.Sprintf("run-other-%d", os.Getpid())
+	mine.Group, other.Group = group, group
+	plain := f.detach(t, nil, "setsid")
+	neighbour := f.detach(t, &other, "setsid")
+	if n, err := Sweep(mine.Mark); err != nil || n != 0 {
+		t.Fatalf("Sweep(%q) with none of its own running killed %d, err %v", mine.Mark, n, err)
+	}
+	if !alive(plain) || !alive(neighbour) {
+		t.Fatalf("a sweep killed what was not its own: unsandboxed alive %v, other mark alive %v", alive(plain), alive(neighbour))
+	}
+	if _, err := Sweep(group); err != nil {
+		t.Fatal(err)
+	}
+	if !alive(plain) {
+		t.Fatal("the group's sweep killed an unsandboxed process")
+	}
+	if !gone(neighbour) {
+		t.Fatal("the group's sweep missed a process inside its sandbox")
+	}
+}

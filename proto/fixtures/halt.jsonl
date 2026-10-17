@@ -1,0 +1,20 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.0.1"},"protocol":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.0.1"},"protocol":1,"capabilities":{"ken":"","servers":["goinfer@local"]}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"workspace":"/w/ken","model":"main","mode":"auto"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"session":"s_01JAFIXTURE0000000000000004"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{"session":"s_01JAFIXTURE0000000000000004","from_seq":0}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"head":0}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"session":"s_01JAFIXTURE0000000000000004","content":[{"type":"text","text":"Run the benchmarks."}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":4,"result":{"seq":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":1,"time":"2026-10-17T12:00:00Z","type":"user.message","payload":{"content":[{"type":"text","text":"Run the benchmarks."}]}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":2,"time":"2026-10-17T12:00:00.02Z","type":"request.sent","cause":1,"payload":{"request":1,"server":"goinfer@local","model":"qwen2.5-7b-instruct-q4_k_m"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":3,"time":"2026-10-17T12:00:02Z","type":"assistant.message","cause":2,"payload":{"request":1,"content":[{"type":"tool_use","id":"toolu_21","name":"bash","input":{"command":"go test -bench . ./..."}}],"stop_reason":"tool_use"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":4,"time":"2026-10-17T12:00:02Z","type":"usage","cause":2,"payload":{"request":1,"server":"goinfer@local","prompt":1180,"output":22,"wall_ms":1400}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":5,"time":"2026-10-17T12:00:02Z","type":"tool.call","cause":3,"payload":{"id":"toolu_21","name":"bash","input":{"command":"go test -bench . ./..."}}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":6,"time":"2026-10-17T12:00:02Z","type":"permission.resolved","cause":5,"payload":{"id":"toolu_21","decision":"allow","by":"mode"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":7,"time":"2026-10-17T12:00:02Z","type":"tool.started","cause":5,"payload":{"id":"toolu_21"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":8,"time":"2026-10-17T12:00:40Z","type":"tool.finished","cause":5,"payload":{"id":"toolu_21","outcome":"error","result":"ok  \tx/bench\t12.1s\nerror: stopped: the command was cancelled and killed; 1 process(es) it had detached from its process group were killed too\n","truncated":false}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":9,"time":"2026-10-17T12:00:40Z","type":"daemon.halted","cause":1,"payload":{"trigger":"command","by":"tack halt","reason":"benchmarks are hogging the GPU"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000004","event":{"seq":10,"time":"2026-10-17T12:00:40Z","type":"turn.end","cause":1,"payload":{"stop_reason":"halted"}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{"session":"s_01JAFIXTURE0000000000000004","content":[{"type":"text","text":"Try again."}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":5,"error":{"code":-32002,"message":"tack was halted: benchmarks are hogging the GPU; run tack resume"}}}

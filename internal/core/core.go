@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
@@ -48,6 +49,7 @@ type Core struct {
 	sessions  map[proto.SessionID]*session
 	sources   map[string]models.Source
 	searchers map[string]tools.Searcher // by workspace root
+	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
 }
 
 type session struct {
@@ -56,6 +58,7 @@ type session struct {
 	log     *store.Log
 	loop    *loop.Session
 	running bool
+	cancel  context.CancelCauseFunc // the running turn's
 	subs    map[*subscriber]bool
 }
 
@@ -335,24 +338,35 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 		text.WriteString(b.Text)
 	}
+	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
+	c.mu.Lock()
+	if h := c.halted; h != nil {
+		c.mu.Unlock()
+		return nil, &proto.Error{Code: proto.CodeHalted, Message: (&halt.Halted{DaemonHalted: *h}).Error() + "; run tack resume"}
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
+		c.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeBusy, Message: "a turn is already running in " + string(s.id)}
 	}
-	s.running = true
+	ctx, cancel := context.WithCancelCause(c.ctx)
+	s.running, s.cancel = true, cancel
 	s.mu.Unlock()
+	c.mu.Unlock()
 	seq, err := s.loop.Start(text.String())
 	if err != nil {
+		cancel(nil)
 		s.mu.Lock()
-		s.running = false
+		s.running, s.cancel = false, nil
 		s.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	go func() {
-		_, _ = s.loop.Run(c.ctx)
+		_, _ = s.loop.Run(ctx)
+		cancel(nil)
 		s.mu.Lock()
-		s.running = false
+		s.running, s.cancel = false, nil
 		s.mu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
@@ -374,4 +388,26 @@ func (c *Core) searcher(root string) (tools.Searcher, error) {
 	}
 	c.searchers[root] = s
 	return s, nil
+}
+
+// Halt cancels every running turn, each recording daemon.halted, and refuses new turns until Resume (DESIGN §6.6).
+// Killing what the turns' commands left running is the shell's on cancel, and `tack halt`'s sweep beyond that.
+func (c *Core) Halt(h proto.DaemonHalted) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.halted = &h
+	for _, s := range c.sessions {
+		s.mu.Lock()
+		if s.cancel != nil {
+			s.cancel(&halt.Halted{DaemonHalted: h})
+		}
+		s.mu.Unlock()
+	}
+}
+
+// Resume lets new turns start again.
+func (c *Core) Resume() {
+	c.mu.Lock()
+	c.halted = nil
+	c.mu.Unlock()
 }

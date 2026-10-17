@@ -32,6 +32,10 @@ type harness struct {
 	order []string
 }
 
+// testBudget is the harness's budget; a test changes the one limit it trips.
+var testBudget = Budget{MaxRequests: 8, MaxToolCalls: 8, MaxWall: time.Minute, MaxTokens: 256, TurnTokens: 1 << 20,
+	MaxErrors: 8, SessionTokens: 1 << 20, SessionToolCalls: 100}
+
 // newHarness runs a session against a scripted goinfer over a small workspace.
 func newHarness(t *testing.T, b Budget, replies ...goinfertest.Reply) *harness {
 	t.Helper()
@@ -56,8 +60,8 @@ func newHarness(t *testing.T, b Budget, replies ...goinfertest.Reply) *harness {
 	h.log, h.script = log, goinfertest.NewScripted("m", 16384, replies...)
 	ts := httptest.NewServer(h.script)
 	t.Cleanup(ts.Close)
-	if b.MaxRequests == 0 {
-		b = Budget{MaxRequests: 8, MaxToolCalls: 8, MaxWall: time.Minute, MaxTokens: 256}
+	if b == (Budget{}) {
+		b = testBudget
 	}
 	h.sess = New(Config{Source: models.NewRemote("local", ts.URL, "", "", nil), Tools: tools.NewSet(nil), WS: ws,
 		Log: log, Blobs: st.Blobs, Budget: b,
@@ -190,7 +194,9 @@ func TestUsagePromptIsPrefilledPlusReused(t *testing.T) {
 }
 
 func TestToolCallBudget(t *testing.T) {
-	h := newHarness(t, Budget{MaxRequests: 8, MaxToolCalls: 1, MaxWall: time.Minute, MaxTokens: 256},
+	b := testBudget
+	b.MaxToolCalls = 1
+	h := newHarness(t, b,
 		goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`, "t2", "glob", `{"pattern":"*.md"}`))
 	stop, _ := h.sess.Turn(context.Background(), "list")
 	if stop != proto.StopBudget {
@@ -210,7 +216,9 @@ func TestToolCallBudget(t *testing.T) {
 }
 
 func TestRequestBudget(t *testing.T) {
-	h := newHarness(t, Budget{MaxRequests: 1, MaxToolCalls: 8, MaxWall: time.Minute, MaxTokens: 256},
+	b := testBudget
+	b.MaxRequests = 1
+	h := newHarness(t, b,
 		goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`))
 	if stop, _ := h.sess.Turn(context.Background(), "list"); stop != proto.StopBudget {
 		t.Fatalf("stop %q", stop)
@@ -353,5 +361,99 @@ func TestBlobDurableBeforeTheEventNamingItIsSynced(t *testing.T) {
 	}
 	if put < 0 || appended < 0 || synced < 0 || !(put < appended && appended < synced) {
 		t.Fatalf("want the blob durable, then the event naming it appended, then synced; order:\n  %s", strings.Join(h.order, "\n  "))
+	}
+}
+
+func (h *harness) budgets() []string {
+	var out []string
+	for _, b := range h.payloads(proto.EvBudgetExceeded) {
+		out = append(out, b.(proto.BudgetExceeded).Budget)
+	}
+	return out
+}
+
+func TestTurnTokenBudget(t *testing.T) {
+	b := testBudget
+	b.TurnTokens = 1
+	h := newHarness(t, b, goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`), goinfertest.Says("done"))
+	if stop, _ := h.sess.Turn(context.Background(), "list"); stop != proto.StopBudget {
+		t.Fatalf("stop %q", stop)
+	}
+	if got := h.budgets(); !slices.Equal(got, []string{"tokens"}) {
+		t.Fatalf("budgets %v", got)
+	}
+	if n := len(h.payloads(proto.EvRequestSent)); n != 1 {
+		t.Fatalf("%d requests; the budget trips before the second", n)
+	}
+	h.checkRebuild(t)
+}
+
+// TestSessionBudgets: a session budget spans turns; once tripped, the next turn ends before its first request.
+func TestSessionBudgets(t *testing.T) {
+	b := testBudget
+	b.SessionTokens = 1
+	h := newHarness(t, b, goinfertest.Says("one"), goinfertest.Says("two"))
+	if stop, _ := h.sess.Turn(context.Background(), "first"); stop != proto.StopEndTurn {
+		t.Fatalf("first turn: %q", stop)
+	}
+	if stop, _ := h.sess.Turn(context.Background(), "second"); stop != proto.StopBudget {
+		t.Fatalf("second turn: %q", stop)
+	}
+	if got, n := h.budgets(), len(h.payloads(proto.EvRequestSent)); !slices.Equal(got, []string{"session_tokens"}) || n != 1 {
+		t.Fatalf("budgets %v after %d requests", got, n)
+	}
+
+	b = testBudget
+	b.SessionToolCalls = 2
+	h = newHarness(t, b, goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`), goinfertest.Says("one"),
+		goinfertest.Calls("", "t2", "glob", `{"pattern":"*.go"}`, "t3", "glob", `{"pattern":"*.md"}`))
+	if stop, _ := h.sess.Turn(context.Background(), "first"); stop != proto.StopEndTurn {
+		t.Fatalf("first turn: %q", stop)
+	}
+	if stop, _ := h.sess.Turn(context.Background(), "second"); stop != proto.StopBudget {
+		t.Fatalf("second turn: %q", stop)
+	}
+	fins := h.payloads(proto.EvToolFinished)
+	if len(fins) != 3 || fins[2].(proto.ToolFinished).Outcome != proto.OutcomeCancelled || !strings.Contains(fins[2].(proto.ToolFinished).Result, "session's tool-call budget") {
+		t.Fatalf("the call over the session's budget must be answered, not run: %+v", fins)
+	}
+	if got := h.budgets(); !slices.Equal(got, []string{"session_tool_calls"}) {
+		t.Fatalf("budgets %v", got)
+	}
+	h.checkRebuild(t)
+}
+
+// TestConsecutiveErrorBudget: failing calls in a row trip it; one success between them resets the count.
+func TestConsecutiveErrorBudget(t *testing.T) {
+	fail := func(id string) goinfertest.Reply {
+		return goinfertest.Calls("", id, "read", `{"path":"no/such/file.go"}`)
+	}
+	ok := func(id string) goinfertest.Reply { return goinfertest.Calls("", id, "glob", `{"pattern":"*.go"}`) }
+	b := testBudget
+	b.MaxErrors = 2
+	h := newHarness(t, b, fail("t1"), ok("t2"), fail("t3"), goinfertest.Says("done"))
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopEndTurn {
+		t.Fatalf("errors with a success between them tripped the budget: %q, %v", stop, h.budgets())
+	}
+	h = newHarness(t, b, fail("t1"), fail("t2"), goinfertest.Says("never sent"))
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopBudget {
+		t.Fatalf("stop %q", stop)
+	}
+	if got := h.budgets(); !slices.Equal(got, []string{"consecutive_errors"}) {
+		t.Fatalf("budgets %v", got)
+	}
+	h.checkRebuild(t)
+}
+
+// TestBudgetsMustBeSet: a budget left at zero is a configuration mistake, not "no limit".
+func TestBudgetsMustBeSet(t *testing.T) {
+	b := testBudget
+	b.MaxErrors = 0
+	h := newHarness(t, b, goinfertest.Says("hi"))
+	if stop, _ := h.sess.Turn(context.Background(), "hi"); stop != proto.StopError {
+		t.Fatalf("stop %q", stop)
+	}
+	if n := len(h.payloads(proto.EvRequestSent)); n != 0 {
+		t.Fatalf("%d requests sent with an unset budget", n)
 	}
 }

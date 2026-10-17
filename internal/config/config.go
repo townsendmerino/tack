@@ -68,6 +68,11 @@ type Run struct {
 	MaxToolCalls int      `toml:"max_tool_calls"` // tool calls per turn (default 100)
 	MaxWall      Duration `toml:"max_wall"`       // wall time per turn (default 30m)
 	MaxTokens    int      `toml:"max_tokens"`     // output tokens per request (default 2048; it comes out of the window)
+	// TurnTokens and SessionTokens count the tokens the server computes: prefilled plus output (loop.Budget).
+	TurnTokens       int `toml:"turn_tokens"`        // per turn (default 200000)
+	MaxErrors        int `toml:"max_errors"`         // tool calls in a row ending in an error or a denial (default 8)
+	SessionTokens    int `toml:"session_tokens"`     // per session (default 2000000)
+	SessionToolCalls int `toml:"session_tool_calls"` // per session (default 1000)
 }
 
 // Duration is a time.Duration written as a string ("10m").
@@ -186,6 +191,19 @@ func (c *Config) validate() error {
 	}
 	if c.Run.MaxTokens == 0 {
 		c.Run.MaxTokens = 2048
+	}
+	for _, d := range []struct {
+		v   *int
+		def int
+	}{{&c.Run.TurnTokens, 200_000}, {&c.Run.MaxErrors, 8}, {&c.Run.SessionTokens, 2_000_000}, {&c.Run.SessionToolCalls, 1000}} {
+		if *d.v == 0 {
+			*d.v = d.def
+		}
+	}
+	r := c.Run
+	if min(r.MaxRequests, r.MaxToolCalls, r.MaxTokens, r.TurnTokens, r.MaxErrors, r.SessionTokens, r.SessionToolCalls) < 0 ||
+		r.MaxWall.Duration < 0 {
+		return errors.New("run: a budget is negative")
 	}
 	if k := c.Ken; k != nil {
 		if k.Mode == "" {

@@ -96,6 +96,18 @@ public struct ContextAssembled: Codable, Equatable, Sendable {
     }
 }
 
+public struct DaemonHalted: Codable, Equatable, Sendable {
+    public var trigger: String
+    public var by: String?
+    public var reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case trigger = "trigger"
+        case by = "by"
+        case reason = "reason"
+    }
+}
+
 public struct DaemonInfo: Codable, Equatable, Sendable {
     public var version: String
 
@@ -369,6 +381,7 @@ public enum EventPayload: Equatable, Sendable {
     case assistantMessage(AssistantMessage)
     case budgetExceeded(BudgetExceeded)
     case contextAssembled(ContextAssembled)
+    case daemonHalted(DaemonHalted)
     case error(ErrorEvent)
     case permissionRequested(PermissionRequested)
     case permissionResolved(PermissionResolved)
@@ -408,6 +421,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "assistant.message": payload = .assistantMessage(try c.decode(AssistantMessage.self, forKey: .payload))
         case "budget.exceeded": payload = .budgetExceeded(try c.decode(BudgetExceeded.self, forKey: .payload))
         case "context.assembled": payload = .contextAssembled(try c.decode(ContextAssembled.self, forKey: .payload))
+        case "daemon.halted": payload = .daemonHalted(try c.decode(DaemonHalted.self, forKey: .payload))
         case "error": payload = .error(try c.decode(ErrorEvent.self, forKey: .payload))
         case "permission.requested": payload = .permissionRequested(try c.decode(PermissionRequested.self, forKey: .payload))
         case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
@@ -433,6 +447,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .assistantMessage(let p): try c.encode(p, forKey: .payload)
         case .budgetExceeded(let p): try c.encode(p, forKey: .payload)
         case .contextAssembled(let p): try c.encode(p, forKey: .payload)
+        case .daemonHalted(let p): try c.encode(p, forKey: .payload)
         case .error(let p): try c.encode(p, forKey: .payload)
         case .permissionRequested(let p): try c.encode(p, forKey: .payload)
         case .permissionResolved(let p): try c.encode(p, forKey: .payload)

@@ -41,18 +41,22 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 	if c.Run.MaxRequests != 40 || c.Run.MaxToolCalls != 100 || c.Run.MaxTokens != 2048 || c.Run.MaxWall.Duration != 30*time.Minute {
 		t.Fatalf("run defaults: %+v", c.Run)
 	}
+	if c.Run.TurnTokens != 200_000 || c.Run.MaxErrors != 8 || c.Run.SessionTokens != 2_000_000 || c.Run.SessionToolCalls != 1000 {
+		t.Fatalf("budget defaults: %+v", c.Run)
+	}
 }
 
 func TestLoadFailsLoudly(t *testing.T) {
 	cases := map[string]struct{ body, want string }{
-		"typo":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
-		"unknown kind":  {"[servers.a]\nkind = \"ollama\"\n", "kind"},
-		"child no ctx":  {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
-		"remote no url": {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
-		"mixed":         {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
-		"main missing":  {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
-		"no servers":    {"main = \"z\"\n", "no [servers"},
-		"bad duration":  {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
+		"typo":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
+		"unknown kind":    {"[servers.a]\nkind = \"ollama\"\n", "kind"},
+		"child no ctx":    {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
+		"remote no url":   {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
+		"mixed":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
+		"main missing":    {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
+		"no servers":      {"main = \"z\"\n", "no [servers"},
+		"bad duration":    {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
+		"negative budget": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {

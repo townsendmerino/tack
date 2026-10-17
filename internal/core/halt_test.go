@@ -1,0 +1,86 @@
+package core
+
+import (
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+)
+
+// TestHalt: a halt stops the running turn mid-request (the request to the model server is cancelled), records
+// daemon.halted then turn.end halted, and refuses new turns until Resume.
+func TestHalt(t *testing.T) {
+	inRequest, cancelled := make(chan struct{}, 1), make(chan struct{}, 1)
+	probes := goinfertest.NewScripted("m", 16384) // answers everything but the generation itself
+	f := newFixtureOn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			probes.ServeHTTP(w, r)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body) // the server notices the client going away only once the body is read
+		select {
+		case inRequest <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done() // generation runs until the client goes away
+		select {
+		case cancelled <- struct{}{}:
+		default:
+		}
+	}))
+	sid := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	prompt := func() error {
+		return f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+			Content: []proto.ContentBlock{proto.Text("hello")}}, nil)
+	}
+	if err := prompt(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inRequest:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn never reached the model server")
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test", Reason: "drill"})
+	evs := f.waitTurnEnd(t)
+	select {
+	case <-cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the model server's request was not cancelled")
+	}
+	var types []proto.EventType
+	for _, ev := range evs {
+		types = append(types, ev.Type)
+	}
+	n := len(evs)
+	if n < 2 || evs[n-2].Type != proto.EvDaemonHalted {
+		t.Fatalf("daemon.halted must precede turn.end: %v", types)
+	}
+	if v, _ := evs[n-2].Decode(); v.(proto.DaemonHalted).Reason != "drill" {
+		t.Fatalf("daemon.halted %+v", v)
+	}
+	if v, _ := evs[n-1].Decode(); v.(proto.TurnEnd).StopReason != proto.StopHalted {
+		t.Fatalf("turn.end %+v", v)
+	}
+
+	err := prompt()
+	var perr *proto.Error
+	if !errors.As(err, &perr) || perr.Code != proto.CodeHalted || !strings.Contains(perr.Message, "tack resume") {
+		t.Fatalf("a prompt while halted: %v", err)
+	}
+	f.core.Resume()
+	if err := prompt(); err != nil {
+		t.Fatalf("a prompt after resume: %v", err)
+	}
+	<-inRequest
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByFile})
+	f.waitTurnEnd(t)
+}
