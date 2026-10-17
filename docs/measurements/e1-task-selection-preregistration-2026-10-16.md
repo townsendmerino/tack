@@ -144,6 +144,25 @@ DESIGN §15.1 wants A0's pass rate between about 20% and 80%. The pilot measures
 - **Outside the band:** one adjustment is allowed, registered here before any E1 run. Below 20% (too hard), the
   non-test line cap (stage 1, rule 3) halves to 40. Above 80% (too easy), its floor rises to 20. No other rule moves.
 
+**Applied 2026-10-17, before any E1 run** (owner). The pilot's A0 passed 0 of 10 (`e1-pilot-2026-10-17.md`), below
+20%, so the cap halves to 40.
+
+- **E1's order is now `eval/e1/e1-order-cap40.jsonl`:** the candidates of `eval/e1/e1-order.jsonl` whose
+  `why.non_test_lines` is at most 40.
+  - 71 of the 101 remain, in the same order: aikit 20, goinfer 38, ken 13. Each line is byte-identical to its line
+    in the full order.
+  - The full order stays as the record of how stage 3 chose; E1 takes its first N from the capped one (amendment 4).
+- **No other rule moves.** Every remaining candidate already met rules 1–8 at the 80-line cap, and lowering the cap
+  only removes candidates, so filtering the chosen order is the whole adjustment. The miner's `maxNonTestLines`
+  stays 80 in code: it describes how these candidates were mined.
+- **Note for whoever reads E1:** the pilot's failures do not look size-driven. Of its 20 runs:
+  - 13 answered in prose instead of editing;
+  - 5 edited the wrong thing;
+  - 2 made the right one-line fix and missed an import.
+
+  A smaller task may not change any of those. The adjustment is applied because it is the registered one, not
+  because the evidence points at size (DESIGN §17, R13).
+
 ## What this does not decide
 
 - Which arm is better. The pilot informs; it decides nothing (DESIGN §15.1).
