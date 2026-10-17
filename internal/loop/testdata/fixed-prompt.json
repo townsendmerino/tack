@@ -1,5 +1,5 @@
 {
-  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-10-16",
+  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-10-17",
   "interactions": [
     {
       "request": {
@@ -45,7 +45,8 @@
                 "type": "object",
                 "properties": {
                   "path": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "relative to the repo root"
                   },
                   "offset": {
                     "type": "integer",
@@ -67,7 +68,8 @@
                 "type": "object",
                 "properties": {
                   "pattern": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "relative to the repo root"
                   }
                 },
                 "required": [
@@ -86,7 +88,7 @@
                   },
                   "path": {
                     "type": "string",
-                    "description": "directory or file"
+                    "description": "directory or file, relative to the repo root; . for all of it (the default)"
                   },
                   "glob": {
                     "type": "string",
@@ -95,6 +97,125 @@
                 },
                 "required": [
                   "pattern"
+                ]
+              }
+            },
+            {
+              "name": "edit",
+              "description": "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "relative to the repo root"
+                  },
+                  "old_string": {
+                    "type": "string"
+                  },
+                  "new_string": {
+                    "type": "string"
+                  },
+                  "replace_all": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "path",
+                  "old_string",
+                  "new_string"
+                ]
+              }
+            },
+            {
+              "name": "write",
+              "description": "Create a file, or overwrite one you have read.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "relative to the repo root"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "content"
+                ]
+              }
+            },
+            {
+              "name": "read_output",
+              "description": "Page a truncated tool output by the handle its result gave.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "handle": {
+                    "type": "string"
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "description": "first line, from 1"
+                  },
+                  "limit": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "handle"
+                ]
+              }
+            },
+            {
+              "name": "todo",
+              "description": "Replace your task list. Keep one item in_progress at a time.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "in_progress",
+                            "done"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "status"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "items"
+                ]
+              }
+            },
+            {
+              "name": "ask_user",
+              "description": "Ask the user a question and wait for the answer. Only when you cannot go on safely without one.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "question"
                 ]
               }
             }
@@ -107,7 +228,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":447}\n"
+        "body": "{\"input_tokens\":844}\n"
       }
     }
   ]

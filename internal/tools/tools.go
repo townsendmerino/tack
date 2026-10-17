@@ -1,6 +1,10 @@
-// Package tools implements the tools the model calls (DESIGN §6.5). P0 has the read-only set: read, glob, grep, and
-// search when a Searcher (ken's engine, DESIGN §12 K1/K2) is supplied. Every schema and description counts against
-// the fixed-prompt budget (DESIGN §2.3), so they are short.
+// Package tools implements the tools the model calls (DESIGN §6.5): read, glob, grep, and search when a Searcher (ken's
+// engine, DESIGN §12 K1/K2) is supplied; edit and write; read_output, todo and ask_user. Every schema and description
+// counts against the fixed-prompt budget (DESIGN §2.3), so they are short.
+//
+// Paths are relative to the repository root, and every path parameter says so. An error the model sees says what to do
+// instead and names paths as the model gave them, never by the host's absolute path (docs/design/p1-notes.md, "Tool
+// paths"): small models learn from error text.
 package tools
 
 import (
@@ -8,10 +12,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/townsendmerino/tack/internal/server"
 )
@@ -43,11 +49,35 @@ type Set struct {
 	order  []string
 }
 
+// Options choose a session's tools. read, glob and grep are always present.
+type Options struct {
+	Searcher Searcher // adds search
+	// Write adds edit and write. Set it only where the permission engine decides each call (DESIGN §6.6).
+	Write bool
+	Blobs BlobReader // adds read_output, which pages outputs the loop truncated into the blob store
+	// Plan adds todo and ask_user; Ask answers ask_user, and nil answers that no one is attached.
+	Plan bool
+	Ask  Asker
+}
+
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
-func NewSet(searcher Searcher) *Set {
-	ts := []Tool{readTool{}, globTool{}, grepTool{}}
-	if searcher != nil {
-		ts = append([]Tool{searchTool{s: searcher}}, ts...)
+func NewSet(searcher Searcher) *Set { return New(Options{Searcher: searcher}) }
+
+// New builds the set Options choose, in a fixed order.
+func New(o Options) *Set {
+	var ts []Tool
+	if o.Searcher != nil {
+		ts = append(ts, searchTool{s: o.Searcher})
+	}
+	ts = append(ts, readTool{}, globTool{}, grepTool{})
+	if o.Write {
+		ts = append(ts, editTool{}, writeTool{})
+	}
+	if o.Blobs != nil {
+		ts = append(ts, readOutputTool{blobs: o.Blobs})
+	}
+	if o.Plan {
+		ts = append(ts, todoTool{}, askUserTool{ask: o.Ask})
 	}
 	s := &Set{byName: map[string]Tool{}}
 	for _, t := range ts {
@@ -73,9 +103,33 @@ func (s *Set) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
-// Workspace is the directory tree file tools are confined to (DESIGN §6.6, "Confinement").
+// Workspace is the directory tree file tools are confined to (DESIGN §6.6, "Confinement"), and what the model has seen
+// of it this session. It is safe for concurrent use.
 type Workspace struct {
 	root string // absolute, symlinks resolved
+
+	mu sync.Mutex
+	// seen is each file's content as the model last saw it: after it read any part of the file, or wrote or edited it.
+	// edit and write check a file against it (DESIGN §7.5). It starts empty, so after a restart the model reads again.
+	seen map[string]string
+}
+
+// saw records that the model has seen abs with this content.
+func (w *Workspace) saw(abs, content string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen == nil {
+		w.seen = map[string]string{}
+	}
+	w.seen[abs] = content
+}
+
+// lastSeen is the content the model last saw of abs, and whether it has seen it at all.
+func (w *Workspace) lastSeen(abs string) (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c, ok := w.seen[abs]
+	return c, ok
 }
 
 // NewWorkspace confines tools to root.
@@ -131,6 +185,69 @@ func (w *Workspace) Resolve(p string) (string, error) {
 		return "", errSecret
 	}
 	return real, nil
+}
+
+// resolveNew is Resolve for a path that may not exist yet, for write: its nearest existing ancestor is resolved
+// through symlinks and must stay inside the workspace; the components below it do not exist, so no symlink can move
+// them.
+func (w *Workspace) resolveNew(p string) (string, error) {
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(w.root, p)
+	}
+	p = filepath.Clean(p)
+	if !within(w.root, p) {
+		return "", errOutside
+	}
+	dir, rest := p, []string(nil)
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		dir = filepath.Dir(dir)
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	out := filepath.Join(append([]string{real}, rest...)...)
+	if !within(w.root, out) {
+		return "", errOutside
+	}
+	if isSecret(out) {
+		return "", errSecret
+	}
+	return out, nil
+}
+
+// pathError is the result for a path the model gave that cannot be used: it says what to do instead, and names the
+// path as given, never by the host's absolute path.
+func (w *Workspace) pathError(given string, err error) Result {
+	switch {
+	case errors.Is(err, errOutside):
+		return errorf("%q is outside the repository; paths are relative to the repo root", given)
+	case errors.Is(err, errSecret):
+		return errorf("%q is on the secrets deny-list and cannot be used", given)
+	case errors.Is(err, fs.ErrNotExist):
+		return errorf("no such file or directory %q; paths are relative to the repo root, use '.' for all of it, "+
+			"and glob finds files by name", given)
+	}
+	return errorf("%q: %s", given, w.scrub(err.Error()))
+}
+
+// scrub replaces the workspace's absolute root in s with ".", so no error the model sees carries a host path.
+func (w *Workspace) scrub(s string) string {
+	return strings.ReplaceAll(s, w.root, ".")
+}
+
+// inGit reports whether abs is inside a .git directory: tools never write there (DESIGN §6.6).
+func inGit(w *Workspace, abs string) bool {
+	for _, seg := range strings.Split(w.Rel(abs), "/") {
+		if seg == ".git" {
+			return true
+		}
+	}
+	return false
 }
 
 // Rel is abs relative to the root, with forward slashes.

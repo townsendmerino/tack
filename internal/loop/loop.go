@@ -263,8 +263,13 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if len(r.Text) > s.cfg.MaxResultBytes {
 		full = []byte(r.Text)
 		head, tail := s.cfg.MaxResultBytes*3/4, s.cfg.MaxResultBytes/4
-		fin.Result = r.Text[:head] + fmt.Sprintf("\n[… %d bytes omitted …]\n", len(r.Text)-head-tail) + r.Text[len(r.Text)-tail:]
-		fin.Truncated, fin.Blob = true, store.HandleOf(full)
+		handle := store.HandleOf(full)
+		omitted := fmt.Sprintf("\n[… %d bytes omitted …]\n", len(r.Text)-head-tail)
+		if _, ok := s.cfg.Tools.Get("read_output"); ok {
+			omitted = fmt.Sprintf("\n[… %d bytes omitted; read_output with handle %q pages them …]\n", len(r.Text)-head-tail, handle)
+		}
+		fin.Result = r.Text[:head] + omitted + r.Text[len(r.Text)-tail:]
+		fin.Truncated, fin.Blob = true, handle
 	}
 	return fin, full, nil
 }

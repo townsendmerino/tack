@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -276,6 +277,24 @@ func TestLongResultGoesToTheBlobStore(t *testing.T) {
 	full, err := h.st.Blobs.Get(fin.Blob)
 	if err != nil || !strings.Contains(string(full), "func applyTokenBudget") {
 		t.Fatalf("blob %q, %v", full, err)
+	}
+}
+
+// TestTruncatedResultNamesItsHandle: with read_output in the session's tools, a truncated result tells the model the
+// handle, and read_output with that handle pages the stored output.
+func TestTruncatedResultNamesItsHandle(t *testing.T) {
+	h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "grep", `{"pattern":"."}`), goinfertest.Says("ok"))
+	h.sess.cfg.MaxResultBytes = 40
+	h.sess.cfg.Tools = tools.New(tools.Options{Blobs: h.st.Blobs})
+	h.sess.Turn(context.Background(), "everything")
+	fin := h.payloads(proto.EvToolFinished)[0].(proto.ToolFinished)
+	if !fin.Truncated || !strings.Contains(fin.Result, `read_output with handle "`+fin.Blob+`"`) {
+		t.Fatalf("the truncated result does not name its handle %q: %q", fin.Blob, fin.Result)
+	}
+	ro, _ := h.sess.cfg.Tools.Get("read_output")
+	r, err := ro.Run(context.Background(), h.ws, json.RawMessage(`{"handle":"`+fin.Blob+`"}`))
+	if err != nil || r.IsError || !strings.Contains(r.Text, "func applyTokenBudget") {
+		t.Fatalf("read_output: %q, %v", r.Text, err)
 	}
 }
 

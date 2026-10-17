@@ -29,7 +29,7 @@ func (readTool) ReadOnly() bool { return true }
 func (readTool) Spec() server.Tool {
 	return server.Tool{Name: "read",
 		Description: "Read a file's lines with line numbers. Files over 200 lines need offset and limit.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
 }
 
 func (readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
@@ -39,19 +39,23 @@ func (readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 		Limit  int    `json:"limit"`
 	}
 	if err := decode(input, &in); err != nil {
-		return errorf("bad input: %v", err), nil
+		return errorf("bad input: %v; read takes path, and optionally offset and limit", err), nil
 	}
 	p, err := ws.Resolve(in.Path)
 	if err != nil {
-		return errorf("%s: %v", in.Path, err), nil
+		return ws.pathError(in.Path, err), nil
+	}
+	if st, err := os.Stat(p); err == nil && st.IsDir() {
+		return errorf("%q is a directory; glob lists its files, such as %s/*", in.Path, strings.TrimSuffix(in.Path, "/")), nil
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return errorf("%s: %v", in.Path, err), nil
+		return ws.pathError(in.Path, err), nil
 	}
 	if bytes.IndexByte(data[:min(len(data), 8192)], 0) >= 0 {
-		return errorf("%s is a binary file", in.Path), nil
+		return errorf("%q is a binary file; read shows text files only", in.Path), nil
 	}
+	ws.saw(p, string(data))
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	if len(data) == 0 {
 		lines = nil
@@ -86,7 +90,7 @@ func (globTool) ReadOnly() bool { return true }
 func (globTool) Spec() server.Tool {
 	return server.Tool{Name: "glob",
 		Description: "List files matching a glob such as **/*.go or internal/*/doc.go.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}`)}
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string","description":"relative to the repo root"}},"required":["pattern"]}`)}
 }
 
 func (globTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
@@ -94,7 +98,7 @@ func (globTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 		Pattern string `json:"pattern"`
 	}
 	if err := decode(input, &in); err != nil || in.Pattern == "" {
-		return errorf("bad input: need a pattern"), nil
+		return errorf("bad input: need a pattern, such as **/*.go"), nil
 	}
 	re, err := globRegexp(in.Pattern)
 	if err != nil {
@@ -114,7 +118,8 @@ func (globTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 		return Result{}, err
 	}
 	if total == 0 {
-		return Result{Text: "no files match " + in.Pattern}, nil
+		return Result{Text: "no files match " + in.Pattern + "; patterns are relative to the repo root, and **/name finds a " +
+			"name at any depth"}, nil
 	}
 	out := strings.Join(sortedUnique(hits), "\n") + "\n"
 	if total > len(hits) {
@@ -129,7 +134,7 @@ func (grepTool) ReadOnly() bool { return true }
 func (grepTool) Spec() server.Tool {
 	return server.Tool{Name: "grep",
 		Description: "Search file contents with a Go regular expression. Use for every occurrence of a name.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"directory or file"},"glob":{"type":"string","description":"only files matching"}},"required":["pattern"]}`)}
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"directory or file, relative to the repo root; . for all of it (the default)"},"glob":{"type":"string","description":"only files matching"}},"required":["pattern"]}`)}
 }
 
 func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
@@ -139,7 +144,7 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 		Glob    string `json:"glob"`
 	}
 	if err := decode(input, &in); err != nil || in.Pattern == "" {
-		return errorf("bad input: need a pattern"), nil
+		return errorf("bad input: need a pattern, a Go regular expression such as func Name"), nil
 	}
 	re, err := regexp.Compile(in.Pattern)
 	if err != nil {
@@ -153,7 +158,7 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 	}
 	start, err := ws.Resolve(in.Path)
 	if err != nil {
-		return errorf("%s: %v", in.Path, err), nil
+		return ws.pathError(in.Path, err), nil
 	}
 	var b strings.Builder
 	matches := 0
