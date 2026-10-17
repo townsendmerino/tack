@@ -122,6 +122,33 @@ jobs alike.
   - So the re-run's timings (turn latency, task wall time, tok/s) cannot be compared with any later build's.
   - Its pass count is unaffected. The mask, and so every greedy output, is identical with and without the prefilter,
     by construction and by test (goinfer's `TestMasker_firstBytePrefilterExact`).
+  - **Superseded by amendment 7** before any job ran on it.
+
+**Amendment 7, 2026-10-17, before the re-run** (owner). **The goinfer build is main `31418112`.** Both jobs start a
+goinfer-serve built from main at or after `31418112`, so it has the tool-call constraint and the masker prefilter.
+
+- **The build.** goinfer main `31418112`:
+  - built with `git archive`, `GOOS=linux`, `-tags cuda`, `./cuda/cmd/serve`;
+  - binary `~/tack-runs/bin/goinfer-serve-cuda-31418112` on nobara, sha256
+    `f8e8b18d3211c0fac5d2702c958cc6b361a7a39da9e007384f2f318829899db0`, the same at both ends of the copy;
+  - it contains `d5dd01ef` (the tool-call fix `8abd8057`);
+  - its `constrain/` is identical to `e0b1a966`, the build goinfer measured for the prefilter, and to main `e482e394`.
+- **Why `31418112` and not newer main.** It is the commit goinfer named for the prefilter. Main after it changes
+  1,007 lines of non-test serve code that the pilot does not need: the swap guard, sampling from the model, model
+  loading and the fit route. `31418112`'s own CI run was cancelled when a newer push superseded it; its `constrain/`
+  is the code `e482e394`'s green run tested.
+- **Timings.** On this build each 19-tool call costs about 207 ms of decode on nobara (goinfer's tier-1 figure for
+  `e0b1a966`), not the ~940 ms of `d5dd01ef`. No run used `d5dd01ef`, so the re-run is one series on `31418112`.
+- **Sampling and raw bodies,** as amendment 6. Each job's record carries the hash, the sampling and where the bodies
+  are kept.
+- **The jobs.** `tack-e1-pilot-rerun-job1-746fb8c-g31418112` (tasks 1–5) and `-job2-…` (tasks 6–11). They replace
+  the `d5dd01ef` queueing, which was dropped unrun. The queue starts tonight, not by day, because goinfer's peer
+  re-run has nobara by day.
+- **Order: queued before the fit check.** The design (below) fit-checks the server before queueing. Here the jobs
+  were queued first, because the box is reserved by day. The fit check (`tack eval models -fit-only`,
+  `~/tack-runs/e1/pilot-server-31418112.toml`, about 15 s under the timing lock) runs when the box is free, before the
+  queue starts. If it does not admit `-ctx 32768` on `cuda-resident`, both jobs are dropped. Its result goes in
+  `~/tack-runs/e1/fitcheck-pilot-server-31418112`.
 
 ## Tasks
 
