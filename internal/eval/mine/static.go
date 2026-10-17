@@ -38,6 +38,9 @@ type Candidate struct {
 	Rejected   string    `json:"rejected,omitempty"` // why stage 1 rejected it, for the rules that report one
 	Statement  string    `json:"statement,omitempty"`
 	ReviewedBy string    `json:"reviewed_by,omitempty"`
+	// Removed is why a chosen task left the set after it was numbered (the stub check, a dropped statement). The line
+	// stays in pilot.jsonl so the other tasks keep their numbers; LoadTasks skips it.
+	Removed string `json:"removed,omitempty"`
 }
 
 // Measure is the stage-1 evidence a task was picked on.

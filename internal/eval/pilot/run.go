@@ -22,8 +22,9 @@ type Task struct {
 	mine.Candidate
 }
 
-// LoadTasks reads pilot.jsonl and returns tasks from..to (1-based, inclusive). Every task must be verified and carry an
-// approved statement (pilot pre-registration, "Tasks"); one that does not is an error, so no draft is ever run.
+// LoadTasks reads pilot.jsonl and returns tasks from..to (1-based line positions, inclusive). A line marked removed is
+// skipped, and the others keep their positions. Every other task must be verified and carry an approved statement
+// (pilot pre-registration, "Tasks"); one that does not is an error, so no draft is ever run.
 func LoadTasks(path string, from, to int) ([]Task, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -42,6 +43,8 @@ func LoadTasks(path string, from, to int) ([]Task, error) {
 			return nil, fmt.Errorf("%s line %d: %w", path, n, err)
 		}
 		switch {
+		case c.Removed != "":
+			continue
 		case c.Verified == nil || !c.Verified.OK:
 			return nil, fmt.Errorf("task %d (%s %s) is not verified", n, c.Repo, c.Commit[:8])
 		case c.Statement == "" || c.ReviewedBy == "":

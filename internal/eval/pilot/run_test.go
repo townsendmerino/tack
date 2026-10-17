@@ -105,6 +105,43 @@ func TestLoadTasksRefusesDrafts(t *testing.T) {
 	}
 }
 
+// TestCommittedPilotTasksLoad keeps eval/e1/pilot.jsonl runnable: every line is approved or marked removed, so a
+// night job over any range of it starts.
+func TestCommittedPilotTasksLoad(t *testing.T) {
+	ts, err := LoadTasks(filepath.Join("..", "..", "..", "eval", "e1", "pilot.jsonl"), 1, 1<<30)
+	if err != nil || len(ts) == 0 {
+		t.Fatalf("%d tasks, %v", len(ts), err)
+	}
+	for _, task := range ts {
+		if task.Removed != "" {
+			t.Errorf("task %d is removed but was loaded", task.N)
+		}
+	}
+	t.Logf("%d tasks load", len(ts))
+}
+
+// TestLoadTasksSkipsRemoved: a task the stub check removed stays on its line, unverified and unapproved, and is
+// skipped; the task after it keeps its position.
+func TestLoadTasksSkipsRemoved(t *testing.T) {
+	f := newFixture(t)
+	p := filepath.Join(t.TempDir(), "pilot.jsonl")
+	approved := f.task.Candidate
+	removed := approved
+	removed.Verified = &mine.Verified{OK: false, Why: "stub check: the named tests pass with the fix's 2 functions stubbed"}
+	removed.ReviewedBy = ""
+	removed.Removed = "stub check"
+	var b strings.Builder
+	for _, c := range []mine.Candidate{approved, removed, approved} {
+		j, _ := json.Marshal(c)
+		b.Write(append(j, '\n'))
+	}
+	os.WriteFile(p, []byte(b.String()), 0o644)
+	ts, err := LoadTasks(p, 1, 3)
+	if err != nil || len(ts) != 2 || ts[0].N != 1 || ts[1].N != 3 {
+		t.Fatalf("tasks %+v, err %v; want tasks 1 and 3", ts, err)
+	}
+}
+
 func TestArmOrderAlternates(t *testing.T) {
 	a0, a0k := Arm{Name: "A0"}, Arm{Name: "A0k"}
 	if ArmOrder(1, a0, a0k)[0].Name != "A0" || ArmOrder(2, a0, a0k)[0].Name != "A0k" {
