@@ -5,6 +5,44 @@
 Findings for P1 (DESIGN §16), recorded as they arrive from P0's runs and measurements. Each one is an input to P1's
 work, with its evidence. Decisions still go in `DECISIONS.md`.
 
+## P1's order and decisions (owner, 2026-10-17)
+
+The order the owner approved, each step with its exit check:
+
+1. **File tools:** `edit`, `write`, `read_output`, `todo`, `ask_user`, with the path and error rules below applied to
+   every path-taking tool (`read`, `glob` and `grep` too).
+   - **Exit:** a tier-0 test per tool; a missing relative path to each path-taking tool gets the guidance and no
+     absolute host path; `edit` refuses a region that changed since the model last saw it (§7.5);
+     `TestFixedPromptBudget` re-recorded under budget.
+2. **Permissions, sandbox, `tackd shell`, `bash`:** the modes, the rules, the run-time recheck, Seatbelt from
+   `(deny default)`, secrets, halt and budgets.
+   - **Exit:** a build-tagged escape test per §6.6 hole, each seen red first. **The network stays fully denied, with
+     an escape test proving it.**
+3. **Checkpoints and rewind:** pre-images, a shadow-repo snapshot before `bash`, rewind as restore plus fork.
+4. **Daemon with auto-spawn:** lock, socket and token, subscribe, crash recovery, drain, versions; the goinfer child
+   under the daemon.
+5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
+   - By day: an exactness check of `SearchFiles` on goinfer.
+   - At night: `SearchFiles`'s latency on goinfer.
+6. **Compaction, subagents, the usage table.**
+7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
+   `recently_changed`.
+8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
+
+**Decisions:**
+
+- **`recently_changed` is implemented in tack, not ken.** It runs git directly (exec, never a shell) and returns recent
+  commits (`git log`) and uncommitted changes (`git status`). ken's change events (K3) can feed it in P2.
+- **`web_fetch` moves to P5** with the per-domain network proxy (DESIGN §16, §6.5, §6.6). P1's sandbox denies the
+  network outright.
+- **G2 and G6 briefs went to goinfer** in this order: its tool-call parsing fix first (the pilot and E1 wait on it),
+  then G2, then G6 (`docs/briefs/goinfer-g2-fit-json.md`, `docs/briefs/goinfer-g6-night-queue-stops-tack-server.md`).
+  Until each lands, tack keeps a workaround:
+  - **G2:** P0's admission — a pressure check before the load, goinfer's own refusal, and the decode-path check after
+    it.
+  - **G6:** the owner stops and starts nobara's tack-facing server by hand around the night queue
+    (`~/tack-runs/serve/stop` and `start` on nobara).
+
 ## Tool paths: say they are relative to the repository root, and make errors say what to do instead (owner, 2026-10-17)
 
 **What happened.** The Mac's night recording `tack-cassette-run-ken-7b` (2026-10-16) ran Qwen2.5-7B-Instruct on Metal.

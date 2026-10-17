@@ -488,14 +488,14 @@ tool-use smoke set compares this merged set against the split one before it is f
 | `search` | ken hybrid search; results packed to a share of the window | read | allow |
 | `find_related` | ken | read | allow |
 | `symbol` | ken structural: a definition, with callers, callees, references or tests on request; given a path instead of a name, the symbols defined there (§7.3) | read | allow |
-| `recently_changed` | ken (git history) | read | allow |
+| `recently_changed` | tack: recent commits (`git log`) and uncommitted changes (`git status`), git run directly, never through a shell; ken's change events (K3) can feed it in P2 | read | allow |
 | `read` | file ranges with line numbers; large files return ken's outline first (§7.3) | read | allow inside the workspace |
 | `glob`, `grep` | Go implementations; exhaustive enumeration stays grep's job | read | allow |
 | `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5) | write | by mode |
 | `write` | create or overwrite | write | ask |
 | `bash` | tack's own sandboxed shell (§6.6); the working directory and exported variables persist per session; background jobs | exec | ask, or a matching allow rule |
 | `read_output` | pages a truncated output out of the blob store | read | allow |
-| `web_fetch` | tack's own fetch; off by default, and absent from the tool list unless turned on when the session starts (the list is fixed for a session, §7.2) | network | ask |
+| `web_fetch` (P5) | tack's own fetch; off by default, and absent from the tool list unless turned on when the session starts (the list is fixed for a session, §7.2) | network | ask |
 | `todo`, `ask_user`, `task` | the loop | none | allow |
 | MCP tools (P5) | user configuration, after the repo trust step | per server | ask |
 
@@ -527,7 +527,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     Security, July 2026). The same rule stops `setsid nohup` and `launchctl submit` from detaching work beyond
     `tack halt`. In a repo with a night queue (goinfer's `night.py`), the queue's directory is declared writable for that
     workspace, so the agent queues a long run instead of detaching it.
-  - **Network** is denied by default. Opening it per domain goes through a local proxy that enforces the list, because
+  - **Network** is denied by default; through P4 it is denied outright, with an escape test proving it. From P5, with
+    `web_fetch`, opening it per domain goes through a local proxy that enforces the list, because
     Seatbelt filters addresses, not host names.
   - **tack itself is out of reach.** The profile denies tack's socket, lock, token, state directory and config, so a
     command cannot approve its own request, change the mode, lift a halt or read transcripts. Methods that change
@@ -1256,11 +1257,11 @@ run faster; the app's review loop is the part more agent throughput does not com
 | phase | scope | size | exit | droppable |
 |---|---|---|---|---|
 | **P0** foundations | repo, CI, protocol types and fixtures, Swift generator stub, store; the goinfer server adapter, supervisor and remote connection; cassettes; `tack run` for read-only questions on a local model; ken K1–K2 (in ken); **E0** at night; the A0-against-A0k pilot | 2–3 wk | E0 and the pilot recorded; `tack run` answers a question about ken from cassettes in CI | no |
-| **P1** daily-driver CLI | the tools except `symbol`; permissions and sandbox; ken in-process; instruction files with the fixed-prompt budget and sections (K9); compaction; checkpoints; subagents; TUI; daemon with auto-spawn; budgets and halt; usage table; the OpenAI-compatible adapter; goinfer G2, G3, G6; E1 pilot, then the full A0-against-A1 run | 5–7 wk | the owner uses it for a week of real work; the P1 rule passes | no |
+| **P1** daily-driver CLI | the tools except `symbol` and `web_fetch` (P5; the network stays fully denied in P1); permissions and sandbox; ken in-process; instruction files with the fixed-prompt budget and sections (K9); compaction; checkpoints; subagents; TUI; daemon with auto-spawn; budgets and halt; usage table; the OpenAI-compatible adapter; goinfer G2, G3, G6; E1 pilot, then the full A0-against-A1 run | 5–7 wk | the owner uses it for a week of real work; the P1 rule passes | no |
 | **P2** context engine | ken K3–K8 (in ken); the ledger; staleness; `symbol`; auto-context; prefix-aware assembly measured; TUI inspector; transcripts corpus | 4–6 wk | the P2 rule: ship, park or fail | a fail parks features, not the product |
 | **P3** fast turns, no swap | reuse tuning and residency; the small jobs with their gates; admission and the memory guard on the Mac; the nobara server hardened | 3–4 wk | the P3 rule plus E2 | yes |
 | **P4** macOS app | §11.1–§11.7, the notifications of §11.8, §11.9, §11.10; signed and notarized from the first build | 6–8 wk | the owner uses the app as primary for a week; §11.9 budgets met | — |
-| **P5** polish and distribution | the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
+| **P5** polish and distribution | `web_fetch` and the per-domain network proxy (§6.6); the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
 | **P6** research | exact-prefix measurements on goinfer's KV tiers; approximate span reuse behind fidelity gates | open | its own pre-registration | yes |
 
 Through P5 that is roughly 23–32 weeks. **Worktree-parallel sessions** — each session in its own `git worktree`, merged
