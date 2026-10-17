@@ -98,6 +98,42 @@ frozen as they were sent.**
 - **What it does not change.** The tasks, the scoring and the rule. "As `tack run` sends them" now means as it sent
   them when E0 was registered.
 
+**Amendment 7, 2026-10-17 — PROPOSED, not yet approved.** Nothing in it is downloaded, fit-checked or run until the
+owner approves this text. **Coder-tuned 7–8B models on nobara.**
+
+- **Why.** The E1 pilot re-run of 2026-10-17 passed 0 of 20 with the incumbent, Qwen2.5-7B-Instruct, though every
+  tool call parsed and ran. 13 runs answered in prose instead of editing (`e1-pilot-2026-10-17.md`; DESIGN §17, R13).
+  The owner asked for coder-tuned models that goinfer can run on nobara's 8 GB card.
+- **The arms**, all nobara, `cuda`, `q4_k_m`, read from `~/models`:
+
+  | checkpoint | architecture | why |
+  |---|---|---|
+  | Qwen2.5-Coder-7B-Instruct | qwen2 | **required** (owner): the incumbent's architecture and size, coder-tuned |
+  | Seed-Coder-8B-Instruct | llama, per its model card | a coder-tuned 8B of another family |
+  | OpenCoder-8B-Instruct | llama, per its model card | a coder-tuned 8B of another family |
+
+  - The two 8Bs are the owner's to keep or drop. goinfer serves `qwen2` and `llama`; the architecture is read from
+    each GGUF's header at the fit. An architecture goinfer refuses makes the arm a recorded refusal, not a fail.
+  - Not included: deepseek-coder-6.7b-instruct. Its 16k native window is below the 32768 the pilot's opencode needs,
+    and its full multi-head KV is the costliest of the candidates.
+- **Download** (the network use the owner asks for). Into `~/models` on nobara, from the publisher's own GGUF where
+  one exists (Qwen's for Qwen2.5-Coder), otherwise a named quantizer. Each file's source URL, revision and sha256 go
+  in the arm's record before its fit.
+  - `~/models/qwen2.5-coder-7b-instruct-gguf-dl/` holds no model today, only a download's cache. It is not reused.
+- **Fit check first, by day,** with `tack eval models -fit-only`, as the run discipline below already requires. It
+  runs only with the timing lock free and no night runner going.
+  - It records E0's sizes, 16384 then 8192, and additionally whether 32768 is admitted, which the pilot's opencode
+    needs. The 32768 row informs the pilot and is not part of E0's rule.
+  - An arm the fit does not admit at 8192 stops there, recorded. It is not re-shaped to fit.
+- **Graded by the registered rule, unchanged:** fit, `check`, smoke at least 17 of 20 on both runs with 0 malformed,
+  then the timed phases at night under `night.py`. The incumbent stays the do-nothing arm.
+- **What E0 cannot see here.** E0's smoke is one request per task and scores the tool chosen. The incumbent already
+  makes good single calls, and R13 is about what a model does over a whole task. So E0 screens these arms for fit,
+  speed and clean calls, but cannot say whether one edits.
+  - *Proposed:* an eligible coder arm becomes nobara's default only after the pilot, re-run with that model beside the
+    incumbent under a new pilot amendment, shows it editing.
+  - Until then, E0's "highest smoke score" rule ranks it, but the owner decides any change of default.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.

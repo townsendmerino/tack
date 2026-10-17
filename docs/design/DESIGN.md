@@ -1312,6 +1312,7 @@ chafes. On one local model, parallel sessions share one decoder, so worktrees bu
 | R10 | chat-template and tool-format differences across model families and servers | high | low–medium | goinfer first-class; per-server capability flags; cassette tests per server and model family |
 | R11 | a 16k window is too small for real work in the owner's repos, even with ken | medium | high | the fixed-prompt budget; instruction files by section; routine compaction; E1 measures it; larger windows where memory allows (nobara's card refuses a 7B beyond about 20k) |
 | R12 | the one-install promise fails on 16 GB Macs: no agent-capable model fits beside the owner's other apps | high | high | E0 on Metal before the app; memory-tiered model offers on first run; a plain message and the remote-server path where nothing fits; goinfer's never-swap and paging work |
+| R13 | the models that fit the owner's hardware do not make agentic edits, even with working tool calls. **Observed:** E1 pilot re-run 2026-10-17, Qwen2.5-7B-Instruct on nobara: 0 of 20; every call parsed and ran, yet 13 runs answered in prose instead of editing, 5 edited the wrong thing and 2 looped (`docs/measurements/e1-pilot-2026-10-17.md`) | high | high | coder-tuned models (an E0 amendment adds coder-tuned 7–8B models with a fit check first); tack's loop treats "answered instead of editing" on an edit task as a failure, not an end; hardware with room for a larger model |
 
 ---
 
