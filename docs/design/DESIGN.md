@@ -1093,7 +1093,20 @@ serving every other agent.
 - ken-mcp now opens its workspaces through `engine.Open`, so the two faces share one path.
 - Not re-verified at the tag: ken's full semble NDCG benchmark (the change touches no ranking code).
 
-**Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements), K9 (markdown sections).
+**Delivered in ken v1.10.0** (2026-10-16, ken ADR-047; tagged at `5795b01`):
+
+- **K9:** `Hit.HeadingPath` (the enclosing headings, outermost first; empty for a non-markdown hit),
+  `Workspace.Sections(ctx, path)` (a markdown file's heading-bounded sections in file order: `Section{HeadingPath,
+  Level, StartLine, EndLine, ApproxTokens}`, the text before the first heading as a level-0 section), and
+  `Workspace.SearchFiles(ctx, query, k, mode, files)` (`SearchMode` restricted to those files). Sections and hits share
+  one boundary, so a hit never straddles two of tack's sections.
+- **Pinned when P1's instruction-file work starts, not before**; tack stays on v1.9.0 until then.
+- **On adoption:** `SearchFiles` over-fetches `min(index size, 5000)` candidates and then filters, so it is exact only
+  on repositories of up to 5,000 chunks; measure its latency on goinfer, the largest. A path that is not in the index
+  silently returns no hits, so check a file with `Sections` (which errors on an unindexed path) before trusting a
+  search over it.
+
+**Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements).
 
 **How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
 (`WatchedIndex()`, `StructuralIfBuilt()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's internal packages
