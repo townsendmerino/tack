@@ -34,13 +34,19 @@ func evalCmd(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "results directory (durable: not /tmp)")
 	arm := fs.String("arm", "", "run only this arm")
 	fitOnly := fs.Bool("fit-only", false, "load each arm and record goinfer's plan; nothing is timed (the day fit check)")
-	rev := fs.String("tack-rev", version, "the tack commit this binary was built from, recorded with every result")
+	rev := fs.String("tack-rev", "", "the tack commit this binary must have been built from (checked against its build info)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitUsage
 	}
 	if *manifest == "" || *out == "" {
 		fmt.Fprintln(stderr, "tack eval models: -manifest and -out are required")
 		return exitUsage
+	}
+	tackRev, err := eval.Revision(*rev)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval models:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval models: not started: "+err.Error()))
+		return exitError
 	}
 	m, err := eval.LoadManifest(*manifest)
 	if err != nil {
@@ -54,7 +60,7 @@ func evalCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	results, err := eval.Run(ctx, eval.Options{Manifest: m, Out: *out, Arm: *arm, FitOnly: *fitOnly, TackRev: *rev,
+	results, err := eval.Run(ctx, eval.Options{Manifest: m, Out: *out, Arm: *arm, FitOnly: *fitOnly, TackRev: tackRev,
 		LockPath: lock, Log: stderr})
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval models:", err)

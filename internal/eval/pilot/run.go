@@ -338,10 +338,12 @@ type Options struct {
 	Log       io.Writer
 	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
 	CountTokens func(ctx context.Context, text string) (int, error)
+	TackRev     string // the tack commit the runner was built from, recorded with every run
 }
 
 // Record is one run's line in results.jsonl.
 type Record struct {
+	Tack         string            `json:"tack"`
 	Task         int               `json:"task"`
 	Repo         string            `json:"repo"`
 	Commit       string            `json:"commit"`
@@ -395,7 +397,7 @@ func RunPilot(ctx context.Context, o Options) error {
 }
 
 func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
-	rec := Record{Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339)}
+	rec := Record{Tack: o.TackRev, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339)}
 	rec.Run = Result{Arm: arm.Name, Exit: -1}
 	dir := filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name)
 	repo := filepath.Join(dir, "repo")

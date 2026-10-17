@@ -115,6 +115,8 @@ pilot then runs with 9, and records that.
 
 ## Recorded per run
 
+- the tack revision the runner was built from, read from its build info; `tack eval pilot` refuses to start without a
+  clean one (`internal/eval/buildrev.go:Revision`);
 - pass or fail;
 - wall time and **capped time** (a failed run counts as the full 10 minutes, PAR-1);
 - whether the cap was hit;

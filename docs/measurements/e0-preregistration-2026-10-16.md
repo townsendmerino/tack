@@ -219,6 +219,10 @@ incumbent stays and that is recorded as a finding.
   - nobara only when no night job holds its GPU.
 - Pinned: tack at the commit that queues the run, goinfer at the revision named in each record, both as pre-built
   binaries at durable paths. Logs go under `~/tack-runs/e0/`, and the queued command lines are in each record.
+- Every record carries the tack revision from the binary's own build info (`vcs.revision`). `tack eval models`
+  refuses to start from a binary without one (built by `go run`, from a `git archive` tree, or with
+  `-buildvcs=false`) or built from a tree with uncommitted changes, and `-tack-rev` must match it
+  (`internal/eval/buildrev.go:Revision`). Build the binary with `go build` from a clean checkout of the commit.
 - One copy of each run. An arm already graded at the same tack, goinfer and model revisions is not re-run.
 
 ## What E0 does not decide

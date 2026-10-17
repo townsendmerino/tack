@@ -48,6 +48,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "results directory (durable)")
 	capFlag := fs.Duration("cap", 10*time.Minute, "wall-time cap per run (the registration's is 10m)")
 	title := fs.Bool("title", true, "leave opencode's title agent on; -title=false turns it off on both arms")
+	rev := fs.String("tack-rev", "", "the tack commit this binary must have been built from (checked against its build info)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -57,13 +58,18 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 			"-ken-mcp BIN -ken-model DIR -goinfer-serve BIN -model-path FILE -out DIR [-cap 10m]")
 		return exitUsage
 	}
+	tackRev, err := eval.Revision(*rev)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))
+		return exitError
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	a0, a0k := pilot.Arm{Name: "A0", NoTitle: !*title}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel, NoTitle: !*title}
-	var err error
 	if *smoke {
 		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
-			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, *out, *capFlag, stderr)
+			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, *out, *capFlag, tackRev, stderr)
 		})
 	} else {
 		var ts []pilot.Task
@@ -71,7 +77,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string) error {
 				return pilot.RunPilot(ctx, pilot.Options{Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
 					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr,
-					CountTokens: counter(srv)})
+					CountTokens: counter(srv), TackRev: tackRev})
 			})
 		}
 	}
@@ -142,7 +148,7 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	return fn(pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}, serveLog)
 }
 
-func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog, out string, capD time.Duration, log io.Writer) error {
+func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog, out string, capD time.Duration, tackRev string, log io.Writer) error {
 	start := time.Now()
 	logf(log, "pilot smoke: start %s, cap %s per run", start.Format("15:04 MST"), capD)
 	var results []pilot.Result
@@ -174,7 +180,7 @@ func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, 
 		results = append(results, r)
 		logf(log, "pilot smoke: %s: exit %d, cap hit %v, %.0f s %s", arm.Name, r.Exit, r.CapHit, r.WallSecs, r.Err)
 	}
-	b, _ := json.MarshalIndent(map[string]any{"statement": smokeStatement, "repo": smokeRepo, "base": smokeBase,
+	b, _ := json.MarshalIndent(map[string]any{"tack": tackRev, "statement": smokeStatement, "repo": smokeRepo, "base": smokeBase,
 		"results": results, "ken_index_secs": kenIndex, "prompt": prompts}, "", "  ")
 	if err := os.WriteFile(filepath.Join(out, "summary.json"), b, 0o644); err != nil {
 		return err
