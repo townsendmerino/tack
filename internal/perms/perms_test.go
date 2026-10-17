@@ -11,8 +11,8 @@ import (
 )
 
 // engine builds an engine over a fresh workspace and a PATH holding only fake programs, with rules for go test and
-// git status.
-func engine(t *testing.T) *Engine {
+// git status. sandboxed says whether commands run inside tack's sandbox, which decides whether rules can allow one.
+func engine(t *testing.T, sandboxed bool) *Engine {
 	t.Helper()
 	bin := t.TempDir()
 	for _, p := range []string{"go", "git", "curl", "sh", "tool"} {
@@ -31,7 +31,7 @@ func engine(t *testing.T) *Engine {
 		}
 		rules = append(rules, r)
 	}
-	return &Engine{Root: root, Path: bin, Rules: rules}
+	return &Engine{Root: root, Path: bin, Rules: rules, Sandboxed: sandboxed}
 }
 
 func bash(cmd string) json.RawMessage {
@@ -42,7 +42,7 @@ func bash(cmd string) json.RawMessage {
 // TestShellCommandsInAskMode: a command line is allowed only when every simple command in it is covered by a rule and
 // nothing writes outside the workspace; otherwise it asks, saying why (DESIGN §6.6).
 func TestShellCommandsInAskMode(t *testing.T) {
-	e := engine(t)
+	e := engine(t, true)
 	cases := []struct {
 		cmd  string
 		want Action
@@ -64,6 +64,10 @@ func TestShellCommandsInAskMode(t *testing.T) {
 		{"~/bin/tool", Ask, "expands at run time"},
 		{`eval "go test"`, Ask, "runs code from a string"},
 		{"echo hi > ../out", Ask, "writes outside the repository"},
+		{"go test -exec curl ./...", Ask, "go -exec runs another program"},
+		{"go test -exec=curl ./...", Ask, "go -exec runs another program"},
+		{"go test --toolexec curl", Ask, "go -toolexec runs another program"},
+		{"go test $FLAGS ./...", Ask, "could be a flag that runs another program"},
 		{"echo hi > $OUT", Ask, "expands at run time"},
 		{"nosuchprog", Ask, "not a program on PATH"},
 		{"go test (", Ask, "does not parse"},
@@ -87,7 +91,7 @@ func TestShellCommandsInAskMode(t *testing.T) {
 
 // TestModes: what each mode does with each kind of tool.
 func TestModes(t *testing.T) {
-	e := engine(t)
+	e := engine(t, true)
 	cases := []struct {
 		mode     proto.Mode
 		tool     string
@@ -121,6 +125,45 @@ func TestParseRule(t *testing.T) {
 	for _, bad := range []string{"go test && rm -rf x", "$X test", "FOO=1 go test", "go test > out", "go test; ls", ""} {
 		if _, err := ParseRule(bad); err == nil {
 			t.Errorf("rule %q was accepted", bad)
+		}
+	}
+}
+
+// TestFailsClosedWithoutTheSandbox: until commands run inside tack's sandbox (and on any platform without one), auto
+// mode refuses shell commands, and no rule allows one without asking, because the sandbox, not the rules, is the
+// boundary. File tools are unaffected: they are confined by tack itself.
+func TestFailsClosedWithoutTheSandbox(t *testing.T) {
+	e := engine(t, false)
+	if v := e.Decide(proto.ModeAuto, "bash", false, bash("go test ./...")); v.Action != Deny ||
+		!strings.Contains(strings.Join(v.Reasons, ";"), "auto mode runs no shell commands") {
+		t.Errorf("auto without the sandbox: %s %v", v.Action, v.Reasons)
+	}
+	for _, mode := range []proto.Mode{proto.ModeAsk, proto.ModeEdits} {
+		v := e.Decide(mode, "bash", false, bash("go test ./...")) // covered by a rule
+		if v.Action != Ask || !strings.Contains(strings.Join(v.Reasons, ";"), "every command asks") || len(v.Parsed) != 1 {
+			t.Errorf("%s without the sandbox, a rule-covered command: %s %v", mode, v.Action, v.Reasons)
+		}
+	}
+	if v := e.Decide(proto.ModeEdits, "edit", false, nil); v.Action != Allow {
+		t.Errorf("edits mode edit without the sandbox: %s", v.Action)
+	}
+	if v := e.Decide(proto.ModePlan, "bash", false, bash("go test")); v.Action != Deny {
+		t.Errorf("plan without the sandbox: %s", v.Action)
+	}
+}
+
+// TestRunFlagsAreNeverCovered: a plain "go test" rule allows go test, but not go test with a flag that runs another
+// program; those ask. The rule's own match is not enough.
+func TestRunFlagsAreNeverCovered(t *testing.T) {
+	e := engine(t, true)
+	if v := e.Decide(proto.ModeAsk, "bash", false, bash("go test -run TestX ./...")); v.Action != Allow {
+		t.Fatalf("plain go test: %s %v", v.Action, v.Reasons)
+	}
+	for _, cmd := range []string{"go test -exec ./evil ./...", "go test -toolexec=./evil", "go test -vettool ./evil",
+		"go test ./... -args -exec x"} {
+		if v := e.Decide(proto.ModeAsk, "bash", false, bash(cmd)); v.Action != Ask ||
+			!strings.Contains(strings.Join(v.Reasons, ";"), "runs another program") {
+			t.Errorf("%q: %s %v", cmd, v.Action, v.Reasons)
 		}
 	}
 }

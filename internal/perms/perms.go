@@ -74,12 +74,19 @@ func ParseRule(s string) (Rule, error) {
 	return r, nil
 }
 
+// noSandbox is the reason a shell command fails closed without the sandbox.
+const noSandbox = "commands do not run inside tack's sandbox"
+
 // Engine decides tool calls for one workspace. Rules may grow during a session (a user's "always"); it is not safe for
 // concurrent use.
 type Engine struct {
 	Root  string // the workspace root
 	Path  string // the PATH programs resolve on
 	Rules []Rule
+	// Sandboxed is true only when the session's commands run inside tack's sandbox profile (DESIGN §6.6). Until then
+	// the engine fails closed: auto mode refuses shell commands, and no rule allows one without asking, because the
+	// sandbox, not the rules, is the boundary.
+	Sandboxed bool
 
 	tools map[string]bool // tools the user allowed for the session (AllowForSession)
 }
@@ -95,8 +102,11 @@ func (e *Engine) root() string {
 //
 //   - Read-only tools are allowed in every mode: file tools are confined to the workspace already.
 //   - edit and write ask in ask mode, are allowed in edits and auto, and are refused in plan.
-//   - bash is refused in plan and allowed in auto, where the sandbox is the boundary. In ask and edits it is allowed
-//     only when every simple command is covered by a rule and nothing writes outside the workspace; otherwise it asks.
+//   - bash is refused in plan. Without the sandbox (Sandboxed false) it is refused in auto and asks in ask and edits,
+//     every command, whatever the rules say. With the sandbox it is allowed in auto, where the sandbox is the
+//     boundary; in ask and edits it is allowed only when every simple command is covered by a rule and no redirection
+//     writes outside the workspace, and otherwise it asks. The redirection check is the only check of where a command
+//     writes: what the programs themselves write is enforced by the sandbox, not by the engine.
 //   - Any other tool that changes something asks, except in plan, where it is refused.
 func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.RawMessage) Verdict {
 	if readOnly {
@@ -123,6 +133,13 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 			return Verdict{Action: Deny, By: ByMode, Reasons: []string{"bash needs a command"}}
 		}
 		cmds, why := e.checkShell(in.Command)
+		if !e.Sandboxed {
+			if mode == proto.ModeAuto {
+				return Verdict{Action: Deny, By: ByMode, Parsed: cmds, Reasons: []string{noSandbox +
+					", so auto mode runs no shell commands; switch to ask mode to approve them one by one"}}
+			}
+			return Verdict{Action: Ask, By: ByMode, Parsed: cmds, Reasons: append(why, noSandbox+", so every command asks")}
+		}
 		if mode == proto.ModeAuto {
 			return Verdict{Action: Allow, By: ByMode, Parsed: cmds}
 		}
