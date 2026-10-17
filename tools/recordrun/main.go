@@ -1,9 +1,11 @@
 // Command recordrun records cmd/tack's `tack run` cassette against a real model: it starts goinfer-serve with the
 // model (a supervised child with a random key), writes a goinfer-remote config pointing at it with a 0600 token file,
-// and runs a pinned tack binary with --record over cmd/tack/testdata/ken, up to -attempts times, until the answer names
-// mcp/token_budget.go. Every attempt's cassette and answer is kept, with a summary in <out>.attempts.json, so the
-// commit adopting the cassette can say how many tries it took. Recording through a remote config matters:
-// the test replays with one, and a remote server is asked /v1/models first, so the cassette must hold that request.
+// and runs a pinned tack binary with --record over cmd/tack/testdata/ken, up to -attempts times, until an attempt passes
+// the exit test. An attempt passes only if the recording run and a strict replay of its cassette, made the way the
+// test makes it, both exit 0 and both pass kenrun.Check, the test's own assertions: a recording the test would reject
+// is a failed attempt. Every attempt's cassette, answer and reasons are kept, with a summary in <out>.attempts.json,
+// so the commit adopting the cassette can say how many tries it took. Recording through a remote config matters: the
+// test replays with one, and a remote server is asked /v1/models first, so the cassette must hold that request.
 //
 // It loads the machine, so it runs through the night queue:
 //
@@ -23,11 +25,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/kenrun"
 	"github.com/townsendmerino/tack/internal/models"
 )
-
-// question is the one TestRunAnswersAQuestionAboutKenFromACassette asks (cmd/tack/run_test.go:kenQuestion).
-const question = "Which file defines applyTokenBudget, and what does it return?"
 
 func main() {
 	tack := flag.String("tack", "", "pinned tack binary")
@@ -78,6 +78,13 @@ func run(tack, serve, model, backend string, ctxN int, workspace, out string, at
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		return err
 	}
+	// The replay's config is the test's: a remote server at an address that must never be reached.
+	replayCfg := filepath.Join(dir, "replay.toml")
+	body = fmt.Sprintf("state_dir = %q\n[servers.local]\nkind = \"goinfer-remote\"\nurl = \"http://cassette.invalid\"\n",
+		filepath.Join(dir, "replay-state"))
+	if err := os.WriteFile(replayCfg, []byte(body), 0o600); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
@@ -87,19 +94,18 @@ func run(tack, serve, model, backend string, ctxN int, workspace, out string, at
 	var log []attempt
 	for i := 1; i <= attempts; i++ {
 		a := attempt{N: i, Cassette: fmt.Sprintf("%s.attempt%d.json", base, i)}
-		var stdout strings.Builder
-		cmd := exec.CommandContext(ctx, tack, "run", "--config", cfg, "--workspace", workspace, "--record", a.Cassette, question)
-		cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &stdout), os.Stderr
 		t0 := time.Now()
-		err := cmd.Run()
-		a.Secs, a.Answer = time.Since(t0).Seconds(), stdout.String()
-		if err != nil {
-			a.Err = err.Error()
+		answer, trace, err := tackRun(ctx, tack, "--config", cfg, "--workspace", workspace, "--record", a.Cassette, kenrun.Question)
+		a.Secs, a.Answer = time.Since(t0).Seconds(), answer
+		a.Why = judge("recording", answer, trace, err)
+		if a.Why == nil { // the test replays the cassette strictly; a recording that does not replay is no cassette
+			answer, trace, err := tackRun(ctx, tack, "--config", replayCfg, "--workspace", workspace, "--replay", a.Cassette, kenrun.Question)
+			a.Why = judge("replay", answer, trace, err)
 		}
-		a.NamesFile = err == nil && strings.Contains(a.Answer, wantFile)
+		a.Passes = a.Why == nil
 		log = append(log, a)
-		fmt.Fprintf(os.Stderr, "recordrun: attempt %d/%d took %.0f s, exit %v, names %s: %v\n", i, attempts, a.Secs, err, wantFile, a.NamesFile)
-		if a.NamesFile {
+		fmt.Fprintf(os.Stderr, "recordrun: attempt %d/%d took %.0f s, passes the exit test: %v %s\n", i, attempts, a.Secs, a.Passes, strings.Join(a.Why, "; "))
+		if a.Passes {
 			b, err := os.ReadFile(a.Cassette)
 			if err != nil {
 				return err
@@ -110,25 +116,45 @@ func run(tack, serve, model, backend string, ctxN int, workspace, out string, at
 			break
 		}
 	}
-	b, _ := json.MarshalIndent(map[string]any{"question": question, "want": wantFile, "attempts": log}, "", "  ")
+	b, _ := json.MarshalIndent(map[string]any{"question": kenrun.Question, "answer_must_contain": kenrun.Answer,
+		"trace_must_contain": kenrun.Trace, "attempts": log}, "", "  ")
 	if err := os.WriteFile(base+".attempts.json", b, 0o644); err != nil {
 		return err
 	}
-	if !log[len(log)-1].NamesFile {
-		return fmt.Errorf("no attempt of %d named %s; every cassette and answer is kept beside %s", attempts, wantFile, out)
+	if !log[len(log)-1].Passes {
+		return fmt.Errorf("no attempt of %d passes the exit test; every cassette, answer and reason is kept beside %s", attempts, out)
 	}
 	return nil
 }
 
-// wantFile is what the exit test requires the answer to name.
-const wantFile = "mcp/token_budget.go"
+// tackRun runs the pinned tack binary's run command, echoing its output, and returns the answer (stdout) and the tool
+// trace (stderr).
+func tackRun(ctx context.Context, tack string, args ...string) (string, string, error) {
+	var stdout, stderr strings.Builder
+	cmd := exec.CommandContext(ctx, tack, append([]string{"run"}, args...)...)
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(os.Stdout, &stdout), io.MultiWriter(os.Stderr, &stderr)
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+// judge is why one run fails the exit test, each reason prefixed with which run it was; nil when it passes.
+func judge(which, answer, trace string, err error) []string {
+	var why []string
+	if err != nil {
+		why = append(why, fmt.Sprintf("%s: exit: %v", which, err))
+	}
+	for _, w := range kenrun.Check(answer, trace) {
+		why = append(why, which+": "+w)
+	}
+	return why
+}
 
 // attempt is one recording try.
 type attempt struct {
-	N         int     `json:"n"`
-	Cassette  string  `json:"cassette"`
-	Secs      float64 `json:"secs"`
-	Answer    string  `json:"answer"`
-	NamesFile bool    `json:"names_file"`
-	Err       string  `json:"err,omitempty"`
+	N        int      `json:"n"`
+	Cassette string   `json:"cassette"`
+	Secs     float64  `json:"secs"`
+	Answer   string   `json:"answer"`
+	Passes   bool     `json:"passes_exit_test"`
+	Why      []string `json:"why,omitempty"` // each failed assertion, of the recording run or of its replay
 }

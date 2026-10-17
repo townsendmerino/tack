@@ -9,12 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/townsendmerino/tack/internal/kenrun"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
 var update = flag.Bool("update", false, "re-record testdata/run-ken.json against the scripted model")
 
-const kenQuestion = "Which file defines applyTokenBudget, and what does it return?"
+const kenQuestion = kenrun.Question
 
 // kenScript is the model's side of the recorded run: grep for the definition, read it, answer. It is scripted (a
 // stand-in for a model, through goinfertest's goinfer-framed server); re-recording against a real model with
@@ -61,13 +62,8 @@ func TestRunAnswersAQuestionAboutKenFromACassette(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "mcp/token_budget.go:70") {
-		t.Fatalf("answer: %q", stdout.String())
-	}
-	for _, want := range []string{`· grep {"pattern":"func applyTokenBudget"}`, "· read ", "ok, 1 lines", "ok, 22 lines"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
-		}
+	if why := kenrun.Check(stdout.String(), stderr.String()); why != nil {
+		t.Fatalf("%s\nstdout:\n%s\nstderr:\n%s", strings.Join(why, "; "), stdout.String(), stderr.String())
 	}
 }
 
