@@ -153,6 +153,49 @@ goinfer-serve built from main at or after `31418112`, so it has the tool-call co
     `-ctx 32768`, window 32768, decode path `cuda-resident (int4)`. KV is 1.8 GB beside 4.0 GB of weights, against a
     budget of 38.5 GB. The check took 14 s, and afterwards the server was gone and the lock free.
 
+**Amendment 8, 2026-10-17 — PROPOSED, for the owner's approval before the night queue starts.** **The pilot again,
+with Qwen2.5-Coder-7B-Instruct in place of Qwen2.5-7B-Instruct.** If the owner does not approve it, both jobs are
+dropped from the queue before it starts.
+
+- **Why.** The re-run passed 0 of 20 with Qwen2.5-7B-Instruct, though every tool call parsed and ran. 13 runs
+  answered in prose instead of editing (`e1-pilot-2026-10-17.md`; DESIGN §17, R13). A coder-tuned model of the same
+  architecture and size is the first mitigation R13 names (E0 amendment 7).
+- **What changes: the model only.** Qwen2.5-Coder-7B-Instruct `q4_k_m` from `~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf`
+  (Qwen's own GGUF, sha256 `509287f7…`, E0 amendment 7).
+  - Served at `-ctx 32768` by the same goinfer-serve as the re-run: main `31418112`, sha256 `f8e8b18d…`.
+  - **Fit-checked by day,** 16:36 PDT, with the lock free and the GPU idle: `-ctx 32768` admitted, decode path
+    `cuda-resident (int4)`, 1.8 GB of KV beside 4.0 GB of weights
+    (`~/tack-runs/e1/fitcheck-pilot-server-coder-31418112`, manifest `pilot-server-coder-31418112.toml`).
+- **What stays the same as the re-run (amendments 1–7):**
+  - the same ten tasks (`pilot-746fb8c.jsonl`, task 8 removed);
+  - both arms, A0 and A0k, in the registered order;
+  - opencode 1.19.0 and ken-mcp v1.9.0, stock titles;
+  - a 10-minute cap;
+  - sampling temperature 0.7, top_p 0.8 and top_k 20, checked in the first recorded request. These are also
+    Qwen2.5-Coder's own recommended values. Its card adds a repetition penalty of 1.1, which the pilot does not send,
+    as it did not send the instruct model's.
+  - Raw bodies are kept locally only.
+  - The task-size adjustment does not apply here: it is E1's (task selection, "Difficulty"), and the pilot keeps its
+    ten tasks.
+- **What is new in tack since the re-run.** The binary is built from main with the oracle's full output kept per run
+  (`oracle.log`), the refusal to start without `go` on the PATH, and the gate below.
+  - The job's PATH is set explicitly to nobara's interactive-shell PATH, so `go` resolves whoever starts the queue.
+    opencode is a native binary.
+- **The gate.** Each job runs only if tonight's E0 run of `qwen2.5-coder-7b-q4km-cuda` meets E0's smoke rule: at least
+  17 of 20 on both runs, 0 malformed (`tack eval pilot -e0-results … -e0-arm …`, `eval.SmokeGate`).
+  - Otherwise the job records why in `NOT-RUN.txt`, its verdict says "not run: E0 gate", and it exits 6. Nothing is
+    measured.
+  - The E0 job is queued ahead of the pilot's jobs. A missing result, an E0 job that failed before its smoke, also
+    refuses.
+- **Comparison.** Results are compared with the 2026-10-17 re-run (Qwen2.5-7B-Instruct, 0 of 20), task by task and
+  arm by arm, and are never pooled with it. Reported:
+  - the figures this registration names (pass rates over all tasks and without task 11, capped times, minutes per
+    run);
+  - for each run, how it ended, as in the re-run's diagnosis. Did it edit or answer in prose, and was the edit
+    right? R13 asks exactly this.
+- **What it decides.** Nothing, as before. It informs whether a coder-tuned 7B edits where the instruct 7B did not,
+  and whether E1 should run on it.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
