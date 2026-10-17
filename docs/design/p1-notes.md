@@ -21,6 +21,13 @@ The order the owner approved, each step with its exit check:
 3. **Checkpoints and rewind:** pre-images, a shadow-repo snapshot before `bash`, rewind as restore plus fork.
 4. **Daemon with auto-spawn:** lock, socket and token, subscribe, crash recovery, drain, versions; the goinfer child
    under the daemon.
+   - **nobara on demand** (owner, 2026-10-17; DESIGN §8.2). A systemd user unit with socket activation on nobara is
+     preferred; otherwise the daemon runs the start script over ssh.
+   - It unloads after an idle timeout (15 minutes by default, a `config.toml` setting).
+   - The start refuses while goinfer's timing lock is held, and tack reports nobara as busy and offers the Mac's
+     model.
+   - The TUI's status shows the first request's load ("loading model on nobara").
+   - Until this step, nothing runs on nobara by day.
 5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
    - By day: an exactness check of `SearchFiles` on goinfer.
    - At night: `SearchFiles`'s latency on goinfer.
@@ -40,8 +47,9 @@ The order the owner approved, each step with its exit check:
   Until each lands, tack keeps a workaround:
   - **G2:** P0's admission — a pressure check before the load, goinfer's own refusal, and the decode-path check after
     it.
-  - **G6:** the owner stops and starts nobara's tack-facing server by hand around the night queue
-    (`~/tack-runs/serve/stop` and `start` on nobara).
+  - **G6** is now a safety net (owner, 2026-10-17). nobara's tack-facing server is on demand and never starts while
+    the timing lock is held, so the night queue only stops one that is still running when it starts. No bedtime
+    routine: until step 4, nothing runs on nobara by day.
 
 ## Tool paths: say they are relative to the repository root, and make errors say what to do instead (owner, 2026-10-17)
 

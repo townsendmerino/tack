@@ -789,14 +789,24 @@ that led to this doc, where re-prefilling "only the stale spans" was floated.)
 
 ### 8.2 goinfer on nobara
 
-- **The owner's default until E0 says otherwise** (§2.3): tack on the Mac, the model on nobara's RTX 2070 SUPER. nobara
-  runs `goinfer-serve` as a service with the model loaded, listening on its tailnet address with `-api-key` and
-  `-allowed-hosts`; tack connects to it like any goinfer.
+- **The owner's default until E0 says otherwise** (§2.3): tack on the Mac, the model on nobara's RTX 2070 SUPER. tack
+  connects to nobara's `goinfer-serve` like any goinfer, on its tailnet address with `-api-key` and `-allowed-hosts`.
+- **On demand, the same shape as the Mac's child (§8.1)** (owner, 2026-10-17). No tack-facing server runs all day:
+  - **It starts when a session needs a model.** The preferred mechanism is systemd socket activation through a user
+    unit on nobara, so the first connection to the tailnet port starts `goinfer-serve` and loads the model. Otherwise
+    the daemon runs a start script on nobara over ssh.
+  - **It unloads after an idle timeout**, 15 minutes by default, set in `config.toml`, and the process exits after
+    that.
+  - **The first request waits for the load.** The TUI's status line says so ("loading model on nobara") until the
+    model serves.
+- **It never starts beside a timed run.** goinfer's rule is that nothing runs beside a timed job, and its night queue
+  measures on the same card.
+  - The start refuses while goinfer's timing lock (`scripts/timing_lock.py`) is held. tack reports nobara as busy and
+    offers the Mac's model.
+  - As a safety net, goinfer's night queue stops a tack-facing server that is still running when the queue starts
+    (§13 G6).
 - tack does not manage the remote server's memory; goinfer's own guards on that box do (CUDA checks the KV against free
   VRAM at load). tack reads its status and its served window.
-- **It must not share the GPU with a timed run.** goinfer's rule is that nothing runs beside a timed job, and its night
-  queue measures on that same card. So the tack-facing server stops while goinfer's night queue runs and starts again
-  after (§13 G6); tack reports the server as unavailable meanwhile.
 - The tailnet is the transport: WireGuard-encrypted, reachable from the Mac anywhere. The daemon and TUI can also run on
   nobara directly, next to the GPU.
 
@@ -906,7 +916,7 @@ and small, because tack's session model was drawn close to ACP's.
 - `tack acp`, `tack eval …` (§15), `tack eval models` (E0).
 
 **TUI** (Bubble Tea): the transcript; a multi-line composer where `@` completes files and symbols from ken and `/` runs
-commands; a status line (model and server, mode, window fill and its reused share, ken state); toggled panes for the
+commands; a status line (model and server, a model load in progress such as "loading model on nobara", mode, window fill and its reused share, ken state); toggled panes for the
 inspector, changes and todos. Approvals appear inline with one-key answers: allow, deny, always, edit rule.
 
 ---
@@ -1138,7 +1148,7 @@ constrained tool calls with several tools; `serve check`; KV0–KV3 shipped in v
 | G3 | Messages usage that separates reused-prefix tokens from prefilled ones, with prefill time. Verified 2026-10-16: `/v1/messages` usage has only `input_tokens` and `output_tokens`, while `/v1/responses` already reports `usage.input_tokens_details.cached_tokens` (goinfer `internal/serveapp/responses.go`). The ask is that field on Messages usage (owner, 2026-10-16: tack stays on Messages) | the ledger's reuse column and the P3 rule | P1 |
 | G4 | KV7, the disk tier | sessions resumed after a restart start warm | P6, on goinfer's schedule |
 | G5 | whatever P6's span-reuse experiments need from the KV manager | research | P6 |
-| G6 | the night queue stops the tack-facing `goinfer-serve` on nobara before timed jobs and starts it after | no tack traffic on the GPU during a timed run (§8.2) | P1 |
+| G6 | a safety net: the night queue stops a tack-facing `goinfer-serve` on nobara if one is still running when the queue starts (tack starts it on demand and never while the timing lock is held, §8.2) | no tack traffic on the GPU during a timed run | P1 |
 | G7 | a way to pin a session's KV blocks while its turn is open (or a slot reserved for side jobs), so other requests cannot evict them; verify first what the slot design already guarantees | side jobs without evicting an open turn (§8.3) | P3 |
 | G8 | model download (`pull`) on the admin socket, with progress as JSON events and sha256 verification | the first-run screen (§11.12) | P4 |
 | G9 | a release artifact tack can bundle: a darwin/arm64 Metal `goinfer-serve` with a version tack can check at start | one install (§8.1) | P4 |
