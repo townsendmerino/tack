@@ -98,8 +98,8 @@ frozen as they were sent.**
 - **What it does not change.** The tasks, the scoring and the rule. "As `tack run` sends them" now means as it sent
   them when E0 was registered.
 
-**Amendment 7, 2026-10-17 — PROPOSED, not yet approved.** Nothing in it is downloaded, fit-checked or run until the
-owner approves this text. **Coder-tuned 7–8B models on nobara.**
+**Amendment 7, 2026-10-17 — approved by the owner the same day,** with the arms settled as recorded under "Approved"
+at its end. **Coder-tuned 7–8B models on nobara.**
 
 - **Why.** The E1 pilot re-run of 2026-10-17 passed 0 of 20 with the incumbent, Qwen2.5-7B-Instruct, though every
   tool call parsed and ran. 13 runs answered in prose instead of editing (`e1-pilot-2026-10-17.md`; DESIGN §17, R13).
@@ -133,6 +133,45 @@ owner approves this text. **Coder-tuned 7–8B models on nobara.**
   - *Proposed:* an eligible coder arm becomes nobara's default only after the pilot, re-run with that model beside the
     incumbent under a new pilot amendment, shows it editing.
   - Until then, E0's "highest smoke score" rule ranks it, but the owner decides any change of default.
+- **Approved (owner, 2026-10-17):**
+  - **Qwen2.5-Coder-7B-Instruct:** required, as written.
+  - **Seed-Coder-8B-Instruct:** kept.
+  - **OpenCoder-8B-Instruct: dropped**, as deepseek-coder was, because its native window is under 32768. Its
+    `config.json` at `infly/OpenCoder-8B-Instruct@01badbbf` has `max_position_embeddings: 8192`, and its model card
+    lists "Sequence Length: 8K".
+  - Both kept models declare 32768 natively (`max_position_embeddings`): Qwen2.5-Coder-7B-Instruct at `c03e6d35`
+    (`Qwen2ForCausalLM`, 28 layers, 4 KV heads) and Seed-Coder-8B-Instruct at `1c5af72a` (`LlamaForCausalLM`,
+    32 layers, 8 KV heads).
+- **Downloads, 2026-10-17 by day,** into nobara's `~/models`. Each was fetched at a pinned revision and checked
+  against the sha256 Hugging Face publishes before it was renamed into place
+  (`~/tack-runs/e0/download-coder-2026-10-17.{sh,log}`).
+
+  | file | source | sha256 |
+  |---|---|---|
+  | `qwen2.5-coder-7b-instruct-q4_k_m.gguf` (4,683,073,536 bytes) | Qwen's own, `Qwen/Qwen2.5-Coder-7B-Instruct-GGUF@13fb94bf` | `509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c` |
+  | `seed-coder-8b-instruct-q4_k_m.gguf` (5,071,410,592 bytes) | `mradermacher/Seed-Coder-8B-Instruct-GGUF@852502f4`, a static llama.cpp quant | `6d1496eee941b58266e4d73581de963d0f69411aa433801a7ad29efd66e3d99f` |
+
+  ByteDance publishes no GGUF. mradermacher's static quant was chosen over unsloth's because unsloth labels its files
+  "Dynamic 2.0", a different quantization recipe from the static `q4_k_m` the incumbent and Qwen's file use.
+- **Fit manifest:** `~/tack-runs/e0/manifests/nobara-coder-fit-a5a786e.toml` on nobara.
+  - It holds E0's two arms and a `-32k-probe` arm per model with `ctx = [32768]`. The probes are not E0 arms.
+  - It uses E0's pinned goinfer build, `0e598d3f`, so these arms compare with the incumbent's E0 rows.
+- **Fit checks, 2026-10-17, 16:25–16:26 by day.** tack `295d1aa`, with the timing lock free, no runner going and the
+  GPU idle. Output: `~/tack-runs/e0/fitcheck-coder-2026-10-17` on nobara.
+
+  | arm | `-ctx` | verdict | decode path | KV beside weights |
+  |---|---|---|---|---|
+  | `qwen2.5-coder-7b-q4km-cuda` | 16384 | admitted | `cuda-resident (int4)` | 0.9 GB beside 4.0 GB |
+  | `seed-coder-8b-q4km-cuda` | 16384 | admitted | `cuda-resident (int4)` | 2.0 GB beside 4.3 GB |
+  | `qwen2.5-coder-7b-q4km-cuda-32k-probe` | 32768 | admitted | `cuda-resident (int4)` | 1.8 GB beside 4.0 GB |
+  | `seed-coder-8b-q4km-cuda-32k-probe` | 32768 | not on the GPU | `cpu (int4)` | needs 4.29 GB; 3.21 GB free |
+
+  - **Both E0 arms are admitted at 16384 on the GPU** and go on to E0's `check`, smoke and timed phases.
+  - **Seed-Coder-8B cannot serve 32768 on nobara's card.** goinfer's own message: "resident context 32768 positions
+    needs 4.29 GB of KV … but only 3.21 GB is free on the device beside the weights". goinfer fell back to the CPU,
+    and the runner marked that probe void, hence the run's INCONCLUSIVE.
+  - So Seed-Coder can be an E0 arm but cannot take the pilot's opencode, which needs 32768, on this card. For the
+    pilot, only Qwen2.5-Coder-7B qualifies.
 
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
