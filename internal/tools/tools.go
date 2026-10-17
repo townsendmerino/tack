@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/server"
 )
 
@@ -54,6 +55,8 @@ type Options struct {
 	Searcher Searcher // adds search
 	// Write adds edit and write. Set it only where the permission engine decides each call (DESIGN §6.6).
 	Write bool
+	// Shell adds bash, which runs command lines in it. Like Write, only where the permission engine decides each call.
+	Shell Shell
 	Blobs BlobReader // adds read_output, which pages outputs the loop truncated into the blob store
 	// Plan adds todo and ask_user; Ask answers ask_user, and nil answers that no one is attached.
 	Plan bool
@@ -72,6 +75,9 @@ func New(o Options) *Set {
 	ts = append(ts, readTool{}, globTool{}, grepTool{})
 	if o.Write {
 		ts = append(ts, editTool{}, writeTool{})
+	}
+	if o.Shell != nil {
+		ts = append(ts, bashTool{sh: o.Shell})
 	}
 	if o.Blobs != nil {
 		ts = append(ts, readOutputTool{blobs: o.Blobs})
@@ -263,25 +269,8 @@ func within(root, p string) bool {
 	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
-// isSecret is the default read deny-list (DESIGN §6.6): .env files, keys and certificates, and the credential
-// directories a workspace should never contain but might link to.
-func isSecret(p string) bool {
-	base := filepath.Base(p)
-	if base == ".env" || strings.HasPrefix(base, ".env.") {
-		return true
-	}
-	for _, ext := range []string{".pem", ".key", ".p12", ".pfx"} {
-		if strings.HasSuffix(base, ext) {
-			return true
-		}
-	}
-	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
-		if seg == ".ssh" || seg == ".aws" || seg == ".gnupg" {
-			return true
-		}
-	}
-	return false
-}
+// isSecret is perms.IsSecret, the default read deny-list (DESIGN §6.6).
+func isSecret(p string) bool { return perms.IsSecret(p) }
 
 // skipDir reports directories walks never enter: version-control internals and dependency trees.
 func skipDir(name string) bool {

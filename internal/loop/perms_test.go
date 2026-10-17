@@ -10,6 +10,7 @@ import (
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
@@ -146,5 +147,53 @@ func TestSessionApprovalSkipsTheNextQuestion(t *testing.T) {
 	}
 	if second := r[1].(proto.PermissionResolved); second.By != proto.DecidedByUser || second.Decision != proto.DecisionAllow {
 		t.Fatalf("second resolution %+v", second)
+	}
+}
+
+// With TACK_SHELL_CHILD=1 this test binary is `tack shell`, so bash runs through the real child.
+func TestMain(m *testing.M) {
+	if os.Getenv("TACK_SHELL_CHILD") == "1" {
+		os.Exit(shell.Child(os.Stdin, os.Stdout, os.NewFile(3, "reply")))
+	}
+	os.Exit(m.Run())
+}
+
+// bashHarness is permHarness with bash over a real shell session, outside the sandbox (as every session is until P1
+// step 2c).
+func bashHarness(t *testing.T, mode proto.Mode, ap Approver, replies ...goinfertest.Reply) *harness {
+	t.Helper()
+	t.Setenv("TACK_SHELL_CHILD", "1")
+	h := newHarness(t, Budget{}, replies...)
+	cfg := h.sess.cfg
+	cfg.Perms = &perms.Engine{Root: h.ws.Root(), Path: os.Getenv("PATH")}
+	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms}
+	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh})
+	cfg.Mode, cfg.Approve = mode, ap
+	h.sess = New(cfg)
+	return h
+}
+
+// TestBashThroughTheLoop: outside the sandbox every command asks; approved, it runs in the real child and its output is
+// the result; in auto mode it is refused without running.
+func TestBashThroughTheLoop(t *testing.T) {
+	call := goinfertest.Calls("", "b1", "bash", `{"command":"echo made > note.txt && cat note.txt"}`)
+	ap := &approver{answer: Approval{Allow: true}}
+	h := bashHarness(t, proto.ModeAsk, ap, call, goinfertest.Says("done"))
+	h.sess.Turn(context.Background(), "make a note")
+	if len(ap.asked) != 1 || ap.asked[0].Command != "echo made > note.txt && cat note.txt" ||
+		!strings.Contains(strings.Join(ap.asked[0].Reasons, ";"), "every command asks") || len(ap.asked[0].Parsed) != 2 {
+		t.Fatalf("asked %+v", ap.asked)
+	}
+	if f := h.finished("b1"); f.Outcome != proto.OutcomeOK || f.Result != "made\n" {
+		t.Fatalf("bash result %+v", f)
+	}
+
+	h = bashHarness(t, proto.ModeAuto, nil, call, goinfertest.Says("done"))
+	h.sess.Turn(context.Background(), "make a note")
+	if f := h.finished("b1"); f.Outcome != proto.OutcomeDenied || !strings.Contains(f.Result, "auto mode runs no shell commands") {
+		t.Fatalf("auto outside the sandbox %+v", f)
+	}
+	if _, err := os.Stat(filepath.Join(h.ws.Root(), "note.txt")); err == nil {
+		t.Fatal("the refused command ran")
 	}
 }

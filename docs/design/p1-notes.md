@@ -79,3 +79,21 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
   `FixedPromptBudget` and are re-counted by `TestFixedPromptBudget`.
 - **Test.** A tier-0 test sends a missing relative path to each path-taking tool and asserts the error carries the
   guidance and no absolute host path.
+
+## Step 2's shell slice: what it does, and what is open (2026-10-17)
+
+- **What it does.** `bash` runs each command line in `tack shell`, a child process in its own process group, so a
+  timeout or cancel kills everything it started (`internal/shell`). The child checks every program the interpreter
+  executes, and every file a redirection opens, at the moment it happens:
+  - a program approval did not see stops the whole command, unless a rule covers it **and** commands run inside the
+    sandbox;
+  - so does a run-program flag (`go test -exec`) approval did not see literally;
+  - so does a redirection that writes outside the repository, or reads the secrets deny-list.
+  The redirection check covers the shell's own redirections only; where programs write is the sandbox's to enforce
+  (step 2c).
+- **Open: "stops and asks."** DESIGN §6.6 says a command whose expansion differs from what was approved stops and
+  asks. This slice stops, and the result says what appeared and why. Asking in the middle of a command needs the
+  child to call back to the daemon and wait for the answer, and is left for later in step 2. Until then the model or
+  the user re-issues the command with the program written out, which approval then sees.
+- **Not wired in yet.** `tack run` keeps the read-only tool set. `edit`, `write` and `bash` reach a session with the
+  daemon (step 4), where the permission engine and an approver exist.

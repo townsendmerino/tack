@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/shell"
 )
 
 type memBlobs map[string][]byte
@@ -25,7 +28,24 @@ func (a fixedAsker) Ask(context.Context, string) (string, error) { return string
 
 // full is the largest tool set, as the daemon will build it.
 func full(blobs memBlobs, ask Asker) *Set {
-	return New(Options{Searcher: fakeSearcher{}, Write: true, Blobs: blobs, Plan: true, Ask: ask})
+	return New(Options{Searcher: fakeSearcher{}, Write: true, Shell: fakeShell{}, Blobs: blobs, Plan: true, Ask: ask})
+}
+
+// fakeShell answers by command: "fail" exits 3, "stop" is stopped by the run-time check, "quiet" prints nothing.
+type fakeShell struct{}
+
+func (fakeShell) Run(_ context.Context, cmd string, timeout time.Duration) (shell.Result, error) {
+	switch cmd {
+	case "fail":
+		return shell.Result{Output: "boom\n", Exit: 3}, nil
+	case "stop":
+		return shell.Result{Exit: 126, Stopped: "/bin/curl was not approved"}, nil
+	case "quiet":
+		return shell.Result{}, nil
+	case "timeout":
+		return shell.Result{Output: timeout.String()}, nil
+	}
+	return shell.Result{Output: "ran " + cmd + "\n"}, nil
 }
 
 func call(t *testing.T, s *Set, ws *Workspace, name, input string) Result {
@@ -267,7 +287,29 @@ func TestSetsByOption(t *testing.T) {
 	if got := names(NewSet(nil)); got != "read,glob,grep" {
 		t.Fatalf("read-only set: %s", got)
 	}
-	if got := names(full(memBlobs{}, nil)); got != "search,read,glob,grep,edit,write,read_output,todo,ask_user" {
+	if got := names(full(memBlobs{}, nil)); got != "search,read,glob,grep,edit,write,bash,read_output,todo,ask_user" {
 		t.Fatalf("full set: %s", got)
+	}
+}
+
+func TestBash(t *testing.T) {
+	ws := workspace(t)
+	s := full(memBlobs{}, nil)
+	cases := []struct {
+		input, want string
+		isErr       bool
+	}{
+		{`{"command":"ls"}`, "ran ls\n", false},
+		{`{"command":"quiet"}`, "(no output)\n", false},
+		{`{"command":"fail"}`, "boom\n[exit status 3]\n", true},
+		{`{"command":"stop"}`, "(no output)\nerror: stopped: /bin/curl was not approved\n", true},
+		{`{"command":"timeout","timeout_ms":5000}`, "5s", false},
+		{`{"command":"timeout","timeout_ms":99999999}`, "10m0s", false}, // capped
+		{`{"command":"timeout"}`, "2m0s", false},                        // the default
+	}
+	for _, tc := range cases {
+		if r := call(t, s, ws, "bash", tc.input); r.Text != tc.want || r.IsError != tc.isErr {
+			t.Errorf("%s: %q (error %v), want %q (error %v)", tc.input, r.Text, r.IsError, tc.want, tc.isErr)
+		}
 	}
 }

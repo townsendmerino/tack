@@ -148,6 +148,25 @@
               }
             },
             {
+              "name": "bash",
+              "description": "Run a shell command. It starts where the last one left off, at first the repo root; exported variables carry over.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "timeout_ms": {
+                    "type": "integer",
+                    "description": "default 120000, at most 600000"
+                  }
+                },
+                "required": [
+                  "command"
+                ]
+              }
+            },
+            {
               "name": "read_output",
               "description": "Page a truncated tool output by the handle its result gave.",
               "input_schema": {
@@ -228,7 +247,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":844}\n"
+        "body": "{\"input_tokens\":931}\n"
       }
     }
   ]

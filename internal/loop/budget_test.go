@@ -11,13 +11,14 @@ import (
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/cassette"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
+	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
 var countURL = flag.String("count-url", "", "re-record testdata/fixed-prompt.json with this goinfer-serve's count_tokens "+
 	"(a Qwen2.5 model: the tokenizer and chat template of the default model)")
 
-// anySearcher and anyBlobs stand in for ken and the blob store so every optional tool's schema is counted: the
+// anySearcher, anyBlobs and anyShell stand in for ken, the blob store and the shell so every optional tool's schema is counted: the
 // budget holds for the largest tool set.
 type anySearcher struct{}
 
@@ -27,10 +28,16 @@ type anyBlobs struct{}
 
 func (anyBlobs) Get(string) ([]byte, error) { return nil, nil }
 
+type anyShell struct{}
+
+func (anyShell) Run(context.Context, string, time.Duration) (shell.Result, error) {
+	return shell.Result{}, nil
+}
+
 // fixedPromptRequest is the fixed prompt as goinfer renders it: the system prompt, every tool's schema, and a
 // one-word user message, the least a request can carry.
 func fixedPromptRequest(model string) server.Request {
-	return server.Request{Model: model, System: SystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Write: true, Blobs: anyBlobs{}, Plan: true}).Specs(),
+	return server.Request{Model: model, System: SystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true}).Specs(),
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 

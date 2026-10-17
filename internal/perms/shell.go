@@ -311,3 +311,56 @@ func resolveExisting(p string) string {
 func within(root, p string) bool {
 	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
+
+// Analyze returns a command line's simple commands as approval sees them, without judging them.
+func (e *Engine) Analyze(command string) []Simple {
+	cmds, _ := e.checkShell(command)
+	return cmds
+}
+
+// Covers reports whether a rule allows s without asking: the engine must run its commands inside the sandbox, a rule
+// must match, and no argument may be, or expand into, a flag that runs another program.
+func (e *Engine) Covers(s Simple) bool {
+	if !e.Sandboxed || s.Program == "" {
+		return false
+	}
+	if _, ok := runsPrograms[filepath.Base(s.Program)]; ok {
+		for i, a := range s.Args {
+			if !s.Literal[i] || runFlag(s.Program, a) != "" {
+				return false
+			}
+		}
+	}
+	return e.allowed(s)
+}
+
+// RunFlag returns the flag in arg that makes prog (an absolute path) run another program, or "".
+func RunFlag(prog, arg string) string { return runFlag(prog, arg) }
+
+// Outside reports whether p, absolute, lies outside root once the symlinks of its existing prefix are resolved.
+func Outside(root, p string) bool {
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	return !within(root, resolveExisting(filepath.Clean(p)))
+}
+
+// IsSecret is the default read deny-list (DESIGN §6.6): .env files, keys and certificates, and the credential
+// directories a workspace should never contain but might link to.
+func IsSecret(p string) bool {
+	base := filepath.Base(p)
+	if base == ".env" || strings.HasPrefix(base, ".env.") {
+		return true
+	}
+	for _, ext := range []string{".pem", ".key", ".p12", ".pfx"} {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+		if seg == ".ssh" || seg == ".aws" || seg == ".gnupg" {
+			return true
+		}
+	}
+	return false
+}

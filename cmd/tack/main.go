@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/townsendmerino/tack/internal/shell"
 )
 
 // version is set at build time with -ldflags "-X main.version=…".
@@ -25,6 +27,10 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return runCmd(args[1:], stdout, stderr)
 	case "eval":
 		return evalCmd(args[1:], stdout, stderr)
+	case "shell":
+		// Internal: the child internal/shell.Session starts for each bash command. It reads its request on stdin and
+		// writes its reply to fd 3; it is not for people.
+		return shell.Child(os.Stdin, stdout, os.NewFile(3, "reply"))
 	case "version", "--version":
 		fmt.Fprintln(stdout, "tack", version)
 		return 0
