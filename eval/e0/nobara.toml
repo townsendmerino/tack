@@ -58,3 +58,17 @@ name = "gemma4-26b-q4km-cuda"
 model_path = "~/models/gemma4-26b-q4_k_m.gguf"
 args = ["-backend", "cuda"]
 expect_fallback = "cpu"
+
+# Amendment 7 (approved 2026-10-17): coder-tuned models, fit-checked by day 2026-10-17 16:25 at 16384 on
+# cuda-resident (~/tack-runs/e0/fitcheck-coder-2026-10-17). Downloaded with their published sha256 checked; sources
+# in the pre-registration. OpenCoder-8B was dropped: its native window is 8192.
+
+[[arm]]
+name = "qwen2.5-coder-7b-q4km-cuda"
+model_path = "~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
+args = ["-backend", "cuda"]
+
+[[arm]]
+name = "seed-coder-8b-q4km-cuda"
+model_path = "~/models/seed-coder-8b-instruct-q4_k_m.gguf"
+args = ["-backend", "cuda"]
