@@ -60,7 +60,8 @@ what each will hold.
   every push. If a file you are editing has changes you did not make, they are someone else's in-flight work: commit
   your hunks and leave theirs.
 - **Before every push, run what CI runs for what you touched, and push only when it passes by exit code:**
-  - `go run ./tools/touched`, after the rebase;
+  - `go run ./tools/touched`, after the rebase. On a docs-only change it finds nothing to check and returns
+    INCONCLUSIVE, which is never a pass; run `go run ./tools/touched -all` then;
   - `go run ./tools/lint`;
   - for a protocol change, the regenerated Swift types and `proto/fixtures`.
 - **A red CI on `main` is fixed first.** Fix forward or revert before other work, and report it.
