@@ -18,6 +18,7 @@ import (
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
+	"github.com/townsendmerino/tack/tools/gate"
 )
 
 // The smoke task: ken at the pilot's task-2 base, a read-only question, so both arms exercise the server, opencode's
@@ -76,13 +77,24 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
-		if errors.Is(err, eval.ErrHeld) {
+		var void voidError
+		switch {
+		case errors.As(err, &void):
+			fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: void, no task ran: "+string(void)))
+			return gate.Reconcile([]gate.Cell{{Outcome: gate.Inconclusive}}).Exit
+		case errors.Is(err, eval.ErrHeld):
 			return exitHeld
 		}
 		return exitError
 	}
 	return exitOK
 }
+
+// voidError is a pilot run that measured nothing: the server is not decoding on the path the run names, so both arms
+// are void before any task starts.
+type voidError string
+
+func (e voidError) Error() string { return "void: " + string(e) }
 
 // withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
 // -log-requests, runs fn against it, and saves the server's log into out.
@@ -104,8 +116,9 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 		return err
 	}
 	defer os.RemoveAll(dir)
+	args := []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}
 	sup, err := models.NewSupervisor(models.ChildConfig{Binary: serve, ModelPath: modelPath, Model: "qwen", Ctx: ctxN,
-		Args: []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
+		Args: args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
 	if err != nil {
 		return err
 	}
@@ -122,7 +135,10 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	}
 	plan, _ := sup.Plan()
 	url, key := sup.Endpoint()
-	logf(log, "pilot: server up in %s; %s", time.Since(t0).Round(time.Second), plan.FitLine)
+	logf(log, "pilot: server up in %s, decode path %q; %s", time.Since(t0).Round(time.Second), plan.DecodePath, plan.FitLine)
+	if why := eval.VoidPath(eval.DecodePathFor(args), plan.DecodePath); why != "" {
+		return voidError(why)
+	}
 	return fn(pilot.Server{BaseURL: url, APIKey: key, Model: "qwen", Context: ctxN}, serveLog)
 }
 

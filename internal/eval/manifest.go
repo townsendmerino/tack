@@ -29,6 +29,9 @@ type Arm struct {
 	ModelPath string   `toml:"model_path"`
 	Args      []string `toml:"args"` // goinfer-serve flags, e.g. ["-backend", "metal"]
 	Ctx       []int    `toml:"ctx"`  // contexts to try, largest first (default 16384, 8192)
+	// DecodePath is the decode path the arm measures, which goinfer's banner must name or the arm is void (default
+	// DecodePathFor(Args): metal-resident, cuda-resident or cpu).
+	DecodePath string `toml:"decode_path"`
 }
 
 // LoadManifest reads and validates a manifest. Every model must be read from ~/models on this machine, never the
@@ -79,6 +82,12 @@ func (m *Manifest) validate(modelsDir string) error {
 		}
 		if len(a.Ctx) == 0 {
 			a.Ctx = []int{16384, 8192}
+		}
+		if a.DecodePath == "" {
+			a.DecodePath = DecodePathFor(a.Args)
+		}
+		if a.DecodePath == "" {
+			return fmt.Errorf("manifest: arm %s names no -backend and no decode_path; an arm names the path it measures", a.Name)
 		}
 	}
 	return nil

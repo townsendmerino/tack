@@ -26,7 +26,8 @@ import (
 
 // With TACK_FAKE_GOINFER=1 this test binary is a small goinfer-serve: it refuses an -ctx above TACK_FAKE_MAX_CTX,
 // answers smoke prompts by calling grep with the prompt's quoted word, counts a token per four bytes, streams one
-// token per word, and implements `check`.
+// token per word, and implements `check`. TACK_FAKE_DECODE sets the banner's decode path, TACK_FAKE_CHECK_FAIL=1 makes
+// `check` fail two rows, and TACK_FAKE_CRASH=1 makes the server exit on its first /v1/messages request.
 func TestMain(m *testing.M) {
 	if os.Getenv("TACK_FAKE_GOINFER") == "1" {
 		fakeServe(os.Args[1:])
@@ -37,6 +38,10 @@ func TestMain(m *testing.M) {
 
 func fakeServe(args []string) {
 	if len(args) > 0 && args[0] == "check" {
+		if os.Getenv("TACK_FAKE_CHECK_FAIL") == "1" {
+			fmt.Println("goinfer check → fake\n\ntools, OpenAI .............. FAIL  400 Bad Request\n\n2 of 9 checks FAILED")
+			os.Exit(1)
+		}
 		fmt.Println("goinfer check → fake\n\nmessages ................... ok    \n\nall 1 checks passed")
 		return
 	}
@@ -64,6 +69,9 @@ func fakeServe(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"input_tokens": len(body) / 4})
 	})
 	api.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("TACK_FAKE_CRASH") == "1" {
+			os.Exit(3)
+		}
 		var req struct {
 			Messages []struct {
 				Content []struct{ Text string } `json:"content"`
@@ -200,7 +208,7 @@ func TestGrade(t *testing.T) {
 		{false, true, 0, [2]int{20, 20}, 0, "fail"},
 	}
 	for i, tc := range cases {
-		if got, _ := grade(tc.window, tc.check, tc.fails, tc.smoke, tc.mal); got != tc.want {
+		if got, _ := gradeArm(tc.window, tc.check, tc.fails, tc.smoke, tc.mal); got != tc.want {
 			t.Errorf("case %d: %s, want %s", i, got, tc.want)
 		}
 	}
@@ -254,8 +262,12 @@ func TestManifestRefusesTheArchive(t *testing.T) {
 		t.Fatalf("validate = %v", err)
 	}
 	m.Arms[0].ModelPath = "/Users/x/models/q.gguf"
-	if err := m.validate("/Users/x/models"); err != nil || len(m.Arms[0].Ctx) != 2 {
-		t.Fatalf("validate = %v, ctx %v", err, m.Arms[0].Ctx)
+	if err := m.validate("/Users/x/models"); err == nil || !strings.Contains(err.Error(), "names no -backend") {
+		t.Fatalf("an arm naming no decode path: validate = %v", err)
+	}
+	m.Arms[0].Args = []string{"-backend", "metal"}
+	if err := m.validate("/Users/x/models"); err != nil || len(m.Arms[0].Ctx) != 2 || m.Arms[0].DecodePath != "metal-resident" {
+		t.Fatalf("validate = %v, ctx %v, decode path %q", err, m.Arms[0].Ctx, m.Arms[0].DecodePath)
 	}
 }
 
@@ -270,11 +282,11 @@ func TestRunEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, "big.go"), bytes.Repeat([]byte("package big // some code text here\n"), 3000), 0o644)
 	out := t.TempDir()
 	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: ws, Arms: []Arm{
-		{Name: "fits-8k", ModelPath: "/m/a.gguf", Ctx: []int{16384, 8192}},
-		{Name: "tiny-window", ModelPath: "/m/b.gguf", Ctx: []int{4096}},
+		{Name: "fits-8k", ModelPath: "/m/a.gguf", Args: cpu, Ctx: []int{16384, 8192}},
+		{Name: "tiny-window", ModelPath: "/m/b.gguf", Args: cpu, Ctx: []int{4096}},
 	}}
 	var log bytes.Buffer
-	err := Run(context.Background(), Options{Manifest: m, Out: out, TackRev: "test", LockPath: filepath.Join(t.TempDir(), "lock"),
+	results, err := Run(context.Background(), Options{Manifest: m, Out: out, TackRev: "test", LockPath: filepath.Join(t.TempDir(), "lock"),
 		Log: &log, Beat: 20 * time.Millisecond, Pressure: func() (models.Pressure, error) { return models.PressureNormal, nil }})
 	if err != nil {
 		t.Fatal(err)
@@ -313,6 +325,10 @@ func TestRunEndToEnd(t *testing.T) {
 	if v := byPhase["tiny-window/verdict"]; len(v) != 1 || v[0].Verdict != "fail" || len(byPhase["tiny-window/ttft"]) != 0 {
 		t.Fatalf("a 4096 window must fail and skip timing: %+v", byPhase["tiny-window/verdict"])
 	}
+	// Both arms were measured: the fail is a result, and a clean run with timing is not voided by its own phases.
+	if len(results) != 2 || len(results[0].Void) > 0 || len(results[1].Void) > 0 || results[1].Verdict != "fail" {
+		t.Fatalf("results %+v", results)
+	}
 	for _, want := range []string{"enter fit", "leave smoke", "heartbeat", "-ctx 16384 refused"} {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("log lacks %q", want)
@@ -327,13 +343,13 @@ func TestPressureSkipsAnArm(t *testing.T) {
 	out := t.TempDir()
 	m := &Manifest{Box: "test", GoinferServe: "/nonexistent", GoinferRev: "r", Workspace: t.TempDir(),
 		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Ctx: []int{8192}}}}
-	err := Run(context.Background(), Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
+	_, err := Run(context.Background(), Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
 		SettleWait: 10 * time.Millisecond, Pressure: func() (models.Pressure, error) { return models.PressureWarning, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
-	if !strings.Contains(string(data), `"skipped":"pressure"`) || !strings.Contains(string(data), `"verdict":"skipped"`) {
+	if !strings.Contains(string(data), `"skipped":"pressure"`) || !strings.Contains(string(data), `"verdict":"void"`) {
 		t.Fatalf("results: %s", data)
 	}
 }
@@ -355,8 +371,8 @@ func TestPressureSettlesBeforeAnArm(t *testing.T) {
 	}
 	out := t.TempDir()
 	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(),
-		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Ctx: []int{8192}}}}
-	if err := Run(context.Background(), Options{Manifest: m, Out: out, FitOnly: true, LockPath: filepath.Join(t.TempDir(), "lock"),
+		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Args: cpu, Ctx: []int{8192}}}}
+	if _, err := Run(context.Background(), Options{Manifest: m, Out: out, FitOnly: true, LockPath: filepath.Join(t.TempDir(), "lock"),
 		SettleWait: 5 * time.Second, Pressure: pressure}); err != nil {
 		t.Fatal(err)
 	}
@@ -366,49 +382,123 @@ func TestPressureSettlesBeforeAnArm(t *testing.T) {
 	}
 }
 
-func TestFellBackFrom(t *testing.T) {
+func TestDecodePath(t *testing.T) {
 	cases := []struct {
 		args   []string
 		decode string
-		fell   bool
+		void   bool
 	}{
 		{[]string{"-backend", "cuda"}, "cuda-resident (int4)", false},
-		{[]string{"-backend", "cuda"}, "cpu (int4)", true},
+		{[]string{"-backend", "cuda"}, "cpu (int4) — requested cuda → running on cpu: …", true},
+		{[]string{"-backend", "cuda"}, "cuda-staged (int4)", true}, // a GPU, but not the path the arm names
 		{[]string{"-backend", "metal"}, "metal-resident (int4)", false},
-		{[]string{"-backend", "metal"}, "cpu (int8int8)", true},
+		{[]string{"-backend", "metal"}, "cpu (int8int8) — requested metal → running on cpu: ActQuantGroup 32", true},
 		{[]string{"-backend", "cpu"}, "cpu (int4)", false},
-		{nil, "cpu (int4)", false},                // no backend asked for
-		{[]string{"-backend", "cuda"}, "", false}, // unknown decode path: not judged
+		{[]string{"-backend", "cuda"}, "", true}, // no banner: nothing shows the path
+		{nil, "cpu (int4)", true},                // the arm names no path
 	}
 	for _, tc := range cases {
-		if got := fellBackFrom(tc.args, tc.decode) != ""; got != tc.fell {
-			t.Errorf("fellBackFrom(%v, %q) fell=%v, want %v", tc.args, tc.decode, got, tc.fell)
+		if got := VoidPath(DecodePathFor(tc.args), tc.decode) != ""; got != tc.void {
+			t.Errorf("VoidPath(%v, %q) void=%v, want %v", tc.args, tc.decode, got, tc.void)
 		}
 	}
 }
 
-// TestFallbackStopsTheArm: an arm that asked for CUDA and was served on the CPU records its fit and a fail verdict
-// naming the fallback, and nothing else: no check, no smoke, no timing.
-func TestFallbackStopsTheArm(t *testing.T) {
+// cpu is the flags of an arm on the fake goinfer-serve, whose banner says "cpu (int4)" unless TACK_FAKE_DECODE says
+// otherwise.
+var cpu = []string{"-backend", "cpu"}
+
+// runFake runs one arm against the fake goinfer-serve and returns the run's results, its results.jsonl, and what
+// Summarize printed and returned: the exit status of `tack eval models`.
+func runFake(t *testing.T, ctx context.Context, arm Arm) (results []ArmResult, jsonl, summary string, exit int) {
+	t.Helper()
 	t.Setenv("TACK_FAKE_GOINFER", "1")
-	t.Setenv("TACK_FAKE_DECODE", "cpu (int4)")
 	t.Setenv(tokenEnv, "")
 	out := t.TempDir()
-	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(),
-		Arms: []Arm{{Name: "big", ModelPath: "/m/big.gguf", Args: []string{"-backend", "cuda"}, Ctx: []int{8192}}}}
-	if err := Run(context.Background(), Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
-		Pressure: func() (models.Pressure, error) { return models.PressureNormal, nil }}); err != nil {
+	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(), Arms: []Arm{arm}}
+	results, err := Run(ctx, Options{Manifest: m, Out: out, LockPath: filepath.Join(t.TempDir(), "lock"),
+		Pressure: func() (models.Pressure, error) { return models.PressureNormal, nil }})
+	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
-	s := string(data)
-	if !strings.Contains(s, `"fell_back":"asked for -backend cuda, goinfer is decoding on \"cpu (int4)\""`) ||
-		!strings.Contains(s, `"verdict":"fail"`) {
+	var buf bytes.Buffer
+	exit = Summarize(&buf, "eval models", results)
+	return results, string(data), buf.String(), exit
+}
+
+// lastLine is the summary's last line, which must be its one VERDICT line.
+func lastLine(t *testing.T, s string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if strings.Count(s, "VERDICT:") != 1 {
+		t.Fatalf("want one VERDICT line:\n%s", s)
+	}
+	return lines[len(lines)-1]
+}
+
+// TestFallbackIsVoid: an arm that asked for Metal and was served on the CPU (last night's phi3) is void, measures
+// nothing past the fit, and makes the run INCONCLUSIVE with a non-zero exit, naming the arm and why.
+func TestFallbackIsVoid(t *testing.T) {
+	t.Setenv("TACK_FAKE_DECODE", "cpu (int8int8) — requested metal → running on cpu")
+	_, s, summary, exit := runFake(t, context.Background(),
+		Arm{Name: "phi3-metal", ModelPath: "/m/phi3.gguf", Args: []string{"-backend", "metal"}, Ctx: []int{4096}})
+	if !strings.Contains(s, `"want_decode_path":"metal-resident"`) || !strings.Contains(s, `"verdict":"void"`) {
 		t.Fatalf("results:\n%s", s)
 	}
 	for _, phase := range []string{`"phase":"check"`, `"phase":"smoke"`, `"phase":"ttft"`, `"phase":"decode"`} {
 		if strings.Contains(s, phase) {
 			t.Errorf("a fallen-back arm ran %s", phase)
 		}
+	}
+	if exit == 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: INCONCLUSIVE") ||
+		!strings.Contains(summary, "phi3-metal") || !strings.Contains(summary, "wanted decode path metal-resident") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestDisqualifiedIsMeasured: an arm on the path it names that fails the check (two rows) and has too small a window
+// is a measured fail, and the run passes: the run's verdict is about whether arms were measured, not how they scored.
+func TestDisqualifiedIsMeasured(t *testing.T) {
+	t.Setenv("TACK_FAKE_CHECK_FAIL", "1")
+	results, s, summary, exit := runFake(t, context.Background(),
+		Arm{Name: "small", ModelPath: "/m/small.gguf", Args: cpu, Ctx: []int{4096}})
+	if len(results) != 1 || results[0].Verdict != "fail" || len(results[0].Void) > 0 || !strings.Contains(s, `"failed_rows":2`) {
+		t.Fatalf("results %+v:\n%s", results, s)
+	}
+	if exit != 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: PASS") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestCrashIsVoid: a server that dies under the smoke requests leaves them unanswered, which is no result, not a
+// smoke score of zero.
+func TestCrashIsVoid(t *testing.T) {
+	t.Setenv("TACK_FAKE_CRASH", "1")
+	results, _, summary, exit := runFake(t, context.Background(),
+		Arm{Name: "crashes", ModelPath: "/m/c.gguf", Args: cpu, Ctx: []int{8192}})
+	if len(results) != 1 || results[0].Verdict != "void" || !strings.Contains(strings.Join(results[0].Void, ";"), "got no answer") {
+		t.Fatalf("results %+v", results)
+	}
+	if exit == 0 || !strings.HasPrefix(lastLine(t, summary), "VERDICT: INCONCLUSIVE") {
+		t.Fatalf("exit %d, summary:\n%s", exit, summary)
+	}
+}
+
+// TestInterruptedIsVoid: a run stopped before an arm (night.py's timeout sends SIGTERM) leaves it void, not absent.
+func TestInterruptedIsVoid(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	results, _, summary, exit := runFake(t, ctx, Arm{Name: "late", ModelPath: "/m/l.gguf", Args: cpu, Ctx: []int{8192}})
+	if len(results) != 1 || results[0].Verdict != "void" || exit == 0 || !strings.Contains(summary, "not reached") {
+		t.Fatalf("results %+v, exit %d, summary:\n%s", results, exit, summary)
+	}
+}
+
+// TestSummarizeNothingIsInconclusive: a run that selected no arm (a mistyped -arm) judged nothing.
+func TestSummarizeNothingIsInconclusive(t *testing.T) {
+	var buf bytes.Buffer
+	if exit := Summarize(&buf, "eval models", nil); exit == 0 || !strings.HasPrefix(lastLine(t, buf.String()), "VERDICT: INCONCLUSIVE") {
+		t.Fatalf("exit %d:\n%s", exit, buf.String())
 	}
 }

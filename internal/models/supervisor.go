@@ -323,6 +323,15 @@ func (s *Supervisor) kill() {
 	}
 }
 
+// RefusedError is the child's admin API answering with an error status: the server is up and said why it would not,
+// as its planner does for a load that does not fit. Any other error from a load means no answer came.
+type RefusedError struct {
+	Status  int
+	Message string
+}
+
+func (e *RefusedError) Error() string { return fmt.Sprintf("%d: %s", e.Status, e.Message) }
+
 // admin calls the child's admin socket (HTTP over a Unix socket, goinfer's admin_socket.go).
 func (s *Supervisor) admin(ctx context.Context, method, path string, body, out any) error {
 	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -349,10 +358,11 @@ func (s *Supervisor) admin(ctx context.Context, method, path string, body, out a
 		var e struct {
 			Error struct{ Message string } `json:"error"`
 		}
+		msg := strings.TrimSpace(string(b))
 		if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
-			return fmt.Errorf("%d: %s", resp.StatusCode, e.Error.Message)
+			msg = e.Error.Message
 		}
-		return fmt.Errorf("%d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return &RefusedError{Status: resp.StatusCode, Message: msg}
 	}
 	if out != nil {
 		return json.Unmarshal(b, out)

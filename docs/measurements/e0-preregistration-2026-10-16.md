@@ -39,6 +39,33 @@ mechanism:
   decode-phase heartbeats on 41e13b26 were read to see which backend it had used. The amendment's reason is the
   clean build of main, not any result. The superseded E4B run on 41e13b26 was left to its timeout.
 
+**Amendment 4, 2026-10-16, after the Mac's run on main** (owner). **An arm that was not measured is void, and a run
+with a void arm is not a pass.** The mechanism: the Mac's phi3 arm asked for Metal, goinfer declined Metal for its
+`ActQuantGroup 32` and served it on the CPU, and the arm recorded **fail** under amendment 3 and stopped. The job still
+exited 0, so goinfer's `night.py` listed it as ok, and only `results.jsonl` showed that it had no data. Before this
+amendment, goinfer's note on that run (`~/tack-runs/e0/NOTE-from-goinfer-2026-10-16-gemma4-metal-ttft.md`) and the
+phi3 arm's records were read; the reason is the exit status, not any arm's numbers.
+
+- **Two kinds of no.** A **fail** is a result: the arm ran on the decode path it names and goinfer refused every load,
+  or the window, `check` or smoke failed the rule below. A **void** is no result: goinfer decoded on another path than
+  the arm names, memory pressure did not settle, a load or request got no answer, `check` did not finish, a timing
+  repeat errored, or the run was stopped before or during the arm. A server that answers with an error, such as a 400
+  for a missing tool-calling template, has answered.
+- **The path is named, not inferred from the backend.** Each arm names its decode path (`decode_path` in the manifest,
+  by default `metal-resident` or `cuda-resident` for a GPU and `cpu` for the CPU), and goinfer's banner must begin with
+  it. A banner with no decode path is void. This replaces amendment 3's prefix match on the backend
+  (`internal/eval/runner.go:VoidPath`).
+- **The verdict line.** `results.jsonl` ends each arm with one `verdict` record: the grade, or `void` with the reasons and
+  any grade reached before the gap. `tack eval models` ends with one `VERDICT:` line: **PASS** when every arm was
+  measured, whatever its grade, and **INCONCLUSIVE** with a non-zero exit when any arm is void, naming each.
+- **No grade moves.** A void arm, like a failed one, is never eligible and never the default. The amendment changes what
+  a run reports, and a void arm is re-run before its numbers count.
+- **Applied to the Mac's run of 2026-10-16** (goinfer `0e598d3f`). The phi3 arm is void on Metal. Its four failed `check`
+  rows (three 400s for a missing tool-calling template, and a long prompt that produced no tokens) were taken on the
+  CPU, and a write-up reports them as observations, never as the Metal arm's result. The gemma-4-E2B and E4B arms
+  are re-run only after goinfer reports its P28 fix (goinfer `docs/queue-performance.md`); their prefill on this build is
+  a goinfer defect, not a property of the models.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.

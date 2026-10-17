@@ -47,7 +47,7 @@ args = ["-backend", "cuda"]
 ctx = [4096]
 
 # The two that do not fit 8 GB of VRAM run last and stop at the fit (amendment 3): goinfer serves each on the CPU,
-# and the arm records that fallback as its fail verdict instead of timing it.
+# and the arm records that fallback as void instead of timing it (the preregistration's amendment 4).
 [[arm]]
 name = "gpt-oss-20b-mxfp4-cuda"
 model_path = "~/models/gpt-oss-20b-MXFP4.gguf"

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/townsendmerino/tack/internal/eval"
+	"github.com/townsendmerino/tack/tools/gate"
 )
 
 // exitHeld is goinfer's timing_lock.py exit status for "a timed run holds the box".
@@ -53,15 +54,15 @@ func evalCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = eval.Run(ctx, eval.Options{Manifest: m, Out: *out, Arm: *arm, FitOnly: *fitOnly, TackRev: *rev,
+	results, err := eval.Run(ctx, eval.Options{Manifest: m, Out: *out, Arm: *arm, FitOnly: *fitOnly, TackRev: *rev,
 		LockPath: lock, Log: stderr})
-	switch {
-	case errors.Is(err, eval.ErrHeld):
+	if err != nil {
 		fmt.Fprintln(stderr, "tack eval models:", err)
-		return exitHeld
-	case err != nil:
-		fmt.Fprintln(stderr, "tack eval models:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval models: "+err.Error()))
+		if errors.Is(err, eval.ErrHeld) {
+			return exitHeld
+		}
 		return exitError
 	}
-	return exitOK
+	return eval.Summarize(stdout, "eval models", results)
 }

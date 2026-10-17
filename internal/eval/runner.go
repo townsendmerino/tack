@@ -22,6 +22,7 @@ import (
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/tools/gate"
 )
 
 // Options configures a run of `tack eval models`.
@@ -43,9 +44,20 @@ type Options struct {
 // ErrHeld is returned (wrapped) when another timed run holds the box.
 var ErrHeld = errors.New("the timing lock is held")
 
-// Run runs every arm of the manifest in order. A timed run holds the timing lock throughout; the fit check only
-// checks that no timed run holds it. An arm that fails records why and the run goes on to the next.
-func Run(ctx context.Context, o Options) error {
+// ArmResult is how one arm ended. Verdict is the pre-registered grade (eligible, parked or fail) of a measured arm,
+// "admitted" for a measured arm of a fit check, and "void" for an arm that was not measured, with one reason per gap
+// in Void. A fail is a result about the model on the decode path the arm names; a void is no result at all.
+type ArmResult struct {
+	Name    string
+	Verdict string
+	Void    []string
+}
+
+// Run runs every selected arm of the manifest in order and returns how each ended. A timed run holds the timing lock
+// throughout; the fit check only checks that no timed run holds it. An arm that fails or is void records why and the
+// run goes on to the next; once ctx is done, the arms not reached are void. The error is for a run that could not
+// start (the lock, the results file), never for an arm.
+func Run(ctx context.Context, o Options) ([]ArmResult, error) {
 	if o.Beat == 0 {
 		o.Beat = 30 * time.Second
 	}
@@ -57,40 +69,71 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if o.FitOnly {
 		if err := CheckTimingLock(o.LockPath); err != nil {
-			return fmt.Errorf("%w: %v", ErrHeld, err)
+			return nil, fmt.Errorf("%w: %v", ErrHeld, err)
 		}
 	} else {
 		lock, err := AcquireTimingLock(o.LockPath, "tack eval models "+o.Manifest.Box)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrHeld, err)
+			return nil, fmt.Errorf("%w: %v", ErrHeld, err)
 		}
 		defer lock.Release()
 	}
 	if err := os.MkdirAll(o.Out, 0o755); err != nil {
-		return err
+		return nil, err
 	}
 	rf, err := os.OpenFile(filepath.Join(o.Out, "results.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rf.Close()
 	r := &runner{o: o, results: rf}
 	start := time.Now()
 	r.logf("e0 %s: start %s, %d arms, fit-only=%v, tack %s, goinfer %s", o.Manifest.Box, start.Format("15:04:05 MST"),
 		len(o.Manifest.Arms), o.FitOnly, o.TackRev, o.Manifest.GoinferRev)
+	var results []ArmResult
 	for i, arm := range o.Manifest.Arms {
 		if o.Arm != "" && arm.Name != o.Arm {
 			continue
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			why := fmt.Sprintf("not reached: %v", ctx.Err())
+			r.record(arm, "verdict", map[string]any{"verdict": "void", "void": []string{why}})
+			results = append(results, ArmResult{Name: arm.Name, Verdict: "void", Void: []string{why}})
+			continue
 		}
 		r.logf("e0 %s: arm %d/%d %s (started %s, elapsed %s)", o.Manifest.Box, i+1, len(o.Manifest.Arms), arm.Name,
 			start.Format("15:04"), time.Since(start).Round(time.Second))
-		r.arm(ctx, arm)
+		results = append(results, r.arm(ctx, arm))
 	}
 	r.logf("e0 %s: done in %s", o.Manifest.Box, time.Since(start).Round(time.Second))
-	return nil
+	return results, nil
+}
+
+// Summarize writes one line per arm, the reasons under each void arm, and the VERDICT line, and returns the exit
+// status: PASS (0) when every arm was measured, whatever its verdict; INCONCLUSIVE (2) when any arm is void or no arm
+// ran.
+func Summarize(w io.Writer, name string, results []ArmResult) int {
+	var cells []gate.Cell
+	var void []string
+	for _, a := range results {
+		c := gate.Cell{Name: a.Name, Outcome: gate.OK, Fields: []gate.Field{gate.F("verdict", a.Verdict)}}
+		fmt.Fprintf(w, "%-9s %s\n", a.Verdict, a.Name)
+		if len(a.Void) > 0 {
+			c.Outcome = gate.Inconclusive
+			void = append(void, a.Name)
+			for _, why := range a.Void {
+				fmt.Fprintf(w, "    %s\n", why)
+			}
+		}
+		cells = append(cells, c)
+	}
+	rep := gate.Reconcile(cells)
+	msg := fmt.Sprintf("%s: %d of %d arms measured", name, rep.Pass, len(results))
+	if len(void) > 0 {
+		msg += "; void: " + strings.Join(void, ", ")
+	}
+	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg))
+	return rep.Exit
 }
 
 type runner struct {
@@ -139,7 +182,35 @@ func (p *progress) step() {
 	p.mu.Unlock()
 }
 
-func (r *runner) arm(ctx context.Context, arm Arm) {
+// arm runs one arm and records its one verdict line last. An arm is void, not failed, when anything it should have
+// measured is missing: goinfer decoding on another path than the arm names, memory pressure, a load or request that
+// got no answer, a check that did not finish, a timing rep that errored, or the run being stopped. A server that
+// answers with an error (a load refused, a 400 for a missing tool template) is a result, graded by the rule.
+func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
+	res.Name = arm.Name
+	if arm.DecodePath == "" { // a manifest built in code skips validate
+		arm.DecodePath = DecodePathFor(arm.Args)
+	}
+	grade, why := "", "" // the registered grade, set once fit, check and smoke have run
+	window, admitted := 0, 0
+	void := func(format string, args ...any) { res.Void = append(res.Void, fmt.Sprintf(format, args...)) }
+	defer func() { // the first deferred, so it runs last: after the child stops and the footprint is recorded
+		if ctx.Err() != nil {
+			void("interrupted: %v", ctx.Err())
+		}
+		res.Verdict = grade
+		f := map[string]any{"verdict": grade, "why": why, "window": window, "admitted_ctx": admitted}
+		if len(res.Void) > 0 {
+			res.Verdict = "void"
+			f["verdict"], f["void"], f["grade"] = "void", res.Void, grade
+		}
+		r.record(arm, "verdict", f)
+		if len(res.Void) > 0 {
+			r.logf("  %s: verdict void: %s", arm.Name, strings.Join(res.Void, "; "))
+		} else {
+			r.logf("  %s: verdict %s (%s)", arm.Name, grade, why)
+		}
+	}()
 	armStart := time.Now()
 	p := &progress{}
 	stopBeat := make(chan struct{})
@@ -178,20 +249,18 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 		}
 	}()
 	var sup *models.Supervisor
-	var fellBack string // why the arm runs on another backend than it asked for, or ""
 	var srv server.Server
-	window, admitted := 0, 0
-	skipped := false
 	phase("fit", len(arm.Ctx), func() {
 		if pr := r.settle(ctx, arm); pr >= models.PressureWarning {
 			r.record(arm, "fit", map[string]any{"skipped": "pressure", "pressure": pr.String()})
-			skipped = true
+			void("memory pressure did not return to normal (%s)", pr)
 			return
 		}
 		for _, n := range arm.Ctx {
 			dir, err := os.MkdirTemp("/tmp", "tke0")
 			if err != nil {
 				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
+				void("-ctx %d: %v", n, err)
 				return
 			}
 			dirs = append(dirs, dir)
@@ -199,6 +268,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 				Model: arm.Name, Ctx: n, Args: arm.Args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
 			if err != nil {
 				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
+				void("-ctx %d: %v", n, err)
 				return
 			}
 			t0 := time.Now()
@@ -208,6 +278,9 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 				_ = s.Stop()
 				r.record(arm, "fit", map[string]any{"ctx": n, "admitted": false, "error": err.Error(), "log_tail": tail(filepath.Join(dir, "goinfer-serve.log"), 20)})
 				r.logf("  %s: -ctx %d refused: %v", arm.Name, n, err)
+				if refused := (*models.RefusedError)(nil); !errors.As(err, &refused) {
+					void("-ctx %d: the load got no answer from goinfer: %v", n, err)
+				}
 				continue
 			}
 			plan, _ := s.Plan()
@@ -217,26 +290,25 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			if plan.ContextWindow > 0 && plan.ContextWindow < n {
 				window = plan.ContextWindow
 			}
-			fellBack = fellBackFrom(arm.Args, plan.DecodePath)
 			r.record(arm, "fit", map[string]any{"ctx": n, "admitted": true, "fit_line": plan.FitLine,
-				"decode_path": plan.DecodePath, "fell_back": fellBack, "context_window": plan.ContextWindow,
+				"decode_path": plan.DecodePath, "want_decode_path": arm.DecodePath, "context_window": plan.ContextWindow,
 				"load_ms": time.Since(t0).Milliseconds()})
 			r.logf("  %s: -ctx %d admitted, window %d, decode path %q; %s", arm.Name, n, window, plan.DecodePath, plan.FitLine)
+			if v := VoidPath(arm.DecodePath, plan.DecodePath); v != "" {
+				void("%s", v)
+			}
 			return
 		}
 	})
-	if skipped {
-		r.record(arm, "verdict", map[string]any{"verdict": "skipped", "why": "memory pressure did not return to normal"})
-		return
-	}
 	if sup == nil {
-		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": "no context was admitted"})
+		if len(res.Void) == 0 { // goinfer answered every load, and refused each: a result
+			grade, why = "fail", "no context was admitted"
+		}
 		return
 	}
-	if fellBack != "" { // amendment 3: the arm asked for a GPU and goinfer served it elsewhere
+	if len(res.Void) > 0 { // the wrong decode path, or a larger -ctx with no answer: nothing measured would be this arm's
 		_ = sup.Stop()
-		r.record(arm, "verdict", map[string]any{"verdict": "fail", "why": fellBack})
-		r.logf("  %s: %s; nothing else is measured for this arm", arm.Name, fellBack)
+		r.logf("  %s: void at fit; nothing else is measured for this arm", arm.Name)
 		return
 	}
 	defer func() {
@@ -247,6 +319,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			"pressure_max": pmax.String(), "vram_peak_mib": vram})
 	}()
 	if r.o.FitOnly {
+		grade, why = "admitted", fmt.Sprintf("fit only: -ctx %d, window %d", admitted, window)
 		return
 	}
 
@@ -260,10 +333,14 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 		checkFails = failedRows(out, code)
 		checkOK = code == 0
 		r.record(arm, "check", map[string]any{"exit": code, "failed_rows": checkFails, "output": path})
+		if code < 0 {
+			void("goinfer-serve check did not finish (see %s)", path)
+		}
 	})
 
 	smoke := [2]int{}
-	malformed := 0
+	malformed, unanswered := 0, 0
+	var firstUnanswered error
 	var unstable []int
 	phase("smoke", 2*len(SmokeTasks), func() {
 		first := make([]bool, len(SmokeTasks))
@@ -274,6 +351,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 				f := map[string]any{"run": run + 1, "result": res}
 				if err != nil {
 					f["error"] = err.Error()
+					if se := (*server.Error)(nil); !errors.As(err, &se) { // a server.Error is an answer, a result
+						if unanswered++; unanswered == 1 {
+							firstUnanswered = err
+						}
+					}
 				}
 				r.record(arm, "smoke", f)
 				if res.Pass {
@@ -292,10 +374,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 		}
 		r.record(arm, "smoke_summary", map[string]any{"pass": smoke, "malformed": malformed, "unstable_tasks": unstable})
 	})
-	verdict, why := grade(admitted > 0 && window >= 8192, checkOK, checkFails, smoke, malformed)
-	r.record(arm, "verdict", map[string]any{"verdict": verdict, "why": why, "window": window, "admitted_ctx": admitted})
-	r.logf("  %s: verdict %s (%s)", arm.Name, verdict, why)
-	if window < 8192 {
+	if unanswered > 0 {
+		void("%d of %d smoke requests got no answer from goinfer: %v", unanswered, 2*len(SmokeTasks), firstUnanswered)
+	}
+	grade, why = gradeArm(admitted > 0 && window >= 8192, checkOK, checkFails, smoke, malformed)
+	if window < 8192 || len(res.Void) > 0 {
 		return
 	}
 
@@ -312,7 +395,9 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			if ctx.Err() != nil {
 				return
 			}
-			r.ttft(ctx, srv, arm, n, filler, p)
+			if err := r.ttft(ctx, srv, arm, n, filler, p); err != nil {
+				void("TTFT at %d tokens: %v", n, err)
+			}
 		}
 	})
 	phase("decode", 3, func() {
@@ -323,6 +408,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			f := map[string]any{"rep": i + 1, "tok_per_s": rate, "tokens": toks}
 			if err != nil {
 				f["error"] = err.Error()
+				void("decode rep %d: %v", i+1, err)
 			} else {
 				rates = append(rates, rate)
 			}
@@ -334,10 +420,11 @@ func (r *runner) arm(ctx context.Context, arm Arm) {
 			r.logf("  %s: decode median %.1f tok/s", arm.Name, med)
 		}
 	})
+	return res
 }
 
-// grade is the pre-registered per-arm rule (docs/measurements/e0-preregistration-2026-10-16.md, "Decision rule").
-func grade(windowOK, checkOK bool, checkFails int, smoke [2]int, malformed int) (string, string) {
+// gradeArm is the pre-registered per-arm rule (docs/measurements/e0-preregistration-2026-10-16.md, "Decision rule").
+func gradeArm(windowOK, checkOK bool, checkFails int, smoke [2]int, malformed int) (string, string) {
 	lo := min(smoke[0], smoke[1])
 	switch {
 	case !windowOK:
@@ -397,13 +484,16 @@ func (r *runner) smokeOne(ctx context.Context, srv server.Server, arm Arm, i int
 
 // ttft measures time to the first streamed token at about n prompt tokens: three cold repeats (a fresh nonce at the
 // start of the system prompt, so nothing is reused) after one warm-up, and three reused repeats (the previous prompt
-// with only its last 512 tokens changed) after one warm-up.
-func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, filler string, p *progress) {
+// with only its last 512 tokens changed) after one warm-up. It returns an error when the size could not be built or any
+// repeat, warm-ups included, errored.
+func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, filler string, p *progress) error {
 	chars, counted, err := sizeFiller(ctx, srv, arm.Name, filler, n)
 	if err != nil {
 		r.record(arm, "ttft", map[string]any{"size": n, "error": err.Error()})
-		return
+		return err
 	}
+	failed := 0
+	var firstErr error
 	tailChars := chars * 512 / n
 	prefix := filler[:chars-tailChars]
 	tailAt := func(i int) string { // distinct tails of the same length, from further into the text
@@ -416,6 +506,9 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 		f := map[string]any{"size": n, "counted": counted, "cell": cell, "rep": rep, "ttft_ms": d.Milliseconds()}
 		if err != nil {
 			f["error"] = err.Error()
+			if failed++; failed == 1 {
+				firstErr = fmt.Errorf("%s rep %d: %w", cell, rep, err)
+			}
 		}
 		if rep > 0 {
 			r.record(arm, "ttft", f)
@@ -428,6 +521,10 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 	for rep := 0; rep <= 3; rep++ {
 		measure("reused", rep, loop.SystemPrompt, prefix+tailAt(10+rep))
 	}
+	if failed > 0 {
+		return fmt.Errorf("%d of 8 requests failed, first %w", failed, firstErr)
+	}
+	return nil
 }
 
 // sizeFiller finds how many characters of filler make the request about n tokens by the server's own count_tokens.
@@ -605,18 +702,36 @@ func (r *runner) settle(ctx context.Context, arm Arm) models.Pressure {
 // settlePoll is how often settle re-reads memory pressure.
 var settlePoll = 2 * time.Second
 
-// fellBackFrom reports, when an arm asked for a GPU backend (-backend cuda or metal) and goinfer's banner says the
-// model is decoding somewhere else (a load that ran out of device memory and fell back to the CPU), why the arm is not
-// the arm registered; "" otherwise, including when the decode path is unknown.
-func fellBackFrom(args []string, decodePath string) string {
-	want := ""
+// DecodePathFor is the decode path an arm with these goinfer-serve flags measures: metal-resident or cuda-resident for
+// a GPU backend (goinfer has no staged GPU path), cpu for the CPU, and "" when the flags name no backend.
+func DecodePathFor(args []string) string {
+	backend := ""
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "-backend" || args[i] == "--backend" {
-			want = args[i+1]
+			backend = args[i+1]
 		}
 	}
-	if (want != "cuda" && want != "metal") || decodePath == "" || strings.HasPrefix(decodePath, want) {
-		return ""
+	switch backend {
+	case "metal", "cuda":
+		return backend + "-resident"
+	case "cpu":
+		return "cpu"
 	}
-	return fmt.Sprintf("asked for -backend %s, goinfer is decoding on %q", want, decodePath)
+	return ""
+}
+
+// VoidPath reports why a server whose banner gave decode path got is not measuring want, or "" when got begins with
+// want. A banner that gives no decode path is void too: nothing shows the arm runs on the path it names. goinfer
+// declines a GPU quietly (a load that does not fit the device, a quantization the backend does not support) and
+// serves on the CPU, answering every request; only the banner says so.
+func VoidPath(want, got string) string {
+	switch {
+	case want == "":
+		return fmt.Sprintf("the arm names no decode path; goinfer is decoding on %q", got)
+	case got == "":
+		return fmt.Sprintf("wanted decode path %s; goinfer's banner gave none", want)
+	case !strings.HasPrefix(got, want):
+		return fmt.Sprintf("wanted decode path %s; goinfer is decoding on %q", want, got)
+	}
+	return ""
 }

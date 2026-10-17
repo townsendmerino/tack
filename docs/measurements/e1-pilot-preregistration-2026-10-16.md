@@ -60,6 +60,13 @@ in their own right: the incumbent harness's fixed prompt alone does not fit the 
   smoke has more re-prefills than the title-off smoke, summed over both arms, every task run has titles off, on both
   arms; otherwise the pilot runs stock. The cap stays 10 minutes either way.
 
+**Amendment 4, 2026-10-16, before any task run** (owner). **A server not decoding on `cuda-resident` voids the job.**
+goinfer declines a GPU quietly, serving the load on the CPU and answering every request, and only its banner says so
+(E0's amendment 4 has the case). The runner reads the banner's decode path once the server is up; if it does not begin
+with `cuda-resident`, no task starts, both arms are void, and `tack eval pilot` ends with `VERDICT: INCONCLUSIVE` and
+a non-zero exit (`internal/eval/runner.go:VoidPath`). The pilot's server was `cuda-resident (int4)` at its nobara fit
+check on 2026-10-16, so no run so far is affected.
+
 ## Tasks
 
 The 10 tasks in `eval/e1/pilot.jsonl`, chosen by the registered selection rules with amendment 2, each with the
