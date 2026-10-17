@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -52,6 +53,11 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	oracleCheck := fs.Bool("oracle-check", false, "no model: run each task's oracle at its fix commit, as a run grades it; every task must pass")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if err := goOnPath(); err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))
+		return exitError
 	}
 	if *oracleCheck {
 		return oracleCheckCmd(*tasks, *from, *to, *mirrors, *out, *rev, stdout, stderr)
@@ -274,4 +280,15 @@ func oracleCheckCmd(tasks string, from, to int, mirrors, out, rev string, stdout
 	}
 	fmt.Fprintln(stdout, gate.Verdict(gate.OK, fmt.Sprintf("oracle check: all %d tasks pass at their fix commit", len(ts))))
 	return exitOK
+}
+
+// goOnPath refuses a job whose PATH has no `go`. The oracle grades every run with `go test`; without it every oracle
+// test reports build-fail, and the job would record that as the model's result. nobara puts Go on the PATH only in
+// interactive shells, so a job started over ssh or from a queue must set it itself.
+func goOnPath() error {
+	if _, err := exec.LookPath("go"); err != nil {
+		return fmt.Errorf("`go` is not on this job's PATH (%v); the oracle grades every run with go test, and without it "+
+			"every test would read build-fail. Start the job with Go on its PATH (on nobara: export PATH=/usr/local/go/bin:$PATH)", err)
+	}
+	return nil
 }
