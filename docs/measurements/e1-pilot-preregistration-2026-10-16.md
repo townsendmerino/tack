@@ -153,9 +153,14 @@ goinfer-serve built from main at or after `31418112`, so it has the tool-call co
     `-ctx 32768`, window 32768, decode path `cuda-resident (int4)`. KV is 1.8 GB beside 4.0 GB of weights, against a
     budget of 38.5 GB. The check took 14 s, and afterwards the server was gone and the lock free.
 
-**Amendment 8, 2026-10-17 — PROPOSED, for the owner's approval before the night queue starts.** **The pilot again,
-with Qwen2.5-Coder-7B-Instruct in place of Qwen2.5-7B-Instruct.** If the owner does not approve it, both jobs are
-dropped from the queue before it starts.
+**Amendment 8, 2026-10-17 — approved by the owner as drafted, before the night queue started** (the text of `f4ad594`
+with `f5117d6`). **The pilot again, with Qwen2.5-Coder-7B-Instruct in place of Qwen2.5-7B-Instruct.**
+
+- **Queued on nobara for the night of 2026-10-17:**
+  - `tack-e1-pilot-coder-job1-0891f6a` (tasks 1–5) and `-job2-0891f6a` (tasks 6–11);
+  - tack `0891f6a`, a clean build, on main; sha256 `f05064eb…`;
+  - both behind the E0 jobs for the two coder arms (E0 amendment 7);
+  - outputs `~/tack-runs/e1/pilot-2026-10-17-coder-job{1,2}`.
 
 - **Why.** The re-run passed 0 of 20 with Qwen2.5-7B-Instruct, though every tool call parsed and ran. 13 runs
   answered in prose instead of editing (`e1-pilot-2026-10-17.md`; DESIGN §17, R13). A coder-tuned model of the same
