@@ -446,3 +446,13 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 
 **Time:** E4B's E0 took 27 minutes, and gpt-oss decodes about half as fast, so expect 40–50 minutes. The worst case is
 90 minutes.
+
+**C2 outcome, 2026-10-18: gpt-oss-20b is ineligible on goinfer `0de92cd9`.**
+
+- E0 ran 10:48 PDT onward (`~/tack-runs/e0/c2-gptoss-0de92cd9/` on nobara).
+- **The load passed:** `cuda-resident (int4)` at E0's 16k, with 0.8 GB of KV beside 11.0 GB of streamed weights.
+- **The smoke failed the gate:** 9/20 on both runs, with 8 malformed calls (6 `greplicate`, 2 `grepaste`), which is
+  under E0's bar on both counts. Under C2's stop rule, no calibration run follows.
+- **The malformed calls carry grep's correct arguments.** goinfer is asked, at low priority, whether gpt-oss wrote those
+  names or the Harmony parser ran past `grep` (tack's note to goinfer, item 4).
+  - If it was the parser, a new C2 on the fixed build is warranted.
