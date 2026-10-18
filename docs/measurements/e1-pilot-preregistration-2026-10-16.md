@@ -313,6 +313,73 @@ tailnet, `~/tack-runs/e1/a1-smoke-2026-10-17`).
   - A difference cannot be put down to one cause: A1 changes the harness, the prompt, the forced tool calls and the
     done rule together.
   - gemma-4-E4B may follow as a second run, under its own amendment.
+- **Harness changes after approval, before the graded run** (owner, 2026-10-18). They change how the harness runs
+  tack, not tack's loop, prompt, tools or limits:
+  - tack's config, token and state go in a sibling of the run directory (`task-NN/A1-tack/`). In the run directory they
+    had made the sandbox deny the repository, which voided the night of 2026-10-17/18.
+  - `tack run --edit` refuses a workspace that overlaps its config or state directory.
+  - Before each task, outside the sandbox and before the clock starts, `go mod download` fills the module cache.
+  - A sandboxed preflight (`go list -deps -test ./... >/dev/null && go version`) must pass before the model starts,
+    or the task is void.
+  - The sandbox's commands run with `GOPROXY=off`.
+  - A1 ran by day on the owner's override, not on the night queue. The record is `e1-pilot-a1-2026-10-18.md`: 0/10.
+
+**Amendment 10, A1b — proposed 2026-10-18, awaiting the owner's approval.** **A1b: A1 with two changes to tack's
+loop, on the same ten tasks.** It is compared task by task with A1 and with opencode's A0 and A0k, never pooled.
+
+1. **An exact repeat whose result has not changed is answered as a repeat, and counts as no progress.**
+   - A repeat is a call with the same tool and the same input, key order aside (`callKey`), as an earlier call in the
+     turn. Earlier means any earlier call, not only the one just before.
+   - A repeat runs as any call does, and its result is compared with the last result that call gave. If they are the
+     same, the model receives, instead of the result: "repeat: this is the Nth time you made this exact call, and its
+     result is the same as before (it is above). Try something else." N counts that call's unchanged repeats, the
+     first repeat being the 2nd time.
+   - For `read`, the message instead says the file is unchanged since that read and its text is above, and that
+     old_string must be copied from it exactly. A re-read after a failed edit is what the edit error asks for. When
+     nothing has changed, the text is already in the window.
+   - It is recorded as an error, and counts toward the consecutive-failure budget of 8 as a failure does. So eight
+     unchanged repeats in a row end the turn, and so does a loop of a failed edit and an unchanged re-read
+     (`consecutive_errors`).
+   - Today's rule stays: an immediate repeat of a call that just failed is not run. It now also says how many times.
+   - Not covered:
+     - `done`, which has its own rule;
+     - any call whose result differs, by even one byte. A bash command whose output carries a timing, such as `go test`'s
+       `ok … 0.35s`, is not a repeat.
+   - What A1 shows: no successful-repeat loop in its ten runs, but 14 unchanged successful repeats and 42 unchanged
+     failed repeats over 8 runs. A smoke run of task 2 looped 383 times on one glob until the window filled
+     (`e1-pilot-a1-2026-10-18.md`, "Repeats whose result did not change").
+2. **Empty results say what to do.**
+   - **`glob` with no match.** If a directory the pattern names does not exist, it says so, names the deepest one that
+     does, and suggests a broader pattern. For example: "no files match internal/search/structural/*.go:
+     internal/search/structural does not exist; internal/search does. Try internal/search/** or **/structural*".
+     Otherwise it gives today's reminder that patterns are relative to the root and `**/name` finds a name at any
+     depth.
+   - **`grep` with no hits.** It says the pattern is an RE2 regular expression and case-sensitive, and suggests a
+     shorter pattern, `(?i)`, or a wider path, naming the path it searched.
+   - Neither message changes a tool's description, so the fixed prompt (1,024 tokens) is unchanged.
+     `TestFixedPromptBudget` re-counts it.
+3. **Everything else is A1's.**
+   - The same: server and build (`31418112`), model, window, sampling, cap and tasks, the budget of 8, `max_tokens`
+     2048, and the harness as above.
+   - tack: a clean build of the commit that adds 1 and 2 and nothing else.
+4. **Tests first, tier 0.** A scripted model, through the loop:
+   - an unchanged glob repeated until the budget ends the turn at eight, with N counted in each message;
+   - a failed edit and an unchanged re-read, alternating, until the budget ends the turn;
+   - a re-read after the file changed is not a repeat;
+   - a failed call repeated after a call that changed its result is not a repeat.
+   Each is broken once: with the rule removed, the test fails.
+5. **A one-task smoke, then the run.**
+   - The smoke is task 2. It is a smoke, not a result, and is recorded as one.
+   - The run takes nobara's timing lock and starts only when the lock is free, by day or by night as the owner says.
+6. **Reported:**
+   - per run, what A1 reports;
+   - how many repeat answers each run received, by tool;
+   - how many turns the budget ended through repeats;
+   - each task beside A1, A0 and A0k.
+7. **What it decides:** nothing. With A1 at 0/10, it shows whether ending repeat loops early and better empty results
+   change what a 7B does on these tasks, as a pass count and as the oracle's outcome per task (fail rather than
+   build-fail, a diff or none). A pass count of 0 or 1 cannot separate A1b from A1. Two or more passes on tasks no arm
+   has passed would be reason to propose a larger run, under its own registration.
 
 ## Tasks
 

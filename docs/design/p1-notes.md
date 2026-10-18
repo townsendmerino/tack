@@ -111,6 +111,24 @@ The model never learned from it. It went on to a wrong answer, that `applyTokenB
 - **Test.** A tier-0 test sends a missing relative path to each path-taking tool and asserts the error carries the
   guidance and no absolute host path.
 
+## The Q&A cassette recording is paused (owner, 2026-10-18)
+
+The recording `tack-cassette-run-ken-7b` (`tools/recordrun`) has used all three of its attempts and failed every
+time. It is paused. The fact "it returns the approximate token total of the kept results" stays required. Revisit it
+after A1, possibly with tack's forced-call loop on the Q&A run.
+
+**The finding:**
+
+- All three attempts answered after a single `grep`, and none read the file. These are d940493's attempts 1 and 2 and
+  001b5ca's attempt 1, in `~/tack-runs/cassettes/run-ken-7b-*.attempt*.json`.
+- Their grep lines showed the doc comment's first line, `mcp/token_budget.go:64`, the signature, `:70`, and a call
+  site, `:95`. Attempt 2 saw only the signature.
+- The sentence the check needs is on lines 67–68, one `read` away. All three answers listed `approxTotal` without
+  saying what it is. Attempt 2 described it wrongly, as "an approximation of the total number of results".
+- The run had no ken search, only `read`, `glob` and `grep`, so nothing in what the model saw was cut short.
+- The recording of 2026-10-16 did read the file (`run-ken-7b.attempt1.json`), making six calls. It failed for the
+  path reason in the section above.
+
 ## Step 2's shell slice: what it does, and what is open (2026-10-17)
 
 - **What it does.** `bash` runs each command line in `tack shell`, a child process in its own process group, so a
