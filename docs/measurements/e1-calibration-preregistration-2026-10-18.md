@@ -237,6 +237,57 @@ packages the model tests, use loopback.
 - **The evidence is in `e1-pilot-a1-2026-10-18.md`.** None of A1's ten runs looped on successful calls, and the
   longest streak was 1. So this is expected to change little, and it is measured as its own amendment for that reason.
 
+### 4.5 Filed for after the baseline: a stop rule for repeated identical calls (owner, 2026-10-18)
+
+**Filed, not registered.** It is registered as its own amendment before any of its runs, and built after the baseline
+with the others.
+
+**The evidence, from the baseline's first pass, while it ran:**
+
+- **Task 4** made the same grep 340 times: `pull\.Select\(files \[\]File, ref Ref\)` in `pull/pull.go`, a regex that
+  matches nothing.
+  - Each call returned "no matches", outcome `ok`, so neither the repeat rule nor the failure budget fired.
+  - It made 353 requests over 7.5 minutes, until the prompt itself passed the window.
+- **Task 5** made one grep 213 times or more.
+- **The smoke of task 2** made one glob 383 times.
+
+How often a single call was repeated with an unchanged result, per run:
+
+| runs | most unchanged repeats of any one call |
+|---|---|
+| A1's ten runs, the void night's ten, the task-9 smoke, and pass 1's tasks 1–3 | 0–14 |
+| loops: baseline pass 1, tasks 4 and 5; the task-2 smoke | 213, 340, 383 |
+
+**The rule:**
+
+- Within a turn, tack keys each call by its tool and its input, key order aside (`callKey`), and remembers the last
+  result each key gave.
+- **The 8th time a call repeats with a result identical to its last one ends the turn.** The stop reason is
+  `repeat_loop`, with its own exit status.
+- Unlike §4.4's message, this counts that call's unchanged repeats wherever they fall in the turn, so calls in
+  between do not reset it.
+- Eight matches the failure budget.
+- **What it would have done:** cut short the three non-loop runs that reached 9, 12 and 14 (all of them failed
+  anyway), and ended each loop after 8 repeats instead of 213–383.
+
+**Tests (tier 0), each broken once:**
+
+- an unchanged grep repeated until the turn ends at the 8th, with stop reason `repeat_loop`;
+- the same call with a changed result does not count;
+- interleaved calls do not reset the count.
+
+**Measured** as its own amendment against the baseline, like 4.1–4.4. It overlaps §4.4, which answers each repeat
+and counts it toward the budget. If both are approved, they are measured separately before any stacking.
+
+**Also filed: a prompt that fills the window is `window_full`, not `error`.**
+
+- Task 4's run ended when goinfer refused the request: "400 invalid_request_error: prompt is too long: 32784 tokens >
+  32768 maximum".
+- tack recorded that as stop reason `error` (exit 1). `window_full` covers only a reply the window cut short.
+- **The fix** maps the server's prompt-too-long refusal to `window_full` (exit 7). It changes no run's outcome, only
+  its label.
+- In the baseline's grading, a run ended this way is counted as window-full, and its record keeps `error`.
+
 ## 5. A harness fix, not a loop change
 
 **The ssh port forward the A1 harness opens leaked into ssh's shared connections.**
