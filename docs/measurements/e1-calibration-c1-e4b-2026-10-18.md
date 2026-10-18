@@ -4,7 +4,7 @@
 
 Amendment C1 (`e1-calibration-preregistration-2026-10-18.md` §7) measures gemma-4 E4B on the calibration set.
 
-**Status: stopped after stage A, before the 36 runs, and brought to the owner.** Both gates passed. The one-task
+**Status: paused (owner, 2026-10-18), not void and not failed.** Stopped after stage A, before the 36 runs. Both gates passed. The one-task
 smoke showed that the runs would mostly measure goinfer's gemma-4 path on the RTX 2070 SUPER, not E4B with tack's
 loop.
 
@@ -61,3 +61,38 @@ loop.
   - the stream lost near 120 s;
   - windowed KV failing on prefix reuse.
 - **Running the 36 runs now would measure them,** mostly as cap hits and errors. C1 waits for the owner's decision.
+
+## Status: paused (owner, 2026-10-18)
+
+**C1 is paused, not void and not failed.** No run of the 36 happens on goinfer `0de92cd9`. goinfer gets a brief on the
+three findings above.
+
+When goinfer ships fixes, C1 resumes under a small amendment naming the new build:
+
+1. it starts again at gate 2: E0, which must not be void this time;
+2. then the one-task smoke;
+3. then the 36 runs, only after the owner has read the smoke.
+
+### The dropped stream: tack's side ruled out
+
+Every timeout on the request's path, Mac to nobara, as set on 2026-10-18:
+
+| hop | setting |
+|---|---|
+| tack's goinfer client (`internal/server/goinfer/client.go:New`, `hc` nil) | `&http.Client{}`: no overall `Timeout`; `http.DefaultTransport`, `ResponseHeaderTimeout` 0 |
+| the capture proxy's server (`internal/eval/pilot/capture.go`) | `http.Server` with no `ReadTimeout`, `WriteTimeout` or `IdleTimeout` |
+| the capture proxy's upstream (`httputil.NewSingleHostReverseProxy`) | `http.DefaultTransport`: `ResponseHeaderTimeout` 0. `IdleConnTimeout` is 90 s, but it applies only to idle pooled connections. |
+| the ssh port forward (`cmd/tack/pilot_a1.go:forwardCmd`) | its own connection (`ControlPath=none`); from `~/.ssh/config`, `ServerAliveInterval 30`, `ServerAliveCountMax 6` (gives up only after 180 s without a reply), `TCPKeepAlive yes` |
+| nobara's sshd | no `ClientAlive*` or `TCPKeepAlive` line in `/etc/ssh/sshd_config`, so the defaults: `ClientAliveInterval` 0, `TCPKeepAlive yes` |
+| goinfer-serve `0de92cd9` (`internal/serveapp/main.go`) | `ReadHeaderTimeout` 10 s, `ReadTimeout` 60 s, `IdleTimeout` 120 s, **`WriteTimeout` 0** |
+
+**Where the bytes stopped:**
+
+- The capture recorded the cut request's response as 297 bytes: `message_start` and one `ping`, which goinfer sends
+  before prefill. Then nothing.
+- The capture had not finished the request (no `.meta` file) when tack saw "unexpected EOF".
+- goinfer logged the same request as complete: status 200, 136 tokens, 131.6 s.
+
+So the bytes goinfer believed it wrote after its 127.7 s of prefill never reached the Mac's capture. The cut is
+between goinfer's socket and the capture: the ssh forward, or goinfer's own connection handling. Nothing on tack's
+side is set near 120 s. goinfer's `IdleTimeout` does not cut an in-flight response, and its `WriteTimeout` is 0.
