@@ -1,0 +1,16 @@
+# E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB), goinfer main 0de92cd9: gpt-oss-20b alone, with its experts
+# streamed (-moe-cache-experts), the gate before any calibration run of it (e1-calibration-preregistration-2026-10-18.md
+# §8). By day, on the owner's override.
+
+box = "nobara"
+# The same goinfer-serve as nobara-0de92cd9.toml (sha256 34348720e94bea1b...).
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-0de92cd9"
+goinfer_rev = "0de92cd9"
+workspace = "~/tack-runs/e0/workspace/tack"
+
+[[arm]]
+name = "gptoss-20b-mxfp4-cuda-moecache"
+model_path = "~/models/gpt-oss-20b-MXFP4.gguf"
+# -moe-cache-experts: 11 GB of weights on an 8 GB card, the experts streamed (resident at 32k, 7.3 GB of VRAM:
+# e1-model-candidates-2026-10-18.md).
+args = ["-backend", "cuda", "-moe-cache-experts"]

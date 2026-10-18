@@ -404,3 +404,42 @@ of 36.
 - the 36 runs: about 1 hour at the baseline's pace.
 
 That is about 1.5 hours by day, with nobara's lock held throughout.
+
+## 8. Amendment C2: E0 for gpt-oss-20b — proposed 2026-10-18, awaiting the owner's approval
+
+**Why.** gpt-oss-20b loads `cuda-resident` at 32k on nobara's 8 GB card with its experts streamed
+(`e1-model-candidates-2026-10-18.md`). Under the owner's rule, a model that loads resident at 32k takes E0's smoke
+before any calibration run. C2 is that gate, and nothing more: it starts no calibration run of gpt-oss.
+
+**What runs:**
+
+- E0, `tack eval models` on nobara, for gpt-oss-20b alone, with the manifest `eval/e0/nobara-0de92cd9-gptoss.toml`:
+  - goinfer-serve `0de92cd9`;
+  - `~/models/gpt-oss-20b-MXFP4.gguf`, whose CUDA sidecar is built;
+  - `-backend cuda -moe-cache-experts`.
+- **How the server is started:** E0 starts goinfer-serve through the same `models.Supervisor` that `tack eval pilot-serve`
+  uses. The option sits in the manifest's `args`, which is how E0 takes server flags; pilot-serve's allowlist,
+  `-serve-option`, is the pilot's own.
+- **All of E0, as registered:** fit, check, two smoke runs of 20, TTFT, decode and footprint. By day on the owner's
+  override, after C1, holding nobara's timing lock.
+
+**The bar is E0's rule, unchanged:** a smoke score of at least 17/20 on both runs, and 0 malformed.
+
+**How a missing call is scored:**
+
+- E0's smoke does not force a tool call: some of its tasks expect no tool. So goinfer's post-check does not refuse
+  replies during E0.
+- A reply with no call, where a tool was wanted, scores as a miss, not as malformed (`internal/eval/smoke.go:ScoreSmoke`).
+- Malformed means goinfer parsed a call it could not read.
+
+**The stop rule:** below 17/20 on either run, or any malformed call, and gpt-oss-20b is recorded as ineligible for
+calibration. At or above the bar, it is eligible, and any calibration run of it needs its own amendment.
+
+**Prediction, before the run:**
+
+- **Smoke:** 15–19 of 20 on each run. Harmony's channels and gpt-oss's own tool-call training should help, and nobara's
+  E0 has no prior gpt-oss result to go on.
+- **Speed:** decode about 35 tokens a second (the by-day sample was 36–37), about half of gemma-4 E4B's 68.
+
+**Time:** E4B's E0 took 27 minutes, and gpt-oss decodes about half as fast, so expect 40–50 minutes. The worst case is
+90 minutes.
