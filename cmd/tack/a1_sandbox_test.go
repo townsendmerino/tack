@@ -48,6 +48,13 @@ func TestA1RunsAndGrades(t *testing.T) {
 	if !strings.Contains(string(stderrLog), fmt.Sprintf("tack run: preflight %q: ok: ", pilot.PreflightCommand)) {
 		t.Errorf("no passing preflight in tack's stderr:\n%s", stderrLog)
 	}
+	run := filepath.Join(out, "task-01", "A1")
+	if _, err := os.Stat(filepath.Join(run, "repo")); !os.IsNotExist(err) {
+		t.Errorf("the repository copy is still there after grading: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(run, "diff.patch")); err != nil || !strings.Contains(string(b), "+func Add(a, b int) int { return a + b }") {
+		t.Errorf("diff.patch: %v %s", err, b)
+	}
 	if b, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "oracle.log")); !strings.Contains(string(b), `"Action":"pass"`) {
 		t.Errorf("oracle.log: %s", b)
 	}
@@ -69,6 +76,23 @@ func TestA1PreflightFailureIsVoid(t *testing.T) {
 	}
 	if script.Left() != 1 {
 		t.Errorf("the model was asked %d time(s); want none", 1-script.Left())
+	}
+}
+
+// TestA1LowDiskIsVoid: a run whose output volume has less free space than it needs is void before anything starts:
+// the record says why, no repository is made, and the model is never asked.
+func TestA1LowDiskIsVoid(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	script := goinfertest.NewScripted("qwen", 32768, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))
+	rec, out := a1Run(t, task, mirrors, script, func(o *pilot.Options) { o.MinFree = 1 << 62 })
+	if !strings.HasPrefix(rec.Run.Void, "disk: ") || !strings.Contains(rec.Run.Void, "GB a run needs") || rec.Pass || rec.TackRun != nil {
+		t.Fatalf("record %+v", rec)
+	}
+	if script.Left() != 1 {
+		t.Errorf("the model was asked %d time(s); want none", 1-script.Left())
+	}
+	if _, err := os.Stat(filepath.Join(out, "task-01", "A1", "repo")); !os.IsNotExist(err) {
+		t.Errorf("a repository was made for a void run: %v", err)
 	}
 }
 
@@ -182,7 +206,7 @@ func TestA1DownloadsModulesBeforeTheSandbox(t *testing.T) {
 
 // a1Run runs the A1 arm of a pilot over task with this test binary as tack, against script through the capture, and
 // returns its one record and the job's output directory.
-func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Scripted) (pilot.Record, string) {
+func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Scripted, set ...func(*pilot.Options)) (pilot.Record, string) {
 	t.Helper()
 	t.Setenv("GOFLAGS", "")
 	t.Setenv("TACK_TEST_AS_TACK", "1")
@@ -196,9 +220,14 @@ func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Sc
 	out := t.TempDir()
 	serveLog := filepath.Join(out, "serve.log")
 	os.WriteFile(serveLog, nil, 0o644)
-	err = pilot.RunPilot(context.Background(), pilot.Options{Tasks: []pilot.Task{task}, Mirrors: mirrors, A1: os.Args[0],
+	o := pilot.Options{Tasks: []pilot.Task{task}, Mirrors: mirrors, A1: os.Args[0],
 		Server:   pilot.Server{BaseURL: capture.URL, APIKey: "k", Model: "qwen", Context: 32768, Direct: ts.URL},
-		ServeLog: serveLog, Out: out, Cap: 2 * time.Minute, Log: io.Discard, Capture: capture, ServerOptions: []string{"moe-cache-experts"}})
+		ServeLog: serveLog, Out: out, Cap: 2 * time.Minute, Log: io.Discard, Capture: capture, ServerOptions: []string{"moe-cache-experts"},
+		MinFree: 1} // the test machine's free space is not under test; TestA1LowDiskIsVoid sets it
+	for _, f := range set {
+		f(&o)
+	}
+	err = pilot.RunPilot(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)
 	}

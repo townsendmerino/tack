@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/eval/mine"
@@ -362,9 +363,11 @@ type Options struct {
 	Server        Server // filled by the caller once the server is up
 	ServeLog      string // the server's log, for each run's request window
 	Out           string
-	Cap           time.Duration
-	KenWarmup     time.Duration // the warm-up's own limit, outside the clock
-	Log           io.Writer
+	// MinFree is the free space a run needs on Out's volume before it starts; 0 means MinFreeDisk.
+	MinFree   uint64
+	Cap       time.Duration
+	KenWarmup time.Duration // the warm-up's own limit, outside the clock
+	Log       io.Writer
 	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
 	CountTokens func(ctx context.Context, text string) (int, error)
 	TackRev     string // the tack commit the runner was built from, recorded with every run
@@ -476,6 +479,18 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		rec.CappedSecs = o.Cap.Seconds()
 		return rec
 	}
+	need := o.MinFree
+	if need == 0 {
+		need = MinFreeDisk
+	}
+	if free, err := FreeBytes(o.Out); err != nil || free < need {
+		rec.Run.Void = fmt.Sprintf("disk: %.1f GB free on %s's volume, under the %.0f GB a run needs (%v)",
+			float64(free)/(1<<30), o.Out, float64(need)/(1<<30), err)
+		return rec
+	}
+	// The repository copy goes once the run is graded, or voided before the model ran: diff.patch keeps what changed,
+	// and the mirror at Base rebuilds the rest.
+	defer os.RemoveAll(repo)
 	if err := PrepareRepo(mirror, t.Base, repo); err != nil {
 		return fail(fmt.Errorf("prepare: %w", err))
 	}
@@ -562,6 +577,19 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		rec.CappedSecs = o.Cap.Seconds()
 	}
 	return rec
+}
+
+// MinFreeDisk is the free space a run needs on its output volume before it starts (owner, 2026-10-18): a full disk
+// voided part of the calibration baseline mid-run (e1-calibration-preregistration-2026-10-18.md §2).
+const MinFreeDisk = 20 << 30
+
+// FreeBytes is the space available to this user on path's volume.
+func FreeBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Bavail) * uint64(st.Bsize), nil
 }
 
 // StatementTokens is the statement's token count as PromptStats.Statement defines it, or 0 when count is nil or fails.
