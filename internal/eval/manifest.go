@@ -29,6 +29,10 @@ type Arm struct {
 	ModelPath string   `toml:"model_path"`
 	Args      []string `toml:"args"` // goinfer-serve flags, e.g. ["-backend", "metal"]
 	Ctx       []int    `toml:"ctx"`  // contexts to try, largest first (default 16384, 8192)
+	// ProbeThinking makes the timing probes ask for thinking, which turns the template's thinking on. Only for a model
+	// whose reasoning cannot be turned off (Harmony), so that it streams rather than being dropped; otherwise the
+	// probes send thinking disabled, as the smoke and tack's turns do.
+	ProbeThinking bool `toml:"probe_thinking"`
 	// DecodePath is the decode path the arm measures, which goinfer's banner must name or the arm is void (default
 	// DecodePathFor(Args): metal-resident, cuda-resident or cpu).
 	DecodePath string `toml:"decode_path"`
