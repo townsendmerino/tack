@@ -169,14 +169,11 @@ func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
-	// The checks run in order: request 1 during; then request 2 before and during; and so on. sleepOn says which
-	// check, counted from 1, reports a sleep of how long.
-	run := func(sleepOn int, d time.Duration, requests int) string {
+	// sleepOn names the one interval that reports a sleep of d.
+	run := func(sleepOn string, d time.Duration, requests int) string {
 		c.SetDir(t.TempDir())
-		calls := 0
-		c.SleepGap = func(start, end time.Time) time.Duration {
-			calls++
-			if calls == sleepOn {
+		c.SleepGap = func(start, end time.Time, where string) time.Duration {
+			if where == sleepOn {
 				return d
 			}
 			return 0
@@ -187,18 +184,18 @@ func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
 		return c.Slept()
 	}
 	for _, tc := range []struct {
-		sleepOn  int
+		sleepOn  string
 		d        time.Duration
 		requests int
 		want     string
 	}{
-		{3, 45 * time.Second, 3, "host slept 45 s during request 2"},
-		{2, 14 * time.Minute, 3, "host slept 840 s before request 2"},
-		{2, 20 * time.Second, 3, ""}, // under MaxSleepGap
-		{0, 0, 3, ""},
+		{"during request 2", 45 * time.Second, 3, "host slept 45 s during request 2"},
+		{"before request 2", 14 * time.Minute, 3, "host slept 840 s before request 2"},
+		{"before request 2", 20 * time.Second, 3, ""}, // under MaxSleepGap
+		{"", 0, 3, ""},
 	} {
 		if got := run(tc.sleepOn, tc.d, tc.requests); got != tc.want {
-			t.Errorf("a sleep of %s on check %d: Slept() = %q, want %q", tc.d, tc.sleepOn, got, tc.want)
+			t.Errorf("a sleep of %s %s: Slept() = %q, want %q", tc.d, tc.sleepOn, got, tc.want)
 		}
 	}
 	// The real gap: no sleep between two instants a moment apart.
@@ -217,5 +214,65 @@ func TestParsePower(t *testing.T) {
 		if got := parsePower(out); got != want {
 			t.Errorf("parsePower(%q) = %q, want %q", out, got, want)
 		}
+	}
+}
+
+// TestASleptOpencodeRunIsVoidNotAFail: an opencode run the host slept through is void: it is still graded, for the
+// record, but its pass is false, its capped time 0, and the job's log reports it VOID rather than as a run. The next
+// run starts clean.
+func TestASleptOpencodeRunIsVoidNotAFail(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	f := newFixture(t)
+	mirrors := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", "--mirror", f.src, filepath.Join(mirrors, "m.git")).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	t.Setenv("TACK_FAKE_OPENCODE", "ok")
+	t.Setenv("TACK_FAKE_KENMCP", "1")
+	t.Setenv("TACK_FAKE_OPENCODE_POST", "1")
+	up := fakeGoinfer(t)
+	c, err := StartCapture(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	first := true // only the first run's request 1
+	c.SleepGap = func(start, end time.Time, where string) time.Duration {
+		if where == "during request 1" && first {
+			first = false
+			return 45 * time.Second
+		}
+		return 0
+	}
+	out := t.TempDir()
+	var log bytes.Buffer
+	err = RunPilot(context.Background(), Options{Tasks: []Task{f.task}, Mirrors: mirrors, Opencode: os.Args[0],
+		A0: Arm{Name: "A0"}, A0k: Arm{Name: "A0k", KenMCP: os.Args[0], KenModel: "/m"},
+		Server: Server{BaseURL: c.URL, APIKey: "secret-key", Model: "qwen", Context: 32768},
+		Out:    out, Cap: time.Minute, KenWarmup: time.Minute, Log: &log, Capture: c, MinFree: 1})
+	b, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
+	if err != nil {
+		t.Fatalf("%v\n%s\n%s", err, b, log.String())
+	}
+	var recs []Record
+	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r Record
+		if json.Unmarshal([]byte(l), &r) != nil {
+			t.Fatalf("record %s", l)
+		}
+		recs = append(recs, r)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("%d records:\n%s", len(recs), b)
+	}
+	slept, next := recs[0], recs[1]
+	if slept.Run.Void != "host slept 45 s during request 1" || slept.Pass || slept.CappedSecs != 0 || len(slept.Oracle) == 0 {
+		t.Errorf("the slept run: void %q pass %v capped %v oracle %v", slept.Run.Void, slept.Pass, slept.CappedSecs, slept.Oracle)
+	}
+	if next.Run.Void != "" {
+		t.Errorf("the next run inherited the sleep: %q", next.Run.Void)
+	}
+	if !strings.Contains(log.String(), "VOID: host slept 45 s during request 1") || strings.Count(log.String(), "pass=") != 1 {
+		t.Errorf("the job's log:\n%s", log.String())
 	}
 }

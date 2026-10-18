@@ -536,7 +536,7 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
 		if o.Capture != nil && rec.Run.Void == "" {
 			rec.Run.Void = o.Capture.Slept()
 		}
-		if rec.Run.Void != "" { // no model request was made: nothing to pair, summarize or grade
+		if rec.Run.Void != "" { // a setup failure, or the host slept: nothing to pair, summarize or grade
 			if o.Capture != nil {
 				o.Capture.SetDir("")
 			}
@@ -544,7 +544,7 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
 		}
 	} else {
 		rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
-		if o.Capture != nil {
+		if o.Capture != nil && rec.Run.Void == "" {
 			rec.Run.Void = o.Capture.Slept()
 		}
 	}
@@ -592,6 +592,9 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
 	rec.CappedSecs = rec.Run.WallSecs
 	if !rec.Pass {
 		rec.CappedSecs = o.Cap.Seconds()
+	}
+	if rec.Run.Void != "" { // graded for the record (Oracle), but neither a pass nor a capped fail
+		rec.Pass, rec.CappedSecs = false, 0
 	}
 	return rec
 }

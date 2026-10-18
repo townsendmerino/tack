@@ -30,9 +30,9 @@ var Sampling = map[string]any{"temperature": 0.7, "top_p": 0.8, "top_k": 20}
 // bodies stay in the run's local directory (owner, 2026-10-17: goinfer may replay first requests).
 type Capture struct {
 	URL string // what opencode is pointed at
-	// SleepGap is how long the host slept between two instants: their wall-clock difference less their monotonic one,
-	// which does not count sleep. nil means hostSlept; tests replace it.
-	SleepGap func(start, end time.Time) time.Duration
+	// SleepGap is how long the host slept between two instants, where says which interval it is ("during request
+	// 2", "before request 3"). nil means hostSlept, which ignores where; tests replace it.
+	SleepGap func(start, end time.Time, where string) time.Duration
 
 	ln  net.Listener
 	srv *http.Server
@@ -57,9 +57,9 @@ func hostSlept(start, end time.Time) time.Duration {
 func (c *Capture) sleptCheck(start, end time.Time, where string) {
 	gap := c.SleepGap
 	if gap == nil {
-		gap = hostSlept
+		gap = func(start, end time.Time, _ string) time.Duration { return hostSlept(start, end) }
 	}
-	if g := gap(start, end); g > MaxSleepGap {
+	if g := gap(start, end, where); g > MaxSleepGap {
 		c.mu.Lock()
 		if c.slept == "" && c.dir != "" {
 			c.slept = fmt.Sprintf("host slept %.0f s %s", g.Seconds(), where)

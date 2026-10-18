@@ -108,9 +108,8 @@ func TestA1HostSleepIsVoid(t *testing.T) {
 		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`),
 		goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	rec, _ := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
-		calls := 0
-		o.Capture.SleepGap = func(start, end time.Time) time.Duration {
-			if calls++; calls == 3 { // during the capture's request 2
+		o.Capture.SleepGap = func(start, end time.Time, where string) time.Duration {
+			if where == "during request 2" {
 				return 45 * time.Second
 			}
 			return 0

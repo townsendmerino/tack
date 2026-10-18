@@ -110,8 +110,10 @@ type Result struct {
 	CapHit   bool    `json:"cap_hit"`
 	Exit     int     `json:"exit"` // opencode's exit status; -1 when killed at the cap
 	Err      string  `json:"err,omitempty"`
-	// Void says why the run measured nothing: the setup failed before the model started (A1's preflight). A void run
-	// is neither a pass nor a fail.
+	// Void says why the run measured nothing: the setup failed before the model started (A1's preflight, the disk
+	// floor), or the host slept through part of it (Capture.Slept). A void run is neither a pass nor a fail: every
+	// count leaves it out, its Pass is false and its capped time 0, and an opencode run voided after it ran keeps its
+	// oracle results only as evidence.
 	Void string `json:"void,omitempty"`
 }
 
