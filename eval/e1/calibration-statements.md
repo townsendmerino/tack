@@ -14,8 +14,9 @@
 
 **What the agent sees.** Only the statement, in a repository at the base commit. The tests are applied after its run.
 
-**Review state:** drafted by Claude Code, 2026-10-18; **not yet reviewed.** A rejected statement is rewritten once, and
-a second rejection drops the task.
+**Review state:** drafted by Claude Code, 2026-10-18. **The owner approved all 12 as drafted** (2026-10-18), task 8
+with its tokens named. They are in `eval/e1/calibration.jsonl` with `reviewed_by`. Results are reported over all 12
+and over the 9 without tasks 3, 8 and 9, whose statements sit close to the fix (pre-registration §2).
 
 **Notes** flag a statement that sits close to the fix, or an oracle that needs care.
 

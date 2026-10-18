@@ -66,6 +66,13 @@ measures each change against that baseline.
 - **Configuration:** tack `1819139`, which is A1 exactly. The same server and build (goinfer `31418112`, Qwen2.5-7B-Instruct `q4_k_m`,
   32k window), sampling (0.7 / 0.8 / 20), the 10-minute cap, the failure budget of 8, `max_tokens` 2048, and the
   harness: module download and sandboxed preflight, void on failure.
+- **Statements:** all 12 were approved by the owner as drafted (2026-10-18), and are in `eval/e1/calibration.jsonl`.
+- **Every result is reported twice, before any run** (owner, 2026-10-18):
+  - over all 12 tasks;
+  - over the 9 without tasks 3, 8 and 9, whose statements sit close to the fix (`eval/e1/calibration-statements.md`,
+    the notes).
+
+  The bar and the decision rule (§3) are read on all 12. The 9-task figures are reported beside them.
 - **Three runs per task: 36 runs.** At temperature 0.7 one run per task cannot tell a hard task from bad luck, and
   three give each task a pass rate of 0, 1, 2 or 3 out of 3.
 - **What "above zero" means.** The set is usable if the baseline passes at least 4 of 36 runs, on at least 2 tasks.
