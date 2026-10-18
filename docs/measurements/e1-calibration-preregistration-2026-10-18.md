@@ -463,3 +463,13 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
     (`e1-model-candidates-2026-10-18.md`), and is not investigated.
 - **With its experts streamed, gpt-oss-20b is out for A1 on this card** (owner, 2026-10-18), whatever the `greplicate`
   answer turns out to be. The parser question to goinfer stays as a correctness check only.
+- **Correction, 12:10 PDT: the "no token was streamed" result is very likely tack's E0 probe, not goinfer.**
+  - E0's first-token probe (`internal/eval/runner.go:firstToken`) sends `MaxTokens: 1` and times the first streamed
+    delta.
+  - gpt-oss's first token is a Harmony channel token, which streams no delta, so the probe can see none on a Harmony
+    model whatever the server does (goinfer's Mac session's reading, matched against tack's code).
+  - So E0's first-token phase does not measure gpt-oss, and its verdict "fail" rests on that phase too.
+- **Unaffected:** the smoke result (9/20 on both runs, 8 malformed), and with it C2's ineligibility. The 2.5 minutes per
+  request remain the server's real time.
+- **Filed, not built:** E0's first-token probe should count a Harmony model's first token. For example, it could time
+  the first byte of content or reasoning, or allow enough tokens for the first delta.
