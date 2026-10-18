@@ -194,6 +194,45 @@ Qwen2.5-Coder-7B-Instruct's fail is recorded with its cause** (`e0-nobara-2026-1
     The result stands as the arm's grade. Re-running it on a newer goinfer is the owner's call, and would be its own
     amendment made after this data.
 
+**Amendment 9, 2026-10-18: E0's timing probes changed** (owner).
+
+**When it was recorded.**
+
+- The code was committed at 14:13 PDT in `38137f5` and `14e80de`, and pushed before C3's first run (14:14:30).
+  `e1-calibration-preregistration-2026-10-18.md` §8 and §9 recorded the change before that run, also at 14:13.
+- **This amendment, in E0's own record, was written after C3 started.** That is a gap in how it was recorded: the
+  change should have been registered here first.
+
+**What changed.**
+
+- **The first-token probe** (`internal/eval/runner.go:firstToken`) allows 16 tokens instead of 1. It times the first
+  streamed delta of text *or thinking*, and records which it was (`first_kind`). Before, a reply whose first token never
+  streams (Harmony's channel header) read "no token was streamed".
+- **The decode probe** (`decodeOnce`) times text and thinking alike. It now refuses, with an error rather than a rate,
+  a reply that counted more tokens than it streamed characters. It records the characters streamed as text and as
+  thinking.
+- **Both probes send each arm's registered thinking setting** (`Arm.ProbeThinking`, `probe_thinking` in the manifest).
+  - By default they send thinking disabled, as the smoke and every tack request do (`client.go:toWire`). goinfer reads
+    that as thinking off.
+  - An arm sets `probe_thinking` only for a model whose reasoning cannot be turned off (Harmony). Its probes then ask for
+    thinking, which turns it on, so the reasoning streams instead of being dropped.
+  - For amendment C3's five models it is off.
+- **The smoke, the check, the fit and the footprint are unchanged.**
+
+**Why.** C2 (gpt-oss-20b) read "no token was streamed" on every first-token request, and a decode rate six times its
+by-day reading. Both came from these probes counting tokens that never streamed. The decode audit is in
+`e0-nobara-2026-10-17.md`.
+
+**Results before and after this amendment are not directly comparable.**
+
+- A first-token time measured after it may include a few decode steps, up to 16 tokens' worth at most, while before it
+  measured to a single token.
+- A decode rate measured after it covers only replies that streamed what they counted. Before, a rate could include
+  tokens that never streamed. The audit found no such case in the figures that stand, but they were judged by
+  mechanism, not recomputed.
+- Comparing a model across the line therefore needs a re-measurement on the new probes. The table for C3's models
+  holds only post-amendment results.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.

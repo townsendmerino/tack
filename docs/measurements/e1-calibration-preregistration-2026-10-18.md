@@ -87,6 +87,16 @@ measures each change against that baseline.
 
 ## 3. How a loop change is measured
 
+**Thinking, for any model that goes to calibration** (owner, 2026-10-18). A calibration amendment for a model must
+register its thinking setting explicitly, before any run:
+
+- on, off, or not controllable;
+- how it is enforced: what tack sends (thinking disabled, unless the amendment changes that), and any server flag;
+- why.
+
+Thinking can change an agent's results a great deal: in time, in tokens spent, and in what the model does. The setting
+is part of the arm, never left to a template's default. A change to it is a new arm under its own amendment.
+
 - **One change per amendment.** Each amendment is registered here before any of its runs, is measured on the same 12
   tasks × 3 runs, and is compared task by task with the baseline, never pooled across arms.
 - **Each change is measured alone against the baseline, not stacked.** Stacking comes later, under its own amendment,
