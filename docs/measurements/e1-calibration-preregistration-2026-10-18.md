@@ -432,8 +432,11 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 - A reply with no call, where a tool was wanted, scores as a miss, not as malformed (`internal/eval/smoke.go:ScoreSmoke`).
 - Malformed means goinfer parsed a call it could not read.
 
-**The stop rule:** below 17/20 on either run, or any malformed call, and gpt-oss-20b is recorded as ineligible for
-calibration. At or above the bar, it is eligible, and any calibration run of it needs its own amendment.
+**The stop rule, the same as C1's:** gpt-oss-20b is recorded as ineligible for calibration if any of these holds:
+
+- its load is not `cuda-resident` (E0's fit phase);
+- E0 scores below 17/20 on either smoke run;
+- E0 has any malformed call. At or above the bar, it is eligible, and any calibration run of it needs its own amendment.
 
 **Prediction, before the run:**
 
