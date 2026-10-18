@@ -253,6 +253,11 @@ the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) 
     2026-10-17). Any other template, where nothing is reported, records "not reported".
   - A1 keeps `31418112`, the 0/20 re-run's server, for comparability (owner). A later gemma-4 run moves to `33532c3b`
     or newer, where the mode is reported ("post-check" expected).
+  - **What `33532c3b`'s change touches.** Its post-check (a forced call answered without one becomes an error) applies
+    only to template families without a JSON call form: Gemma 4, gpt-oss, and models under `-tool-format template`.
+    A family with one is grammar-constrained from the first token on both builds.
+  - A1's one model, Qwen2.5-7B-Instruct, is chatml, which has a JSON call form. So no model of A1's is touched by
+    that change, and keeping `31418112` loses nothing on that count.
 - **The tasks:** the same ten (`pilot-746fb8c.jsonl`, task 8 removed). The task-size adjustment is E1's and does not
   apply here.
 - **How it runs.**
