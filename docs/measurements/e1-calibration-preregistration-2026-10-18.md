@@ -79,6 +79,9 @@ measures each change against that baseline.
   - **Below that bar** (fewer than 4 passes, or passes on fewer than 2 tasks), **no loop change is measured** (owner,
     2026-10-18). The next decision is then the model or the hardware, per R13 (DESIGN §17), not further loop tuning.
   - The bar does not move without a mechanism.
+- **Outcome, 2026-10-18: below the bar.** The baseline passed 0 of 36 runs, and 0 of 27 over the 9
+  (`e1-calibration-baseline-2026-10-18.md`). No loop change is measured on it. The next decision is the model, R13:
+  gemma-4 E4B in §7.
 - **Time:** A1's ten runs averaged 0.5 min each. Thirty-six runs take about 20–60 min, and the worst case is 6 h with
   every run capped. It runs by day or by night as the owner says, with nobara's timing lock held.
 
@@ -308,6 +311,88 @@ and counts it toward the budget. If both are approved, they are measured separat
    tried.
 2. Draft the 12 statements, and the owner reviews them.
 3. Run the grader check on the Mac.
-4. Run the baseline: A1 as is, 36 runs.
+4. ~~Run the baseline: A1 as is, 36 runs.~~ Done 2026-10-18: 0 of 36, below the bar (`e1-calibration-baseline-2026-10-18.md`).
 5. If the baseline reaches the bar, build the changes, each with tier-0 tests broken once, in the order 4.1, 4.2, 4.3,
    4.4. Each is registered as an amendment and measured before the next is built. Below the bar, stop at §2's rule.
+
+## 7. Amendment C1: gemma-4 E4B on the calibration set — proposed 2026-10-18, awaiting the owner's approval
+
+**Why.** The Qwen2.5-7B baseline passed 0 of 36 runs, and 0 of 27 over the 9 (`e1-calibration-baseline-2026-10-18.md`), below §2's bar. Under §2's rule the next decision is the model or the hardware (R13). This amendment
+measures one other model, gemma-4 E4B, with tack's loop unchanged except for the post-check resend below. It is the
+model the owner named.
+
+**The arm, A1-E4B:**
+
+- **Model:** gemma-4-E4B-it `q4_0` (`~/models/gemma-4-e4b-gguf/gemma-4-E4B_q4_0-it.gguf` on nobara). Its CUDA int4
+  sidecar (format v17) is already built.
+- **Server:** goinfer-serve from goinfer main `0de92cd9`, which contains `33532c3b`. It is cross-built on the Mac
+  from a git archive the same way `31418112` was (sha256 `34348720e94bea1b…`), at `~/tack-runs/bin/goinfer-serve-cuda-0de92cd9`.
+  - gemma-4's call form is native, `<|tool_call>call:NAME{…}`. goinfer cannot constrain it and checks it after
+    generation, so `/v1/models` reports `forced_tool_call` "post-check". Each record records the mode from
+    `/v1/models`.
+- **tack:** a clean build of `dd39263`, which holds the post-check resend below (`bd6d026`), the 20 GB disk floor and
+  the cleanup of repository copies (`dd39263`). For a grammar-mode model none of these changes the loop.
+- **Everything else as the Qwen baseline:**
+  - tack's loop, prompt, tools and limits;
+  - the 32k window, the 10-minute cap, the failure budget of 8, and `max_tokens` 2048;
+  - the harness: module download, sandboxed preflight, and void on failure;
+  - the same 12 tasks with 3 runs each (36 runs), reported over 12 and over 9.
+- **Sampling:** the registered 0.7 / 0.8 / 20. This is not gemma-4's own recommended setting (1.0 / 0.95 / 64).
+  Keeping the registration's values keeps the arms comparable task by task, and the sampling check on the first
+  request holds either way.
+
+**tack's design for post-check models, registered before any E4B run** (owner, 2026-10-18; tack `bd6d026`):
+
+- **When it applies:** goinfer refuses a reply because a forced tool call came back without one. This happens under
+  "post-check" only; under "grammar" the reply cannot be generated, so Qwen's runs are unchanged.
+- **What tack does:** it sends the request again, at most twice for one request, with "a tool call is required; call
+  done if you're finished" added to the request's last user message.
+- **Counting:** each resend is a request of its own, recorded as an error event of class `no_tool_call`. A third
+  refusal of the same request ends the turn as a server error.
+- **Records:** each run's record counts its resends (`tack_run.resends`).
+- **Test:** `TestNoToolCallIsResent`, broken once in two ways (resend off; the rebuild without the nudge).
+- **Without it,** A1 would end a run at the first reply without a call. E0 measured 3 such replies in 20, so about 9
+  in 10 runs of 15 requests would end that way (0.85¹⁵ ≈ 0.09).
+
+**Before the calibration run, in order:**
+
+1. **Fit at 32k on the new build.** One load through `tack eval pilot-serve` with goinfer `0de92cd9`, by day once the
+   lock is free. It must come up `cuda-resident`. The record keeps the context held, the fit line, and `nvidia-smi`'s
+   VRAM.
+2. **E0 on the new build, E4B only, by day** (owner override; it includes E0's timed phases, and took 27 minutes on
+   2026-10-16).
+   - It uses its own manifest, `eval/e0/nobara-0de92cd9.toml`, which is the existing one with the new goinfer build
+     and the E4B arm alone.
+   - **It must pass E0's rule:** a smoke score of at least 17/20 on both runs, with 0 malformed. If it does not, the
+     calibration run does not start, and it goes back to the owner.
+3. **A one-task smoke** of A1-E4B, task 1, through the full path. It is a smoke and not a result. It shows that the
+   forced-call mode arrives as "post-check", that the resend works end to end, and that the records carry resends.
+
+**Prediction, recorded before any E4B run:**
+
+- **Resends:** E0's 3 in 20 replies without a call gives about 0.15 resends per request. That is about 1–3 per run
+  in runs of the baseline's typical length (5–20 requests), and more in a loop.
+- **Runs ended by a third refusal:** about 0.15³ ≈ 0.003 per request, so at most 1 of the 36 runs.
+- **Passes: 0–2 of 36, below the bar.** E4B passed E0 only at the bar (17/20), it is smaller than Qwen2.5-7B, and it
+  runs the same loop, which made Qwen 0 of 36. Nothing in this arm addresses the baseline's failures: giving up, wrong
+  edits and loops. The resend only keeps runs going. A pass count of 4 or more over 2 or more tasks would contradict this
+  prediction, and would make E4B the model the loop changes are measured on.
+- **Loops:** gemma-4 E4B is no more likely than Qwen to avoid repeated identical calls. Expect window_full or
+  prompt-too-long endings in about the share the baseline showed (the baseline: 8 of 36 runs filled the window, 7 of them through loops of one identical call).
+
+**The decision rule:** §2's bar applies to this arm as to the baseline: at least 4 passes over at least 2 tasks, out
+of 36.
+
+- **If E4B reaches the bar:** it becomes the model the loop changes in §4 are measured on, each against E4B's own
+  baseline.
+- **If it does not:** the next decision is again the model or the hardware, and goes to the owner. No loop change is
+  measured.
+
+**Time:**
+
+- the fit load: about 1 minute;
+- E0: about 27 minutes;
+- the smoke: a few minutes;
+- the 36 runs: about 1 hour at the baseline's pace.
+
+That is about 1.5 hours by day, with nobara's lock held throughout.

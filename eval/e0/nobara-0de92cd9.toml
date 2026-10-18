@@ -1,0 +1,16 @@
+# E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB), goinfer main 0de92cd9: gemma-4 E4B alone, the gate before its
+# calibration run (e1-calibration-preregistration-2026-10-18.md §7). By day, on the owner's override.
+
+box = "nobara"
+# Cross-built on the Mac from a git archive of goinfer main 0de92cd9: `go work init . ./cuda ./metal`, GOOS=linux
+# GOARCH=amd64 CGO_ENABLED=0, -tags cuda, ./cuda/cmd/serve (sha256 34348720e94bea1b...). It contains 33532c3b, so
+# /v1/models reports forced_tool_call.
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-0de92cd9"
+goinfer_rev = "0de92cd9"
+# The same snapshot of tack the earlier E0 runs size their prompts from.
+workspace = "~/tack-runs/e0/workspace/tack"
+
+[[arm]]
+name = "gemma4-e4b-q40-cuda"
+model_path = "~/models/gemma-4-e4b-gguf/gemma-4-E4B_q4_0-it.gguf"
+args = ["-backend", "cuda"]
