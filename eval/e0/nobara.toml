@@ -68,7 +68,5 @@ name = "qwen2.5-coder-7b-q4km-cuda"
 model_path = "~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf"
 args = ["-backend", "cuda"]
 
-[[arm]]
-name = "seed-coder-8b-q4km-cuda"
-model_path = "~/models/seed-coder-8b-instruct-q4_k_m.gguf"
-args = ["-backend", "cuda"]
+# seed-coder-8b-q4km-cuda is retired (amendment 8): its GGUF has no tool-calling template, so goinfer refuses its tool
+# requests. Its 2026-10-17 run is void, and its decode rate is kept as a speed row only.

@@ -173,6 +173,27 @@ at its end. **Coder-tuned 7–8B models on nobara.**
   - So Seed-Coder can be an E0 arm but cannot take the pilot's opencode, which needs 32768, on this card. For the
     pilot, only Qwen2.5-Coder-7B qualifies.
 
+**Amendment 8, 2026-10-17, after the coder arms' night run** (owner). **Seed-Coder-8B-Instruct is retired, and
+Qwen2.5-Coder-7B-Instruct's fail is recorded with its cause** (`e0-nobara-2026-10-17.md`).
+
+- **Seed-Coder-8B-Instruct is retired** on the same ground as phi3-mini-4k (amendment 5). Its GGUF carries no
+  tool-calling template, and goinfer refuses every tool request for such a model (`400 this model has no
+  tool-calling template`), deliberately and permanently.
+  - Its run is void: smoke 0/20 in 11 ms, and every TTFT request refused. It stays on record as that.
+  - Its decode rate, 80.6 tok/s, is kept as a speed row only.
+  - It leaves `eval/e0/nobara.toml`. It returns only if the owner asks goinfer for an opt-in template.
+- **Qwen2.5-Coder-7B-Instruct fails** by the registered rule: smoke 2 of 20 on both runs, 0 malformed, `check` ok.
+  - **The finding.** It calls a tool when offered one, but not when offered several. goinfer's `check`: with one tool
+    (`get_weather`) it calls it in two turns; with the 12-tool schema it answers without calling, on
+    `/v1/chat/completions` and `/v1/messages` alike.
+  - In E0's smoke, with three tools offered, it called none on any task. Its two passes are the two tasks where the
+    right answer is no call.
+  - Its template is not the cause: the same tool section as the incumbent's, which calls among 12 and scores 18/20.
+  - Its speed equals the incumbent's (85.6 tok/s against 85.7).
+  - Its run was on E0's goinfer `0e598d3f` with E0's default `tool_choice` (auto), under which goinfer forces no call.
+    The result stands as the arm's grade. Re-running it on a newer goinfer is the owner's call, and would be its own
+    amendment made after this data.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
