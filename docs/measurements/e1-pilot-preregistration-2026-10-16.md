@@ -201,6 +201,72 @@ with `f5117d6`). **The pilot again, with Qwen2.5-Coder-7B-Instruct in place of Q
     right? R13 asks exactly this.
 - **What it decides.** Nothing, as before. It informs whether a coder-tuned 7B edits where the instruct 7B did not,
   and whether E1 should run on it.
+- **Outcome (2026-10-17):** not run. The gate refused both jobs: Qwen2.5-Coder-7B's E0 smoke was 2/20 on both runs
+  (`e0-nobara-2026-10-17.md`).
+
+**Amendment 9, 2026-10-17 — PROPOSED, for the owner's approval before the one-task smoke.** **A1: tack's own loop on
+the same ten tasks, compared task by task with opencode's 0/20 re-run.** The owner approved the path (tack sandboxed on
+the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) and set items 1–4 below.
+
+1. **The Mac grader check, done first.** `tack eval pilot -oracle-check` on the Mac (tack `174ae71`, Go 1.27.2,
+   2026-10-17 20:55), on the same tasks file (sha256 `5616b0be…`) and the same mirrors as nobara (each at the same
+   HEAD). All ten pass at their fix commits, as on nobara (`~/tack-runs/e1/oracle-check-mac-2026-10-17-174ae71`). A1
+   is graded on the Mac by the same oracle.
+2. **Instruction files.** tack loads the same file opencode does, the first of `AGENTS.md`, `CLAUDE.md` and
+   `CONTEXT.md` at the repository root, whole (`tack run --instructions whole`).
+   - The difference: opencode puts it in its system prompt; tack appends it to the first user message, labelled
+     "Project instructions, from <file>:", where tack keeps per-workspace bytes (DESIGN §7.2).
+   - In these tasks that is `CLAUDE.md` for tasks 2, 4, 6 and 7, and none for the rest (the re-run's records). Each
+     run records its tokens (`instruction_tokens`).
+   - tack's design loads instruction files by section (DESIGN §7.4, K9, P1 step 5). That is not built, so this run
+     uses whole files.
+3. **done with no file changed (tack's design, R13's loop mitigation, DESIGN §17).** Every request requires a tool
+   call (`tool_choice: any`), and a turn ends only through `done`.
+   - The first `done` with no file changed (git status) is answered: "no files changed; make the change, or call done
+     again with the reason none is needed".
+   - The second ends the turn.
+   - Each run counts how often the refusal fired (`tack_run.done_refused`).
+4. **Tailnet time.** For every model request, the record pairs goinfer's own TTFT and total (its request log) with the
+   Mac's time to first byte and total (the capture), with the prompt's prefilled tokens beside them (`timed`). The
+   tailnet time is the Mac's total less goinfer's.
+
+- **The model and server:** as the re-run.
+  - Qwen2.5-7B-Instruct `q4_k_m`, at `-ctx 32768`, on goinfer-serve from main `31418112` (sha256 `f8e8b18d…`).
+  - The same flags: CUDA, one slot, every request logged.
+  - Sampling 0.7 / 0.8 / 20, checked in the first model request as amendment 6 requires.
+  - Fit-checked again by day on nobara before queueing.
+- **The arm, A1:** `tack run --edit --instructions whole`, tack's own loop in its macOS sandbox.
+  - Tools: `read`, `glob`, `grep`, `edit`, `write`, `bash` and `done`. No ken, so A1 is set beside A0, with A0k listed.
+  - Fixed prompt: 1,024 tokens, against opencode A0's 11,146.
+  - Commands may write only the repository, a temp directory and tack's Go cache. The network is denied, and the
+    module cache is read-only.
+- **Limits.** The 10-minute cap is the only limit, as for opencode. Every other budget of tack's is set out of reach,
+  so the comparison is of the loop, not of tack's budgets. `max_tokens` is 2048, opencode's reply limit.
+- **No compaction.** tack has none yet (P1 step 6). A run that fills the 32k window ends in an error, recorded as such.
+- **The forced-call enforcement mode** goinfer reports for the model is recorded per run (`forced_call_mode`):
+  grammar, post-check or off. goinfer does not report it yet, so the field reads "not reported" until it does. The
+  expected mode for Qwen2.5-7B is "grammar".
+- **The tasks:** the same ten (`pilot-746fb8c.jsonl`, task 8 removed). The task-size adjustment is E1's and does not
+  apply here.
+- **How it runs.**
+  - One job on the Mac's night queue: `tack eval pilot -a1`, holding the Mac's timing lock.
+  - It starts `tack eval pilot-serve` on nobara over ssh, which holds nobara's timing lock, and reaches the server
+    through an ssh port forward.
+  - If nobara's lock is held, the job stops before anything runs.
+  - Raw bodies are kept on the Mac only.
+  - tack: a clean build of the approved commit, darwin for the Mac and linux for nobara.
+- **First a one-task smoke, by day,** after this amendment is approved: one A1 run of task 7 (ken, a small change)
+  under the same job, to exercise the ssh layer and the records end to end. It is a smoke, not a result, and is
+  recorded as such.
+- **Reported:**
+  - per run: pass, how it ended (done, done refused and how often, cap, error), tool calls, minutes, and the paired
+    timings;
+  - the figures this registration names, over all tasks and without task 11;
+  - each task beside opencode's A0 and A0k from the re-run, never pooled.
+- **What it decides.** Nothing. It informs whether tack's loop gets a 7B to edit where opencode's did not.
+  - A difference cannot be put down to one cause: A1 changes the harness, the prompt, the forced tool calls and the
+    done rule together.
+  - gemma-4-E4B may follow as a second run, under its own amendment.
 
 ## Tasks
 
