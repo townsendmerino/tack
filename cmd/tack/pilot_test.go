@@ -69,3 +69,12 @@ func TestPilotE0Gate(t *testing.T) {
 		t.Fatalf("-e0-results without -e0-arm: exit %d", code)
 	}
 }
+
+// TestForwardHasItsOwnConnection: the A1 port forward opts out of ssh connection sharing, so killing it closes the
+// forward instead of leaving it to a shared master connection.
+func TestForwardHasItsOwnConnection(t *testing.T) {
+	args := strings.Join(forwardCmd("nobara", 50001, 40001).Args, " ")
+	if !strings.Contains(args, "-o ControlPath=none") || !strings.HasSuffix(args, "-L 127.0.0.1:50001:127.0.0.1:40001 nobara") {
+		t.Fatalf("forward: %s", args)
+	}
+}

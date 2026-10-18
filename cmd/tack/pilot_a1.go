@@ -188,8 +188,7 @@ func withRemoteServer(ctx context.Context, r remote, out string, log io.Writer, 
 	if err != nil {
 		return err
 	}
-	fwd := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-N",
-		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", local, ep.Port), r.host)
+	fwd := forwardCmd(r.host, local, ep.Port)
 	fwd.Stderr = log
 	if err := fwd.Start(); err != nil {
 		return fmt.Errorf("ssh port forward: %w", err)
@@ -206,6 +205,14 @@ func withRemoteServer(ctx context.Context, r remote, out string, log io.Writer, 
 	defer capture.Close()
 	logf(log, "pilot a1: requests are recorded raw through %s, forwarded to %s; sampling %v", capture.URL, r.host, pilot.Sampling)
 	return fn(pilot.Server{BaseURL: capture.URL, APIKey: ep.Key, Model: "qwen", Context: r.ctxN, Direct: url}, serveLog, capture)
+}
+
+// forwardCmd is the ssh port forward from local on this machine to port on host's loopback. ControlPath=none gives it
+// a connection of its own: through a shared one (ControlMaster in the owner's ssh config) the master owns the forward,
+// which then keeps listening after this ssh is killed.
+func forwardCmd(host string, local, port int) *exec.Cmd {
+	return exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ControlPath=none", "-N",
+		"-L", fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", local, port), host)
 }
 
 func freePort() (int, error) {
