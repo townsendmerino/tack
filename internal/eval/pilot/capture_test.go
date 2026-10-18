@@ -90,8 +90,11 @@ func TestCaptureRecordsRawBodies(t *testing.T) {
 	req, _ := os.ReadFile(filepath.Join(dir, "0001.req.json"))
 	resp, _ := os.ReadFile(filepath.Join(dir, "0001.resp"))
 	meta, _ := os.ReadFile(filepath.Join(dir, "0001.meta"))
-	if string(req) != `{"top_k":20}` || !strings.Contains(string(resp), "[DONE]") || string(meta) != "POST /v1/chat/completions 200\n" {
+	if string(req) != `{"top_k":20}` || !strings.Contains(string(resp), "[DONE]") || !strings.HasPrefix(string(meta), "POST /v1/chat/completions 200 ttfb_ms=") {
 		t.Fatalf("recorded %q / %q / %q", req, resp, meta)
+	}
+	if tm, ok := ReadTiming(filepath.Join(dir, "0001.meta")); !ok || tm.TotalMs < tm.TTFBms || tm.TotalMs < 0 {
+		t.Fatalf("timing %+v %v from %q", tm, ok, meta)
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {

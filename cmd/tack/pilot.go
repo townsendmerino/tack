@@ -53,6 +53,10 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	oracleCheck := fs.Bool("oracle-check", false, "no model: run each task's oracle at its fix commit, as a run grades it; every task must pass")
 	e0Results := fs.String("e0-results", "", "gate: run only if this E0 results.jsonl shows -e0-arm meeting E0's smoke rule")
 	e0Arm := fs.String("e0-arm", "", "gate: the E0 arm whose smoke must pass (with -e0-results)")
+	a1 := fs.Bool("a1", false, "tack's arm alone (amendment 9): tack run --edit here, against the server on -remote-host")
+	remoteHost := fs.String("remote-host", "", "a1: the host serving the model, reached over ssh (nobara)")
+	remoteTack := fs.String("remote-tack", "", "a1: tack's binary on the remote host, which runs pilot-serve")
+	remoteOut := fs.String("remote-out", "", "a1: where the remote host keeps its copy of the server's log")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -72,6 +76,29 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	if *oracleCheck {
 		return oracleCheckCmd(*tasks, *from, *to, *mirrors, *out, *rev, stdout, stderr)
+	}
+	if *a1 {
+		if *tasks == "" || *mirrors == "" || *out == "" || *serve == "" || *modelPath == "" || *remoteHost == "" ||
+			*remoteTack == "" || *remoteOut == "" {
+			fmt.Fprintln(stderr, "usage: tack eval pilot -a1 -tasks pilot.jsonl -from N -to M -mirrors DIR -out DIR "+
+				"-remote-host HOST -remote-tack BIN -remote-out DIR -goinfer-serve BIN -model-path FILE [-ctx 32768] [-cap 10m]")
+			return exitUsage
+		}
+		tackRev, err := eval.Revision(*rev)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack eval pilot:", err)
+			fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))
+			return exitError
+		}
+		ts, err := pilot.LoadTasks(*tasks, *from, *to)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack eval pilot:", err)
+			return exitError
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return a1Cmd(ctx, ts, *mirrors, *out, *capFlag, tackRev, remote{host: *remoteHost, tack: *remoteTack, serve: *serve,
+			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN}, stdout, stderr)
 	}
 	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
 		*modelPath == "" || *out == "" {
@@ -126,55 +153,79 @@ func (e voidError) Error() string { return "void: " + string(e) }
 // withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
 // -log-requests, runs fn against it, and saves the server's log into out.
 func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string, *pilot.Capture) error) error {
-	lockPath, err := eval.TimingLockPath()
+	ps, err := startPilotServer(ctx, serve, modelPath, ctxN, out, log)
 	if err != nil {
 		return err
 	}
-	lock, err := eval.AcquireTimingLock(lockPath, "tack eval pilot")
-	if err != nil {
-		return fmt.Errorf("%w: %v", eval.ErrHeld, err)
-	}
-	defer lock.Release()
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return err
-	}
-	dir, err := os.MkdirTemp("/tmp", "tkpilot")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	args := []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}
-	sup, err := models.NewSupervisor(models.ChildConfig{Binary: serve, ModelPath: modelPath, Model: "qwen", Ctx: ctxN,
-		Args: args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
-	if err != nil {
-		return err
-	}
-	serveLog := filepath.Join(dir, "goinfer-serve.log")
-	defer func() {
-		_ = sup.Stop()
-		if b, err := os.ReadFile(serveLog); err == nil {
-			_ = os.WriteFile(filepath.Join(out, "goinfer-serve.log"), b, 0o644)
-		}
-	}()
-	t0 := time.Now()
-	if _, err := sup.Ensure(ctx); err != nil {
-		return err
-	}
-	plan, _ := sup.Plan()
-	url, key := sup.Endpoint()
-	logf(log, "pilot: server up in %s, decode path %q; %s", time.Since(t0).Round(time.Second), plan.DecodePath, plan.FitLine)
-	if why := eval.VoidPath(eval.DecodePathFor(args), plan.DecodePath); why != "" {
-		return voidError(why)
-	}
+	defer ps.stop()
 	// opencode talks to goinfer through the recording proxy, so every request and response is kept raw in the run's
 	// directory (pilot.Capture); tack's own count_tokens calls go to goinfer directly.
-	capture, err := pilot.StartCapture(url)
+	capture, err := pilot.StartCapture(ps.url)
 	if err != nil {
 		return err
 	}
 	defer capture.Close()
 	logf(log, "pilot: requests are recorded raw through %s; sampling %v", capture.URL, pilot.Sampling)
-	return fn(pilot.Server{BaseURL: capture.URL, APIKey: key, Model: "qwen", Context: ctxN, Direct: url}, serveLog, capture)
+	return fn(pilot.Server{BaseURL: capture.URL, APIKey: ps.key, Model: "qwen", Context: ctxN, Direct: ps.url}, ps.serveLog, capture)
+}
+
+// pilotServer is the pilot's goinfer-serve, up and on its registered decode path.
+type pilotServer struct {
+	url, key, serveLog string
+	plan               models.Plan
+	stop               func() // stops the server, copies its log into out and releases the timing lock
+}
+
+// startPilotServer holds this machine's timing lock and starts the pilot's goinfer-serve: CUDA, one slot, every request
+// logged, at ctxN. A server not on its registered decode path is void (voidError), and is stopped.
+func startPilotServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer) (*pilotServer, error) {
+	lockPath, err := eval.TimingLockPath()
+	if err != nil {
+		return nil, err
+	}
+	lock, err := eval.AcquireTimingLock(lockPath, "tack eval pilot")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", eval.ErrHeld, err)
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		lock.Release()
+		return nil, err
+	}
+	dir, err := os.MkdirTemp("/tmp", "tkpilot")
+	if err != nil {
+		lock.Release()
+		return nil, err
+	}
+	args := []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}
+	sup, err := models.NewSupervisor(models.ChildConfig{Binary: serve, ModelPath: modelPath, Model: "qwen", Ctx: ctxN,
+		Args: args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
+	if err != nil {
+		os.RemoveAll(dir)
+		lock.Release()
+		return nil, err
+	}
+	ps := &pilotServer{serveLog: filepath.Join(dir, "goinfer-serve.log")}
+	ps.stop = func() {
+		_ = sup.Stop()
+		if b, err := os.ReadFile(ps.serveLog); err == nil {
+			_ = os.WriteFile(filepath.Join(out, "goinfer-serve.log"), b, 0o644)
+		}
+		os.RemoveAll(dir)
+		lock.Release()
+	}
+	t0 := time.Now()
+	if _, err := sup.Ensure(ctx); err != nil {
+		ps.stop()
+		return nil, err
+	}
+	ps.plan, _ = sup.Plan()
+	ps.url, ps.key = sup.Endpoint()
+	logf(log, "pilot: server up in %s, decode path %q; %s", time.Since(t0).Round(time.Second), ps.plan.DecodePath, ps.plan.FitLine)
+	if why := eval.VoidPath(eval.DecodePathFor(args), ps.plan.DecodePath); why != "" {
+		ps.stop()
+		return nil, voidError(why)
+	}
+	return ps, nil
 }
 
 func runSmoke(ctx context.Context, mirrors, opencode string, a0, a0k pilot.Arm, srv pilot.Server, serveLog string, capture *pilot.Capture, out string, capD time.Duration, tackRev string, log io.Writer) error {

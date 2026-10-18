@@ -347,10 +347,13 @@ func outside(s, root string) string {
 
 // Options configures a pilot job: a range of tasks, both arms each.
 type Options struct {
-	Tasks     []Task
-	Mirrors   string // <repo>.git bare mirrors
-	Opencode  string
-	A0, A0k   Arm
+	Tasks    []Task
+	Mirrors  string // <repo>.git bare mirrors
+	Opencode string
+	A0, A0k  Arm
+	// A1, when set, is tack's binary: the job runs tack's arm alone, `tack run --edit` (amendment 9), instead of A0
+	// and A0k.
+	A1        string
 	Server    Server // filled by the caller once the server is up
 	ServeLog  string // the server's log, for each run's request window
 	Out       string
@@ -378,15 +381,23 @@ type Record struct {
 	Oracle     map[string]string `json:"oracle"`
 	OracleErr  string            `json:"oracle_err,omitempty"`
 	// OracleExit is go test's exit error under the oracle; its full output is the run's oracle.log.
-	OracleExit   string         `json:"oracle_exit,omitempty"`
-	KenIndexSecs float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
-	Requests     []Request      `json:"requests"`
-	Prompt       PromptStats    `json:"prompt"`
-	Events       EventSummary   `json:"events"`
-	DiffBytes    int            `json:"diff_bytes"`
-	Sampling     map[string]any `json:"sampling"`                    // what opencode was configured to send
-	Captured     int            `json:"captured_requests,omitempty"` // requests recorded raw in requests/
-	At           string         `json:"at"`
+	OracleExit string `json:"oracle_exit,omitempty"`
+	// TackRun, Timed and TimingErr are A1's: tack's own event summary, and each model request's time on both sides of
+	// the tailnet (PairTimings), or why they could not be paired.
+	TackRun   *TackSummary `json:"tack_run,omitempty"`
+	Timed     []Timed      `json:"timed,omitempty"`
+	TimingErr string       `json:"timing_err,omitempty"`
+	// ServerFeatures and ForcedCallMode are goinfer's own report of the server, from its banner (ServerFeatures).
+	ServerFeatures string         `json:"server_features,omitempty"`
+	ForcedCallMode string         `json:"forced_call_mode,omitempty"`
+	KenIndexSecs   float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
+	Requests       []Request      `json:"requests"`
+	Prompt         PromptStats    `json:"prompt"`
+	Events         EventSummary   `json:"events"`
+	DiffBytes      int            `json:"diff_bytes"`
+	Sampling       map[string]any `json:"sampling"`                    // what opencode was configured to send
+	Captured       int            `json:"captured_requests,omitempty"` // requests recorded raw in requests/
+	At             string         `json:"at"`
 }
 
 // RunPilot runs every task's arms in order and appends a Record per run to Out/results.jsonl. A failure to set up a
@@ -406,7 +417,11 @@ func RunPilot(ctx context.Context, o Options) error {
 	}
 	logf("start %s, %d tasks x 2 arms, cap %s per run", start.Format("15:04 MST"), len(o.Tasks), o.Cap)
 	for _, t := range o.Tasks {
-		for _, arm := range ArmOrder(t.N, o.A0, o.A0k) {
+		arms := ArmOrder(t.N, o.A0, o.A0k)
+		if o.A1 != "" {
+			arms = []Arm{{Name: "A1"}}
+		}
+		for _, arm := range arms {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -459,14 +474,39 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 	if o.Capture != nil {
 		o.Capture.SetDir(filepath.Join(dir, "requests"))
 	}
-	rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
+	if o.A1 != "" {
+		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap)
+	} else {
+		rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
+	}
 	if o.Capture != nil {
 		rec.Captured = o.Capture.Count()
 		o.Capture.SetDir("")
 	}
 	rec.Requests = Requests(o.ServeLog, from, size(o.ServeLog))
+	rec.ServerFeatures, rec.ForcedCallMode = ServerFeatures(o.ServeLog)
+	if o.A1 != "" {
+		// A remote server's log arrives over ssh: wait, briefly, for its lines to catch up with the capture.
+		reqDir := filepath.Join(dir, "requests")
+		for i := 0; i < 50; i++ {
+			if timed, err := PairTimings(rec.Requests, reqDir); err == nil {
+				rec.Timed = timed
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+			rec.Requests = Requests(o.ServeLog, from, size(o.ServeLog))
+		}
+		if rec.Timed == nil {
+			_, err := PairTimings(rec.Requests, reqDir)
+			rec.TimingErr = fmt.Sprint(err)
+		}
+		tack := SummarizeTack(filepath.Join(dir, "events.jsonl"))
+		rec.TackRun = &tack
+		rec.Events = EventSummary{ToolCalls: tack.ToolCalls}
+	} else {
+		rec.Events = SummarizeEvents(filepath.Join(dir, "events.jsonl"), repo)
+	}
 	rec.Prompt = Prompts(rec.Requests, stmt).WithInstructions(ctx, o.CountTokens, repo)
-	rec.Events = SummarizeEvents(filepath.Join(dir, "events.jsonl"), repo)
 	diff := Diff(repo, t.Base)
 	rec.DiffBytes = len(diff)
 	_ = os.WriteFile(filepath.Join(dir, "diff.patch"), []byte(diff), 0o644)

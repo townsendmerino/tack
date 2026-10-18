@@ -12,7 +12,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Sampling is what opencode sends with every request: Qwen2.5's own recommended settings (pilot pre-registration,
@@ -23,7 +26,7 @@ var Sampling = map[string]any{"temperature": 0.7, "top_p": 0.8, "top_k": 20}
 
 // Capture is a recording reverse proxy in front of goinfer: every request opencode sends and every response, raw (the
 // SSE stream as streamed), goes to the current run's directory as NNNN.req.json and NNNN.resp, with NNNN.meta holding
-// the method, path and status. Headers are not recorded, so the API key is not. It listens on loopback only, and the
+// the method, path, status and the client-side timings (CaptureTiming). Headers are not recorded, so the API key is not. It listens on loopback only, and the
 // bodies stay in the run's local directory (owner, 2026-10-17: goinfer may replay first requests).
 type Capture struct {
 	URL string // what opencode is pointed at
@@ -64,9 +67,13 @@ func StartCapture(upstream string) (*Capture, error) {
 			defer resp.Close()
 		}
 		sw := &statusWriter{ResponseWriter: w, status: 200}
+		t0 := time.Now()
+		sw.start = t0
 		rp.ServeHTTP(sw, r)
+		total := time.Since(t0)
 		if meta != "" {
-			_ = os.WriteFile(meta, fmt.Appendf(nil, "%s %s %d\n", r.Method, r.URL.Path, sw.status), 0o644)
+			_ = os.WriteFile(meta, fmt.Appendf(nil, "%s %s %d ttfb_ms=%d total_ms=%d\n", r.Method, r.URL.Path, sw.status,
+				sw.ttfb.Milliseconds(), total.Milliseconds()), 0o644)
 		}
 	})}
 	go c.srv.Serve(ln)
@@ -135,6 +142,15 @@ func (t *teeBody) Read(p []byte) (int, error) {
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	start  time.Time
+	ttfb   time.Duration // to the first byte of the response body
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.ttfb == 0 && len(b) > 0 {
+		s.ttfb = time.Since(s.start)
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 func (s *statusWriter) WriteHeader(code int) {
@@ -150,11 +166,11 @@ func (s *statusWriter) Flush() {
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// CheckSampling reads a run's first recorded request and reports whether it carries every Sampling field with its
+// CheckSampling reads a run's first recorded model request (firstModelRequest) and reports whether it carries every Sampling field with its
 // value (pilot pre-registration, amendment 6: the check that top_k, which the provider would otherwise drop, reaches
 // goinfer).
 func CheckSampling(dir string) error {
-	b, err := os.ReadFile(filepath.Join(dir, "0001.req.json"))
+	b, err := os.ReadFile(firstModelRequest(dir))
 	if err != nil {
 		return fmt.Errorf("pilot: no first request recorded in %s: %w", dir, err)
 	}
@@ -172,4 +188,44 @@ func CheckSampling(dir string) error {
 		}
 	}
 	return nil
+}
+
+// CaptureTiming is one recorded request's client-side timing, read from its NNNN.meta: the milliseconds to the first
+// byte of the response body and to its end, as the proxy saw them. Beside goinfer's own TTFT and total for the same
+// request, the difference is the time spent between the client and the server (the tailnet, for A1).
+type CaptureTiming struct {
+	TTFBms, TotalMs int
+}
+
+// ReadTiming reads a recorded request's meta file; ok is false for a file without timings.
+func ReadTiming(meta string) (CaptureTiming, bool) {
+	b, err := os.ReadFile(meta)
+	if err != nil {
+		return CaptureTiming{}, false
+	}
+	var t CaptureTiming
+	var method, path string
+	var status int
+	if n, _ := fmt.Sscanf(string(b), "%s %s %d ttfb_ms=%d total_ms=%d", &method, &path, &status, &t.TTFBms, &t.TotalMs); n != 5 {
+		return CaptureTiming{}, false
+	}
+	return t, true
+}
+
+// firstModelRequest is the body of the first recorded request that asked the model for a reply (a POST to /v1/messages
+// or /v1/chat/completions), skipping a client's model listing. A recording without metas falls back to 0001.
+func firstModelRequest(dir string) string {
+	metas, _ := filepath.Glob(filepath.Join(dir, "*.meta"))
+	sort.Strings(metas)
+	for _, m := range metas {
+		b, err := os.ReadFile(m)
+		if err != nil {
+			continue
+		}
+		f := strings.Fields(string(b))
+		if len(f) >= 2 && f[0] == "POST" && (f[1] == "/v1/messages" || f[1] == "/v1/chat/completions") {
+			return strings.TrimSuffix(m, ".meta") + ".req.json"
+		}
+	}
+	return filepath.Join(dir, "0001.req.json")
 }
