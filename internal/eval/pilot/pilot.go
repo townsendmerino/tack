@@ -110,6 +110,9 @@ type Result struct {
 	CapHit   bool    `json:"cap_hit"`
 	Exit     int     `json:"exit"` // opencode's exit status; -1 when killed at the cap
 	Err      string  `json:"err,omitempty"`
+	// Void says why the run measured nothing: the setup failed before the model started (A1's preflight). A void run
+	// is neither a pass nor a fail.
+	Void string `json:"void,omitempty"`
 }
 
 // RunOpencode runs `opencode run --format json --auto` once in repo with the statement, under cap. opencode's config,

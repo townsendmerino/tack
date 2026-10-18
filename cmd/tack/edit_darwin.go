@@ -16,8 +16,12 @@ import (
 // editKit gives an auto-mode session its sandboxed shell (DESIGN §6.6). Commands run in `tack shell` under Seatbelt,
 // marked with the session's group and each command's own mark. They may write only the workspace, a temp directory
 // of the session's own and tack's Go cache (under the user cache directory); tack's state directory and config directory are out of their reach.
+// It refuses a workspace that overlaps either directory (sandbox.Config.Check).
 func editKit(stateDir, configDir string) func(root string, group sandbox.Target) (core.EditKit, error) {
 	return func(root string, group sandbox.Target) (core.EditKit, error) {
+		if err := (sandbox.Config{Workspace: root, Tack: []string{stateDir, configDir}}).Check(); err != nil {
+			return core.EditKit{}, err
+		}
 		exe, err := os.Executable()
 		if err != nil {
 			return core.EditKit{}, err

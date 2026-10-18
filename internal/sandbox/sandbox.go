@@ -164,6 +164,49 @@ func Profile(c Config) string {
 	return b.String()
 }
 
+// Check refuses a Config whose tack paths overlap the workspace. A tack path that is or contains the workspace denies
+// every command its own working directory; one inside the workspace puts tack's token and state in reach of tack's own
+// file tools, which run outside the sandbox. Paths are compared as real paths, resolved through their deepest existing
+// ancestor, so a state directory not yet created still compares correctly.
+func (c Config) Check() error {
+	ws := resolve(c.Workspace)
+	for _, p := range c.Tack {
+		t := resolve(p)
+		if within(ws, t) || within(t, ws) {
+			return fmt.Errorf("tack's own path %s overlaps the workspace %s: keep tack's config, token and state "+
+				"outside the workspace and not above it", t, ws)
+		}
+	}
+	return nil
+}
+
+// resolve is p's real path: its deepest existing ancestor with symlinks resolved, and the rest joined on.
+func resolve(p string) string {
+	p = filepath.Clean(p)
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	var rest []string
+	for d := p; ; d = filepath.Dir(d) {
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			for i := len(rest) - 1; i >= 0; i-- {
+				r = filepath.Join(r, rest[i])
+			}
+			return r
+		}
+		if filepath.Dir(d) == d {
+			return p
+		}
+		rest = append(rest, filepath.Base(d))
+	}
+}
+
+// within says whether p is dir or lies under it.
+func within(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // Command returns name with args, run under c's profile.
 func Command(c Config, name string, args ...string) *exec.Cmd {
 	return exec.Command(Exe, append([]string{"-p", Profile(c), name}, args...)...)

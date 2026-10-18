@@ -50,17 +50,24 @@ session_tool_calls = 1000000
 `, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), replyLimit)
 }
 
-// RunTack runs `tack run --edit --instructions whole --json` once in repo with the statement, under cap. The config,
-// the API key (mode 0600), tack's state, its event stream (events.jsonl) and its stderr go in out. At the cap tack is
-// sent SIGTERM, so it cancels its turn and its shell kills what each command started, then SIGKILL after 10 s.
+// PreflightCommand is what A1 runs in the sandbox, in the task's repository, before the model starts (`tack run
+// --preflight`). If it fails the run is void, not the model's failure (owner, 2026-10-18).
+const PreflightCommand = "go version"
+
+// RunTack runs `tack run --edit --instructions whole --json` once in repo with the statement, under cap, after
+// PreflightCommand. tack's own files, the config, the API key (mode 0600) and its state, go in TackDir(out): tack
+// refuses to run with them inside the workspace or above it. Its event stream (events.jsonl) and its stderr go in out.
+// A failed preflight sets Void. At the cap tack is sent SIGTERM, so it cancels its turn and its shell kills what each
+// command started, then SIGKILL after 10 s.
 func RunTack(ctx context.Context, tack string, s Server, repo, statement, out string, cap time.Duration) Result {
 	r := Result{Arm: "A1", Exit: -1}
-	err := os.MkdirAll(out, 0o755)
+	own := TackDir(out)
+	err := errors.Join(os.MkdirAll(out, 0o755), os.MkdirAll(own, 0o755))
 	if err == nil {
-		err = os.WriteFile(filepath.Join(out, "token"), []byte(s.APIKey+"\n"), 0o600)
+		err = os.WriteFile(filepath.Join(own, "token"), []byte(s.APIKey+"\n"), 0o600)
 	}
 	if err == nil {
-		err = os.WriteFile(filepath.Join(out, "config.toml"), []byte(tackConfig(s, out)), 0o600)
+		err = os.WriteFile(filepath.Join(own, "config.toml"), []byte(tackConfig(s, own)), 0o600)
 	}
 	if err != nil {
 		r.Err = err.Error()
@@ -74,8 +81,8 @@ func RunTack(ctx context.Context, tack string, s Server, repo, statement, out st
 	}
 	defer events.Close()
 	defer stderr.Close()
-	cmd := exec.Command(tack, "run", "--config", filepath.Join(out, "config.toml"), "--workspace", repo, "--edit",
-		"--instructions", "whole", "--json", statement)
+	cmd := exec.Command(tack, "run", "--config", filepath.Join(own, "config.toml"), "--workspace", repo, "--edit",
+		"--preflight", PreflightCommand, "--instructions", "whole", "--json", statement)
 	cmd.Dir = repo
 	cmd.Stdout, cmd.Stderr = events, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -118,13 +125,35 @@ func RunTack(ctx context.Context, tack string, s Server, repo, statement, out st
 	default:
 		r.Err = err.Error()
 	}
+	if r.Exit == exitPreflight {
+		r.Void = preflightError(filepath.Join(out, "stderr.log"))
+	}
 	return r
 }
 
-// TackSummary is what an A1 run's events.jsonl says: tool calls by name, the requests sent, how the turn ended, and
-// how many times done was refused for an unchanged workspace (loop.DoneNoChange, R13's loop mitigation).
+// exitPreflight is tack run's exit status when its --preflight command failed.
+const exitPreflight = 8
+
+// TackDir is where an A1 run keeps tack's own files: a sibling of out, which holds the repository.
+func TackDir(out string) string { return out + "-tack" }
+
+// preflightError is tack's line saying why the preflight failed, from its stderr.
+func preflightError(stderr string) string {
+	b, _ := os.ReadFile(stderr)
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "tack run: preflight") {
+			return l
+		}
+	}
+	return "tack run exited 8 (preflight failed) without saying why"
+}
+
+// TackSummary is what an A1 run's events.jsonl says: tool calls by name and how many of them failed, the requests
+// sent, how the turn ended, and how many times done was refused for an unchanged workspace (loop.DoneNoChange, R13's
+// loop mitigation).
 type TackSummary struct {
 	ToolCalls   map[string]int `json:"tool_calls"`
+	Failed      map[string]int `json:"failed,omitempty"` // tool calls whose outcome was not ok, by name
 	Requests    int            `json:"requests"`
 	StopReason  string         `json:"stop_reason"`
 	DoneRefused int            `json:"done_refused"`
@@ -134,7 +163,8 @@ type TackSummary struct {
 
 // SummarizeTack reads tack's event stream for an A1 run.
 func SummarizeTack(path string) TackSummary {
-	s := TackSummary{ToolCalls: map[string]int{}}
+	s := TackSummary{ToolCalls: map[string]int{}, Failed: map[string]int{}}
+	names := map[string]string{} // tool call id to name
 	f, err := os.Open(path)
 	if err != nil {
 		return s
@@ -154,11 +184,15 @@ func SummarizeTack(path string) TackSummary {
 		switch p := v.(type) {
 		case proto.ToolCall:
 			s.ToolCalls[p.Name]++
+			names[p.ID] = p.Name
 		case proto.RequestSent:
 			s.Requests++
 		case proto.ToolFinished:
 			if p.Result == loop.DoneNoChange {
 				s.DoneRefused++
+			}
+			if p.Outcome != proto.OutcomeOK {
+				s.Failed[names[p.ID]]++
 			}
 		case proto.TurnEnd:
 			s.StopReason = p.StopReason

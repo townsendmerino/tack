@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/core"
@@ -23,15 +24,19 @@ import (
 	"github.com/townsendmerino/tack/internal/kensearch"
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/cassette"
+	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
-// hit max_tokens; 5 tack is halted (tack halt); 7 the context window filled (6 is eval pilot's gated "not run").
+// hit max_tokens; 5 tack is halted (tack halt); 7 the context window filled (6 is eval pilot's gated "not run"); 8 the
+// --preflight command failed, before any model request.
 const (
 	exitOK         = 0
 	exitError      = 1
@@ -40,6 +45,7 @@ const (
 	exitMaxTokens  = 4
 	exitHalted     = 5
 	exitWindowFull = 7
+	exitPreflight  = 8
 )
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
@@ -50,6 +56,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	serverName := fs.String("server", "", "server from the config to use (default: its main)")
 	jsonOut := fs.Bool("json", false, "stream every event as one JSON line on stdout")
 	edit := fs.Bool("edit", false, "an edit task: auto mode in the sandbox, edit, write and bash, every turn a tool call, ended by done (macOS)")
+	preflight := fs.String("preflight", "", "with --edit: run this command in the sandbox, as bash would, before the model starts; exit 8 if it fails")
 	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question")
 	fs.Bool("no-daemon", true, "run the core in this process (the only mode until the daemon exists)")
 	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
@@ -63,6 +70,10 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 		fmt.Fprintln(stderr, `tack run: give one question, quoted: tack run "where is X defined?"`)
+		return exitUsage
+	}
+	if *preflight != "" && !*edit {
+		fmt.Fprintln(stderr, "tack run: --preflight is for --edit")
 		return exitUsage
 	}
 	if *record != "" && *replay != "" {
@@ -159,6 +170,11 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true
 		opts.Edit = editKit(stateDir, filepath.Dir(*cfgPath))
+		if *preflight != "" {
+			if code := runPreflight(ctx, opts.Edit, ws, *preflight, stderr); code != exitOK {
+				return code
+			}
+		}
 	}
 	if s, ok := cfg.Servers[name]; ok {
 		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
@@ -183,6 +199,35 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// runPreflight runs command in the workspace through an edit kit's sandboxed shell, made as a session's is, before any
+// model request. A failure is the setup's, not the model's: it prints the reason on one line starting
+// "tack run: preflight" and returns exitPreflight.
+func runPreflight(ctx context.Context, edit func(string, sandbox.Target) (core.EditKit, error), ws, command string, stderr io.Writer) int {
+	fail := func(why string) int {
+		fmt.Fprintf(stderr, "tack run: preflight %q failed: %s\n", command, strings.Join(strings.Fields(why), " "))
+		return exitPreflight
+	}
+	w, err := tools.NewWorkspace(ws)
+	if err != nil {
+		return fail(err.Error())
+	}
+	kit, err := edit(w.Root(), sandbox.Target{Mark: sandbox.NewMark("p"), Since: time.Now()})
+	if err != nil {
+		return fail(err.Error())
+	}
+	res, err := kit.Shell.Run(shell.WithApproval(ctx, perms.ByMode), command, time.Minute)
+	switch {
+	case err != nil:
+		return fail(err.Error())
+	case res.Stopped != "":
+		return fail(res.Stopped + ": " + res.Output)
+	case res.Exit != 0:
+		return fail(fmt.Sprintf("exit %d: %s", res.Exit, res.Output))
+	}
+	fmt.Fprintf(stderr, "tack run: preflight %q: ok: %s\n", command, strings.TrimSpace(res.Output))
+	return exitOK
 }
 
 // drive runs one turn through the protocol, against the Core over an in-memory pipe (--no-daemon, DESIGN §9.1).

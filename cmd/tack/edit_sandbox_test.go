@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -75,5 +76,57 @@ func TestEditRunInTheSandbox(t *testing.T) {
 	}
 	if r := results["b2"]; !strings.Contains(r.Result, "Operation not permitted") {
 		t.Errorf("writing outside the workspace: %+v", r)
+	}
+}
+
+// TestEditRefusesTackPathsOverlappingTheWorkspace: tack run --edit refuses to start when tack's config directory is
+// inside the workspace or contains it, before any model request. Inside, tack's own read tool, which runs outside the
+// sandbox, would hand the model tack's token (the escape this guards). Containing it, the sandbox's section tack denies
+// every command its working directory (docs/measurements/e1-pilot-a1-2026-10-18.md, "The void night").
+func TestEditRefusesTackPathsOverlappingTheWorkspace(t *testing.T) {
+	const secret = "tack-token-7f3a"
+	for _, c := range []struct {
+		name string
+		cfg  func(ws string) string // the config directory, given the workspace
+		ws   func(root string) string
+		call string
+	}{
+		{"config inside the workspace", func(ws string) string { return filepath.Join(ws, ".tack") },
+			func(root string) string { return root }, `{"path":".tack/token"}`},
+		{"config above the workspace", func(ws string) string { return filepath.Dir(ws) },
+			func(root string) string { return filepath.Join(root, "repo") }, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root, _ := filepath.EvalSymlinks(t.TempDir())
+			ws := c.ws(root)
+			os.MkdirAll(ws, 0o755)
+			os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module x\n\ngo 1.27\n"), 0o644)
+			cd := c.cfg(ws)
+			os.MkdirAll(cd, 0o755)
+			os.WriteFile(filepath.Join(cd, "token"), []byte(secret+"\n"), 0o600)
+			p := filepath.Join(cd, "config.toml")
+			os.WriteFile(p, []byte(fmt.Sprintf("state_dir = %q\n", filepath.Join(cd, "state"))), 0o600)
+			calls := []goinfertest.Reply{goinfertest.Calls("", "b1", "bash", `{"command":"go version"}`)}
+			if c.call != "" {
+				calls = []goinfertest.Reply{goinfertest.Calls("", "r1", "read", c.call)}
+			}
+			script := goinfertest.NewScripted("m", 32768, append(calls, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))...)
+			ts := httptest.NewServer(script)
+			defer ts.Close()
+			f, _ := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+			fmt.Fprintf(f, "[servers.local]\nkind = \"goinfer-remote\"\nurl = %q\ntoken_file = %q\n", ts.URL, filepath.Join(cd, "token"))
+			f.Close()
+			var stdout, stderr bytes.Buffer
+			code := dispatch([]string{"run", "--config", p, "--workspace", ws, "--edit", "--json", "Look."}, &stdout, &stderr)
+			if strings.Contains(stdout.String(), secret) {
+				t.Errorf("ESCAPED: tack's token reached the model's tool result\n%s", stdout.String())
+			}
+			if code != exitError || !strings.Contains(stderr.String(), "overlaps the workspace") {
+				t.Errorf("exit %d, want %d with the overlap named\nstderr: %s\nstdout: %s", code, exitError, stderr.String(), stdout.String())
+			}
+			if script.Left() != len(calls)+1 {
+				t.Errorf("%d model requests were made; want none", len(calls)+1-script.Left())
+			}
+		})
 	}
 }

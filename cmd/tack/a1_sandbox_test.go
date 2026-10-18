@@ -22,11 +22,53 @@ import (
 
 // TestA1RunsAndGrades drives the A1 arm below its ssh layer: RunPilot with tack's own binary (this test binary,
 // standing in) runs `tack run --edit` in the sandbox against a scripted model through the capture. The model reads,
-// edits, runs go test and calls done; the run is graded by the oracle at the task's fix commit. The record carries
-// tack's summary, the sampling check passes on the first model request, and the oracle's output is kept.
+// edits, runs go build and calls done; the run is graded by the oracle at the task's fix commit. The record carries
+// tack's summary, in which the bash call succeeded (a sandbox denying the repository fails it), the sampling check
+// passes on the first model request, and the oracle's output is kept.
 func TestA1RunsAndGrades(t *testing.T) {
-	t.Setenv("GOFLAGS", "")
-	t.Setenv("TACK_TEST_AS_TACK", "1")
+	task, mirrors := a1Task(t)
+	script := goinfertest.NewScripted("qwen", 32768,
+		goinfertest.Calls("", "r1", "read", `{"path":"calc/calc.go"}`),
+		goinfertest.Calls("", "e1", "edit", `{"path":"calc/calc.go","old_string":"a - b","new_string":"a + b"}`),
+		goinfertest.Calls("", "b1", "bash", `{"command":"go build ./..."}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"Add adds"}`))
+	rec, out := a1Run(t, task, mirrors, script)
+	stderrLog, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "stderr.log"))
+	if !rec.Pass || rec.Run.Arm != "A1" || rec.Run.Exit != 0 || rec.Run.Void != "" || rec.TackRun == nil ||
+		rec.TackRun.StopReason != "done" || rec.TackRun.ToolCalls["edit"] != 1 || rec.TackRun.ToolCalls["bash"] != 1 ||
+		rec.TackRun.Failed["bash"] != 0 || rec.TackRun.DoneRefused != 0 {
+		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
+	}
+	if !strings.Contains(string(stderrLog), `tack run: preflight "go version": ok: go version go1.`) {
+		t.Errorf("no passing preflight in tack's stderr:\n%s", stderrLog)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "oracle.log")); !strings.Contains(string(b), `"Action":"pass"`) {
+		t.Errorf("oracle.log: %s", b)
+	}
+	if err := pilot.CheckSampling(filepath.Join(out, "task-01", "A1", "requests")); err != nil {
+		t.Errorf("sampling: %v", err)
+	}
+}
+
+// TestA1PreflightFailureIsVoid: when the preflight cannot run go in the sandbox (here, no go on tack's PATH), the task
+// is recorded void with tack's reason, not graded, and the model is never asked anything.
+func TestA1PreflightFailureIsVoid(t *testing.T) {
+	task, mirrors := a1Task(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	script := goinfertest.NewScripted("qwen", 32768, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))
+	rec, _ := a1Run(t, task, mirrors, script)
+	if !strings.Contains(rec.Run.Void, `tack run: preflight "go version" failed`) || rec.Pass || rec.Run.Exit != 8 ||
+		rec.TackRun != nil || len(rec.Oracle) != 0 {
+		t.Fatalf("record %+v", rec)
+	}
+	if script.Left() != 1 {
+		t.Errorf("the model was asked %d time(s); want none", 1-script.Left())
+	}
+}
+
+// a1Task is a one-task pilot over a fresh repository where Add subtracts, and the mirror directory holding it.
+func a1Task(t *testing.T) (pilot.Task, string) {
+	t.Helper()
 	src := t.TempDir()
 	git := func(args ...string) string {
 		cmd := exec.Command("git", args...)
@@ -60,12 +102,15 @@ func TestA1RunsAndGrades(t *testing.T) {
 	task := pilot.Task{N: 1, Candidate: mine.Candidate{Repo: "m", Commit: commit, Base: base, Tests: []string{"TestAdd"},
 		Packages: []string{"./calc"}, TestFiles: []string{"calc/calc_test.go"}, Statement: "Add subtracts; it should add.",
 		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}}
+	return task, mirrors
+}
 
-	script := goinfertest.NewScripted("qwen", 32768,
-		goinfertest.Calls("", "r1", "read", `{"path":"calc/calc.go"}`),
-		goinfertest.Calls("", "e1", "edit", `{"path":"calc/calc.go","old_string":"a - b","new_string":"a + b"}`),
-		goinfertest.Calls("", "b1", "bash", `{"command":"go build ./..."}`),
-		goinfertest.Calls("", "d1", "done", `{"reason":"Add adds"}`))
+// a1Run runs the A1 arm of a pilot over task with this test binary as tack, against script through the capture, and
+// returns its one record and the job's output directory.
+func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Scripted) (pilot.Record, string) {
+	t.Helper()
+	t.Setenv("GOFLAGS", "")
+	t.Setenv("TACK_TEST_AS_TACK", "1")
 	ts := httptest.NewServer(script)
 	defer ts.Close()
 	capture, err := pilot.StartCapture(ts.URL)
@@ -90,15 +135,5 @@ func TestA1RunsAndGrades(t *testing.T) {
 	if !sc.Scan() || json.Unmarshal(sc.Bytes(), &rec) != nil {
 		t.Fatal("no record")
 	}
-	stderrLog, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "stderr.log"))
-	if !rec.Pass || rec.Run.Arm != "A1" || rec.Run.Exit != 0 || rec.TackRun == nil || rec.TackRun.StopReason != "done" ||
-		rec.TackRun.ToolCalls["edit"] != 1 || rec.TackRun.ToolCalls["bash"] != 1 || rec.TackRun.DoneRefused != 0 {
-		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
-	}
-	if b, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "oracle.log")); !strings.Contains(string(b), `"Action":"pass"`) {
-		t.Errorf("oracle.log: %s", b)
-	}
-	if err := pilot.CheckSampling(filepath.Join(out, "task-01", "A1", "requests")); err != nil {
-		t.Errorf("sampling: %v", err)
-	}
+	return rec, out
 }

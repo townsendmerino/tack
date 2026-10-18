@@ -421,7 +421,7 @@ func RunPilot(ctx context.Context, o Options) error {
 		armsPerTask = 1
 	}
 	total := len(o.Tasks) * armsPerTask
-	done := 0
+	done, graded := 0, 0
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(o.Log, time.Now().Format("15:04:05")+" pilot: "+format+"\n", args...)
 	}
@@ -440,7 +440,12 @@ func RunPilot(ctx context.Context, o Options) error {
 			if err := enc.Encode(rec); err != nil {
 				return err
 			}
-			if done == 1 && o.Capture != nil { // amendment 6: the sampling must reach goinfer, or nothing after this measures it
+			if rec.Run.Void != "" {
+				logf("%d/%d task %d %s %s: VOID: %s", done, total, t.N, t.Repo, arm.Name, rec.Run.Void)
+				continue
+			}
+			graded++
+			if graded == 1 && o.Capture != nil { // amendment 6: the sampling must reach goinfer, or nothing after this measures it
 				if err := CheckSampling(filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name, "requests")); err != nil {
 					logf("stopping the job: %v", err)
 					return err
@@ -486,6 +491,12 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 	}
 	if o.A1 != "" {
 		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap)
+		if rec.Run.Void != "" { // no model request was made: nothing to pair, summarize or grade
+			if o.Capture != nil {
+				o.Capture.SetDir("")
+			}
+			return rec
+		}
 	} else {
 		rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
 	}
