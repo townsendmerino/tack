@@ -1,0 +1,13 @@
+The function `applyTokenBudget` is defined in `mcp/token_budget.go`. According to the provided code, it returns a tuple with three values:
+
+- `kept []search.Result`: The results that fit within the token budget.
+- `dropped int`: The number of results that were dropped due to exceeding the token budget.
+- `approxTotal int`: An approximation of the total number of results.
+
+The relevant code snippet is:
+
+```go
+func applyTokenBudget(results []search.Result, maxTokens int) (kept []search.Result, dropped, approxTotal int) {
+```
+
+So, the function `applyTokenBudget` returns `kept []search.Result, dropped int, approxTotal int`.

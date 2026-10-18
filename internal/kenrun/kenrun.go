@@ -49,7 +49,12 @@ var Facts = []Fact{
 	{"where it is defined: mcp/token_budget.go", res(`token_budget\.go`)},
 	{"it returns the kept results, a prefix of the input", res(`\bkept\b`, `\bprefix\b`, `\bkeeps\b`)},
 	{"it returns how many results were dropped", res(`\bdropped\b`, `\bdrops?\b`)},
-	{"it returns the approximate token total of the kept results", res(`approx`, `\btotal\b`)},
+	// The fact stated, tokens as a total of the kept results: neither the word approx or total nor the quoted
+	// signature (approxTotal) passes, and "a total number of results" is not one of tokens.
+	{"it returns the approximate token total of the kept results", res(
+		`\btoken total of (the |what (it |was |is )?)?kept\b`,
+		`\bkept (results|set|prefix)('s?)? (approximate |estimated )?token total\b`,
+		`\b(total|sum) (of )?(the )?(estimated |approximate )?(number of )?tokens? (of|in|for|across|used by|taken by) (the )?kept\b`)},
 	{"it keeps results within a token budget", res(`max_?tokens`, `\bmax tokens\b`, `\btoken (budget|limit)\b`,
 		`\bwithin\b`, `\bfits?\b`)},
 }

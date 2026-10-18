@@ -79,3 +79,42 @@ func TestCheckModelRejectsEachGap(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckModelRejectsTheSecondNightAnswer: the 2026-10-17 night's attempt 2, verbatim. It names the file and says
+// what kept and dropped are, but calls approxTotal "an approximation of the total number of results": a total, but not
+// of tokens, beside the quoted signature. It is rejected for that fact alone.
+func TestCheckModelRejectsTheSecondNightAnswer(t *testing.T) {
+	stdout, _ := os.ReadFile(filepath.Join("testdata", "night-2026-10-17-attempt2.stdout"))
+	stderr, _ := os.ReadFile(filepath.Join("testdata", "night-2026-10-17-attempt2.stderr"))
+	why := CheckModel(string(stdout), string(stderr))
+	if len(why) != 1 || !strings.Contains(why[0], "approximate token total") {
+		t.Fatalf("attempt 2's rejection: %v", why)
+	}
+}
+
+// TestTokenTotalPhrasings: the fact passes in other words that state it, and fails on near misses.
+func TestTokenTotalPhrasings(t *testing.T) {
+	fact := Facts[3]
+	for _, s := range []string{
+		"and the approximate token total of the kept set",
+		"and the approximate token total of what it kept",
+		"it returns the kept results' approximate token total",
+		"the third value is the sum of the estimated tokens across the kept results",
+		"approxTotal, the total number of tokens in the kept prefix",
+	} {
+		if !anyMatch(fact.Patterns, s) {
+			t.Errorf("rejected a statement of the fact: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"`approxTotal int`: An approximation of the total number of results.",
+		"(kept []search.Result, dropped, approxTotal int)",
+		"it returns an approximate total",
+		"the token count",
+		"the total tokens of all the results",
+	} {
+		if anyMatch(fact.Patterns, s) {
+			t.Errorf("accepted a near miss: %q", s)
+		}
+	}
+}

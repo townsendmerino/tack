@@ -1,0 +1,2 @@
+· grep {"pattern":"func applyTokenBudget","path":"."}
+  ok, 1 lines
