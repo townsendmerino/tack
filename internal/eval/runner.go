@@ -428,14 +428,15 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	phase("decode", 3, func() {
 		var rates []float64
 		for i := 0; i < 3; i++ {
-			rate, toks, err := decodeOnce(ctx, srv, arm.Name)
+			s, err := decodeOnce(ctx, srv, arm.Name)
 			p.step()
-			f := map[string]any{"rep": i + 1, "tok_per_s": rate, "tokens": toks}
+			f := map[string]any{"rep": i + 1, "tok_per_s": s.Rate, "tokens": s.Tokens, "text_chars": s.TextChars,
+				"thinking_chars": s.Thinking}
 			if err != nil {
 				f["error"] = err.Error()
 				flag("decode rep %d: %v", i+1, err)
 			} else {
-				rates = append(rates, rate)
+				rates = append(rates, s.Rate)
 			}
 			r.record(arm, "decode", f)
 		}
@@ -526,9 +527,9 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 		return filler[off : off+tailChars]
 	}
 	measure := func(cell string, rep int, system, user string) {
-		d, err := firstToken(ctx, srv, arm.Name, system, user)
+		d, kind, err := firstToken(ctx, srv, arm.Name, system, user)
 		p.step()
-		f := map[string]any{"size": n, "counted": counted, "cell": cell, "rep": rep, "ttft_ms": d.Milliseconds()}
+		f := map[string]any{"size": n, "counted": counted, "cell": cell, "rep": rep, "ttft_ms": d.Milliseconds(), "first_kind": kind}
 		if err != nil {
 			f["error"] = err.Error()
 			if failed++; failed == 1 {
@@ -573,47 +574,81 @@ func sizeFiller(ctx context.Context, srv server.Server, model, filler string, n 
 	return lo, counted, nil
 }
 
+// ttftMaxTokens is what a first-token request allows. One token is not enough: a reply that opens with tokens that
+// never stream (Harmony's channel header, Qwen3's <think>) would show none. The probe times the first streamed delta,
+// so the few tokens before it add at most a few decode steps to the measured time.
+const ttftMaxTokens = 16
+
+// The probes ask for thinking: goinfer drops the reasoning of a request that did not (Harmony's analysis channel,
+// Qwen3's thinking), and a dropped token is counted in the reply's output tokens but never streamed, so a rate over
+// the streamed span would count work it did not time. Asked for, reasoning streams as thinking deltas, and both
+// kinds are timed.
 func ttftRequest(model, system, user string) server.Request {
 	zero := 0.0
-	return server.Request{Model: model, System: system, Tools: p0Tools, MaxTokens: 1, Temperature: &zero,
-		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(user)}}}}
+	return server.Request{Model: model, System: system, Tools: p0Tools, MaxTokens: ttftMaxTokens, Temperature: &zero,
+		Thinking: true, Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(user)}}}}
 }
 
-func firstToken(ctx context.Context, srv server.Server, model, system, user string) (time.Duration, error) {
+// firstToken is the time to the first streamed delta of text or thinking, and that delta's kind.
+func firstToken(ctx context.Context, srv server.Server, model, system, user string) (time.Duration, string, error) {
 	t0 := time.Now()
 	var first time.Duration
-	_, err := srv.Stream(ctx, ttftRequest(model, system, user), func(server.Delta) {
-		if first == 0 {
-			first = time.Since(t0)
+	kind := ""
+	_, err := srv.Stream(ctx, ttftRequest(model, system, user), func(d server.Delta) {
+		if first == 0 && d.Text != "" {
+			first, kind = time.Since(t0), d.Kind
 		}
 	})
 	if err == nil && first == 0 {
-		err = errors.New("no token was streamed")
+		err = fmt.Errorf("no text or thinking was streamed within %d tokens", ttftMaxTokens)
 	}
-	return first, err
+	return first, kind, err
 }
 
-func decodeOnce(ctx context.Context, srv server.Server, model string) (float64, int, error) {
+// decodeSample is one decode measurement: its rate over the tokens it streamed, and what streamed.
+type decodeSample struct {
+	Rate                float64
+	Tokens              int // the reply's output tokens, as the server counted them
+	TextChars, Thinking int // characters streamed as text and as thinking
+}
+
+// decodeOnce times a 256-token reply between its first and last streamed delta, text or thinking. A reply whose
+// streamed characters number fewer than its counted tokens held tokens back from the stream, and its rate would count
+// work it did not time: that is an error, not a rate.
+func decodeOnce(ctx context.Context, srv server.Server, model string) (decodeSample, error) {
 	zero := 0.0
-	req := server.Request{Model: model, MaxTokens: 256, Temperature: &zero, Messages: []server.Message{{Role: server.User,
+	req := server.Request{Model: model, MaxTokens: 256, Temperature: &zero, Thinking: true, Messages: []server.Message{{Role: server.User,
 		Content: []server.Block{server.TextBlock("Write a long, detailed story about a lighthouse keeper. Keep writing until you are stopped.")}}}}
 	var first, last time.Time
-	resp, err := srv.Stream(ctx, req, func(server.Delta) {
+	var s decodeSample
+	resp, err := srv.Stream(ctx, req, func(d server.Delta) {
+		if d.Text == "" {
+			return
+		}
 		now := time.Now()
 		if first.IsZero() {
 			first = now
 		}
 		last = now
+		if d.Kind == "thinking" {
+			s.Thinking += len(d.Text)
+		} else {
+			s.TextChars += len(d.Text)
+		}
 	})
 	if err != nil {
-		return 0, 0, err
+		return s, err
 	}
-	toks := resp.Usage.OutputTokens
+	s.Tokens = resp.Usage.OutputTokens
 	el := last.Sub(first).Seconds()
-	if toks < 2 || el <= 0 {
-		return 0, toks, fmt.Errorf("too few tokens (%d) to time", toks)
+	if s.Tokens < 2 || el <= 0 {
+		return s, fmt.Errorf("too few tokens (%d) to time", s.Tokens)
 	}
-	return float64(toks-1) / el, toks, nil
+	if streamed := s.TextChars + s.Thinking; streamed < s.Tokens {
+		return s, fmt.Errorf("%d tokens counted but only %d characters streamed: the reply held tokens back, so its rate would count work it did not time", s.Tokens, streamed)
+	}
+	s.Rate = float64(s.Tokens-1) / el
+	return s, nil
 }
 
 // repoText is the workspace's Go source, concatenated in path order: real code to size prompts with.

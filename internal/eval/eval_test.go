@@ -76,13 +76,14 @@ func fakeServe(args []string) {
 			Messages []struct {
 				Content []struct{ Text string } `json:"content"`
 			} `json:"messages"`
-			Tools     []any `json:"tools"`
-			MaxTokens int   `json:"max_tokens"`
+			Tools     []any                  `json:"tools"`
+			MaxTokens int                    `json:"max_tokens"`
+			Thinking  *struct{ Type string } `json:"thinking"` // the timing probes ask for thinking; the smoke does not
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 		text := req.Messages[0].Content[0].Text
 		w.Header().Set("Content-Type", "text/event-stream")
-		if len(req.Tools) > 0 && req.MaxTokens > 1 && !strings.Contains(text, "tool") {
+		if len(req.Tools) > 0 && req.Thinking == nil && !strings.Contains(text, "tool") {
 			// grep for the prompt's first capitalised or path-like word: right for some tasks, wrong for others.
 			word := "x"
 			for _, f := range strings.Fields(text) {
