@@ -21,6 +21,7 @@ import (
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
 )
@@ -39,6 +40,8 @@ type Options struct {
 	// io.Closer.
 	OpenSearcher func(ctx context.Context, root string) (tools.Searcher, error)
 	Budget       loop.Budget
+	// Sampling is every session's sampling (the configured server's).
+	Sampling server.Sampling
 	// Each session gets its own sweep target, a random sandbox mark and its start time. Halt sweeps every session's
 	// target with Sweep (internal/sandbox.Sweep on macOS; nil where commands cannot run). HaltDir, when set, is the
 	// state directory where the targets are registered for tack halt (internal/halt.Register).
@@ -279,7 +282,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	}
 	s.loop = loop.New(loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Emit: s.emit})
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit})
 	c.mu.Lock()
 	c.sessions[id] = s
 	c.mu.Unlock()

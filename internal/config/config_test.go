@@ -48,15 +48,18 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 
 func TestLoadFailsLoudly(t *testing.T) {
 	cases := map[string]struct{ body, want string }{
-		"typo":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
-		"unknown kind":    {"[servers.a]\nkind = \"ollama\"\n", "kind"},
-		"child no ctx":    {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
-		"remote no url":   {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
-		"mixed":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
-		"main missing":    {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
-		"no servers":      {"main = \"z\"\n", "no [servers"},
-		"bad duration":    {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
-		"negative budget": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
+		"typo":                 {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
+		"unknown kind":         {"[servers.a]\nkind = \"ollama\"\n", "kind"},
+		"child no ctx":         {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
+		"remote no url":        {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
+		"mixed":                {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
+		"main missing":         {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
+		"no servers":           {"main = \"z\"\n", "no [servers"},
+		"bad duration":         {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
+		"negative temperature": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = -0.1\n", "temperature must be"},
+		"top_p over 1":         {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
+		"top_k zero":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
+		"negative budget":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -97,5 +100,19 @@ func TestKenSection(t *testing.T) {
 		if _, err := load(t, base+body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", body, err, want)
 		}
+	}
+}
+
+func TestServerSampling(t *testing.T) {
+	c, err := load(t, "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = 0.7\ntop_p = 0.8\ntop_k = 20\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := c.Servers["a"]
+	if s.Temperature == nil || *s.Temperature != 0.7 || s.TopP == nil || *s.TopP != 0.8 || s.TopK == nil || *s.TopK != 20 {
+		t.Fatalf("sampling %+v", s)
+	}
+	if c, _ := load(t, "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"); c.Servers["a"].TopK != nil {
+		t.Fatal("unset top_k is not nil")
 	}
 }

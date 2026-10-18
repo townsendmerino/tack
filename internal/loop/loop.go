@@ -55,6 +55,8 @@ type Config struct {
 	Log    *store.Log
 	Blobs  *store.Blobs
 	Budget Budget
+	// Sampling goes with every request (server.Conversation.Sampling).
+	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
 	Emit func(proto.Event)
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
@@ -98,7 +100,7 @@ func New(cfg Config) *Session {
 		cfg.Emit = func(proto.Event) {}
 	}
 	return &Session{cfg: cfg, conv: &server.Conversation{System: SystemPrompt, Tools: cfg.Tools.Specs(),
-		MaxTokens: cfg.Budget.MaxTokens}}
+		MaxTokens: cfg.Budget.MaxTokens, Sampling: cfg.Sampling}}
 }
 
 // Conversation is the session's conversation so far, for tests and for checking it against a rebuild from the log.

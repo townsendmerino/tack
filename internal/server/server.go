@@ -31,8 +31,10 @@ type Request struct {
 	MaxTokens int
 	// Thinking asks for the model's thinking. It must not change within a turn (Conversation enforces it).
 	Thinking bool
-	// Temperature, when set, overrides the server's default sampling temperature.
+	// Temperature, TopP and TopK, when set, override the server's default sampling.
 	Temperature *float64
+	TopP        *float64
+	TopK        *int
 	// ToolChoice is "" (the server's default, auto), "any" (the model must call a tool) or "none".
 	ToolChoice string
 }

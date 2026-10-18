@@ -53,6 +53,12 @@ type Server struct {
 	URL string `toml:"url"`
 	// TokenFile holds the server's bearer token (mode 0600). The Keychain replaces it (DESIGN §5.3).
 	TokenFile string `toml:"token_file"`
+
+	// Sampling sent with every request, for either kind; unset leaves goinfer's default (or the model's own, where its
+	// GGUF recommends one).
+	Temperature *float64 `toml:"temperature"` // at least 0
+	TopP        *float64 `toml:"top_p"`       // above 0, at most 1
+	TopK        *int     `toml:"top_k"`       // at least 1
 }
 
 // Ken configures ken's engine (ken v1.9.0, engine.Options). ModelDir is always explicit: tack does not rely on ken's
@@ -148,6 +154,10 @@ func (c *Config) validate() error {
 	}
 	for name, s := range c.Servers {
 		s.Binary, s.ModelPath, s.TokenFile = expand(s.Binary), expand(s.ModelPath), expand(s.TokenFile)
+		if (s.Temperature != nil && *s.Temperature < 0) || (s.TopP != nil && (*s.TopP <= 0 || *s.TopP > 1)) ||
+			(s.TopK != nil && *s.TopK < 1) {
+			return fmt.Errorf("servers.%s: temperature must be at least 0, top_p in (0, 1] and top_k at least 1", name)
+		}
 		switch s.Kind {
 		case KindChild:
 			if s.Binary == "" || s.ModelPath == "" || s.Ctx <= 0 {

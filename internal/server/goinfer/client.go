@@ -78,6 +78,8 @@ type wireRequest struct {
 	Tools       []server.Tool `json:"tools,omitempty"`
 	Thinking    *wireThinking `json:"thinking,omitempty"`
 	Temperature *float64      `json:"temperature,omitempty"`
+	TopP        *float64      `json:"top_p,omitempty"`
+	TopK        *int          `json:"top_k,omitempty"`
 	ToolChoice  *wireChoice   `json:"tool_choice,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
 }
@@ -86,7 +88,7 @@ func str(s string) *string { return &s }
 
 func toWire(req server.Request, stream bool) wireRequest {
 	w := wireRequest{Model: req.Model, MaxTokens: req.MaxTokens, System: req.System, Tools: req.Tools,
-		Temperature: req.Temperature, Stream: stream}
+		Temperature: req.Temperature, TopP: req.TopP, TopK: req.TopK, Stream: stream}
 	if req.ToolChoice != "" {
 		w.ToolChoice = &wireChoice{Type: req.ToolChoice}
 	}

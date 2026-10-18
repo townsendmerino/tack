@@ -24,6 +24,7 @@ import (
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/cassette"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
@@ -146,6 +147,9 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
+	if s, ok := cfg.Servers[name]; ok {
+		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
+	}
 	c := core.New(ctx, opts)
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)

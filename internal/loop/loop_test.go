@@ -14,6 +14,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
@@ -455,5 +456,32 @@ func TestBudgetsMustBeSet(t *testing.T) {
 	}
 	if n := len(h.payloads(proto.EvRequestSent)); n != 0 {
 		t.Fatalf("%d requests sent with an unset budget", n)
+	}
+}
+
+// TestSamplingReachesTheWire: Config.Sampling goes out with every request; unset, the fields are left out so the
+// server's (or the model's) defaults apply.
+func TestSamplingReachesTheWire(t *testing.T) {
+	temp, topP, topK := 0.7, 0.8, 20
+	h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`), goinfertest.Says("done"))
+	cfg := h.sess.cfg
+	cfg.Sampling = server.Sampling{Temperature: &temp, TopP: &topP, TopK: &topK}
+	h.sess = New(cfg)
+	if stop, err := h.sess.Turn(context.Background(), "list"); err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("turn: %q %v", stop, err)
+	}
+	if len(h.script.Requests) != 2 {
+		t.Fatalf("%d requests", len(h.script.Requests))
+	}
+	for i, body := range h.script.Requests {
+		s := string(body)
+		if !strings.Contains(s, `"temperature":0.7`) || !strings.Contains(s, `"top_p":0.8`) || !strings.Contains(s, `"top_k":20`) {
+			t.Errorf("request %d lacks the sampling: %s", i, s[:min(len(s), 300)])
+		}
+	}
+	h = newHarness(t, Budget{}, goinfertest.Says("hi"))
+	h.sess.Turn(context.Background(), "hi")
+	if s := string(h.script.Requests[0]); strings.Contains(s, "top_p") || strings.Contains(s, "top_k") || strings.Contains(s, "temperature") {
+		t.Errorf("unset sampling was sent: %s", s[:min(len(s), 300)])
 	}
 }
