@@ -34,10 +34,10 @@ func (anyShell) Run(context.Context, string, time.Duration) (shell.Result, error
 	return shell.Result{}, nil
 }
 
-// fixedPromptRequest is the fixed prompt as goinfer renders it: the system prompt, every tool's schema, and a
-// one-word user message, the least a request can carry.
+// fixedPromptRequest is the largest fixed prompt as goinfer renders it: the edit task's system prompt, the longer of
+// the two, every tool's schema including done, and a one-word user message, the least a request can carry.
 func fixedPromptRequest(model string) server.Request {
-	return server.Request{Model: model, System: SystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true}).Specs(),
+	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true}).Specs(),
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 

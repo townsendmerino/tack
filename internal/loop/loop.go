@@ -68,6 +68,11 @@ type Config struct {
 	Perms   *perms.Engine
 	Mode    proto.Mode
 	Approve Approver
+	// EditTask makes every request require a tool call (tool_choice any) and ends a turn only through the done tool,
+	// which Tools must hold. Changed reports whether the workspace differs from where the session began; done with
+	// no change is refused once (DoneNoChange), R13's loop mitigation (DESIGN §17).
+	EditTask bool
+	Changed  func() (bool, error)
 	// Now and Sleep are replaced by tests.
 	Now   func() time.Time
 	Sleep func(context.Context, time.Duration) error
@@ -99,8 +104,12 @@ func New(cfg Config) *Session {
 	if cfg.Emit == nil {
 		cfg.Emit = func(proto.Event) {}
 	}
-	return &Session{cfg: cfg, conv: &server.Conversation{System: SystemPrompt, Tools: cfg.Tools.Specs(),
-		MaxTokens: cfg.Budget.MaxTokens, Sampling: cfg.Sampling}}
+	conv := &server.Conversation{System: SystemPrompt, Tools: cfg.Tools.Specs(), MaxTokens: cfg.Budget.MaxTokens,
+		Sampling: cfg.Sampling}
+	if cfg.EditTask {
+		conv.System, conv.ToolChoice = EditSystemPrompt, "any"
+	}
+	return &Session{cfg: cfg, conv: conv}
 }
 
 // Conversation is the session's conversation so far, for tests and for checking it against a rebuild from the log.
@@ -196,6 +205,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.conv.Model = s.cfg.Source.Model()
 
 	requests, calls, tokens, errorsInARow := 0, 0, 0, 0
+	doneRefused, finished := false, false // an edit task's done (Config.EditTask)
 	for {
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
@@ -281,6 +291,24 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				over = &proto.BudgetExceeded{Budget: "session_tool_calls", Limit: float64(bud.SessionToolCalls), Value: float64(s.calls + 1)}
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled,
 					Result: fmt.Sprintf("error: not run: the session's tool-call budget (%d) was exceeded", bud.SessionToolCalls)}
+			case b.Name == "done" && s.cfg.EditTask:
+				calls++
+				s.calls++
+				// An unreadable workspace counts as changed: the refusal is for a model that has not tried, and a
+				// failure to tell must not keep one that has from finishing.
+				changed := true
+				if s.cfg.Changed != nil {
+					if c, err := s.cfg.Changed(); err == nil {
+						changed = c
+					}
+				}
+				if !changed && !doneRefused {
+					doneRefused = true
+					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: DoneNoChange}
+				} else {
+					finished = true
+					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: "done"}
+				}
 			default:
 				calls++
 				s.calls++
@@ -317,6 +345,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		if err := s.conv.AnswerTools(results); err != nil {
 			return fail("internal", err)
+		}
+		if finished {
+			return end(proto.StopDone)
 		}
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)

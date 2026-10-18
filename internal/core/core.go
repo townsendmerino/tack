@@ -5,12 +5,14 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server"
@@ -47,7 +50,27 @@ type Options struct {
 	// state directory where the targets are registered for tack halt (internal/halt.Register).
 	Sweep   func(t sandbox.Target, dryRun bool) (sandbox.Report, error)
 	HaltDir string
+	// Edit makes a session in auto mode able to change its workspace: it returns the session's sandboxed shell and the
+	// permission engine that decides each call (cmd/tack: macOS only). Without it, a session asking for auto mode is
+	// refused, and every session is read-only.
+	Edit func(root string, group sandbox.Target) (EditKit, error)
+	// EditTask makes every auto-mode session an edit task (loop.Config.EditTask): tool calls required, ended by done.
+	EditTask bool
+	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
+	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
+	// until that is built, matching what opencode loads.
+	WholeInstructions bool
 }
+
+// EditKit is what an auto-mode session changes its workspace with.
+type EditKit struct {
+	Shell  tools.Shell
+	Engine *perms.Engine
+}
+
+// instructionFiles are the instruction files WholeInstructions looks for at the workspace root, in opencode 1.19.0's
+// order (internal/eval/pilot.instructionFiles); the first found is used.
+var instructionFiles = []string{"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
 
 // Core hosts sessions. It is safe for concurrent use by any number of connections.
 type Core struct {
@@ -70,6 +93,9 @@ type session struct {
 	cancel  context.CancelCauseFunc // the running turn's
 	subs    map[*subscriber]bool
 	target  sandbox.Target // what Halt sweeps for this session
+	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been.
+	instructions string
+	prompted     bool
 }
 
 // subscriber is one connection's subscription to one session. last is the highest persisted seq it has been sent, so
@@ -281,8 +307,27 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			return "", err
 		}
 	}
-	s.loop = loop.New(loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit})
+	cfg := loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit}
+	if p.Mode == proto.ModeAuto {
+		if c.opt.Edit == nil {
+			c.unregister(id)
+			return "", errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
+		}
+		kit, err := c.opt.Edit(ws.Root(), s.target)
+		if err != nil {
+			c.unregister(id)
+			return "", fmt.Errorf("auto mode: %w", err)
+		}
+		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask})
+		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
+		root := ws.Root()
+		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
+	}
+	if c.opt.WholeInstructions {
+		s.instructions = readInstructions(ws.Root())
+	}
+	s.loop = loop.New(cfg)
 	c.mu.Lock()
 	c.sessions[id] = s
 	c.mu.Unlock()
@@ -372,6 +417,11 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	}
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	s.running, s.cancel = true, cancel
+	// The instructions join the first message itself, so the log holds exactly what the model was sent.
+	if s.instructions != "" && !s.prompted {
+		text.WriteString("\n\n" + s.instructions)
+	}
+	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
 	seq, err := s.loop.Start(text.String())
@@ -456,4 +506,31 @@ func (c *Core) Resume() {
 	c.mu.Lock()
 	c.halted = nil
 	c.mu.Unlock()
+}
+
+// unregister drops a session's sweep target when the session is not created after all.
+func (c *Core) unregister(id proto.SessionID) {
+	if c.opt.HaltDir != "" {
+		_ = halt.Unregister(c.opt.HaltDir, string(id))
+	}
+}
+
+// workspaceChanged reports whether git sees any change in root, tracked or untracked, since its last commit: an edit
+// task's done asks it (loop.Config.Changed).
+func workspaceChanged(root string) (bool, error) {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".
+func readInstructions(root string) string {
+	for _, name := range instructionFiles {
+		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
+			return "Project instructions, from " + name + ":\n\n" + string(b)
+		}
+	}
+	return ""
 }

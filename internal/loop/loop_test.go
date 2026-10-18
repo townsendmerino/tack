@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -112,7 +113,7 @@ func (h *harness) checkRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := h.sess.Conversation()
-	re, err := Rebuild(evs, h.ws.Root(), live.Model, live.Tools, live.MaxTokens)
+	re, err := Rebuild(evs, h.ws.Root(), *live)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +323,7 @@ func TestRebuildAfterACrashMarksTheCallUnknown(t *testing.T) {
 		t.Fatalf("Inspect %+v", st)
 	}
 	live := h.sess.Conversation()
-	re, err := Rebuild(cut, h.ws.Root(), live.Model, live.Tools, live.MaxTokens)
+	re, err := Rebuild(cut, h.ws.Root(), *live)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,5 +484,67 @@ func TestSamplingReachesTheWire(t *testing.T) {
 	h.sess.Turn(context.Background(), "hi")
 	if s := string(h.script.Requests[0]); strings.Contains(s, "top_p") || strings.Contains(s, "top_k") || strings.Contains(s, "temperature") {
 		t.Errorf("unset sampling was sent: %s", s[:min(len(s), 300)])
+	}
+}
+
+// editHarness is newHarness as an edit task: the done tool, tool_choice any, and changed as the workspace's answer.
+func editHarness(t *testing.T, changed func() (bool, error), replies ...goinfertest.Reply) *harness {
+	h := newHarness(t, Budget{}, replies...)
+	cfg := h.sess.cfg
+	cfg.Tools, cfg.EditTask, cfg.Changed = tools.New(tools.Options{Done: true}), true, changed
+	h.sess = New(cfg)
+	return h
+}
+
+func doneResults(h *harness) []string {
+	var out []string
+	for _, f := range h.payloads(proto.EvToolFinished) {
+		out = append(out, f.(proto.ToolFinished).Result)
+	}
+	return out
+}
+
+// TestEditTaskForcesToolCalls: every request of an edit task carries tool_choice any and the edit system prompt, and
+// done ends the turn with stop reason done once files have changed.
+func TestEditTaskForcesToolCalls(t *testing.T) {
+	h := editHarness(t, func() (bool, error) { return true, nil },
+		goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`), goinfertest.Calls("", "d1", "done", `{"reason":"fixed it"}`))
+	if stop, err := h.sess.Turn(context.Background(), "fix it"); err != nil || stop != proto.StopDone {
+		t.Fatalf("stop %q %v", stop, err)
+	}
+	for i, body := range h.script.Requests {
+		var req struct {
+			System     string `json:"system"`
+			ToolChoice *struct {
+				Type string `json:"type"`
+			} `json:"tool_choice"`
+		}
+		json.Unmarshal(body, &req)
+		if req.ToolChoice == nil || req.ToolChoice.Type != "any" || req.System != EditSystemPrompt {
+			t.Errorf("request %d: tool_choice %+v, system edit prompt %v", i, req.ToolChoice, req.System == EditSystemPrompt)
+		}
+	}
+	if r := doneResults(h); len(r) != 2 || r[1] != "done" {
+		t.Fatalf("results %q", r)
+	}
+	h.checkRebuild(t)
+}
+
+// TestDoneWithNoChangeIsRefusedOnce: the first done with no file changed is answered DoneNoChange and the turn goes on;
+// the second ends it, whatever the files say.
+func TestDoneWithNoChangeIsRefusedOnce(t *testing.T) {
+	h := editHarness(t, func() (bool, error) { return false, nil },
+		goinfertest.Calls("", "d1", "done", `{"reason":"looks fine"}`), goinfertest.Calls("", "d2", "done", `{"reason":"no change is needed: X"}`))
+	if stop, err := h.sess.Turn(context.Background(), "fix it"); err != nil || stop != proto.StopDone {
+		t.Fatalf("stop %q %v", stop, err)
+	}
+	if r := doneResults(h); len(r) != 2 || r[0] != DoneNoChange || r[1] != "done" || len(h.script.Requests) != 2 {
+		t.Fatalf("results %q after %d requests", r, len(h.script.Requests))
+	}
+	// An unreadable workspace counts as changed: done ends at once.
+	h = editHarness(t, func() (bool, error) { return false, errors.New("git: not a repository") },
+		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))
+	if stop, _ := h.sess.Turn(context.Background(), "fix it"); stop != proto.StopDone || len(doneResults(h)) != 1 {
+		t.Fatalf("unreadable workspace: stop %q, results %q", stop, doneResults(h))
 	}
 }

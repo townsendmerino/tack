@@ -23,6 +23,8 @@ type Conversation struct {
 	MaxTokens int
 	// Sampling is sent with every request; its nil fields leave the server's defaults.
 	Sampling Sampling
+	// ToolChoice is sent with every request: "" (the server's default, auto), "any" or "none".
+	ToolChoice string
 
 	msgs     []Message
 	thinking bool
@@ -141,7 +143,7 @@ func (c *Conversation) EndTurn() error {
 // Request is the next request: the stable prefix, then every message so far.
 func (c *Conversation) Request() Request {
 	return Request{Model: c.Model, System: c.System, Tools: c.Tools, MaxTokens: c.MaxTokens, Thinking: c.thinking,
-		Temperature: c.Sampling.Temperature, TopP: c.Sampling.TopP, TopK: c.Sampling.TopK,
+		Temperature: c.Sampling.Temperature, TopP: c.Sampling.TopP, TopK: c.Sampling.TopK, ToolChoice: c.ToolChoice,
 		Messages: append([]Message(nil), c.msgs...)}
 }
 

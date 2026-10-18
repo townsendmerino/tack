@@ -158,9 +158,10 @@ and in how much memory, before the loop is built around them.
     window: 3,276 tokens at 16k, more on a larger window (owner, 2026-10-16, ADR-003; to be reconsidered as goinfer
     serves larger windows). For scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
     the whole window (`docs/integrations/claude-code.md`).
-    Measured: tack's fixed prompt is 447 tokens (`TestFixedPromptBudget`). opencode 1.19.0's own system prompt and tool
-    schemas, before any instruction file, are 11,180 tokens with the same Qwen2.5 tokenizer: 25 times tack's, and 68% of
-    a 16k window. With ken-mcp's schemas they are 14,694 (E1 pilot smoke, 2026-10-16;
+    Measured: tack's largest fixed prompt, an edit task's (its system prompt and every tool, `done` included), is 1,024
+    tokens (`TestFixedPromptBudget`); P0's read-only set measured 447 on 2026-10-16. opencode 1.19.0's own system prompt
+    and tool schemas, before any instruction file, are 11,180 tokens with the same Qwen2.5 tokenizer: 11 times tack's
+    largest, and 68% of a 16k window. With ken-mcp's schemas they are 14,694 (E1 pilot smoke, 2026-10-16;
     `docs/measurements/e0-mac-2026-10-16.md`).
   - **Long instruction files are read by section.** goinfer's `CLAUDE.md` is 44 KB, about 11,000 tokens: two-thirds of
     the window on its own. ken's is 28 KB. Above a budget (*proposed* 15% of the window, cumulative until the next

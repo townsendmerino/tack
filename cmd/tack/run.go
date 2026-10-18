@@ -48,10 +48,16 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	wsFlag := fs.String("workspace", "", "repository to work in (default: the git root of the current directory)")
 	serverName := fs.String("server", "", "server from the config to use (default: its main)")
 	jsonOut := fs.Bool("json", false, "stream every event as one JSON line on stdout")
+	edit := fs.Bool("edit", false, "an edit task: auto mode in the sandbox, edit, write and bash, every turn a tool call, ended by done (macOS)")
+	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question")
 	fs.Bool("no-daemon", true, "run the core in this process (the only mode until the daemon exists)")
 	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
 	replay := fs.String("replay", "", "development: answer every model request from this cassette instead of a server")
 	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if *instructions != "" && *instructions != "whole" {
+		fmt.Fprintln(stderr, `tack run: --instructions takes "whole" (section loading is not built yet)`)
 		return exitUsage
 	}
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
@@ -147,6 +153,12 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
+	opts.WholeInstructions = *instructions == "whole"
+	mode := proto.ModePlan
+	if *edit {
+		mode, opts.EditTask = proto.ModeAuto, true
+		opts.Edit = editKit(stateDir, filepath.Dir(*cfgPath))
+	}
 	if s, ok := cfg.Servers[name]; ok {
 		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
 	}
@@ -154,7 +166,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)
 
-	code := drive(ctx, c, ws, question, *jsonOut, stdout, stderr)
+	code := drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
 
 	if rec != nil {
 		if err := rec.C.Save(*record); err != nil {
@@ -173,7 +185,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 }
 
 // drive runs one turn through the protocol, against the Core over an in-memory pipe (--no-daemon, DESIGN §9.1).
-func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool, stdout, stderr io.Writer) int {
+func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mode, jsonOut bool, stdout, stderr io.Writer) int {
 	a, b := net.Pipe()
 	defer a.Close()
 	go func() { _ = c.Serve(ctx, b); b.Close() }()
@@ -229,7 +241,7 @@ func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool,
 		return exitError
 	}
 	var sess proto.SessionNewResult
-	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
@@ -249,7 +261,7 @@ func drive(ctx context.Context, c *core.Core, ws, question string, jsonOut bool,
 		reason = <-done // the turn records its cancel and ends
 	}
 	switch reason {
-	case proto.StopEndTurn:
+	case proto.StopEndTurn, proto.StopDone:
 		return exitOK
 	case proto.StopBudget:
 		return exitBudget

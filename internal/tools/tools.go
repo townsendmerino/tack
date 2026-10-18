@@ -61,6 +61,8 @@ type Options struct {
 	// Plan adds todo and ask_user; Ask answers ask_user, and nil answers that no one is attached.
 	Plan bool
 	Ask  Asker
+	// Done adds done, which ends an edit task (loop.Config.EditTask).
+	Done bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -84,6 +86,9 @@ func New(o Options) *Set {
 	}
 	if o.Plan {
 		ts = append(ts, todoTool{}, askUserTool{ask: o.Ask})
+	}
+	if o.Done {
+		ts = append(ts, doneTool{})
 	}
 	s := &Set{byName: map[string]Tool{}}
 	for _, t := range ts {

@@ -10,9 +10,11 @@ import (
 // Rebuild replays a session's persisted events into the conversation they describe (principle 4: the log is the
 // truth). A rebuilt conversation's next request is the one the live loop would send, byte for byte, so a resumed
 // session keeps its cached prefix. A tool call that started and never finished (a crash) is answered with an error
-// result saying its outcome is unknown; it is never re-run (DESIGN §6.1). model and tools are the session's.
-func Rebuild(evs []proto.Event, workspaceRoot, model string, tools []server.Tool, maxTokens int) (*server.Conversation, error) {
-	conv := &server.Conversation{Model: model, System: SystemPrompt, Tools: tools, MaxTokens: maxTokens}
+// result saying its outcome is unknown; it is never re-run (DESIGN §6.1). base carries the session's settings: its
+// model, system prompt, tools, MaxTokens, Sampling and ToolChoice, as New set them; its messages are ignored.
+func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) (*server.Conversation, error) {
+	conv := &server.Conversation{Model: base.Model, System: base.System, Tools: base.Tools, MaxTokens: base.MaxTokens,
+		Sampling: base.Sampling, ToolChoice: base.ToolChoice}
 	var results []server.ToolResult
 	turns := 0
 	flush := func() error {
