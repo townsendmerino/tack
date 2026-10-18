@@ -490,6 +490,18 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		o.Capture.SetDir(filepath.Join(dir, "requests"))
 	}
 	if o.A1 != "" {
+		ml, err := os.Create(filepath.Join(dir, "modules.log"))
+		if err == nil {
+			err = DownloadModules(ctx, repo, ml)
+			ml.Close()
+		}
+		if err != nil {
+			if o.Capture != nil {
+				o.Capture.SetDir("")
+			}
+			rec.Run.Void = "module download: " + err.Error()
+			return rec
+		}
 		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap)
 		if rec.Run.Void != "" { // no model request was made: nothing to pair, summarize or grade
 			if o.Capture != nil {

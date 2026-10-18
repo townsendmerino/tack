@@ -3,9 +3,12 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -26,7 +29,7 @@ import (
 // tack's summary, in which the bash call succeeded (a sandbox denying the repository fails it), the sampling check
 // passes on the first model request, and the oracle's output is kept.
 func TestA1RunsAndGrades(t *testing.T) {
-	task, mirrors := a1Task(t)
+	task, mirrors := a1Task(t, false)
 	script := goinfertest.NewScripted("qwen", 32768,
 		goinfertest.Calls("", "r1", "read", `{"path":"calc/calc.go"}`),
 		goinfertest.Calls("", "e1", "edit", `{"path":"calc/calc.go","old_string":"a - b","new_string":"a + b"}`),
@@ -39,7 +42,7 @@ func TestA1RunsAndGrades(t *testing.T) {
 		rec.TackRun.Failed["bash"] != 0 || rec.TackRun.DoneRefused != 0 {
 		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
 	}
-	if !strings.Contains(string(stderrLog), `tack run: preflight "go version": ok: go version go1.`) {
+	if !strings.Contains(string(stderrLog), fmt.Sprintf("tack run: preflight %q: ok: ", pilot.PreflightCommand)) {
 		t.Errorf("no passing preflight in tack's stderr:\n%s", stderrLog)
 	}
 	if b, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "oracle.log")); !strings.Contains(string(b), `"Action":"pass"`) {
@@ -50,14 +53,14 @@ func TestA1RunsAndGrades(t *testing.T) {
 	}
 }
 
-// TestA1PreflightFailureIsVoid: when the preflight cannot run go in the sandbox (here, no go on tack's PATH), the task
-// is recorded void with tack's reason, not graded, and the model is never asked anything.
+// TestA1PreflightFailureIsVoid: when the preflight cannot run go in the sandbox (here, no go on tack's PATH, though the
+// pilot has go), the task is recorded void with tack's reason, not graded, and the model is never asked anything.
 func TestA1PreflightFailureIsVoid(t *testing.T) {
-	task, mirrors := a1Task(t)
-	t.Setenv("PATH", "/usr/bin:/bin")
+	task, mirrors := a1Task(t, false)
+	t.Setenv("TACK_TEST_PATH", "/usr/bin:/bin")
 	script := goinfertest.NewScripted("qwen", 32768, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))
 	rec, _ := a1Run(t, task, mirrors, script)
-	if !strings.Contains(rec.Run.Void, `tack run: preflight "go version" failed`) || rec.Pass || rec.Run.Exit != 8 ||
+	if !strings.Contains(rec.Run.Void, fmt.Sprintf("tack run: preflight %q failed", pilot.PreflightCommand)) || rec.Pass || rec.Run.Exit != 8 ||
 		rec.TackRun != nil || len(rec.Oracle) != 0 {
 		t.Fatalf("record %+v", rec)
 	}
@@ -66,8 +69,10 @@ func TestA1PreflightFailureIsVoid(t *testing.T) {
 	}
 }
 
-// a1Task is a one-task pilot over a fresh repository where Add subtracts, and the mirror directory holding it.
-func a1Task(t *testing.T) (pilot.Task, string) {
+// a1Task is a one-task pilot over a fresh repository where Add subtracts, and the mirror directory holding it. With
+// dep, the repository needs a module, example.com/dep, that only a local proxy serves (a1Proxy), and the module cache
+// starts empty.
+func a1Task(t *testing.T, dep bool) (pilot.Task, string) {
 	t.Helper()
 	src := t.TempDir()
 	git := func(args ...string) string {
@@ -87,10 +92,24 @@ func a1Task(t *testing.T) (pilot.Task, string) {
 	git("init", "-q", "-b", "main")
 	write("go.mod", "module m\n\ngo 1.27\n")
 	write("calc/calc.go", "package calc\n\nfunc Add(a, b int) int { return a - b }\n")
+	if dep {
+		a1Proxy(t)
+		write("calc/calc.go", "package calc\n\nimport \"example.com/dep\"\n\nfunc Add(a, b int) int { return a - b + dep.Zero }\n")
+		tidy := exec.Command("go", "mod", "tidy")
+		tidy.Dir = src
+		tidy.Env = append(os.Environ(), "GOFLAGS=-modcacherw", "GOMODCACHE="+t.TempDir()) // the run's cache stays empty
+		if out, err := tidy.CombinedOutput(); err != nil {
+			t.Fatalf("go mod tidy: %v %s", err, out)
+		}
+	}
 	git("add", "-A")
 	git("commit", "-q", "-m", "base")
 	base := git("rev-parse", "HEAD")
-	write("calc/calc.go", "package calc\n\nfunc Add(a, b int) int { return a + b }\n")
+	if dep {
+		write("calc/calc.go", "package calc\n\nimport \"example.com/dep\"\n\nfunc Add(a, b int) int { return a + b + dep.Zero }\n")
+	} else {
+		write("calc/calc.go", "package calc\n\nfunc Add(a, b int) int { return a + b }\n")
+	}
 	write("calc/calc_test.go", "package calc\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(Add(2, 2))\n\t}\n}\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "fix")
@@ -103,6 +122,59 @@ func a1Task(t *testing.T) (pilot.Task, string) {
 		Packages: []string{"./calc"}, TestFiles: []string{"calc/calc_test.go"}, Statement: "Add subtracts; it should add.",
 		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}}
 	return task, mirrors
+}
+
+// a1Proxy serves example.com/dep v1.0.0 from a file proxy, with an empty module cache and no checksum database.
+func a1Proxy(t *testing.T) {
+	t.Helper()
+	proxy := t.TempDir()
+	v := filepath.Join(proxy, "example.com", "dep", "@v")
+	os.MkdirAll(v, 0o755)
+	mod := "module example.com/dep\n\ngo 1.26\n"
+	os.WriteFile(filepath.Join(v, "list"), []byte("v1.0.0\n"), 0o644)
+	os.WriteFile(filepath.Join(v, "v1.0.0.info"), []byte(`{"Version":"v1.0.0"}`), 0o644)
+	os.WriteFile(filepath.Join(v, "v1.0.0.mod"), []byte(mod), 0o644)
+	f, err := os.Create(filepath.Join(v, "v1.0.0.zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := zip.NewWriter(f)
+	for name, body := range map[string]string{"go.mod": mod, "dep.go": "package dep\n\nconst Zero = 0\n"} {
+		w, _ := z.Create("example.com/dep@v1.0.0/" + name)
+		w.Write([]byte(body))
+	}
+	if err := errors.Join(z.Close(), f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOPROXY", "file://"+proxy)
+	t.Setenv("GOSUMDB", "off")
+	cache := t.TempDir()
+	t.Setenv("GOMODCACHE", cache)
+	t.Cleanup(func() { // the cache's files are read-only; this runs before TempDir's removal
+		filepath.WalkDir(cache, func(p string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+}
+
+// TestA1DownloadsModulesBeforeTheSandbox: a task whose repository needs a module missing from the cache runs, because
+// the pilot downloads it outside the sandbox before tack starts. The sandbox can neither fetch nor write the cache, so
+// without the download the preflight fails and the task is void.
+func TestA1DownloadsModulesBeforeTheSandbox(t *testing.T) {
+	task, mirrors := a1Task(t, true)
+	script := goinfertest.NewScripted("qwen", 32768,
+		goinfertest.Calls("", "r1", "read", `{"path":"calc/calc.go"}`),
+		goinfertest.Calls("", "e1", "edit", `{"path":"calc/calc.go","old_string":"a - b","new_string":"a + b"}`),
+		goinfertest.Calls("", "b1", "bash", `{"command":"go build ./..."}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"Add adds"}`))
+	rec, out := a1Run(t, task, mirrors, script)
+	stderrLog, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "stderr.log"))
+	if !rec.Pass || rec.Run.Void != "" || rec.TackRun == nil || rec.TackRun.ToolCalls["bash"] != 1 || rec.TackRun.Failed["bash"] != 0 {
+		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
+	}
 }
 
 // a1Run runs the A1 arm of a pilot over task with this test binary as tack, against script through the capture, and

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -51,8 +52,23 @@ session_tool_calls = 1000000
 }
 
 // PreflightCommand is what A1 runs in the sandbox, in the task's repository, before the model starts (`tack run
-// --preflight`). If it fails the run is void, not the model's failure (owner, 2026-10-18).
-const PreflightCommand = "go version"
+// --preflight`): every package the repository's builds and tests need must load from the module cache, since the
+// sandbox can neither download a module nor write the cache. If it fails the run is void, not the model's failure
+// (owner, 2026-10-18).
+const PreflightCommand = "go list -deps -test ./... >/dev/null && go version"
+
+// DownloadModules fills the module cache with what repo's packages and tests need (`go mod download`), outside the
+// sandbox and before the run's clock starts, writing go's output to log.
+func DownloadModules(ctx context.Context, repo string, log io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "mod", "download")
+	cmd.Dir, cmd.Stdout, cmd.Stderr = repo, log, log
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("go mod download: %w", err)
+	}
+	return nil
+}
 
 // RunTack runs `tack run --edit --instructions whole --json` once in repo with the statement, under cap, after
 // PreflightCommand. tack's own files, the config, the API key (mode 0600) and its state, go in TackDir(out): tack

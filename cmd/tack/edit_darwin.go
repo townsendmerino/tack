@@ -46,7 +46,8 @@ func editKit(stateDir, configDir string) func(root string, group sandbox.Target)
 		cfg := sandbox.Config{Workspace: root, Temp: tmp, GoCache: gocache, Home: home, Tack: []string{stateDir, configDir}}
 		eng := &perms.Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true}
 		sh := &shell.Session{Exe: exe, Args: []string{"shell"}, Engine: eng, Group: group,
-			Env: []string{"TMPDIR=" + tmp, "GOCACHE=" + gocache},
+			// GOPROXY=off: the sandbox has no network, so a module missing from the cache fails as missing.
+			Env: []string{"TMPDIR=" + tmp, "GOCACHE=" + gocache, "GOPROXY=off"},
 			Wrap: func(c *exec.Cmd, g, mark string) *exec.Cmd {
 				cc := cfg
 				cc.Group, cc.Mark = g, mark
