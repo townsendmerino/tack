@@ -62,6 +62,22 @@ The order the owner approved, each step with its exit check:
       - **Not settled by `fit`:** on Metal the served context can differ from the `ctx` that `fit` priced, so the
         banner remains the authority.
       - **Stage 2,** after G6, settles the decode path and the Metal or CUDA residency before the load.
+    - **G2 stage 2 landed for Metal** (goinfer main `1d09c2e7`, 2026-10-17).
+      - For a `.giw` on Metal, `fit` now answers `decode_path` without loading: resident, with `resident_ctx`, or CPU
+        with the load's exact decline text.
+      - Still `unknown`: CUDA and WebGPU, a `.gguf` on a GPU backend, and Metal int8. A decline inside the build or
+        its self-test is not foreseen, so the post-load check stays.
+      - **tack's answer for CUDA (nobara): "unknown, load to find out" is enough through P1–P3.**
+        - nobara serves a few fixed configurations, each fit-checked by day.
+        - The post-load decode-path check stays whatever `fit` says.
+        - A wrong guess costs one load, about 15 s on the 7B, and is caught.
+      - **It would be needed** once tack picks a model or window on nobara for the user: P4's model picker, or
+        choosing the largest window that stays on the GPU.
+        - Then a load that fits host memory but not the card falls back to the CPU. Seed-Coder-8B at 32768 did on
+          2026-10-17: "needs 4.29 GB of KV … but only 3.21 GB is free on the device".
+        - Today the only way to find the window that fits is to load and retry.
+        - tack would ask goinfer then for CUDA's VRAM pricing in `fit`. The numbers are goinfer's own, from its
+          build's check, never tack's arithmetic.
   - **G6** is now a safety net (owner, 2026-10-17). nobara's tack-facing server is on demand and never starts while
     the timing lock is held, so the night queue only stops one that is still running when it starts. No bedtime
     routine: until step 4, nothing runs on nobara by day.
