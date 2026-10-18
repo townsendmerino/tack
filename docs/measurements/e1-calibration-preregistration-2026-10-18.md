@@ -459,6 +459,7 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 - **E0 finished at 11:55 PDT with verdict "fail".**
   - **Time to first token:** every one of its 24 requests ended "no token was streamed". That covers 4,096, 8,192 and
     15,360 tokens, cold and with the prefix reused. They took about 2.5 minutes each, 17:53–18:54 UTC.
+  - **Decode: not to be quoted** (owner, 2026-10-18). The figure is most likely a counting error; see below.
   - **Decode:** its phase measured 226–230 tok/s. That disagrees with the by-day sample of 36–37 tok/s
     (`e1-model-candidates-2026-10-18.md`), and is not investigated.
 - **With its experts streamed, gpt-oss-20b is out for A1 on this card** (owner, 2026-10-18), whatever the `greplicate`
@@ -473,3 +474,13 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
   request remain the server's real time.
 - **Filed, not built:** E0's first-token probe should count a Harmony model's first token. For example, it could time
   the first byte of content or reasoning, or allow enough tokens for the first delta.
+- **The decode reading of 226–230 tok/s is most likely a counting error, and must not be quoted** (owner, 2026-10-18).
+  - It is six times the by-day reading of 36–37 tok/s, with nothing in between to explain it.
+  - E0's decode rate (`internal/eval/runner.go:decodeOnce`) is the output tokens the server reports, less one, over the
+    time between the first and last streamed delta. On a Harmony model, tokens that never stream (channel tokens,
+    analysis) count in the numerator but not in the time, the same blind spot as the first-token probe.
+  - Filed with the probe fix: E0's decode timing must cover every token it counts.
+- **How gpt-oss-20b can return** (owner, 2026-10-18), in this order and no other way:
+  1. goinfer fixes its Harmony parser, if the `greplicate`/`grepaste` names turn out to be the parser running past
+     `grep` (item 4 of tack's note to goinfer, which waits until the owner names it);
+  2. a new C2 runs on that build, with E0's first-token check (and decode timing) fixed to count Harmony tokens.
