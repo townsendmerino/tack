@@ -353,13 +353,16 @@ type Options struct {
 	A0, A0k  Arm
 	// A1, when set, is tack's binary: the job runs tack's arm alone, `tack run --edit` (amendment 9), instead of A0
 	// and A0k.
-	A1        string
-	Server    Server // filled by the caller once the server is up
-	ServeLog  string // the server's log, for each run's request window
-	Out       string
-	Cap       time.Duration
-	KenWarmup time.Duration // the warm-up's own limit, outside the clock
-	Log       io.Writer
+	A1 string
+	// ForcedCallMode is how the server enforces a forced tool call on the model; RunPilot asks the server for it
+	// (ForcedToolCall) when it is empty, and each record falls back to the banner (ServerFeatures) when neither knows.
+	ForcedCallMode string
+	Server         Server // filled by the caller once the server is up
+	ServeLog       string // the server's log, for each run's request window
+	Out            string
+	Cap            time.Duration
+	KenWarmup      time.Duration // the warm-up's own limit, outside the clock
+	Log            io.Writer
 	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
 	CountTokens func(ctx context.Context, text string) (int, error)
 	TackRev     string // the tack commit the runner was built from, recorded with every run
@@ -410,6 +413,9 @@ func RunPilot(ctx context.Context, o Options) error {
 	defer rf.Close()
 	enc := json.NewEncoder(rf)
 	start := time.Now()
+	if o.ForcedCallMode == "" && o.Server.Direct != "" {
+		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
+	}
 	total := len(o.Tasks) * 2
 	done := 0
 	logf := func(format string, args ...any) {
@@ -485,6 +491,9 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 	}
 	rec.Requests = Requests(o.ServeLog, from, size(o.ServeLog))
 	rec.ServerFeatures, rec.ForcedCallMode = ServerFeatures(o.ServeLog)
+	if o.ForcedCallMode != "" { // the server's own answer, from /v1/models, over the banner's
+		rec.ForcedCallMode = o.ForcedCallMode
+	}
 	if o.A1 != "" {
 		// A remote server's log arrives over ssh: wait, briefly, for its lines to catch up with the capture.
 		reqDir := filepath.Join(dir, "requests")

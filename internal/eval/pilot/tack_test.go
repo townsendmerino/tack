@@ -1,6 +1,9 @@
 package pilot
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,5 +91,27 @@ func TestServerFeatures(t *testing.T) {
 	os.WriteFile(p, []byte("  features: tools\n  forced calls: post-check (no constrainable call form)\n"), 0o644)
 	if _, m := ServerFeatures(p); m != "post-check" {
 		t.Fatalf("a reported mode: %q", m)
+	}
+}
+
+// TestForcedToolCall reads the model's forced_tool_call from /v1/models, and "" from a server that does not report it.
+func TestForcedToolCall(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer k" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"object":"list","data":[{"id":"other","forced_tool_call":"off"},{"id":"qwen","forced_tool_call":"grammar"}]}`))
+	}))
+	defer ts.Close()
+	if m := ForcedToolCall(context.Background(), ts.URL, "k", "qwen"); m != "grammar" {
+		t.Fatalf("mode %q", m)
+	}
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"object":"list","data":[{"id":"qwen"}]}`))
+	}))
+	defer old.Close()
+	if m := ForcedToolCall(context.Background(), old.URL, "k", "qwen"); m != "" {
+		t.Fatalf("an older server: %q", m)
 	}
 }

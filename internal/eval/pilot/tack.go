@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,4 +248,37 @@ func ServerFeatures(serveLog string) (features, forcedCallMode string) {
 		}
 	}
 	return features, forcedCallMode
+}
+
+// ForcedToolCall asks the server how a forced tool call (tool_choice any or required) is enforced on model: "grammar",
+// "post-check" or "off", from the model's forced_tool_call in /v1/models (goinfer 33532c3b and later). It returns ""
+// when the server does not report it (an older goinfer, or a model whose template takes no tools).
+func ForcedToolCall(ctx context.Context, baseURL, key, model string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
+	if err != nil {
+		return ""
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var list struct {
+		Data []struct {
+			ID             string `json:"id"`
+			ForcedToolCall string `json:"forced_tool_call"`
+		} `json:"data"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&list) != nil {
+		return ""
+	}
+	for _, m := range list.Data {
+		if m.ID == model {
+			return m.ForcedToolCall
+		}
+	}
+	return ""
 }

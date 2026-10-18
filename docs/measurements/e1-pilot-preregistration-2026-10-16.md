@@ -244,8 +244,13 @@ the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) 
   so the comparison is of the loop, not of tack's budgets. `max_tokens` is 2048, opencode's reply limit.
 - **No compaction.** tack has none yet (P1 step 6). A run that fills the 32k window ends in an error, recorded as such.
 - **The forced-call enforcement mode** goinfer reports for the model is recorded per run (`forced_call_mode`):
-  grammar, post-check or off. goinfer does not report it yet, so the field reads "not reported" until it does. The
-  expected mode for Qwen2.5-7B is "grammar".
+  "grammar", "post-check" or "off". It is read from the model's `forced_tool_call` in `/v1/models` (goinfer main
+  `33532c3b` and later), falling back to the banner.
+  - goinfer `31418112`, this run's server, predates that field, so the run records "not reported".
+  - The expected mode for Qwen2.5-7B, a ChatML JSON call form, is "grammar". A family with no JSON call form, such
+    as gemma-4-E4B, would read "post-check".
+  - Moving the server to `33532c3b` would report the mode. It would also change the server from the 0/20 re-run's,
+    so A1 keeps `31418112` unless the owner decides otherwise.
 - **The tasks:** the same ten (`pilot-746fb8c.jsonl`, task 8 removed). The task-size adjustment is E1's and does not
   apply here.
 - **How it runs.**
