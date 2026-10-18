@@ -2,8 +2,10 @@
 
 <!-- citations-at: 99534d6 -->
 
-**Status: proposed 2026-10-18, awaiting the owner's approval.** Nothing below runs before approval. Each loop change
-is its own amendment, registered here before any of its runs.
+**Status: approved by the owner 2026-10-18 (as `808a088`), with one addition in §2: below the bar, no loop
+change is measured, and the next decision is the model or the hardware (DESIGN §17, R13).** Each loop change is its
+own amendment, registered here before any of its runs. The loop changes are built after the baseline has run, not
+before (owner).
 
 **Why.** The pilot's ten tasks gave 0/10 for A1 and 0/20 for opencode (`e1-pilot-a1-2026-10-18.md`), so there is no
 baseline a loop change could beat. This page sets up a set of tasks a 7B can pass, measures A1 unchanged on it, then
@@ -40,13 +42,11 @@ measures each change against that baseline.
     - in 6, no named test fails at the base;
     - in 1, the tests pass with the fix stubbed.
   - E1's 101 are the only verified pool.
-- **What this costs E1: the owner's decision.**
-  - All twelve are in E1's capped order, at positions 1, 18, 20, 25, 37, 38, 39, 43, 47, 54, 56 and 63.
-  - E1 takes its first N, and N is not decided yet.
+- **What this costs E1.**
+  - All twelve were in E1's capped order, at positions 1, 18, 20, 25, 37, 38, 39, 43, 47, 54, 56 and 63.
   - Tuning tack's loop on these tasks means E1 can no longer treat them as held out.
-  - **Proposed:** remove the twelve from E1's capped order, as an amendment to E1's task selection. E1 then draws
-    from the other 59, in the same order.
-  - **Alternative:** keep them in E1, and report E1 both with and without them.
+  - **They leave E1 (owner, 2026-10-18).** E1 draws from the other 59, in the same order. This is E1 task selection's
+    amendment 5, and the twelve are kept as `eval/e1/calibration-candidates.jsonl`.
 - **Statements.**
   - Drafted under E1's statement rules: an issue, not a spec of the fix, and never quoting or paraphrasing the
     non-test diff.
@@ -69,8 +69,9 @@ measures each change against that baseline.
 - **Three runs per task: 36 runs.** At temperature 0.7 one run per task cannot tell a hard task from bad luck, and
   three give each task a pass rate of 0, 1, 2 or 3 out of 3.
 - **What "above zero" means.** The set is usable if the baseline passes at least 4 of 36 runs, on at least 2 tasks.
-  - Below that, nothing further runs on this set. It goes back to the owner, and the rule above does not move
-    without a mechanism.
+  - **Below that bar** (fewer than 4 passes, or passes on fewer than 2 tasks), **no loop change is measured** (owner,
+    2026-10-18). The next decision is then the model or the hardware, per R13 (DESIGN §17), not further loop tuning.
+  - The bar does not move without a mechanism.
 - **Time:** A1's ten runs averaged 0.5 min each. Thirty-six runs take about 20–60 min, and the worst case is 6 h with
   every run capped. It runs by day or by night as the owner says, with nobara's timing lock held.
 
@@ -211,8 +212,12 @@ listening on localhost. On this Mac on 2026-10-18 that was:
    pattern, and ken's `internal/modelfetch` tests pass in the sandbox.
 
 **A remaining hole, stated and tested.** A listener that someone outside the sandbox starts *while* a command runs is
-reachable from that command. A test shows this, so the hole is known. The owner accepts it, or this change does not
-go in.
+reachable from that command.
+
+- **Accepted by the owner, 2026-10-18.** It is recorded in DESIGN §6.6 as a known gap (ADR-005), and the test that
+  shows it lands with the change.
+- **Approved as designed:** every port listening at a command's start is blocked. The escape tests go red first,
+  including the pre-existing listener and the ssh SOCKS proxy.
 
 **This change is measured like the others.** On the calibration set it matters only where a task's tests, or the
 packages the model tests, use loopback.
@@ -240,9 +245,11 @@ packages the model tests, use loopback.
 
 ## 6. Order
 
-1. Approve: this page, the E1 decision in §1, and the harness fix in §5.
+1. ~~Approve: this page, the E1 decision in §1, and the harness fix in §5.~~ Approved 2026-10-18. The harness fix
+   is `54c2b31`. The four leftover forwards had already closed with their master connection when the cancel was
+   tried.
 2. Draft the 12 statements, and the owner reviews them.
 3. Run the grader check on the Mac.
 4. Run the baseline: A1 as is, 36 runs.
-5. If the baseline is above zero, the amendments follow, each registered before its runs, in the order 4.1, 4.2,
-   4.3, 4.4.
+5. If the baseline reaches the bar, build the changes, each with tier-0 tests broken once, in the order 4.1, 4.2, 4.3,
+   4.4. Each is registered as an amendment and measured before the next is built. Below the bar, stop at §2's rule.

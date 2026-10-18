@@ -156,3 +156,46 @@ Records: night job `tack-adr004-synctime`, `~/tack-runs/synctime/synctime-2026-1
 
 Under the owner's rule, tens of milliseconds closes the item, and decision (a) stands. Hundreds of milliseconds would
 have gone to the owner with the barrier figures.
+
+## ADR-005 — The sandbox allows loopback, except ports already listening when a command starts
+
+**Status:** decided 2026-10-18 by the owner. It is built after the calibration baseline
+(`docs/measurements/e1-calibration-preregistration-2026-10-18.md` §4.3), and measured there as its own amendment.
+
+**Question.** DESIGN §6.6 denied the network outright through P4, loopback included. Should a sandboxed command be able
+to use loopback?
+
+**What showed it.** In the A1 run of 2026-10-18 (`docs/measurements/e1-pilot-a1-2026-10-18.md`), `go test ./...` on
+ken failed `internal/modelfetch`: its `httptest` server could not bind `[::1]:0`. Any repository whose tests start a
+local server fails the same way under tack, and did not under opencode, which runs with no sandbox.
+
+**The risk.** Loopback reaches every local listener, not just the command's own. On the owner's Mac on 2026-10-18
+that meant:
+
+- VS Code Remote-SSH's SOCKS proxy to nobara (`ssh -D 50814`), a route to the whole outside network;
+- ssh port forwards;
+- VS Code and Claude Code helper servers;
+- AirPlay.
+
+**Options.**
+
+- (a) Keep loopback denied.
+- (b) Allow all of loopback.
+- (c) Allow loopback, but deny every port already listening when the command starts.
+
+**Decision: (c).**
+
+- Each command's profile is built when the command starts (`sandbox.Wrap`). The deny-list is read then, from the
+  kernel's socket table.
+- A test's own server binds port 0 after that, so it is allowed.
+- Off loopback, everything stays denied: outside addresses, DNS and UDP.
+
+**Escape tests, each red first:**
+
+- an outside address;
+- a listener started before the command;
+- an ssh `-D` SOCKS proxy;
+- DNS and UDP to the outside.
+
+**Known gap, accepted by the owner.** A listener started outside the sandbox while a command runs is reachable from
+that command. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it, and DESIGN §6.6 records it.

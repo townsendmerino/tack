@@ -534,6 +534,17 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **Network** is denied by default; through P4 it is denied outright, with an escape test proving it. From P5, with
     `web_fetch`, opening it per domain goes through a local proxy that enforces the list, because
     Seatbelt filters addresses, not host names.
+  - **Loopback is allowed, except to what was already listening** (ADR-005; built after the calibration baseline,
+    `e1-calibration-preregistration-2026-10-18.md` §4.3).
+    - A command may bind, accept and connect on loopback, so tests that start a local server (`httptest`) run.
+    - Every loopback port already listening when the command starts is denied to it. This covers the owner's local
+      services, such as an editor's helper servers, ssh forwards and an ssh SOCKS proxy, any of which could reach
+      the outside network.
+    - Everything off loopback stays denied. Escape tests prove it, each red first: an outside address, a pre-existing
+      listener, an ssh SOCKS proxy, and DNS and UDP.
+    - **Known gap, accepted by the owner (2026-10-18):** a listener started outside the sandbox *while* a command runs
+      is reachable from that command, because its port was not listening when the command's profile was built.
+      `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it and lands with the change.
   - **tack itself is out of reach.** The profile denies tack's socket, lock, token, state directory and config, so a
     command cannot approve its own request, change the mode, lift a halt or read transcripts. Methods that change
     permissions, mode, trust or halt state also require the token in `client.token`, which only unsandboxed clients can

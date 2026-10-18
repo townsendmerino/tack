@@ -163,6 +163,22 @@ DESIGN §15.1 wants A0's pass rate between about 20% and 80%. The pilot measures
   A smaller task may not change any of those. The adjustment is applied because it is the registered one, not
   because the evidence points at size (DESIGN §17, R13).
 
+**Amendment 5, 2026-10-18, before any E1 run** (owner). **The calibration set leaves E1; E1 draws from 59.**
+
+- **Which tasks leave.** The calibration set (`e1-calibration-preregistration-2026-10-18.md`) is every candidate in
+  E1's full order with `why.non_test_lines` at most 10: 12 tasks, goinfer 8, ken 3 and aikit 1.
+  - They are kept, byte-identical to their lines in `eval/e1/e1-order.jsonl`, as `eval/e1/calibration-candidates.jsonl`
+    (sha256 `1dc1c1c1…`).
+- **Why.** tack's loop changes are measured on the calibration set, so those tasks cannot also be held out for E1.
+- **E1's order is now `eval/e1/e1-order-cap40-nocal.jsonl`** (sha256 `17491435…`): `e1-order-cap40.jsonl` without the
+  twelve.
+  - 59 candidates remain, in the same order: aikit 19, goinfer 30, ken 10.
+  - Each line is byte-identical to its line in the capped order.
+  - E1 takes its first N from this order (amendment 4). The cap of 30 from any one repository is now exactly
+    goinfer's count.
+- **No other rule moves.** Removing tasks changes no candidate's eligibility. The capped order stays as the record of
+  amendment 4's adjustment.
+
 ## What this does not decide
 
 - Which arm is better. The pilot informs; it decides nothing (DESIGN §15.1).
