@@ -240,9 +240,43 @@ the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) 
   - Fixed prompt: 1,024 tokens, against opencode A0's 11,146.
   - Commands may write only the repository, a temp directory and tack's Go cache. The network is denied, and the
     module cache is read-only.
-- **Limits.** The 10-minute cap is the only limit, as for opencode. Every other budget of tack's is set out of reach,
-  so the comparison is of the loop, not of tack's budgets. `max_tokens` is 2048, opencode's reply limit.
-- **No compaction.** tack has none yet (P1 step 6). A run that fills the 32k window ends in an error, recorded as such.
+- **Limits.** The 10-minute cap, and tack's consecutive-failure budget of 8: the turn ends after eight failed tool
+  calls in a row (stop reason `budget`, `consecutive_errors`). Every other budget of tack's is out of reach. `max_tokens`
+  is 2048, opencode's reply limit.
+- **No compaction.** tack has none yet (P1 step 6). A run that fills the 32k window ends with stop reason `window_full`
+  (exit 7): a reply cut off short of its own token limit was stopped by the window, not by `max_tokens`.
+- **Changes after the task-7 smoke, before any A1 run** (owner, 2026-10-17). They are tack's design, from the P1-notes
+  rule that errors say what to do, and are not tuned to task 7:
+  - **The consecutive-failure budget (8) is restored.** It had been set out of reach above.
+  - **edit's error for text not in the file** now says what probably happened and what to do: "this text isn't in
+    <file>; the edit may already have been made. Read the file again before editing: old_string must match it exactly,
+    whitespace included".
+  - **An exact repeat of the call that just failed** (same tool, same input, key order aside) is not run. Its result
+    says so: "error: not run: this is the same call as the one that just failed, so it would fail the same way. Read
+    the file again, or try something else." It counts as a failure toward the budget.
+  - **`window_full`** is its own stop reason, as above.
+- **First byte is not TTFT.** The capture's time to first byte (`timed.ClientTTFBms`) is when the response stream
+  opens: goinfer sends its opening event before prefill ends. Compare goinfer's TTFT with the client's total, not its
+  first byte. The tailnet time is computed from the totals (`TailnetMs`).
+
+**The task-7 smoke, 2026-10-17 23:06–23:13: a smoke, not a result** (tack `dc489eb`, the Mac with nobara over the
+tailnet, `~/tack-runs/e1/a1-smoke-2026-10-17`).
+
+- **The path worked end to end.**
+  - pilot-serve brought the server up on nobara in 12 s, on `cuda-resident (int4)`; the forward and the capture ran.
+  - All 280 model requests were paired with goinfer's timings; the tailnet time had a median of 21 ms (9–142 ms).
+  - The sampling arrived, and `forced_call_mode` read "grammar (derived from the chatml template; build predates the
+    field)".
+  - `CLAUDE.md` was loaded whole (3,180 tokens), `oracle.log` was kept, and no process was left on either machine.
+- **The run failed, and showed what the changes above address.**
+  - The model hard-coded the statement's example value: the statement says the chunk "should start on line 5", and
+    the model edited `StartLine: t.startLine` to `StartLine: 5`.
+  - It then sent that identical edit about 220 more times, each failing. With every budget out of reach, this went on
+    until the 32k window filled (the last prompt was 32,759 tokens). The last reply was cut off nine tokens into a
+    tool call, and tack recorded it as `max_tokens`.
+  - It also renamed `tableDef`'s fields in one file and left their other uses broken, so the oracle's build failed.
+  - Tool calls: 270 edits (266 failed), 7 reads, 1 grep, 1 glob, no `done`.
+- The smoke runs once more after the changes, before A1 is queued.
 - **The forced-call enforcement mode** goinfer reports for the model is recorded per run (`forced_call_mode`):
   "grammar", "post-check" or "off". It is read from the model's `forced_tool_call` in `/v1/models` (goinfer main
   `33532c3b` and later), falling back to the banner.
