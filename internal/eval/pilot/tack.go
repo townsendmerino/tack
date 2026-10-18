@@ -218,16 +218,22 @@ func PairTimings(reqs []Request, requestsDir string) ([]Timed, error) {
 	return out, nil
 }
 
+// jsonCallForms are the chat-template families whose tool calls goinfer constrains with a grammar from the first token
+// under a forced tool call (goinfer 33532c3b's note: chatml, mellum2, mistral, llama3).
+var jsonCallForms = map[string]bool{"chatml": true, "mellum2": true, "mistral": true, "llama3": true}
+
 // ServerFeatures reads goinfer-serve's startup banner from its log: the "features:" line, verbatim, and the forced
-// tool-call enforcement mode (grammar, post-check or off), taken from a banner line that names forced calls. goinfer
-// does not report the mode yet (2026-10-17): until it does, the mode is "not reported", and nothing is assumed.
+// tool-call enforcement mode. The mode is a banner line naming forced calls if there is one. Otherwise, for a server
+// that predates goinfer's report (ForcedToolCall), it is derived from the loaded model's chat template, "[chat: X" on
+// its "loaded" line: a family with a JSON call form gives "grammar (derived from the X template; build predates the
+// field)" (owner, 2026-10-17, amendment 9). Any other template is "not reported": nothing else is assumed.
 func ServerFeatures(serveLog string) (features, forcedCallMode string) {
-	forcedCallMode = "not reported"
 	f, err := os.Open(serveLog)
 	if err != nil {
-		return "", forcedCallMode
+		return "", "not reported"
 	}
 	defer f.Close()
+	template := ""
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -236,6 +242,10 @@ func ServerFeatures(serveLog string) (features, forcedCallMode string) {
 		}
 		if rest, ok := strings.CutPrefix(line, "features:"); ok && features == "" {
 			features = strings.TrimSpace(rest)
+		}
+		if _, rest, ok := strings.Cut(line, "[chat: "); ok && template == "" && strings.HasPrefix(line, "loaded ") {
+			template, _, _ = strings.Cut(rest, ",")
+			template = strings.TrimSuffix(strings.TrimSpace(template), "]")
 		}
 		low := strings.ToLower(line)
 		if i := strings.Index(low, "forced call"); i >= 0 {
@@ -246,6 +256,13 @@ func ServerFeatures(serveLog string) (features, forcedCallMode string) {
 				}
 			}
 		}
+	}
+	switch {
+	case forcedCallMode != "":
+	case jsonCallForms[template]:
+		forcedCallMode = "grammar (derived from the " + template + " template; build predates the field)"
+	default:
+		forcedCallMode = "not reported"
 	}
 	return features, forcedCallMode
 }

@@ -204,8 +204,8 @@ with `f5117d6`). **The pilot again, with Qwen2.5-Coder-7B-Instruct in place of Q
 - **Outcome (2026-10-17):** not run. The gate refused both jobs: Qwen2.5-Coder-7B's E0 smoke was 2/20 on both runs
   (`e0-nobara-2026-10-17.md`).
 
-**Amendment 9, 2026-10-17 — PROPOSED, for the owner's approval before the one-task smoke.** **A1: tack's own loop on
-the same ten tasks, compared task by task with opencode's 0/20 re-run.** The owner approved the path (tack sandboxed on
+**Amendment 9, 2026-10-17 — approved by the owner, with the forced-call mode recorded as derived below, before the
+one-task smoke.** **A1: tack's own loop on the same ten tasks, compared task by task with opencode's 0/20 re-run.** The owner approved the path (tack sandboxed on
 the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) and set items 1–4 below.
 
 1. **The Mac grader check, done first.** `tack eval pilot -oracle-check` on the Mac (tack `174ae71`, Go 1.27.2,
@@ -246,11 +246,13 @@ the Mac under the Mac's night queue, the 32k server on nobara over the tailnet) 
 - **The forced-call enforcement mode** goinfer reports for the model is recorded per run (`forced_call_mode`):
   "grammar", "post-check" or "off". It is read from the model's `forced_tool_call` in `/v1/models` (goinfer main
   `33532c3b` and later), falling back to the banner.
-  - goinfer `31418112`, this run's server, predates that field, so the run records "not reported".
-  - The expected mode for Qwen2.5-7B, a ChatML JSON call form, is "grammar". A family with no JSON call form, such
-    as gemma-4-E4B, would read "post-check".
-  - Moving the server to `33532c3b` would report the mode. It would also change the server from the 0/20 re-run's,
-    so A1 keeps `31418112` unless the owner decides otherwise.
+  - goinfer `31418112`, this run's server, predates that field. Where a server predates it, the mode is derived from
+    the loaded model's chat template as the banner names it: a family with a JSON call form (chatml, mellum2,
+    mistral, llama3) is grammar-constrained.
+  - So this run records "grammar (derived from the chatml template; build predates the field)" (owner,
+    2026-10-17). Any other template, where nothing is reported, records "not reported".
+  - A1 keeps `31418112`, the 0/20 re-run's server, for comparability (owner). A later gemma-4 run moves to `33532c3b`
+    or newer, where the mode is reported ("post-check" expected).
 - **The tasks:** the same ten (`pilot-746fb8c.jsonl`, task 8 removed). The task-size adjustment is E1's and does not
   apply here.
 - **How it runs.**

@@ -82,15 +82,26 @@ func TestPairTimings(t *testing.T) {
 }
 
 func TestServerFeatures(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "a.log")
-	os.WriteFile(p, []byte("goinfer serving on http://127.0.0.1:1\n  features: tools (constrainable call form) · structured output\nrequest: POST /v1/messages model=qwen\n"), 0o644)
-	if f, m := ServerFeatures(p); f != "tools (constrainable call form) · structured output" || m != "not reported" {
-		t.Fatalf("today's banner: %q %q", f, m)
+	p := filepath.Join(t.TempDir(), "a.log")
+	read := func(banner string) (string, string) {
+		os.WriteFile(p, []byte(banner+"request: POST /v1/messages model=qwen\n"), 0o644)
+		return ServerFeatures(p)
 	}
-	os.WriteFile(p, []byte("  features: tools\n  forced calls: post-check (no constrainable call form)\n"), 0o644)
-	if _, m := ServerFeatures(p); m != "post-check" {
+	// goinfer 31418112's own banner for the pilot's model (2026-10-17): the mode is derived from its chatml template.
+	f, m := read("goinfer serving on http://127.0.0.1:37313 []\n" +
+		"loaded \"qwen\": 28-layer model (vocab 152064) in 12.17s [chat: chatml, thinking: unmanaged]\n" +
+		"  features: tools (constrainable call form) · structured output\n")
+	if f != "tools (constrainable call form) · structured output" || m != "grammar (derived from the chatml template; build predates the field)" {
+		t.Fatalf("31418112's banner: %q %q", f, m)
+	}
+	if _, m := read("loaded \"g\": 30-layer model [chat: gemma4, thinking: managed]\n  features: tools\n"); m != "not reported" {
+		t.Fatalf("a template with no JSON call form: %q", m)
+	}
+	if _, m := read("loaded \"q\": 28-layer model [chat: chatml]\n  forced calls: post-check (no constrainable call form)\n"); m != "post-check" {
 		t.Fatalf("a reported mode: %q", m)
+	}
+	if _, m := read("  features: tools\n"); m != "not reported" {
+		t.Fatalf("no loaded line: %q", m)
 	}
 }
 
