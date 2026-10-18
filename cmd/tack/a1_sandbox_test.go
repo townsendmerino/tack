@@ -42,6 +42,9 @@ func TestA1RunsAndGrades(t *testing.T) {
 		rec.TackRun.Failed["bash"] != 0 || rec.TackRun.DoneRefused != 0 {
 		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
 	}
+	if strings.Join(rec.ServerOptions, ",") != "moe-cache-experts" {
+		t.Errorf("the record lists server options %q", rec.ServerOptions)
+	}
 	if !strings.Contains(string(stderrLog), fmt.Sprintf("tack run: preflight %q: ok: ", pilot.PreflightCommand)) {
 		t.Errorf("no passing preflight in tack's stderr:\n%s", stderrLog)
 	}
@@ -195,7 +198,7 @@ func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Sc
 	os.WriteFile(serveLog, nil, 0o644)
 	err = pilot.RunPilot(context.Background(), pilot.Options{Tasks: []pilot.Task{task}, Mirrors: mirrors, A1: os.Args[0],
 		Server:   pilot.Server{BaseURL: capture.URL, APIKey: "k", Model: "qwen", Context: 32768, Direct: ts.URL},
-		ServeLog: serveLog, Out: out, Cap: 2 * time.Minute, Log: io.Discard, Capture: capture})
+		ServeLog: serveLog, Out: out, Cap: 2 * time.Minute, Log: io.Discard, Capture: capture, ServerOptions: []string{"moe-cache-experts"}})
 	if err != nil {
 		t.Fatal(err)
 	}

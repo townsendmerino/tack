@@ -45,8 +45,10 @@ func pilotServeCmd(args []string, stdout, stderr io.Writer) int {
 	ctxN := fs.Int("ctx", 32768, "the served context")
 	out := fs.String("out", "", "where the server's log is copied when it stops")
 	rev := fs.String("tack-rev", "", "the tack commit this binary must have been built from")
+	var opts serveOptionList
+	fs.Var(&opts, "serve-option", serveOptionUsage)
 	if err := fs.Parse(args); err != nil || *serve == "" || *modelPath == "" || *out == "" {
-		fmt.Fprintln(stderr, "usage: tack eval pilot-serve -goinfer-serve BIN -model-path FILE -ctx N -out DIR -tack-rev REV")
+		fmt.Fprintln(stderr, "usage: tack eval pilot-serve -goinfer-serve BIN -model-path FILE -ctx N -out DIR -tack-rev REV [-serve-option NAME]")
 		return exitUsage
 	}
 	if _, err := eval.Revision(*rev); err != nil {
@@ -55,7 +57,7 @@ func pilotServeCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ps, err := startPilotServer(ctx, *serve, *modelPath, *ctxN, *out, stderr)
+	ps, err := startPilotServer(ctx, *serve, *modelPath, *ctxN, *out, opts, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot-serve:", err)
 		var void voidError
@@ -124,6 +126,17 @@ func urlPort(u string) (int, error) {
 type remote struct {
 	host, tack, serve, modelPath, out, rev string
 	ctxN                                   int
+	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
+}
+
+// serveCmdArgs is the remote command that starts pilot-serve for r.
+func (r remote) serveCmdArgs() []string {
+	a := []string{r.tack, "eval", "pilot-serve", "-goinfer-serve", r.serve, "-model-path", r.modelPath,
+		"-ctx", strconv.Itoa(r.ctxN), "-out", r.out, "-tack-rev", r.rev}
+	for _, o := range r.options {
+		a = append(a, "-serve-option", o)
+	}
+	return a
 }
 
 // withRemoteServer holds this Mac's timing lock and runs fn against the pilot's server on r.host: pilot-serve over one
@@ -148,8 +161,7 @@ func withRemoteServer(ctx context.Context, r remote, out string, log io.Writer, 
 		return err
 	}
 	defer mirror.Close()
-	srv := exec.Command("ssh", "-o", "BatchMode=yes", r.host, r.tack, "eval", "pilot-serve", "-goinfer-serve", r.serve,
-		"-model-path", r.modelPath, "-ctx", strconv.Itoa(r.ctxN), "-out", r.out, "-tack-rev", r.rev)
+	srv := exec.Command("ssh", append([]string{"-o", "BatchMode=yes", r.host}, r.serveCmdArgs()...)...)
 	stdin, err := srv.StdinPipe()
 	if err != nil {
 		return err
@@ -248,7 +260,8 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	}
 	err = withRemoteServer(ctx, r, out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
 		return pilot.RunPilot(ctx, pilot.Options{Capture: capture, Tasks: ts, Mirrors: mirrors, A1: self,
-			Server: srv, ServeLog: serveLog, Out: out, Cap: capD, Log: stderr, CountTokens: counter(srv), TackRev: tackRev})
+			Server: srv, ServeLog: serveLog, Out: out, Cap: capD, Log: stderr, CountTokens: counter(srv), TackRev: tackRev,
+			ServerOptions: r.options})
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)

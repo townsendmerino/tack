@@ -78,3 +78,33 @@ func TestForwardHasItsOwnConnection(t *testing.T) {
 		t.Fatalf("forward: %s", args)
 	}
 }
+
+// TestServeOptionsAreAnAllowlist: pilot-serve and eval pilot -a1 refuse a goinfer-serve option not on the allowlist
+// before anything starts, and pass an allowed one through: to pilot-serve's command over ssh, and to goinfer-serve.
+func TestServeOptionsAreAnAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	for name, args := range map[string][]string{
+		"pilot-serve": {"eval", "pilot-serve", "-goinfer-serve", "x", "-model-path", "x", "-out", dir,
+			"-serve-option", "kv-sessions"},
+		"pilot -a1": {"eval", "pilot", "-a1", "-tasks", "x", "-mirrors", dir, "-out", dir, "-remote-host", "h",
+			"-remote-tack", "x", "-remote-out", "x", "-goinfer-serve", "x", "-model-path", "x", "-serve-option", "--ctx"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := dispatch(args, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "is not passed through") {
+			t.Errorf("%s: exit %d, want %d refusing the option\nstderr: %s", name, code, exitUsage, stderr.String())
+		}
+	}
+	var opts serveOptionList
+	for _, v := range []string{"moe-cache-experts", "--moe-cache-experts"} {
+		if err := opts.Set(v); err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+	}
+	if got := strings.Join(opts.args(), " "); got != "-moe-cache-experts" {
+		t.Errorf("goinfer-serve gets %q", got)
+	}
+	r := remote{host: "nobara", tack: "tack", serve: "serve", modelPath: "m", out: "o", rev: "r", ctxN: 32768, options: opts}
+	if got := strings.Join(r.serveCmdArgs(), " "); !strings.HasSuffix(got, "-tack-rev r -serve-option moe-cache-experts") {
+		t.Errorf("pilot-serve over ssh: %s", got)
+	}
+}

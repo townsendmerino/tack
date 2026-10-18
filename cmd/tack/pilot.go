@@ -57,6 +57,8 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	remoteHost := fs.String("remote-host", "", "a1: the host serving the model, reached over ssh (nobara)")
 	remoteTack := fs.String("remote-tack", "", "a1: tack's binary on the remote host, which runs pilot-serve")
 	remoteOut := fs.String("remote-out", "", "a1: where the remote host keeps its copy of the server's log")
+	var serveOpts serveOptionList
+	fs.Var(&serveOpts, "serve-option", "a1: "+serveOptionUsage)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -98,7 +100,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return a1Cmd(ctx, ts, *mirrors, *out, *capFlag, tackRev, remote{host: *remoteHost, tack: *remoteTack, serve: *serve,
-			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN}, stdout, stderr)
+			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN, options: serveOpts}, stdout, stderr)
 	}
 	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
 		*modelPath == "" || *out == "" {
@@ -153,7 +155,7 @@ func (e voidError) Error() string { return "void: " + string(e) }
 // withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
 // -log-requests, runs fn against it, and saves the server's log into out.
 func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string, *pilot.Capture) error) error {
-	ps, err := startPilotServer(ctx, serve, modelPath, ctxN, out, log)
+	ps, err := startPilotServer(ctx, serve, modelPath, ctxN, out, nil, log)
 	if err != nil {
 		return err
 	}
@@ -178,7 +180,7 @@ type pilotServer struct {
 
 // startPilotServer holds this machine's timing lock and starts the pilot's goinfer-serve: CUDA, one slot, every request
 // logged, at ctxN. A server not on its registered decode path is void (voidError), and is stopped.
-func startPilotServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer) (*pilotServer, error) {
+func startPilotServer(ctx context.Context, serve, modelPath string, ctxN int, out string, opts serveOptionList, log io.Writer) (*pilotServer, error) {
 	lockPath, err := eval.TimingLockPath()
 	if err != nil {
 		return nil, err
@@ -196,7 +198,7 @@ func startPilotServer(ctx context.Context, serve, modelPath string, ctxN int, ou
 		lock.Release()
 		return nil, err
 	}
-	args := []string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}
+	args := append([]string{"-backend", "cuda", "-kv-sessions", "1", "-log-requests"}, opts.args()...)
 	sup, err := models.NewSupervisor(models.ChildConfig{Binary: serve, ModelPath: modelPath, Model: "qwen", Ctx: ctxN,
 		Args: args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
 	if err != nil {

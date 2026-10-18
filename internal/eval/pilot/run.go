@@ -357,12 +357,14 @@ type Options struct {
 	// ForcedCallMode is how the server enforces a forced tool call on the model; RunPilot asks the server for it
 	// (ForcedToolCall) when it is empty, and each record falls back to the banner (ServerFeatures) when neither knows.
 	ForcedCallMode string
-	Server         Server // filled by the caller once the server is up
-	ServeLog       string // the server's log, for each run's request window
-	Out            string
-	Cap            time.Duration
-	KenWarmup      time.Duration // the warm-up's own limit, outside the clock
-	Log            io.Writer
+	// ServerOptions are the goinfer-serve options the server was started with beyond the registered ones, by name.
+	ServerOptions []string
+	Server        Server // filled by the caller once the server is up
+	ServeLog      string // the server's log, for each run's request window
+	Out           string
+	Cap           time.Duration
+	KenWarmup     time.Duration // the warm-up's own limit, outside the clock
+	Log           io.Writer
 	// CountTokens counts a lone user message on the server, for each run's statement_tokens; nil leaves them unknown.
 	CountTokens func(ctx context.Context, text string) (int, error)
 	TackRev     string // the tack commit the runner was built from, recorded with every run
@@ -393,6 +395,7 @@ type Record struct {
 	// ServerFeatures and ForcedCallMode are goinfer's own report of the server, from its banner (ServerFeatures).
 	ServerFeatures string         `json:"server_features,omitempty"`
 	ForcedCallMode string         `json:"forced_call_mode,omitempty"`
+	ServerOptions  []string       `json:"server_options"`           // see Options.ServerOptions; [] when none
 	KenIndexSecs   float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
 	Requests       []Request      `json:"requests"`
 	Prompt         PromptStats    `json:"prompt"`
@@ -462,7 +465,8 @@ func RunPilot(ctx context.Context, o Options) error {
 }
 
 func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
-	rec := Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339)}
+	rec := Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339),
+		ServerOptions: append([]string{}, o.ServerOptions...)}
 	rec.Run = Result{Arm: arm.Name, Exit: -1}
 	dir := filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name)
 	repo := filepath.Join(dir, "repo")
