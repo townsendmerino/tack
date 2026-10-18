@@ -206,6 +206,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 
 	requests, calls, tokens, errorsInARow := 0, 0, 0, 0
 	doneRefused, finished := false, false // an edit task's done (Config.EditTask)
+	lastFailed := "\x00"                  // the last call's key when it failed (callKey); no call has that key
 	for {
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
@@ -262,6 +263,10 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		if len(s.conv.Pending()) == 0 {
 			if resp.StopReason == "max_tokens" {
+				// A reply stopped short of its own limit was stopped by the window: the prompt left no room.
+				if s.conv.MaxTokens > 0 && resp.Usage.OutputTokens < s.conv.MaxTokens {
+					return end(proto.StopWindowFull)
+				}
 				return end(proto.StopMaxTokens)
 			}
 			return end(proto.StopEndTurn)
@@ -278,9 +283,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			var fin proto.ToolFinished
+			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: malformed tool call: " + resp.Malformed[b.ID]}
+			case key == lastFailed:
+				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: RepeatedCall}
 			case ctx.Err() != nil:
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled, Result: "error: not run: " + notRun(ctx)}
 			case calls >= bud.MaxToolCalls:
@@ -338,9 +346,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
 			switch fin.Outcome {
 			case proto.OutcomeOK:
-				errorsInARow = 0
+				errorsInARow, lastFailed = 0, ""
 			case proto.OutcomeError, proto.OutcomeDenied:
-				errorsInARow++
+				errorsInARow, lastFailed = errorsInARow+1, key
+			default:
+				lastFailed = ""
 			}
 		}
 		if err := s.conv.AnswerTools(results); err != nil {
@@ -519,4 +529,16 @@ func notRun(ctx context.Context) string {
 		return h.Error()
 	}
 	return "the user cancelled the turn"
+}
+
+// callKey identifies a tool call by its tool and its input, with the input's JSON normalised so a repeat with its keys
+// in another order is the same call. A malformed input keys by its raw bytes.
+func callKey(b proto.ModelBlock) string {
+	var v any
+	if json.Unmarshal(b.Input, &v) == nil {
+		if n, err := json.Marshal(v); err == nil {
+			return b.Name + "\x00" + string(n)
+		}
+	}
+	return b.Name + "\x00" + string(b.Input)
 }

@@ -211,7 +211,9 @@ const (
 	StopCancelled = "cancelled"
 	StopHalted    = "halted" // tack was halted (daemon.halted precedes it)
 	StopDone      = "done"   // an edit task called the done tool (loop.Config.EditTask)
-	StopError     = "error"
+	// StopWindowFull: the prompt filled the context window, so the reply was cut off short of its own token limit.
+	StopWindowFull = "window_full"
+	StopError      = "error"
 )
 
 // TurnEnd closes a turn. The store fsyncs after it.

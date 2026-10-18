@@ -63,8 +63,8 @@ func (editTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 	case n == 0 && strings.Contains(seen, in.OldString):
 		return errorf("%q changed since you last read it, in the part you are editing; read it again", in.Path), nil
 	case n == 0:
-		return errorf("old_string is not in %q; it must match the file exactly, including whitespace: read the lines you "+
-			"want to change and copy them", in.Path), nil
+		return errorf("this text isn't in %q; the edit may already have been made. Read the file again before editing: "+
+			"old_string must match it exactly, whitespace included", in.Path), nil
 	case n > 1 && !in.ReplaceAll:
 		return errorf("old_string occurs %d times in %q; include more surrounding lines to make it unique, or set "+
 			"replace_all", n, in.Path), nil

@@ -31,14 +31,15 @@ import (
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
-// hit max_tokens; 5 tack is halted (tack halt).
+// hit max_tokens; 5 tack is halted (tack halt); 7 the context window filled (6 is eval pilot's gated "not run").
 const (
-	exitOK        = 0
-	exitError     = 1
-	exitUsage     = 2
-	exitBudget    = 3
-	exitMaxTokens = 4
-	exitHalted    = 5
+	exitOK         = 0
+	exitError      = 1
+	exitUsage      = 2
+	exitBudget     = 3
+	exitMaxTokens  = 4
+	exitHalted     = 5
+	exitWindowFull = 7
 )
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
@@ -267,6 +268,8 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 		return exitBudget
 	case proto.StopMaxTokens:
 		return exitMaxTokens
+	case proto.StopWindowFull:
+		return exitWindowFull
 	case proto.StopHalted:
 		return exitHalted
 	}

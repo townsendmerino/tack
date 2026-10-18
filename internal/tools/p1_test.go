@@ -141,8 +141,8 @@ func TestEdit(t *testing.T) {
 	}
 	read(t, s, ws, f)
 	if r := call(t, s, ws, "edit", `{"path":"`+f+`","old_string":"nope","new_string":"x"}`); !r.IsError ||
-		!strings.Contains(r.Text, "must match the file exactly") {
-		t.Fatalf("missing old_string: %q", r.Text)
+		!strings.Contains(r.Text, "the edit may already have been made") || !strings.Contains(r.Text, "Read the file again") {
+		t.Fatalf("missing old_string: the error must say what probably happened and what to do: %q", r.Text)
 	}
 	if r := call(t, s, ws, "edit", `{"path":"`+f+`","old_string":"func applyBudget() {}","new_string":"func applyBudget() int { return 1 }"}`); r.IsError ||
 		r.Text != "edited internal/a/a.go at line 4" {

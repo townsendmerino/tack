@@ -21,9 +21,9 @@ import (
 
 // A1 is tack's own arm (pilot pre-registration, amendment 9): `tack run --edit` in the repository instead of opencode.
 
-// tackConfig is the config.toml an A1 run gets: the pilot's server through the capture, the registered Sampling, and
-// budgets out of reach so that the cap is the run's only limit, as it is opencode's. max_tokens is opencode's reply
-// limit.
+// tackConfig is the config.toml an A1 run gets: the pilot's server through the capture and the registered Sampling.
+// tack's consecutive-failure budget is its design's, 8 (owner, after the task-7 smoke); every other budget is out of
+// reach, so the cap otherwise limits the run, as it does opencode's. max_tokens is opencode's reply limit.
 func tackConfig(s Server, out string) string {
 	f := func(k string) any { return Sampling[k] }
 	return fmt.Sprintf(`main = "pilot"
@@ -44,7 +44,7 @@ max_requests = 1000000
 max_tool_calls = 1000000
 max_tokens = %d
 turn_tokens = 1000000000
-max_errors = 1000000
+max_errors = 8
 session_tokens = 1000000000
 session_tool_calls = 1000000
 `, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), replyLimit)

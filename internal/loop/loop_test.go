@@ -548,3 +548,52 @@ func TestDoneWithNoChangeIsRefusedOnce(t *testing.T) {
 		t.Fatalf("unreadable workspace: stop %q, results %q", stop, doneResults(h))
 	}
 }
+
+// TestWindowFullIsItsOwnStop: a reply cut off at max_tokens with fewer output tokens than the request allowed was stopped
+// by the window (the prompt left no room), and the turn ends window_full; one that used its whole limit ends max_tokens.
+func TestWindowFullIsItsOwnStop(t *testing.T) {
+	cut := proto.ModelBlock{Type: "text", Text: "<tool_call>\n{\"name\": \"edit\", \""}
+	h := newHarness(t, Budget{}, goinfertest.Reply{Body: goinfertest.SSEWithReuse("max_tokens", 101, 32658, 9, cut)})
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopWindowFull {
+		t.Fatalf("a reply cut at 9 of 256 tokens: stop %q %v", stop, err)
+	}
+	h = newHarness(t, Budget{}, goinfertest.Reply{Body: goinfertest.SSEWithReuse("max_tokens", 100, 0, 256, cut)})
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopMaxTokens {
+		t.Fatalf("a reply that used its whole limit: stop %q", stop)
+	}
+}
+
+// TestRepeatOfAFailedCallIsNotRun: the exact repeat of the call that just failed, its input's keys in another order, is
+// answered RepeatedCall without running and counts as a failure; the same call after a success in between runs again.
+func TestRepeatOfAFailedCallIsNotRun(t *testing.T) {
+	failing := `{"path":"mcp/token_budget.go","offset":9999}`
+	h := newHarness(t, Budget{},
+		goinfertest.Calls("", "r1", "read", failing),
+		goinfertest.Calls("", "r2", "read", `{"offset":9999,"path":"mcp/token_budget.go"}`),
+		goinfertest.Calls("", "g1", "glob", `{"pattern":"**/*.go"}`),
+		goinfertest.Calls("", "r3", "read", failing),
+		goinfertest.Says("stop"))
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("stop %q %v", stop, err)
+	}
+	var got []proto.ToolFinished
+	for _, f := range h.payloads(proto.EvToolFinished) {
+		got = append(got, f.(proto.ToolFinished))
+	}
+	if len(got) != 4 || got[0].Outcome != proto.OutcomeError || got[0].Result == RepeatedCall ||
+		got[1].Result != RepeatedCall || got[1].Outcome != proto.OutcomeError ||
+		got[2].Outcome != proto.OutcomeOK || got[3].Result == RepeatedCall {
+		t.Fatalf("results %+v", got)
+	}
+	if n := len(h.payloads(proto.EvToolStarted)); n != 3 {
+		t.Fatalf("%d tools started; the repeat must not run", n)
+	}
+	// Repeats count toward the consecutive-error budget.
+	b := testBudget
+	b.MaxErrors = 3
+	h = newHarness(t, b, goinfertest.Calls("", "r1", "read", failing), goinfertest.Calls("", "r2", "read", failing),
+		goinfertest.Calls("", "r3", "read", failing), goinfertest.Says("never"))
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopBudget {
+		t.Fatalf("three failures, two of them repeats: stop %q", stop)
+	}
+}

@@ -30,7 +30,7 @@ func TestTackConfigLoads(t *testing.T) {
 	if s.URL != "http://127.0.0.1:1" || s.Model != "qwen" || *s.Temperature != 0.7 || *s.TopP != 0.8 || *s.TopK != 20 {
 		t.Fatalf("server %+v", s)
 	}
-	if c.Run.MaxTokens != replyLimit || c.Run.MaxRequests < 100000 || c.Run.MaxErrors < 100000 || c.Run.MaxWall.Hours() < 1 {
+	if c.Run.MaxTokens != replyLimit || c.Run.MaxRequests < 100000 || c.Run.MaxErrors != 8 || c.Run.MaxWall.Hours() < 1 {
 		t.Fatalf("budgets %+v", c.Run)
 	}
 	var raw map[string]any

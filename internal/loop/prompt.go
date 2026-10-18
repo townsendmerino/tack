@@ -29,6 +29,11 @@ const EditSystemPrompt = `You are tack, a coding agent working in one repository
 // the turn whatever the files say: R13's loop mitigation (DESIGN §17).
 const DoneNoChange = "no files changed; make the change, or call done again with the reason none is needed"
 
+// RepeatedCall answers an exact repeat (same tool, same input) of the call that just failed: it is not run, because
+// it would fail the same way, and it counts as a failure toward the consecutive-error budget.
+const RepeatedCall = "error: not run: this is the same call as the one that just failed, so it would fail the same " +
+	"way. Read the file again, or try something else."
+
 // UserText is the text the model receives for a user's message. The first turn of a session carries the workspace
 // facts at the tail, where per-session bytes belong; later turns carry the message alone. Rebuilding a session from
 // its log calls it the same way, so the rebuilt request matches the one sent.

@@ -416,12 +416,16 @@ func RunPilot(ctx context.Context, o Options) error {
 	if o.ForcedCallMode == "" && o.Server.Direct != "" {
 		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
 	}
-	total := len(o.Tasks) * 2
+	armsPerTask := 2
+	if o.A1 != "" {
+		armsPerTask = 1
+	}
+	total := len(o.Tasks) * armsPerTask
 	done := 0
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(o.Log, time.Now().Format("15:04:05")+" pilot: "+format+"\n", args...)
 	}
-	logf("start %s, %d tasks x 2 arms, cap %s per run", start.Format("15:04 MST"), len(o.Tasks), o.Cap)
+	logf("start %s, %d tasks x %d arm(s), cap %s per run", start.Format("15:04 MST"), len(o.Tasks), armsPerTask, o.Cap)
 	for _, t := range o.Tasks {
 		arms := ArmOrder(t.N, o.A0, o.A0k)
 		if o.A1 != "" {
