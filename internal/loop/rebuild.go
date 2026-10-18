@@ -51,6 +51,12 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 					return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 				}
 			}
+		case proto.ErrorEvent:
+			if p.Class == NoToolCallClass {
+				if err := conv.Nudge(NoToolCallNudge); err != nil {
+					return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
+				}
+			}
 		case proto.TurnEnd:
 			if err := conv.EndTurn(); err != nil {
 				return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -121,6 +122,14 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("%d %s: %s", e.Status, e.Type, e.Message) }
+
+// NoToolCall reports whether the server refused a reply because a forced tool call (tool_choice any) came back
+// without one. goinfer answers so only for a model whose calls it checks after generation (forced_tool_call
+// "post-check" in /v1/models); under "grammar" a reply without a call cannot be generated. The text is goinfer's
+// errNoForcedCall (goinfer internal/serveapp/tool_turn.go), sent as a stream error event.
+func (e *Error) NoToolCall() bool {
+	return strings.Contains(e.Message, "tool_choice required a tool call and the model answered without one")
+}
 
 // Retryable reports whether the request can be sent again after RetryAfter: the server's queue was full (goinfer
 // answers 529 on /v1/messages, 429 elsewhere, 503 when its in-flight cap is reached).

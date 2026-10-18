@@ -224,7 +224,7 @@ type TurnEnd struct {
 // ErrorEvent reports an error during a turn. Retrying says whether the loop will try again (e.g. after a 529 from a
 // full goinfer queue).
 type ErrorEvent struct {
-	Class    string `json:"class"` // "server", "protocol", "tool", "internal"
+	Class    string `json:"class"` // "server", "protocol", "tool", "internal", "no_tool_call" (a resent request)
 	Message  string `json:"message"`
 	Retrying bool   `json:"retrying"`
 }

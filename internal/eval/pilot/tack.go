@@ -173,6 +173,7 @@ type TackSummary struct {
 	Requests    int            `json:"requests"`
 	StopReason  string         `json:"stop_reason"`
 	DoneRefused int            `json:"done_refused"`
+	Resends     int            `json:"resends"`          // requests sent again after the server refused one for carrying no tool call
 	Budget      string         `json:"budget,omitempty"` // the budget that tripped, if any
 	Errors      []string       `json:"errors,omitempty"`
 }
@@ -215,6 +216,10 @@ func SummarizeTack(path string) TackSummary {
 		case proto.BudgetExceeded:
 			s.Budget = p.Budget
 		case proto.ErrorEvent:
+			if p.Class == loop.NoToolCallClass {
+				s.Resends++
+				continue
+			}
 			s.Errors = append(s.Errors, p.Class+": "+p.Message)
 		}
 	}

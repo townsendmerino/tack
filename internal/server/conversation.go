@@ -131,6 +131,16 @@ func (c *Conversation) CancelPending(why string) ([]string, error) {
 	return ids, c.AnswerTools(rs)
 }
 
+// Nudge adds text to the message the next request ends with, which must be the user's: a request the server refused
+// is sent again with it. It adds to the tail only, so the cached prefix holds.
+func (c *Conversation) Nudge(text string) error {
+	if !c.inTurn || len(c.pending) > 0 || c.last().Role != User {
+		return errors.New("conversation: a nudge must follow a user message, in a turn")
+	}
+	c.msgs[len(c.msgs)-1].Content = append(c.msgs[len(c.msgs)-1].Content, TextBlock(text))
+	return nil
+}
+
 // EndTurn closes the turn. Calls still pending are an error: they must be answered first.
 func (c *Conversation) EndTurn() error {
 	if len(c.pending) > 0 {

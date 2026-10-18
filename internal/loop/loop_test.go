@@ -597,3 +597,42 @@ func TestRepeatOfAFailedCallIsNotRun(t *testing.T) {
 		t.Fatalf("three failures, two of them repeats: stop %q", stop)
 	}
 }
+
+// TestNoToolCallIsResent: goinfer's refusal of a reply that carried no tool call (a post-check model) is answered by
+// sending the request again with NoToolCallNudge added, at most MaxNoToolCallResends times for one request, each
+// recorded as a no_tool_call error event; one more refusal ends the turn as a server error. Any other server error is
+// not resent. A rebuilt conversation carries the same nudges.
+func TestNoToolCallIsResent(t *testing.T) {
+	streamErr := func(msg string) goinfertest.Reply {
+		b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": msg}})
+		return goinfertest.Reply{Body: "event: error\ndata: " + string(b) + "\n\n"}
+	}
+	refused := streamErr("generation failed: tool_choice required a tool call and the model answered without one " +
+		`(this model's calls are checked after generation, not constrained: forced_tool_call "post-check" in /v1/models)`)
+	h := newHarness(t, Budget{}, refused, goinfertest.Calls("", "g1", "glob", `{"pattern":"**/*.go"}`), refused, refused,
+		goinfertest.Says("done"))
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("stop %q %v", stop, err)
+	}
+	var resends int
+	for _, e := range h.payloads(proto.EvError) {
+		if e.(proto.ErrorEvent).Class == NoToolCallClass && e.(proto.ErrorEvent).Retrying {
+			resends++
+		}
+	}
+	if resends != 3 || len(h.script.Requests) != 5 || strings.Contains(string(h.script.Requests[0]), NoToolCallNudge) ||
+		!strings.Contains(string(h.script.Requests[1]), NoToolCallNudge) ||
+		strings.Count(string(h.script.Requests[4]), NoToolCallNudge) != 3 {
+		t.Fatalf("%d resends over %d requests", resends, len(h.script.Requests))
+	}
+	h.checkRebuild(t)
+
+	h = newHarness(t, Budget{}, refused, refused, refused, goinfertest.Says("never"))
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopError || len(h.script.Requests) != 3 {
+		t.Fatalf("a third refusal of one request: stop %q after %d requests", stop, len(h.script.Requests))
+	}
+	h = newHarness(t, Budget{}, streamErr("prompt is too long: 32784 tokens > 32768 maximum"), goinfertest.Says("never"))
+	if stop, _ := h.sess.Turn(context.Background(), "go"); stop != proto.StopError || len(h.script.Requests) != 1 {
+		t.Fatalf("another server error: stop %q after %d requests; it must not be resent", stop, len(h.script.Requests))
+	}
+}

@@ -34,6 +34,17 @@ const DoneNoChange = "no files changed; make the change, or call done again with
 const RepeatedCall = "error: not run: this is the same call as the one that just failed, so it would fail the same " +
 	"way. Read the file again, or try something else."
 
+// NoToolCallNudge is added to the request when the server refused a reply for carrying no tool call (a post-check
+// model, server.Error.NoToolCall), and the request is sent again, at most MaxNoToolCallResends times
+// (e1-calibration-preregistration-2026-10-18.md, the E4B amendment).
+const NoToolCallNudge = "a tool call is required; call done if you're finished"
+
+// MaxNoToolCallResends caps how often one request is sent again after a refusal for carrying no tool call.
+const MaxNoToolCallResends = 2
+
+// NoToolCallClass is the error event's class for such a refusal; Rebuild adds NoToolCallNudge where it finds one.
+const NoToolCallClass = "no_tool_call"
+
 // UserText is the text the model receives for a user's message. The first turn of a session carries the workspace
 // facts at the tail, where per-session bytes belong; later turns carry the message alone. Rebuilding a session from
 // its log calls it the same way, so the rebuilt request matches the one sent.

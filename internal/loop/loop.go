@@ -207,6 +207,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	requests, calls, tokens, errorsInARow := 0, 0, 0, 0
 	doneRefused, finished := false, false // an edit task's done (Config.EditTask)
 	lastFailed := "\x00"                  // the last call's key when it failed (callKey); no call has that key
+	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
 	for {
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
@@ -232,8 +233,19 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			if ctx.Err() != nil {
 				return stopped()
 			}
+			if se := (*server.Error)(nil); errors.As(err, &se) && se.NoToolCall() && resent < MaxNoToolCallResends {
+				resent++
+				if _, err := s.record(proto.EvError, reqEv.Seq, proto.ErrorEvent{Class: NoToolCallClass, Message: se.Error(), Retrying: true}); err != nil {
+					return proto.StopError, err
+				}
+				if err := s.conv.Nudge(NoToolCallNudge); err != nil {
+					return fail("internal", err)
+				}
+				continue
+			}
 			return fail("server", err)
 		}
+		resent = 0
 		s.cfg.Source.Touch()
 		msgEv, err := s.record(proto.EvAssistantMessage, reqEv.Seq, proto.AssistantMessage{Request: n, Content: resp.Content, StopReason: resp.StopReason})
 		if err != nil {
