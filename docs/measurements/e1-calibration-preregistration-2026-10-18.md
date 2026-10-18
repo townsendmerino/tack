@@ -315,7 +315,7 @@ and counts it toward the budget. If both are approved, they are measured separat
 5. If the baseline reaches the bar, build the changes, each with tier-0 tests broken once, in the order 4.1, 4.2, 4.3,
    4.4. Each is registered as an amendment and measured before the next is built. Below the bar, stop at §2's rule.
 
-## 7. Amendment C1: gemma-4 E4B on the calibration set — proposed 2026-10-18, awaiting the owner's approval
+## 7. Amendment C1: gemma-4 E4B on the calibration set — approved by the owner 2026-10-18, before any run
 
 **Why.** The Qwen2.5-7B baseline passed 0 of 36 runs, and 0 of 27 over the 9 (`e1-calibration-baseline-2026-10-18.md`), below §2's bar. Under §2's rule the next decision is the model or the hardware (R13). This amendment
 measures one other model, gemma-4 E4B, with tack's loop unchanged except for the post-check resend below. It is the
@@ -367,6 +367,14 @@ model the owner named.
      calibration run does not start, and it goes back to the owner.
 3. **A one-task smoke** of A1-E4B, task 1, through the full path. It is a smoke and not a result. It shows that the
    forced-call mode arrives as "post-check", that the resend works end to end, and that the records carry resends.
+
+**The stop rule, before any run** (owner, 2026-10-18):
+
+- **When C1 stops:** C1 stops at the first failed gate.
+  - Gate 1 fails if the 32k fit load does not come up `cuda-resident`.
+  - Gate 2 fails if E0 on goinfer `0de92cd9` scores under 17/20 on either of its two smoke runs, or has any malformed
+    call.
+- **What happens then:** E4B is recorded as ineligible, with the gate that failed, and none of the 36 runs happen.
 
 **Prediction, recorded before any E4B run:**
 
