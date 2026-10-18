@@ -1,16 +1,15 @@
 # E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB): amendment C3, the five models resident on the card at a measured
-# context (e1-model-candidates-2026-10-18.md), in the owner's run order. goinfer main 0de92cd9, where the contexts were
-# measured; tack's fixed E0 (38137f5 or later). By day, on the owner's override.
+# context (e1-model-candidates-2026-10-18.md), in the owner's run order. goinfer main f20f0d93 (the windowed-KV fix; the
+# contexts were measured on 0de92cd9, the fallback); tack's fixed E0. By day, on the owner's override.
 
 box = "nobara"
-goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-0de92cd9"
-goinfer_rev = "0de92cd9"
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-f20f0d93"
+goinfer_rev = "f20f0d93"
 workspace = "~/tack-runs/e0/workspace/tack"
 
-# Thinking off (-thinking off) for every Qwen arm: tack never asks for thinking and goinfer drops the reasoning of a
-# request that did not, so a model thinking by its template's default spends E0's 256-token smoke, and A1's turns,
-# on text tack never sees (e1-calibration-preregistration-2026-10-18.md §9). The timing probes ask for thinking
-# explicitly, which overrides the server default, so their reasoning streams and is timed.
+# Thinking off for every Qwen arm. tack sends thinking disabled on every request (the smoke, the probes, A1);
+# -thinking off is the server default for anything that sends nothing (e1-calibration-preregistration-2026-10-18.md §9).
+# probe_thinking stays unset: no arm here has reasoning that cannot be turned off.
 
 [[arm]]
 name = "qwen3.5-9b-q4km-cuda"

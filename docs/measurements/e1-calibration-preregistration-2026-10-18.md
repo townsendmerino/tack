@@ -489,16 +489,18 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
   1. goinfer fixes its Harmony parser, if the `greplicate`/`grepaste` names turn out to be the parser running past
      `grep` (item 4 of tack's note to goinfer, which waits until the owner names it);
   2. a new C2 runs on that build, with E0's first-token check (and decode timing) fixed to count Harmony tokens.
-- **Built, 2026-10-18 (tack `38137f5`):** E0's first-token and decode probes ask for thinking, time text and thinking
+- **Built, 2026-10-18 (tack `38137f5`):** E0's first-token and decode probes ask for thinking, (**changed at C3's approval:** asking turns
+  the template's thinking on, so the probes now send each arm's registered setting, disabled by default, §9) time text and thinking
   alike, allow 16 tokens for the first one, and refuse a decode reply that counted more tokens than it streamed
   characters.
 - **The audit is done** (`e0-nobara-2026-10-17.md`, "Decode audit"). No earlier decode figure could be recomputed:
   E0's servers logged to a temporary directory.
-  - gemma-4 E4B's 68.3 and E2B's 85.6 tok/s are marked unverified: their template has a reasoning channel goinfer
-    could drop.
+  - gemma-4 E4B's 68.3 and E2B's 85.6 tok/s are marked unverified because they were not recomputed. **Corrected
+    the same day:** the first reason given (a reasoning channel goinfer could drop) was wrong. These checkpoints are
+    `thinking: unmanaged`, which goinfer never splits, so no mechanism is known.
   - The Qwen2.5, Seed-Coder and Mac figures stand: their templates have none.
 
-## 9. Amendment C3: E0 on the five models resident on nobara's card — proposed 2026-10-18, awaiting the owner's approval
+## 9. Amendment C3: E0 on the five models resident on nobara's card — approved by the owner 2026-10-18, with changes made before the first run
 
 **Why.** Five models load `cuda-resident` on the RTX 2070 SUPER (8 GB) at a context measured by day
 (`e1-model-candidates-2026-10-18.md`). Under the owner's rule, each takes E0 before any calibration amendment.
@@ -510,10 +512,16 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 **What runs:**
 
 - **The command:** `tack eval models` on nobara, with `eval/e0/nobara-c3.toml`.
-- **The builds:**
-  - goinfer-serve `0de92cd9`, where the contexts were measured;
-  - tack's fixed E0, `38137f5` or later: the first-token probe allows 16 tokens and times the first streamed text or
-    thinking; the decode probe times both kinds and refuses a reply that held tokens back.
+- **The builds** (changed by the owner at approval):
+  - goinfer-serve from main **`f20f0d93`**, which carries the windowed-KV fix. It is cross-built like the others
+    (sha256 `b00ed6183e2610a9…`) and keeps sidecar format v17.
+    - Each model's pre-run load at its context records residency and VRAM on this build.
+    - A model that does not come up `cuda-resident` there at its measured context runs on `0de92cd9` instead, where the
+      context was measured, and the table says why.
+  - tack's fixed E0, at the commit that follows this amendment's change:
+    - the first-token probe allows 16 tokens and times the first streamed text or thinking;
+    - the decode probe times both kinds and refuses a reply that held tokens back;
+    - both send each arm's registered thinking setting (below).
 - **The run:** all of E0, as registered, for each model. That is fit, check, two smoke runs of 20, first-token time at
   4,096, 8,192 and 15,360 tokens, decode and footprint.
 - **The order** (owner): Qwen3.5-9B, Qwen3.6-35B-A3B, Qwen3-8B, Qwen3-4B, Granite-4.2-3B.
@@ -524,30 +532,50 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 
 **Each model's setting:**
 
-| # | model | context | server flags | forced-call mode (expected; goinfer's report recorded at the run) | thinking |
+| # | model | context | server flags | forced-call mode: what to expect (goinfer's report recorded at the run) | thinking |
 |---|---|---|---|---|---|
-| 1 | Qwen3.5-9B `Q4_K_M` | 32,768 | `-thinking off` | grammar: chatml, goinfer's Hermes JSON form | off (template default off) |
-| 2 | Qwen3.6-35B-A3B `q4_k_m` | 32,768 | `-moe-cache-experts -thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
-| 3 | Qwen3-8B `Q4_K_M` | 16,384 | `-thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
-| 4 | Qwen3-4B (bf16, int4 at load) | 30,720 | `-thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
-| 5 | Granite-4.2-3B (bf16, int4 at load) | 30,720 | none | grammar: chatml, Hermes JSON | none: unmanaged, no thinking control |
+| 1 | Qwen3.5-9B `Q4_K_M` | 32,768 | `-thinking off` | grammar under goinfer's default Hermes JSON form; the model's native XML form (`-tool-format template`, not used) would be post-check | off (template default off) |
+| 2 | Qwen3.6-35B-A3B `q4_k_m` | 32,768 | `-moe-cache-experts -thinking off` | as Qwen3.5: grammar under the default Hermes form | off (template default on) |
+| 3 | Qwen3-8B `Q4_K_M` | 16,384 | `-thinking off` | grammar (chatml, Hermes JSON) | off (template default on) |
+| 4 | Qwen3-4B (bf16, int4 at load) | 30,720 | `-thinking off` | grammar (chatml, Hermes JSON) | off (template default on) |
+| 5 | Granite-4.2-3B (bf16, int4 at load) | 30,720 | none | **uncertain: could be "off"**, see below | none: unmanaged, no thinking control |
 
-**Why thinking is off for the Qwen models:**
+**Forced-call modes** (corrected at approval):
 
-- **tack never asks for thinking.** goinfer drops the reasoning of a request that did not ask, so a model thinking by
-  its template's default generates text tack never sees.
-- **In E0's smoke, which allows 256 tokens,** that reasoning can use up the reply before the tool call it scores.
-  The smoke would then measure the thinking budget, not tool choice.
-- **In an A1 turn,** it costs time and tokens on every request for nothing tack can read.
-- **The timing probes ask for thinking explicitly,** which overrides the server default. The decode rate therefore
-  includes any reasoning, streamed and timed.
-- **Whether reasoning would help tool use** is a different question, not asked here. If the owner wants it, thinking on
-  can be a second E0 arm under its own amendment.
+- **Granite-4.2-3B.** The owner's note is that Granite's released template is not chatml, so goinfer may serve it with
+  no JSON call form and report "off". goinfer's banner at the 13:58 load named it `[chat: chatml, thinking:
+  unmanaged]`, which would make it grammar. Whichever it reports is recorded.
+- **Qwen3.5 and Qwen3.6.** goinfer's earlier coverage listed their native tool form as post-check. That holds only
+  under `-tool-format template`. C3 serves goinfer's default Hermes form, which is grammar-constrained.
+- **Every model.** goinfer's own `forced_tool_call` from `/v1/models` is recorded before each E0. **A model that
+  reports "off" is flagged prominently in the table:** A1 relies on forced tool calls.
 
-**Known limit of the first-token probe:** it offers E0's tools. A model that opens its reply with a tool call streams
-nothing until the call completes, because goinfer buffers tool calls, so the probe records "no text or thinking … within
-16 tokens" for that request. That is visible, not silent. The models E0 has run so far answered the probe's filler
-prompt with text.
+**Thinking: off for the Qwen models, the same in every request** (corrected at approval):
+
+- **tack already sends thinking disabled on every request that does not ask for it**
+  (`internal/server/goinfer/client.go:toWire`, since P0). goinfer reads that as thinking off, explicitly
+  (`resolveThink`). So E0's smoke and every A1 turn run the Qwen models with thinking off, whatever the template
+  defaults to. `-thinking off` in the manifest is belt-and-braces for anything that sends nothing.
+- **The timing probes now send the same.** The first fix had them ask for thinking, which turns the template's thinking
+  on (`thinking.type: enabled` makes `resolveThink` set it on): it made the probes unlike the smoke and A1. They now
+  follow each arm's registered setting, `probe_thinking`:
+  - off by default, so they send thinking disabled like everything else;
+  - set only for a model whose reasoning cannot be turned off (Harmony), so that reasoning streams rather than being
+    dropped.
+
+  The decode probe still refuses a reply that counted more tokens than it streamed.
+- **Why off:** with thinking on, the reasoning is text tack never reads. In E0's 256-token smoke it could use up the
+  reply before the scored tool call, and in an A1 turn it costs time and tokens on every request.
+- **Whether reasoning would help tool use** is a different question, not asked here. Thinking on could be a second E0
+  arm under its own amendment.
+
+**Known limit of the first-token probe:** it offers E0's tools, so its prompt matches tack's real prefix. A model that
+opens with a tool call streams nothing until the call completes, because goinfer buffers tool calls, and that request
+records "no text or thinking … within 16 tokens", visibly.
+
+- **Not used: `tool_choice: "none"`,** the owner's optional suggestion. goinfer treats a request with tool_choice none as
+  having no active tools (`toolsActive` in `internal/serveapp/anthropic.go`), so the tool schemas would leave the
+  prompt. The probe's prompt would then be smaller than the one E0 sized it at, and unlike tack's real prefix.
 
 **The gate, E0's rule unchanged:** a smoke score of at least 17/20 on both runs, and 0 malformed. If a model's load is
 not `cuda-resident`, or its smoke falls below the bar or has any malformed call, that model is recorded ineligible.
