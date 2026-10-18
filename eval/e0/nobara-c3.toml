@@ -1,0 +1,43 @@
+# E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB): amendment C3, the five models resident on the card at a measured
+# context (e1-model-candidates-2026-10-18.md), in the owner's run order. goinfer main 0de92cd9, where the contexts were
+# measured; tack's fixed E0 (38137f5 or later). By day, on the owner's override.
+
+box = "nobara"
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-0de92cd9"
+goinfer_rev = "0de92cd9"
+workspace = "~/tack-runs/e0/workspace/tack"
+
+# Thinking off (-thinking off) for every Qwen arm: tack never asks for thinking and goinfer drops the reasoning of a
+# request that did not, so a model thinking by its template's default spends E0's 256-token smoke, and A1's turns,
+# on text tack never sees (e1-calibration-preregistration-2026-10-18.md §9). The timing probes ask for thinking
+# explicitly, which overrides the server default, so their reasoning streams and is timed.
+
+[[arm]]
+name = "qwen3.5-9b-q4km-cuda"
+model_path = "~/models/Qwen3.5-9B-Q4_K_M.gguf"
+args = ["-backend", "cuda", "-thinking", "off"]
+ctx = [32768]
+
+[[arm]]
+name = "qwen3.6-35b-a3b-q4km-cuda-moecache"
+model_path = "~/models/qwen3.6-35b-a3b-q4_k_m.gguf"
+args = ["-backend", "cuda", "-moe-cache-experts", "-thinking", "off"]
+ctx = [32768]
+
+[[arm]]
+name = "qwen3-8b-q4km-cuda"
+model_path = "~/models/qwen3-8b-gguf/Qwen3-8B-Q4_K_M.gguf"
+args = ["-backend", "cuda", "-thinking", "off"]
+ctx = [16384]
+
+[[arm]]
+name = "qwen3-4b-cuda"
+model_path = "~/models/qwen3-4b"
+args = ["-backend", "cuda", "-thinking", "off"]
+ctx = [30720]
+
+[[arm]]
+name = "granite-4.2-3b-cuda"
+model_path = "~/models/granite-4.2-3b"
+args = ["-backend", "cuda"] # thinking unmanaged: the template has no thinking control
+ctx = [30720]

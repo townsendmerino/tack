@@ -497,3 +497,81 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
   - gemma-4 E4B's 68.3 and E2B's 85.6 tok/s are marked unverified: their template has a reasoning channel goinfer
     could drop.
   - The Qwen2.5, Seed-Coder and Mac figures stand: their templates have none.
+
+## 9. Amendment C3: E0 on the five models resident on nobara's card — proposed 2026-10-18, awaiting the owner's approval
+
+**Why.** Five models load `cuda-resident` on the RTX 2070 SUPER (8 GB) at a context measured by day
+(`e1-model-candidates-2026-10-18.md`). Under the owner's rule, each takes E0 before any calibration amendment.
+
+- **C3 is E0 only.** It starts no calibration run.
+- **It produces a table, not a decision.** Picking a model for calibration is a separate amendment, after the owner has
+  seen the table.
+
+**What runs:**
+
+- **The command:** `tack eval models` on nobara, with `eval/e0/nobara-c3.toml`.
+- **The builds:**
+  - goinfer-serve `0de92cd9`, where the contexts were measured;
+  - tack's fixed E0, `38137f5` or later: the first-token probe allows 16 tokens and times the first streamed text or
+    thinking; the decode probe times both kinds and refuses a reply that held tokens back.
+- **The run:** all of E0, as registered, for each model. That is fit, check, two smoke runs of 20, first-token time at
+  4,096, 8,192 and 15,360 tokens, decode and footprint.
+- **The order** (owner): Qwen3.5-9B, Qwen3.6-35B-A3B, Qwen3-8B, Qwen3-4B, Granite-4.2-3B.
+- **All five run even if an early one passes,** because the comparison table is the point.
+- **When:** by day, on the owner's override, each holding nobara's timing lock.
+- **Before each model's E0:** one load through pilot-serve at its context records goinfer's own `forced_tool_call` from
+  `/v1/models`, which E0 does not record.
+
+**Each model's setting:**
+
+| # | model | context | server flags | forced-call mode (expected; goinfer's report recorded at the run) | thinking |
+|---|---|---|---|---|---|
+| 1 | Qwen3.5-9B `Q4_K_M` | 32,768 | `-thinking off` | grammar: chatml, goinfer's Hermes JSON form | off (template default off) |
+| 2 | Qwen3.6-35B-A3B `q4_k_m` | 32,768 | `-moe-cache-experts -thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
+| 3 | Qwen3-8B `Q4_K_M` | 16,384 | `-thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
+| 4 | Qwen3-4B (bf16, int4 at load) | 30,720 | `-thinking off` | grammar: chatml, Hermes JSON | off (template default on) |
+| 5 | Granite-4.2-3B (bf16, int4 at load) | 30,720 | none | grammar: chatml, Hermes JSON | none: unmanaged, no thinking control |
+
+**Why thinking is off for the Qwen models:**
+
+- **tack never asks for thinking.** goinfer drops the reasoning of a request that did not ask, so a model thinking by
+  its template's default generates text tack never sees.
+- **In E0's smoke, which allows 256 tokens,** that reasoning can use up the reply before the tool call it scores.
+  The smoke would then measure the thinking budget, not tool choice.
+- **In an A1 turn,** it costs time and tokens on every request for nothing tack can read.
+- **The timing probes ask for thinking explicitly,** which overrides the server default. The decode rate therefore
+  includes any reasoning, streamed and timed.
+- **Whether reasoning would help tool use** is a different question, not asked here. If the owner wants it, thinking on
+  can be a second E0 arm under its own amendment.
+
+**Known limit of the first-token probe:** it offers E0's tools. A model that opens its reply with a tool call streams
+nothing until the call completes, because goinfer buffers tool calls, so the probe records "no text or thinking … within
+16 tokens" for that request. That is visible, not silent. The models E0 has run so far answered the probe's filler
+prompt with text.
+
+**The gate, E0's rule unchanged:** a smoke score of at least 17/20 on both runs, and 0 malformed. If a model's load is
+not `cuda-resident`, or its smoke falls below the bar or has any malformed call, that model is recorded ineligible.
+Every model runs regardless.
+
+**Predictions, recorded before any run.** The incumbent, Qwen2.5-7B, scored 18/18 on E0 at 85.7 tok/s, a figure that
+stands after the audit.
+
+| model | smoke (each run) | gate | decode tok/s | first token at 15k, cold |
+|---|---|---|---|---|
+| Qwen3.5-9B | 17–19 | pass | 50–75 | 2–8 s |
+| Qwen3.6-35B-A3B | 17–19 | pass | 10–35 (experts streamed from host RAM) | 15–90 s |
+| Qwen3-8B | 16–18 | on the edge | 65–85 | 2–6 s |
+| Qwen3-4B | 14–17 | likely below | 90–130 | 1–4 s |
+| Granite-4.2-3B | 12–16 | below | 90–140 | 1–4 s |
+
+**Reported in one table:**
+
+- the gate result;
+- the malformed count, and the names called;
+- first-token time at 4k, 8k and 15k, cold and reused, as medians;
+- decode speed, as the median of three;
+- VRAM, from E0's footprint;
+- goinfer's reported forced-call mode.
+
+**Time:** E0 took 27 minutes for gemma-4 E4B and about an hour for gpt-oss-20b. The four dense models should take
+20–40 minutes each, and Qwen3.6-35B-A3B up to 90. That is about 2.5–4 hours by day in all, holding nobara's lock.
