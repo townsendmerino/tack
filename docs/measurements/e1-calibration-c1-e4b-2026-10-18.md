@@ -46,26 +46,33 @@ loop.
   (it needs head dim 64 or 128 …)".
   - Time to first token: 48 s, 86 s, 10 s, 76 s, 5 s and 128 s, on prompts of 10.9k–25.6k tokens.
   - At that rate, a run of 15 requests reaches the 10-minute cap on prefill alone.
-- **The run ended `error`: "goinfer: reading stream: unexpected EOF".**
-  - The 6th request is in goinfer's log with status 200 and 131.6 s total, 127.7 s of it before the first token.
-    tack's client saw the stream end early.
-  - Earlier requests up to 96.9 s total got through.
-  - goinfer's HTTP server sets `IdleTimeout: 120 s` (`internal/serveapp/main.go`), which fits a cut near 120 s of
-    silence. This is not proven.
-  - Six requests, 4.7 minutes, no diff. The oracle failed.
+- **The run ended `error`: "goinfer: reading stream: unexpected EOF". RETRACTED as a goinfer finding (10:58 PDT): the
+  Mac, which drives the run, went to sleep.**
+  - Request 6 was sent at 10:25:50 PDT. The Mac's `pmset -g log` has "Entering Sleep state due to 'Idle Sleep' …
+    Using Batt" at 10:25:53, DarkWakes at 10:39:05 and 10:39:56, and tack's EOF at 10:40:09, 14 min 19 s after the
+    send. goinfer finished the request at 131.6 s and logged it status 200, writing into a connection the sleeping Mac
+    had stopped reading.
+  - The record's 280 s of wall time is Go's monotonic clock, which does not count sleep. The events' wall-clock times
+    span 18.5 minutes.
+  - goinfer's 10 s SSE pings do run through prefill: requests 2–5 received 5, 9, 1 and 7 of them. No goinfer change
+    is needed for this (goinfer's Mac session, 2026-10-18).
+  - First written as "goinfer's `IdleTimeout: 120 s` fits a cut near 120 s of silence". That was wrong, and is kept
+    here as written.
+  - **This is a tack harness gap:** a Mac-driven run neither keeps the Mac awake nor notices that it slept.
+  - Six requests before the sleep, no diff. The oracle failed. This smoke says nothing about E4B's loop past request 6.
 
 ## What it means
 
-- **Each of the three is goinfer's or the card's, not E4B's or tack's loop:**
+- **Two findings are goinfer's or the card's, not E4B's or tack's loop:**
   - sequential prefill past the 2070 SUPER's shared-memory limit, for gemma-4's head size;
-  - the stream lost near 120 s;
   - windowed KV failing on prefix reuse.
+- **The third, the dropped stream, was tack's:** the Mac slept mid-run (above).
 - **Running the 36 runs now would measure them,** mostly as cap hits and errors. C1 waits for the owner's decision.
 
 ## Status: paused (owner, 2026-10-18)
 
-**C1 is paused, not void and not failed.** No run of the 36 happens on goinfer `0de92cd9`. goinfer gets a brief on the
-three findings above.
+**C1 is paused, not void and not failed.** No run of the 36 happens on goinfer `0de92cd9`. goinfer has a brief on its two findings (sequential prefill, windowed KV);
+the third was the Mac sleeping. The resumed smoke runs with the Mac kept awake.
 
 When goinfer ships fixes, C1 resumes under a small amendment naming the new build:
 
@@ -73,7 +80,7 @@ When goinfer ships fixes, C1 resumes under a small amendment naming the new buil
 2. then the one-task smoke;
 3. then the 36 runs, only after the owner has read the smoke.
 
-### The dropped stream: tack's side ruled out
+### The dropped stream: every timeout on the path (kept; the cause was the Mac sleeping, above)
 
 Every timeout on the request's path, Mac to nobara, as set on 2026-10-18:
 
