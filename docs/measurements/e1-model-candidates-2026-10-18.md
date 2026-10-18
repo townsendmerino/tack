@@ -39,6 +39,17 @@ CUDA, and what is known about each fitting the RTX 2070 SUPER (8 GB) at 32k. The
 `docs/tool-call-coverage.md` in goinfer is stale on gpt-oss, which it lists as having no tools, and on Phi-3. goinfer's
 Mac session has been told.
 
+## Next, if gemma-4 E4B and gpt-oss-20b both fall short (owner, 2026-10-18)
+
+**Candidate:** a Qwen3 8B-class chatml model, for example Qwen3-8B at `Q4_K_M` (about 5 GB).
+
+- **Why it:** chatml has a JSON call wrapper, so its calls are grammar-constrained (`forced_tool_call` "grammar"), and
+  tack's post-check resend never applies.
+- **What it needs:** nobara has no Qwen3-8B; the nearest file is Qwen3.8-27B, far too big. So it needs a download, on
+  the owner's word.
+- **Then:** the same steps as C1. A 32k fit load (it builds its sidecar), E0's smoke at the bar, then its own
+  calibration amendment.
+
 ## goinfer's fit endpoint cannot answer the card question
 
 - `POST /admin/models/fit` prices the load against **host** memory. On CUDA, whether a model goes resident is decided

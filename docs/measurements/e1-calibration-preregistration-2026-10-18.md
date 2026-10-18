@@ -405,7 +405,7 @@ of 36.
 
 That is about 1.5 hours by day, with nobara's lock held throughout.
 
-## 8. Amendment C2: E0 for gpt-oss-20b — proposed 2026-10-18, awaiting the owner's approval
+## 8. Amendment C2: E0 for gpt-oss-20b — approved by the owner as written, 2026-10-18, before the run
 
 **Why.** gpt-oss-20b loads `cuda-resident` at 32k on nobara's 8 GB card with its experts streamed
 (`e1-model-candidates-2026-10-18.md`). Under the owner's rule, a model that loads resident at 32k takes E0's smoke
