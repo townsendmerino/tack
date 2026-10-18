@@ -480,6 +480,11 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
     time between the first and last streamed delta. On a Harmony model, tokens that never stream (channel tokens,
     analysis) count in the numerator but not in the time, the same blind spot as the first-token probe.
   - Filed with the probe fix: E0's decode timing must cover every token it counts.
+  - **When those fixes are built** (owner, 2026-10-18): check every earlier E0 decode figure for tokens that never
+    streamed, gemma-4 E4B's 68.3 tok/s first (thinking text, or a post-check hold-back, could be counted but not
+    timed). Recompute from the raw records where they allow it; otherwise mark the figure unverified in its record.
+    E0's records keep only each repetition's token count and rate, not per-delta timings, so most figures may end up
+    unverified.
 - **How gpt-oss-20b can return** (owner, 2026-10-18), in this order and no other way:
   1. goinfer fixes its Harmony parser, if the `greplicate`/`grepaste` names turn out to be the parser running past
      `grep` (item 4 of tack's note to goinfer, which waits until the owner names it);
