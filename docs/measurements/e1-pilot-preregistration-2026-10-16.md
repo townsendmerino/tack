@@ -324,7 +324,7 @@ tailnet, `~/tack-runs/e1/a1-smoke-2026-10-17`).
   - The sandbox's commands run with `GOPROXY=off`.
   - A1 ran by day on the owner's override, not on the night queue. The record is `e1-pilot-a1-2026-10-18.md`: 0/10.
 
-**Amendment 10, A1b — proposed 2026-10-18, awaiting the owner's approval.** **A1b: A1 with two changes to tack's
+**Amendment 10, A1b — proposed 2026-10-18; set aside by the owner the same day, not run.** A1 showed no repeat loops (longest streak 1), so it targets the wrong failure. Its two messages survive as a small addition in `e1-calibration-preregistration-2026-10-18.md` §4.4. As proposed: **A1b: A1 with two changes to tack's
 loop, on the same ten tasks.** It is compared task by task with A1 and with opencode's A0 and A0k, never pooled.
 
 1. **An exact repeat whose result has not changed is answered as a repeat, and counts as no progress.**
