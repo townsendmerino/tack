@@ -456,3 +456,10 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
 - **The malformed calls carry grep's correct arguments.** goinfer is asked, at low priority, whether gpt-oss wrote those
   names or the Harmony parser ran past `grep` (tack's note to goinfer, item 4).
   - If it was the parser, a new C2 on the fixed build is warranted.
+- **E0 finished at 11:55 PDT with verdict "fail".**
+  - **Time to first token:** every one of its 24 requests ended "no token was streamed". That covers 4,096, 8,192 and
+    15,360 tokens, cold and with the prefix reused. They took about 2.5 minutes each, 17:53–18:54 UTC.
+  - **Decode:** its phase measured 226–230 tok/s. That disagrees with the by-day sample of 36–37 tok/s
+    (`e1-model-candidates-2026-10-18.md`), and is not investigated.
+- **With its experts streamed, gpt-oss-20b is out for A1 on this card** (owner, 2026-10-18), whatever the `greplicate`
+  answer turns out to be. The parser question to goinfer stays as a correctness check only.
