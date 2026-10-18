@@ -90,3 +90,43 @@ and VRAM (`~/tack-runs/e0/sidecars-2026-10-18/sidecar-load.sh`). Estimated 28 mi
 - Qwen3.6-35B-A3B, with `moe-cache-experts`;
 - Granite-4.2-3B;
 - Mellum2.1.
+
+## The night jobs, and the by-day fit checks after them
+
+**The queue ran 12:45–12:58 PDT.** It was started by day; the records are in
+`~/goinfer-logs/night/runs/2026-10-18/<job>.log` and `~/tack-runs/e0/sidecars-2026-10-18/<name>/` on nobara.
+
+- **Every job built its CUDA sidecar.** The Qwen3-8B download landed: `Qwen3-8B-Q4_K_M.gguf`, sha256 `d98cdcbd…`.
+- **Two came up `cuda-resident` at 32k:**
+  - Qwen3.5-9B: 2.0 GB of KV beside 4.7 GB of weights, 7.2 GB of VRAM.
+  - Qwen3.6-35B-A3B with its experts streamed: 1.2 GB of KV beside 18.2 GB of weights, 7.3 GB of VRAM. It took 176 s to
+    come up.
+- **Five ended rc=1.** Each did so correctly: pilot-serve voids a load that is not resident. goinfer declined the CUDA
+  resident at 32k because the KV, plus its 384 MB reserve, did not fit beside the weights:
+
+| model | KV at 32k | free beside the weights | KV per position |
+|---|---|---|---|
+| gemma-4 12B | 2.08 GB | 0.37 GB | 62.0 KB |
+| Qwen3-4B | 4.83 GB | 5.13 GB | 144.0 KB |
+| Granite-4.2-3B | 5.37 GB | 5.53 GB | 160.0 KB |
+| Mellum2.1 | 1.07 GB | 0.68 GB | 31.9 KB |
+| Qwen3-8B | 4.83 GB | 3.17 GB | 144.0 KB |
+
+**The fix: context sized to the card, with tack's 16k design window as the floor.** Each context was then checked by a
+load by day, through pilot-serve with goinfer `0de92cd9`, holding nobara's lock, 13:57–13:58 PDT:
+
+| model | context | result |
+|---|---|---|
+| Qwen3-4B | 30,720 | `cuda-resident (int4)`: 4.2 GB of KV beside 2.1 GB of weights, 7.3 GB of VRAM |
+| Granite-4.2-3B | 30,720 | `cuda-resident (int4)`: 4.7 GB of KV beside 1.9 GB of weights, 7.4 GB of VRAM |
+| Qwen3-8B | 16,384 | `cuda-resident (int4)`: 2.2 GB of KV beside 4.3 GB of weights, 7.2 GB of VRAM |
+| Mellum2.1 | not loaded | out: about 8,500 positions fit, under the 16k floor |
+| gemma-4 12B | not loaded | out: nothing fits; the free space is under goinfer's reserve |
+
+**Nothing was re-queued.** The sidecars are built, and the by-day loads answered the one remaining question.
+
+**Each model that is resident at its context needs E0's smoke before any calibration amendment.** That is Qwen3.5-9B
+and Qwen3.6-35B-A3B at 32k, Qwen3-4B and Granite-4.2-3B at 30,720, and Qwen3-8B at 16,384.
+
+A context under 32k would also change the calibration's registered window (32,768), so such a model needs that in its
+own amendment.
