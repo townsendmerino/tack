@@ -489,3 +489,11 @@ before any calibration run. C2 is that gate, and nothing more: it starts no cali
   1. goinfer fixes its Harmony parser, if the `greplicate`/`grepaste` names turn out to be the parser running past
      `grep` (item 4 of tack's note to goinfer, which waits until the owner names it);
   2. a new C2 runs on that build, with E0's first-token check (and decode timing) fixed to count Harmony tokens.
+- **Built, 2026-10-18 (tack `38137f5`):** E0's first-token and decode probes ask for thinking, time text and thinking
+  alike, allow 16 tokens for the first one, and refuse a decode reply that counted more tokens than it streamed
+  characters.
+- **The audit is done** (`e0-nobara-2026-10-17.md`, "Decode audit"). No earlier decode figure could be recomputed:
+  E0's servers logged to a temporary directory.
+  - gemma-4 E4B's 68.3 and E2B's 85.6 tok/s are marked unverified: their template has a reasoning channel goinfer
+    could drop.
+  - The Qwen2.5, Seed-Coder and Mac figures stand: their templates have none.
