@@ -62,6 +62,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	defer startKeepAwake(stderr)()
 	if err := goOnPath(); err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))

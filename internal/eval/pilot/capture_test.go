@@ -149,3 +149,73 @@ func TestSamplingCheckThroughThePilot(t *testing.T) {
 		})
 	}
 }
+
+// TestCaptureNamesTheRequestTheHostSleptThrough: the capture checks every request, and the gap before it, for the host
+// sleeping (wall-clock time the monotonic clock did not count). The first sleep over MaxSleepGap is named by where it
+// fell, a sleep under it is ignored, and a new run's recording starts clean.
+func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
+	defer up.Close()
+	c, err := StartCapture(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	post := func() {
+		resp, err := http.Post(c.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	// The checks run in order: request 1 during; then request 2 before and during; and so on. sleepOn says which
+	// check, counted from 1, reports a sleep of how long.
+	run := func(sleepOn int, d time.Duration, requests int) string {
+		c.SetDir(t.TempDir())
+		calls := 0
+		c.SleepGap = func(start, end time.Time) time.Duration {
+			calls++
+			if calls == sleepOn {
+				return d
+			}
+			return 0
+		}
+		for i := 0; i < requests; i++ {
+			post()
+		}
+		return c.Slept()
+	}
+	for _, tc := range []struct {
+		sleepOn  int
+		d        time.Duration
+		requests int
+		want     string
+	}{
+		{3, 45 * time.Second, 3, "host slept 45 s during request 2"},
+		{2, 14 * time.Minute, 3, "host slept 840 s before request 2"},
+		{2, 20 * time.Second, 3, ""}, // under MaxSleepGap
+		{0, 0, 3, ""},
+	} {
+		if got := run(tc.sleepOn, tc.d, tc.requests); got != tc.want {
+			t.Errorf("a sleep of %s on check %d: Slept() = %q, want %q", tc.d, tc.sleepOn, got, tc.want)
+		}
+	}
+	// The real gap: no sleep between two instants a moment apart.
+	if g := hostSlept(time.Now(), time.Now()); g < -time.Second || g > time.Second {
+		t.Errorf("hostSlept with no sleep = %s", g)
+	}
+}
+
+// TestParsePower reads pmset -g batt's first line.
+func TestParsePower(t *testing.T) {
+	for out, want := range map[string]string{
+		"Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged":         "ac",
+		"Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t69%; discharging": "battery",
+		"": "unknown",
+	} {
+		if got := parsePower(out); got != want {
+			t.Errorf("parsePower(%q) = %q, want %q", out, got, want)
+		}
+	}
+}

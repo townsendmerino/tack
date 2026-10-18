@@ -42,6 +42,9 @@ func TestA1RunsAndGrades(t *testing.T) {
 		rec.TackRun.Failed["bash"] != 0 || rec.TackRun.DoneRefused != 0 {
 		t.Fatalf("record %+v\ntack %+v\nstderr %s", rec, rec.TackRun, stderrLog)
 	}
+	if rec.Power != "ac" && rec.Power != "battery" && !strings.Contains(rec.Power, "→") {
+		t.Errorf("the record's power source is %q", rec.Power)
+	}
 	if strings.Join(rec.ServerOptions, ",") != "moe-cache-experts" {
 		t.Errorf("the record lists server options %q", rec.ServerOptions)
 	}
@@ -93,6 +96,28 @@ func TestA1LowDiskIsVoid(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "task-01", "A1", "repo")); !os.IsNotExist(err) {
 		t.Errorf("a repository was made for a void run: %v", err)
+	}
+}
+
+// TestA1HostSleepIsVoid: a run during which the host slept more than MaxSleepGap is void, naming the request the
+// sleep hit, not graded as the model's.
+func TestA1HostSleepIsVoid(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	script := goinfertest.NewScripted("qwen", 32768,
+		goinfertest.Calls("", "r1", "read", `{"path":"calc/calc.go"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`),
+		goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+	rec, _ := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
+		calls := 0
+		o.Capture.SleepGap = func(start, end time.Time) time.Duration {
+			if calls++; calls == 3 { // during the capture's request 2
+				return 45 * time.Second
+			}
+			return 0
+		}
+	})
+	if rec.Run.Void != "host slept 45 s during request 2" || rec.Pass || rec.TackRun != nil {
+		t.Fatalf("record %+v", rec)
 	}
 }
 

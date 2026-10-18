@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -396,17 +397,20 @@ type Record struct {
 	Timed     []Timed      `json:"timed,omitempty"`
 	TimingErr string       `json:"timing_err,omitempty"`
 	// ServerFeatures and ForcedCallMode are goinfer's own report of the server, from its banner (ServerFeatures).
-	ServerFeatures string         `json:"server_features,omitempty"`
-	ForcedCallMode string         `json:"forced_call_mode,omitempty"`
-	ServerOptions  []string       `json:"server_options"`           // see Options.ServerOptions; [] when none
-	KenIndexSecs   float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
-	Requests       []Request      `json:"requests"`
-	Prompt         PromptStats    `json:"prompt"`
-	Events         EventSummary   `json:"events"`
-	DiffBytes      int            `json:"diff_bytes"`
-	Sampling       map[string]any `json:"sampling"`                    // what opencode was configured to send
-	Captured       int            `json:"captured_requests,omitempty"` // requests recorded raw in requests/
-	At             string         `json:"at"`
+	ServerFeatures string   `json:"server_features,omitempty"`
+	ForcedCallMode string   `json:"forced_call_mode,omitempty"`
+	ServerOptions  []string `json:"server_options"` // see Options.ServerOptions; [] when none
+	// Power is what the host ran on: "ac" or "battery", from its start to its end ("battery→ac" when it changed), or
+	// "unknown" off darwin (PowerSource).
+	Power        string         `json:"power"`
+	KenIndexSecs float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
+	Requests     []Request      `json:"requests"`
+	Prompt       PromptStats    `json:"prompt"`
+	Events       EventSummary   `json:"events"`
+	DiffBytes    int            `json:"diff_bytes"`
+	Sampling     map[string]any `json:"sampling"`                    // what opencode was configured to send
+	Captured     int            `json:"captured_requests,omitempty"` // requests recorded raw in requests/
+	At           string         `json:"at"`
 }
 
 // RunPilot runs every task's arms in order and appends a Record per run to Out/results.jsonl. A failure to set up a
@@ -467,8 +471,8 @@ func RunPilot(ctx context.Context, o Options) error {
 	return nil
 }
 
-func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
-	rec := Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339),
+func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
+	rec = Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339),
 		ServerOptions: append([]string{}, o.ServerOptions...)}
 	rec.Run = Result{Arm: arm.Name, Exit: -1}
 	dir := filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name)
@@ -479,6 +483,13 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		rec.CappedSecs = o.Cap.Seconds()
 		return rec
 	}
+	power := PowerSource()
+	defer func() {
+		if end := PowerSource(); end != power {
+			power += "→" + end
+		}
+		rec.Power = power
+	}()
 	need := o.MinFree
 	if need == 0 {
 		need = MinFreeDisk
@@ -522,6 +533,9 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 			return rec
 		}
 		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap)
+		if o.Capture != nil && rec.Run.Void == "" {
+			rec.Run.Void = o.Capture.Slept()
+		}
 		if rec.Run.Void != "" { // no model request was made: nothing to pair, summarize or grade
 			if o.Capture != nil {
 				o.Capture.SetDir("")
@@ -530,6 +544,9 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) Record {
 		}
 	} else {
 		rec.Run = RunOpencode(ctx, o.Opencode, o.Server, arm, repo, t.Statement, dir, o.Cap)
+		if o.Capture != nil {
+			rec.Run.Void = o.Capture.Slept()
+		}
 	}
 	if o.Capture != nil {
 		rec.Captured = o.Capture.Count()
@@ -590,6 +607,30 @@ func FreeBytes(path string) (uint64, error) {
 		return 0, err
 	}
 	return uint64(st.Bavail) * uint64(st.Bsize), nil
+}
+
+// PowerSource is what the host draws from now: "ac" or "battery" from pmset on darwin, else "unknown".
+func PowerSource() string {
+	if runtime.GOOS != "darwin" {
+		return "unknown"
+	}
+	out, err := exec.Command("pmset", "-g", "batt").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return parsePower(string(out))
+}
+
+// parsePower reads pmset -g batt's first line: "Now drawing from 'AC Power'" or "'Battery Power'".
+func parsePower(out string) string {
+	first, _, _ := strings.Cut(out, "\n")
+	switch {
+	case strings.Contains(first, "'AC Power'"):
+		return "ac"
+	case strings.Contains(first, "'Battery Power'"):
+		return "battery"
+	}
+	return "unknown"
 }
 
 // StatementTokens is the statement's token count as PromptStats.Statement defines it, or 0 when count is nil or fails.

@@ -30,13 +30,49 @@ var Sampling = map[string]any{"temperature": 0.7, "top_p": 0.8, "top_k": 20}
 // bodies stay in the run's local directory (owner, 2026-10-17: goinfer may replay first requests).
 type Capture struct {
 	URL string // what opencode is pointed at
+	// SleepGap is how long the host slept between two instants: their wall-clock difference less their monotonic one,
+	// which does not count sleep. nil means hostSlept; tests replace it.
+	SleepGap func(start, end time.Time) time.Duration
 
 	ln  net.Listener
 	srv *http.Server
 
-	mu  sync.Mutex
-	dir string
-	n   int
+	mu    sync.Mutex
+	dir   string
+	n     int
+	last  time.Time // when the current run's last request ended
+	slept string    // the current run's first sleep over MaxSleepGap, as Slept says it
+}
+
+// MaxSleepGap is the most a run may lose to the host sleeping, on any one request or between two (owner, 2026-10-18):
+// a Mac that idle-sleeps mid-request leaves the model server writing into a connection nobody reads.
+const MaxSleepGap = 30 * time.Second
+
+// hostSlept is how long the host slept between start and end.
+func hostSlept(start, end time.Time) time.Duration {
+	return end.Round(0).Sub(start.Round(0)) - end.Sub(start)
+}
+
+// sleptCheck records the run's first sleep over MaxSleepGap between start and end, where says where it fell.
+func (c *Capture) sleptCheck(start, end time.Time, where string) {
+	gap := c.SleepGap
+	if gap == nil {
+		gap = hostSlept
+	}
+	if g := gap(start, end); g > MaxSleepGap {
+		c.mu.Lock()
+		if c.slept == "" && c.dir != "" {
+			c.slept = fmt.Sprintf("host slept %.0f s %s", g.Seconds(), where)
+		}
+		c.mu.Unlock()
+	}
+}
+
+// Slept says the current run's first sleep over MaxSleepGap ("host slept 45 s during request 3"), or "".
+func (c *Capture) Slept() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.slept
 }
 
 // StartCapture starts the proxy in front of upstream, a goinfer base URL.
@@ -61,7 +97,23 @@ func StartCapture(upstream string) (*Capture, error) {
 	c.srv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		resp, meta := c.open(r, body)
+		start := time.Now()
+		resp, meta, n := c.open(r, body)
+		c.mu.Lock()
+		last := c.last
+		c.mu.Unlock()
+		if !last.IsZero() && n > 0 {
+			c.sleptCheck(last, start, fmt.Sprintf("before request %d", n))
+		}
+		defer func() {
+			end := time.Now()
+			if n > 0 {
+				c.sleptCheck(start, end, fmt.Sprintf("during request %d", n))
+			}
+			c.mu.Lock()
+			c.last = end
+			c.mu.Unlock()
+		}()
 		if resp != nil {
 			r = r.WithContext(contextWith(r, resp))
 			defer resp.Close()
@@ -84,7 +136,7 @@ func StartCapture(upstream string) (*Capture, error) {
 func (c *Capture) SetDir(dir string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.dir, c.n = dir, 0
+	c.dir, c.n, c.last, c.slept = dir, 0, time.Time{}, ""
 	if dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
@@ -100,22 +152,24 @@ func (c *Capture) Count() int {
 // Close stops the proxy.
 func (c *Capture) Close() error { return c.srv.Close() }
 
-// open writes a request's body and returns the file its response body is teed into, and the meta path.
-func (c *Capture) open(r *http.Request, body []byte) (*os.File, string) {
+// open writes a request's body and returns the file its response body is teed into, the meta path, and the
+// request's number in the run (0 when nothing is being recorded).
+func (c *Capture) open(r *http.Request, body []byte) (*os.File, string, int) {
 	c.mu.Lock()
 	if c.dir == "" {
 		c.mu.Unlock()
-		return nil, ""
+		return nil, "", 0
 	}
 	c.n++
-	base := filepath.Join(c.dir, fmt.Sprintf("%04d", c.n))
+	n := c.n
+	base := filepath.Join(c.dir, fmt.Sprintf("%04d", n))
 	c.mu.Unlock()
 	_ = os.WriteFile(base+".req.json", body, 0o644)
 	f, err := os.Create(base + ".resp")
 	if err != nil {
-		return nil, base + ".meta"
+		return nil, base + ".meta", n
 	}
-	return f, base + ".meta"
+	return f, base + ".meta", n
 }
 
 type captureKey struct{}
