@@ -670,6 +670,10 @@ measures A1, unchanged, on Qwen3-4B. C5 follows on Qwen3-8B.
   loops are expected at a similar rate.
 - **Decision rule:** §2's bar, at least 4 passes over at least 2 tasks, out of 36.
 
+**Outcome (2026-10-19): below the bar.** 0 of 36 passed (0 of 27 over the 9), and 11 of 36 stopped on a full window.
+Both are within the predictions. In 19 runs the model called `done` without doing any work. Pass 1's tasks 1–7 ran with
+the Mac on battery; they are kept and marked. Record: `e1-calibration-c4-qwen3-4b-2026-10-19.md`.
+
 ## 11. Amendment C5: Qwen3-8B on the calibration set — registered 2026-10-18 by the owner, before any run
 
 **Why.** Qwen3-8B passed E0's gate in C3 (19/20 on both runs, 0 malformed, 79 tok/s). It runs after C4, on the same
