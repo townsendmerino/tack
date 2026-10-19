@@ -318,22 +318,29 @@ and counts it toward the budget. If both are approved, they are measured separat
 - 16 KiB is about 4–5k tokens. A fixed cap that size is right for a 32k window and too large for 16k with a 10k first
   prompt.
 
-**The change.**
-- **Size the cap to what the window has left.** Before a result enters the conversation, its cap becomes the smaller
-  of 16 KiB and the room the window has left, converted to bytes. That room is the window, less the last request's
-  prompt and output tokens, less `max_tokens` (the next reply's room), less a fixed margin of 512 tokens.
+**The change** (revised by the owner, 2026-10-19).
+- **Cap each result at the room left, less a reserve for the next reply.**
+  - The cap is the smaller of 16 KiB and the room left, converted to bytes.
+  - The room left is the window, less the tokens the last request used (prompt and output), less the reserve.
+  - The reserve is `max_tokens` (the next reply's room) plus a margin of 512 tokens.
 - **The tokens-to-bytes rate is measured, not assumed:** the bytes of the conversation so far over its token count from
   the last response's usage. Until a response exists, it is 3 bytes per token.
-- **A floor of 1 KiB,** so every result says something.
-- **The cut keeps head and tail as now, and says why:** "[… N bytes omitted to fit the window; read_output with
-  handle H pages them, or narrow the command (go test -run, | tail) …]".
+- **Below a minimum, a note instead of a sliver.**
+  - If the cap comes out under the minimum (1 KiB), the result is replaced by a short note: "[window nearly full: this
+    output (N bytes) is not shown. Finish up: make your edit and call done.]"
+  - The full output is still stored and paged by `read_output`.
+- **Every truncation is marked in-band:** how much was cut, and how to narrow it. For example: "[… cut N of M bytes
+  (K of L lines) to fit the window; narrow it with grep, or read a line range with offset and limit …]".
+  - Head and tail are kept as now.
+  - The note names `read_output`'s handle when that tool is present.
 - **Behind a `[run]` setting** (off until adopted), so both arms run the same binary.
 
 **Tests (tier 0), each broken once:**
 - a result larger than the room left is cut to it, and the record keeps the full output;
 - a result that fits is untouched;
-- the cap never exceeds 16 KiB or falls below the floor;
-- the message names the handle and the reason;
+- the cap never exceeds 16 KiB;
+- under the minimum, the result is the "window nearly full" note and not a sliver;
+- every cut says how much was cut and how to narrow it, and names the handle;
 - with the setting off, behaviour is byte-identical to today's.
 
 `TestFixedPromptBudget` is unaffected, because no tool description changes.
@@ -341,6 +348,53 @@ and counts it toward the budget. If both are approved, they are measured separat
 **Expected effect:**
 - Fewer window stops after `bash`, and runs that go on to read their failing test's output.
 - It does not address loops. It cannot make a wrong fix right.
+
+### 4.7 Proposed, not registered: glob and grep descriptions that say which is which (owner asked for the count, 2026-10-19)
+
+**The count.** Calls that chose glob where the smoke task wanted grep or read, in E0's smoke (40 calls per model;
+records under `~/tack-runs/e0/` on nobara):
+
+| model | glob instead of grep or read | its other misses |
+|---|---|---|
+| Mellum2.1 (amendment 10, `b2b5e816`) | **16 of 40** | 2 glob patterns lacking `_test.go` |
+| gpt-oss-20b (C2) | **8 of 40** | 8 malformed (`greplicate`, `grepaste`), 4 others |
+| Granite-4.2-3B (C3) | **6 of 40** | 22 with no tool call |
+| Qwen3-4B, Qwen3-8B, Qwen3.5-9B (C3) | **0 of 40 each** | 2–4 each, all glob patterns missing a part (`_test.go`, `.github`) |
+
+- **It clusters on the same prompts.** All three non-Qwen models chose glob for smoke tasks 11 ("Which file defines the
+  type Conversation?") and 12 ("Find every call to os.Exit."). Two of them also did so for task 5 ("Find all TODO
+  comments in the code.").
+- **In real runs:**
+  - C4 (Qwen3-4B) made no glob call at all.
+  - C5 (Qwen3-8B) made 186 glob calls in 17 of 36 runs. 124 of them were in two runs of task 5, globbing for the field
+    name `kvF16Decline` as a file name (`**/kvF16Decline*`, `kvF16Decline.go`) in a loop.
+
+**So it is common in the non-Qwen models and rare in Qwen.** On C6's arm it touched 2 of 36 runs, both on task 5,
+which failed for other reasons too.
+
+**tack's descriptions now** (`internal/tools/fs.go`):
+- **glob:** "List files matching a glob such as **/*.go or internal/*/doc.go." Its `pattern` is "relative to the repo
+  root".
+- **grep:** "Search file contents with a Go regular expression. Use for every occurrence of a name."
+
+Nothing says that glob never looks inside files.
+
+**Proposed rewrite:**
+- **glob:** "Find files by name or path pattern, such as **/*_test.go or cmd/*. It matches file names only, never
+  contents: to find where a function, type or text appears, use grep."
+- **grep:** "Search inside files for a Go regular expression: where a function, type, field or string is defined or
+  used. Use for every occurrence of a name."
+
+The fixed prompt now uses 1,024 of its 3,276-token budget, so the rewrite fits.
+
+**How it would be measured, honestly.**
+- Under C6, on Qwen3-8B, the expected effect is near zero: 2 runs. It is unlikely to reach d ≥ 3, so it would be
+  measured last.
+- Its value is for the models that make the error, which C6 does not run. **A cheaper tier-1 check answers that
+  directly:**
+  - re-run E0's smoke, 2×20 and a few minutes, on Mellum2.1 and gpt-oss with the rewritten descriptions;
+  - against the counts above, with its mechanism metric: glob-instead-of-grep calls.
+- The owner decides whether it is 4.7 under C6, that tier-1 check, or both.
 
 ## 5. A harness fix, not a loop change
 
@@ -784,6 +838,14 @@ its commit, its setting and its predictions.
   - A fit load of Qwen3-8B at 16,384 on `b2b5e816` comes first. It must be `cuda-resident`, or the change waits.
 - **A is reported beside C5 task by task.** If A's total differs from C5's 4 by 3 or more passes, that is a build
   effect, and it is reported to goinfer. The change's d is still read against its own A.
+- **Changes stack** (owner, 2026-10-19). This replaces §3's "each change measured alone, not stacked" for C6.
+  - Every change adopted so far is on in **both** A and B of the next change, so each change is measured on top of
+    the loop as it will ship.
+  - A change that is parked or not adopted is off in both arms of later changes. A parked change is re-measured
+    under its own rule before the next change runs.
+  - Each change's registration line names the changes its A includes.
+  - **The order therefore matters.** A change's effect is measured given those before it, and is not comparable with
+    the same change measured on plain A1.
 
 ### 12.2 Interleaving (owner rule, 2026-10-19)
 
@@ -821,6 +883,19 @@ These rest on the ten zero-rate tasks being truly zero. A task with a small true
 
 **Also reported, not decided on:** each task's outcome in both arms, how runs ended, window-full stops, tool errors by
 kind, and the cell states.
+
+**One mechanism metric per change** (owner, 2026-10-19). Each is recorded in both arms and reported beside d. It
+shows whether the change did what it is for. **It is never used for adoption.**
+
+| change | its mechanism metric |
+|---|---|
+| 4.6, the window-sized output cap | window-full stops (`window_full` plus prompt-too-long refusals), with the cap's truncations and "nearly full" notes counted |
+| 4.5, the stop rule | stop reasons, `repeat_loop` included |
+| 4.4, repeat and empty-result messages | repeat loops (runs with 8 or more unchanged repeats of one call) and empty-result repeats (an empty glob or grep repeated unchanged) |
+| 4.1, the edit tool | edit failures by kind, in §4.1's table |
+| 4.2, done requires verification | verification runs per run, and window use after `go test`: the prompt's growth from each verification's result, and window stops that follow one |
+| 4.3, loopback | tool-output and oracle failures that name a loopback bind or dial |
+| 4.7, if registered | glob calls that search for a code name as a file name |
 
 ### 12.4 Time and order
 
