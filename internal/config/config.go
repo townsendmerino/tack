@@ -79,6 +79,9 @@ type Run struct {
 	MaxErrors        int `toml:"max_errors"`         // tool calls in a row ending in an error or a denial (default 8)
 	SessionTokens    int `toml:"session_tokens"`     // per session (default 2000000)
 	SessionToolCalls int `toml:"session_tool_calls"` // per session (default 1000)
+	// FitWindow caps each tool result at the room the window has left (loop.Config.FitWindow). Default off until the
+	// calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.6).
+	FitWindow bool `toml:"fit_window"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

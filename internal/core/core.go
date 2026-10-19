@@ -56,6 +56,8 @@ type Options struct {
 	Edit func(root string, group sandbox.Target) (EditKit, error)
 	// EditTask makes every auto-mode session an edit task (loop.Config.EditTask): tool calls required, ended by done.
 	EditTask bool
+	// FitWindow caps every session's tool results at the room its window has left (loop.Config.FitWindow).
+	FitWindow bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -308,7 +310,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	}
 	cfg := loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit}
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow}
 	if p.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)

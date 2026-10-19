@@ -323,8 +323,12 @@ and counts it toward the budget. If both are approved, they are measured separat
   - The cap is the smaller of 16 KiB and the room left, converted to bytes.
   - The room left is the window, less the tokens the last request used (prompt and output), less the reserve.
   - The reserve is `max_tokens` (the next reply's room) plus a margin of 512 tokens.
-- **The tokens-to-bytes rate is measured, not assumed:** the bytes of the conversation so far over its token count from
-  the last response's usage. Until a response exists, it is 3 bytes per token.
+- **The tokens-to-bytes rate is measured, not assumed:** the bytes of the last request's JSON over its prompt tokens
+  from the response's usage, **scaled by 0.85, then held to 2–6 bytes per token** (owner, 2026-10-19).
+  - JSON's escapes and keys inflate the measured rate, and an inflated rate would let a result overflow the window.
+  - Until a response exists, it is 3 bytes per token.
+- **A cut or a note is not a failure.** The result keeps the tool's own outcome, so neither counts toward the
+  consecutive-failure budget of 8.
 - **Below a minimum, a note instead of a sliver.**
   - If the cap comes out under the minimum (1 KiB), the result is replaced by a short note: "[window nearly full: this
     output (N bytes) is not shown. Finish up: make your edit and call done.]"

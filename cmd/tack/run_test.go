@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -92,5 +93,52 @@ func TestRunUsage(t *testing.T) {
 	}
 	if code := dispatch([]string{"frobnicate"}, &out, &errb); code != exitUsage {
 		t.Fatalf("unknown command: exit %d", code)
+	}
+}
+
+// TestRunFitWindowReachesTheLoop: [run] fit_window in config.toml reaches the loop through tack run and the core. With a
+// window the scripted model has nearly filled, a long read comes back as the nearly-full note with the setting on, and
+// as the plain capped output with it off.
+func TestRunFitWindowReachesTheLoop(t *testing.T) {
+	ws := t.TempDir()
+	var big strings.Builder
+	for i := 0; i < 300; i++ {
+		big.WriteString("a line of a long file, long enough to count\n")
+	}
+	if err := os.WriteFile(filepath.Join(ws, "big.txt"), []byte(big.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(fit bool) string {
+		t.Helper()
+		// The scripted model reports 100 prompt and 20 output tokens; with max_tokens 256 and the 512-token margin, this
+		// window leaves 100 tokens, under the 1 KiB minimum at any rate the loop allows.
+		script := goinfertest.NewScripted("m", 100+20+256+512+100,
+			goinfertest.Calls("", "toolu_1", "read", `{"path":"big.txt","offset":1,"limit":300}`), goinfertest.Says("ok"))
+		ts := httptest.NewServer(script)
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(f, "[run]\nmax_tokens = 256\nfit_window = %v\n", fit)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		if code := dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "read big.txt"}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("fit_window %v: exit %d: %s", fit, code, stderr.String())
+		}
+		for _, l := range strings.Split(stdout.String(), "\n") {
+			if strings.Contains(l, `"type":"tool.finished"`) {
+				return l
+			}
+		}
+		t.Fatalf("fit_window %v: no tool.finished in\n%s", fit, stdout.String())
+		return ""
+	}
+	if on := run(true); !strings.Contains(on, "[window nearly full: this output") {
+		t.Errorf("fit_window = true did not reach the loop: %.300s", on)
+	}
+	if off := run(false); strings.Contains(off, "window nearly full") || !strings.Contains(off, "a line of a long file") {
+		t.Errorf("fit_window = false changed the result: %.300s", off)
 	}
 }

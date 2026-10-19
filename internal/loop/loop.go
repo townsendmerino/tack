@@ -62,6 +62,11 @@ type Config struct {
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
 	// the blob store. Default 16 KiB.
 	MaxResultBytes int
+	// FitWindow also caps each result at the room the window has left after the last request, less a reserve for the
+	// next reply (fitRoom); a long result that meets less than fitMinBytes of room becomes a "window nearly full" note,
+	// and every cut says how much it cut and how to narrow it. Off, results are capped by MaxResultBytes alone
+	// (calibration pre-registration §4.6).
+	FitWindow bool
 	// Perms decides every tool call that changes something, in Mode (DESIGN §6.6). Without it such a call is refused:
 	// a session whose tools can write must have an engine. Approve asks the user when the engine asks; nil means no one
 	// is attached, and a call that needs the user is refused.
@@ -208,6 +213,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	doneRefused, finished := false, false // an edit task's done (Config.EditTask)
 	lastFailed := "\x00"                  // the last call's key when it failed (callKey); no call has that key
 	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
+	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
 	for {
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
@@ -227,6 +233,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
 		if err != nil {
 			return proto.StopError, err
+		}
+		reqBytes := 0 // the request's size, for the window's bytes-per-token rate (fitRoom)
+		if s.cfg.FitWindow {
+			if b, err := json.Marshal(s.conv.Request()); err == nil {
+				reqBytes = len(b)
+			}
 		}
 		resp, err := s.stream(ctx, srv, reqEv.Seq)
 		if err != nil {
@@ -270,6 +282,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		tokens += computed
 		s.tokens += computed
+		room = nil
+		if s.cfg.FitWindow {
+			if r, ok := s.fitRoom(u, reqBytes); ok {
+				room = &r
+			}
+		}
 		if err := s.conv.AddResponse(resp.Content); err != nil {
 			return fail("internal", err)
 		}
@@ -341,7 +359,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				if fin, full, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq); err != nil {
+				if fin, full, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
 					return proto.StopError, err
 				}
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -356,6 +374,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
+			if room != nil {
+				*room = max(0, *room-len(fin.Result))
+			}
 			switch fin.Outcome {
 			case proto.OutcomeOK:
 				errorsInARow, lastFailed = 0, ""
@@ -464,8 +485,9 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 
 // runTool records tool.started (fsynced by the store, so a crash leaves the call marked started), runs the tool and
 // returns its tool.finished payload. When the output is too long for the model, the payload names a blob by handle
-// and full holds the bytes; the caller stores them before recording the payload (ADR-004).
-func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64) (fin proto.ToolFinished, full []byte, err error) {
+// and full holds the bytes; the caller stores them before recording the payload (ADR-004). room, when not nil, is the
+// bytes the window has left for this response's results (Config.FitWindow).
+func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int) (fin proto.ToolFinished, full []byte, err error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
 	if !ok { // checked by the client already; kept so a server that skipped the check cannot reach a nil tool
 		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil, nil
@@ -483,6 +505,9 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
+	}
+	if room != nil {
+		return s.fit(fin, r.Text, *room)
 	}
 	if len(r.Text) > s.cfg.MaxResultBytes {
 		full = []byte(r.Text)
