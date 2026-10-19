@@ -1,4 +1,10 @@
-# DRAFT, not registered: a thinking-on arm for Qwen3-8B (calibration)
+# DROPPED at 16k (owner, 2026-10-19): a thinking-on arm for Qwen3-8B (calibration)
+
+**Dropped after C5 reported.** C5 met the bar, and three of its four passing runs already ended at 15.8–16.3k of
+prompt, so thinking kept in the window would push them out (§4's own rule; `e1-calibration-c5-qwen3-8b-2026-10-19.md`).
+Two things below stay true for any later thinking arm, on a larger window or another model:
+- as built, A1's forced calls render thinking off (§1);
+- thinking stays in the window for the whole task (§2).
 
 <!-- citations-at: 4c8fc42 (tack), f20f0d93 (goinfer) -->
 

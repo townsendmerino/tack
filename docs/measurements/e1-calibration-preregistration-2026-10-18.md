@@ -301,6 +301,47 @@ and counts it toward the budget. If both are approved, they are measured separat
   its label.
 - In the baseline's grading, a run ended this way is counted as window-full, and its record keeps `error`.
 
+### 4.6 A tool-output cap sized to the window (owner, 2026-10-19: its own arm)
+
+**Filed, not registered.** Like the others, it is registered under §12 before any of its runs.
+
+**The evidence (C5, `e1-calibration-c5-qwen3-8b-2026-10-19.md`):**
+- At 16,384, 22 of C5's 32 failing runs stopped on the window.
+- 10 of those 22 stopped straight after a `bash` call (`go test -v ./...`, or a CUDA build) whose 300–360 lines of
+  output took a 10–12k prompt past the window.
+- goinfer then refused the next request as too long, and the model never saw the output it asked for.
+
+**What tack does now.**
+- `internal/loop/loop.go:Session.runTool` caps a result at `MaxResultBytes`, 16 KiB, keeping three quarters from the
+  head and one quarter from the tail.
+- The full output goes to the blob store, and `read_output` pages it.
+- 16 KiB is about 4–5k tokens. A fixed cap that size is right for a 32k window and too large for 16k with a 10k first
+  prompt.
+
+**The change.**
+- **Size the cap to what the window has left.** Before a result enters the conversation, its cap becomes the smaller
+  of 16 KiB and the room the window has left, converted to bytes. That room is the window, less the last request's
+  prompt and output tokens, less `max_tokens` (the next reply's room), less a fixed margin of 512 tokens.
+- **The tokens-to-bytes rate is measured, not assumed:** the bytes of the conversation so far over its token count from
+  the last response's usage. Until a response exists, it is 3 bytes per token.
+- **A floor of 1 KiB,** so every result says something.
+- **The cut keeps head and tail as now, and says why:** "[… N bytes omitted to fit the window; read_output with
+  handle H pages them, or narrow the command (go test -run, | tail) …]".
+- **Behind a `[run]` setting** (off until adopted), so both arms run the same binary.
+
+**Tests (tier 0), each broken once:**
+- a result larger than the room left is cut to it, and the record keeps the full output;
+- a result that fits is untouched;
+- the cap never exceeds 16 KiB or falls below the floor;
+- the message names the handle and the reason;
+- with the setting off, behaviour is byte-identical to today's.
+
+`TestFixedPromptBudget` is unaffected, because no tool description changes.
+
+**Expected effect:**
+- Fewer window stops after `bash`, and runs that go on to read their failing test's output.
+- It does not address loops. It cannot make a wrong fix right.
+
 ## 5. A harness fix, not a loop change
 
 **The ssh port forward the A1 harness opens leaked into ssh's shared connections.**
@@ -324,6 +365,8 @@ and counts it toward the budget. If both are approved, they are measured separat
 4. ~~Run the baseline: A1 as is, 36 runs.~~ Done 2026-10-18: 0 of 36, below the bar (`e1-calibration-baseline-2026-10-18.md`).
 5. If the baseline reaches the bar, build the changes, each with tier-0 tests broken once, in the order 4.1, 4.2, 4.3,
    4.4. Each is registered as an amendment and measured before the next is built. Below the bar, stop at §2's rule.
+   **Superseded 2026-10-19 by §12:** C5 reached the bar, and the changes, now including 4.5 and 4.6, are measured on C5's
+   arm. §12 proposes an order for the owner.
 
 ## 7. Amendment C1: gemma-4 E4B on the calibration set — approved by the owner 2026-10-18, before any run
 
@@ -709,9 +752,91 @@ smoke is not clean, C5 stops and the reason is recorded.
 
 **Outcome (2026-10-19): at the bar.** 4 of 36 passed, over 2 tasks: task 2 once and task 11 three times (4 of 27 over
 the 9). Both predictions missed: 4 passes against 0–3, and 25 window-full stops against 12–20. The window confound is
-the main failure: 10 of the window stops followed a `bash` call whose output overflowed 16k. Whether loop changes are now
-measured on this arm is the owner's decision. Record: `e1-calibration-c5-qwen3-8b-2026-10-19.md`.
+the main failure: 10 of the window stops followed a `bash` call whose output overflowed 16k. **The owner decided
+(2026-10-19): the loop changes are measured on this arm (§12).** Record: `e1-calibration-c5-qwen3-8b-2026-10-19.md`.
 
 **Order and time:** C4, then C5, the same night, each holding nobara's timing lock for its runs. The baseline's 36
 runs took about 70 minutes. Expect about 1–1.5 hours each, plus the fit load and the smoke. C5 may finish sooner,
 because a 16k window fills sooner.
+
+## 12. Amendment C6: the loop changes, measured on C5's arm — owner decision 2026-10-19; registered before any run
+
+**Why.** C5 (Qwen3-8B at 16,384) passed 4 of 36 over 2 tasks, which meets §2's bar. The owner decided that §4's loop
+changes are now measured on this arm, with the effect size that would count registered here.
+
+**This section fixes how every change is measured.** Each change still gets its own line here, before its runs, with
+its commit, its setting and its predictions.
+
+### 12.1 The arms
+
+- **A, the do-nothing arm:** C5's configuration.
+  - A1 as is, on Qwen3-8B `Q4_K_M` at 16,384.
+  - Thinking off, enforced as in C4.
+  - Forced-call mode grammar.
+  - Sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure budget 8, the 10-minute cap.
+  - The same harness, and the same 12 tasks.
+- **B:** A with exactly one change from §4 switched on.
+- **One binary.** Each change lands behind a `[run]` setting that is off by default, so A and B run the same tack
+  binary, built clean at the change's commit, and differ by that one config line. The pilot writes the line.
+- **The server: goinfer `b2b5e816`** (owner: anything registered from now on), the same build for both arms.
+  - C5 ran on `f20f0d93`, so each change is measured against an A arm run beside it, not against C5's 36 runs.
+  - C5's runs stay the evidence that the bar is met, and they supply the per-task rates for the sd.
+  - A fit load of Qwen3-8B at 16,384 on `b2b5e816` comes first. It must be `cuda-resident`, or the change waits.
+- **A is reported beside C5 task by task.** If A's total differs from C5's 4 by 3 or more passes, that is a build
+  effect, and it is reported to goinfer. The change's d is still read against its own A.
+
+### 12.2 Interleaving (owner rule, 2026-10-19)
+
+- **Per task, six runs back to back:** A B B A A B. Then the next task.
+- **A cell is one run.** Its start records nobara's load, its free memory and the Mac's power. The Mac's load is
+  recorded and never voids.
+- **A cell is void if it starts under heavy load on nobara:** a 1-minute load over 8.0, or free memory under the fit's
+  need plus 2 GB. It is also void if it starts with the Mac on battery.
+- A void cell is re-run in its place and listed in the record, never averaged.
+
+### 12.3 The decision rule and the effect size that counts
+
+§3's rule, with the sd computed now from C5's per-task rates:
+- task 2 at 1/3, task 11 at 3/3, the other ten at 0;
+- under no effect, d = B's passes minus A's has variance 2·Σ 3·p(1−p) = 2·3·(1/3)(2/3) = 4/3, so **sd = 1.15**.
+
+| d (B − A, out of 36 each) | verdict |
+|---|---|
+| **3 or more** (d ≥ 2 sd = 2.31) | **adopted** |
+| 2 (1 sd ≤ d < 2 sd) | parked: 3 more runs per task in each arm, then the same rule on all 6 per task |
+| 1 or less | not adopted; the do-nothing arm wins ties |
+
+**What +3 means.**
+- **A gain of 3 passes per 36 runs:** for example 7/36 against 4/36, an absolute gain of 8 points.
+- **Task 11 is already 3/3 and task 2 can add at most 2,** so a change can be adopted only if it makes a task pass
+  that C5 never passed.
+- **A smaller real effect is parked or missed.** That is the price of 36 runs per arm, and it is stated rather than
+  hidden.
+
+**How often the rule errs when a change does nothing,** taking C5's rates as true:
+- adopted by chance, P(d ≥ 3): 1.1%;
+- parked by chance, P(d = 2): about 8%.
+
+These rest on the ten zero-rate tasks being truly zero. A task with a small true rate adds noise and raises both.
+
+**Also reported, not decided on:** each task's outcome in both arms, how runs ended, window-full stops, tool errors by
+kind, and the cell states.
+
+### 12.4 Time and order
+
+- **Each change is 72 runs:** C5's 36 took 57 minutes, so about 2 hours, plus the fit load.
+  - That is at the night line of the 2026-10-19 rule. It runs by day unless the owner says otherwise.
+  - A done-by time is stated at launch.
+  - It holds nobara's lock only for each step, and releases it between changes.
+- **Proposed order, for the owner to decide.** It replaces §6's 4.1–4.4, given C5's evidence:
+  1. **4.6, the tool-output cap sized to the window.** The largest failure in C5: 10 of 22 window stops followed a
+     `bash` output.
+  2. **4.5, the stop rule,** then **4.4, the repeat and empty-result messages.** C5's loops were short, so they are
+     expected to change little.
+  3. **4.1, the edit tool.**
+  4. **4.2, done requires verification.** Measured after 4.6, because it makes the model run `go build` or `go test`,
+     whose output at 16k without 4.6 would add window stops.
+  5. **4.3, loopback in the sandbox.** It only affects tasks whose tests use loopback.
+- **The prompt-too-long label** (§4.5, "also filed") changes no outcome, so it lands as a harness fix, not an arm.
+- **Each change is product code.** It is built with tier-0 tests broken once, shown to the owner, and pushed on his
+  yes. Then its registration line goes here, and then its runs.
