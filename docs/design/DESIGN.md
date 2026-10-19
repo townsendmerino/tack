@@ -1199,6 +1199,12 @@ average and free memory, with a cell started under heavy load void; timed runs b
 first, and night only for Mac jobs the fit guard refuses while the owner's apps are open, or jobs over about two hours
 (owner, 2026-10-19); one copy of each run; never re-measure an unchanged arm.
 
+**Heavy load** (owner, 2026-10-19), judged on the box doing the timed work at the cell's start: a 1-minute load average
+above half its core count (the Mac's 8 cores: 4.0; nobara's 16: 8.0), or less free memory than the fit guard needs for
+the cell's load plus 2 GB. A void cell is re-run in its interleaved place and listed in the record, never averaged. A box
+that only drives the harness (the Mac, for runs against nobara) records its load and never voids a cell. goinfer's
+`docs/measurements/noise-registry.md` §8 states the same rule.
+
 ### 15.1 Instruments
 
 - **E0, the model survey (P0, night runs).** For each machine (the Mac on Metal and CPU; nobara on CUDA), each candidate
