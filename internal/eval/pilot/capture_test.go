@@ -133,7 +133,7 @@ func TestSamplingCheckThroughThePilot(t *testing.T) {
 			err = RunPilot(context.Background(), Options{Tasks: []Task{f.task}, Mirrors: mirrors, Opencode: os.Args[0],
 				A0: Arm{Name: "A0"}, A0k: Arm{Name: "A0k", KenMCP: os.Args[0], KenModel: "/m"},
 				Server: Server{BaseURL: c.URL, APIKey: "secret-key", Model: "qwen", Context: 32768},
-				Out:    out, Cap: time.Minute, Log: io.Discard, Capture: c})
+				Out:    out, Cap: time.Minute, Log: io.Discard, Capture: c, MinFree: 1}) // the test machine's free space is not under test
 			records, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
 			runs := strings.Count(string(records), "\n")
 			switch drop {

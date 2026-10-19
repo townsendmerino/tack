@@ -216,7 +216,8 @@ func TestRunPilotEndToEnd(t *testing.T) {
 	count := func(_ context.Context, text string) (int, error) { return len(strings.Fields(text)) + 20, nil } // 20: the template
 	err := RunPilot(context.Background(), Options{Tasks: []Task{f.task}, Mirrors: mirrors, Opencode: os.Args[0],
 		A0: Arm{Name: "A0"}, A0k: Arm{Name: "A0k", KenMCP: os.Args[0], KenModel: "/m"},
-		Server: Server{BaseURL: "http://x", Model: "qwen", Context: 16384}, ServeLog: serveLog, Out: out,
+		Server: Server{BaseURL: "http://x", Model: "qwen", Context: 16384}, ServeLog: serveLog, Out: out, MinFree: 1, // the test machine's free space is not under test
+
 		Cap: time.Minute, KenWarmup: 30 * time.Second, Log: io.Discard, CountTokens: count})
 	if err != nil {
 		t.Fatal(err)
