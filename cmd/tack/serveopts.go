@@ -8,9 +8,12 @@ import (
 
 // serveOptions are the goinfer-serve options the pilot passes through, by name, and none other (owner, 2026-10-18): a
 // run's server differs from the registered one only in ways named here, and each run's record lists the ones it used.
-// Each takes no value.
-var serveOptions = map[string]bool{
-	"moe-cache-experts": true, // a mixture-of-experts model larger than the card streams its experts (gpt-oss-20b, Qwen3.6-35B-A3B)
+// Each name stands for fixed goinfer-serve flags; a name takes no value of its own.
+var serveOptions = map[string][]string{
+	// a mixture-of-experts model larger than the card streams its experts (gpt-oss-20b, Qwen3.6-35B-A3B)
+	"moe-cache-experts": {"-moe-cache-experts"},
+	// thinking off as the server default, beside the thinking disabled tack sends on every request (calibration C4, C5)
+	"thinking-off": {"-thinking", "off"},
 }
 
 // serveOptionList is the repeatable -serve-option flag. A name not in serveOptions is refused when the flag is parsed,
@@ -21,7 +24,7 @@ func (l *serveOptionList) String() string { return strings.Join(*l, ",") }
 
 func (l *serveOptionList) Set(v string) error {
 	v = strings.TrimLeft(v, "-")
-	if !serveOptions[v] {
+	if _, ok := serveOptions[v]; !ok {
 		var names []string
 		for n := range serveOptions {
 			names = append(names, n)
@@ -42,9 +45,9 @@ func (l *serveOptionList) Set(v string) error {
 func (l serveOptionList) args() []string {
 	var out []string
 	for _, o := range l {
-		out = append(out, "-"+o)
+		out = append(out, serveOptions[o]...)
 	}
 	return out
 }
 
-const serveOptionUsage = "a goinfer-serve option to pass through, by name; repeatable; only: moe-cache-experts"
+const serveOptionUsage = "a goinfer-serve option to pass through, by name; repeatable; only: moe-cache-experts, thinking-off"

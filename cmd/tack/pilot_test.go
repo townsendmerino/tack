@@ -95,16 +95,16 @@ func TestServeOptionsAreAnAllowlist(t *testing.T) {
 		}
 	}
 	var opts serveOptionList
-	for _, v := range []string{"moe-cache-experts", "--moe-cache-experts"} {
+	for _, v := range []string{"moe-cache-experts", "--moe-cache-experts", "thinking-off"} {
 		if err := opts.Set(v); err != nil {
 			t.Fatalf("%s: %v", v, err)
 		}
 	}
-	if got := strings.Join(opts.args(), " "); got != "-moe-cache-experts" {
+	if got := strings.Join(opts.args(), " "); got != "-moe-cache-experts -thinking off" {
 		t.Errorf("goinfer-serve gets %q", got)
 	}
 	r := remote{host: "nobara", tack: "tack", serve: "serve", modelPath: "m", out: "o", rev: "r", ctxN: 32768, options: opts}
-	if got := strings.Join(r.serveCmdArgs(), " "); !strings.HasSuffix(got, "-tack-rev r -serve-option moe-cache-experts") {
+	if got := strings.Join(r.serveCmdArgs(), " "); !strings.HasSuffix(got, "-tack-rev r -serve-option moe-cache-experts -serve-option thinking-off") {
 		t.Errorf("pilot-serve over ssh: %s", got)
 	}
 }
