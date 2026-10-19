@@ -233,6 +233,49 @@ by-day reading. Both came from these probes counting tokens that never streamed.
 - Comparing a model across the line therefore needs a re-measurement on the new probes. The table for C3's models
   holds only post-amendment results.
 
+**Amendment 10, 2026-10-19: E0 for Mellum2.1 on goinfer b2b5e816** (owner: "Mellum2.1 E0 now, with
+-moe-cache-experts on ~/serve-cuda-b2b5e816, thinking setting stated"). Registered before the run.
+
+- **Why.** Mellum2.1 is not out (`e1-model-candidates-2026-10-18.md`, correction of 2026-10-19). Its night load lacked
+  `moe-cache-experts`, so the resident build was declined and the load fell back to CPU. With its experts streamed it
+  may be resident.
+- **The arm:** `mellum2.1-thinking-cuda-moecache`.
+  - Model: `~/models/mellum2.1-thinking` (JetBrains/Mellum2.1-12B-A2.5B-Thinking, bf16, a mixture of experts: 12B in
+    total, 2.5B active). goinfer serves it from its own int4 bundle.
+  - Server: goinfer-serve `b2b5e816` (`~/serve-cuda-b2b5e816`), copied to `~/tack-runs/bin/goinfer-serve-cuda-b2b5e816`
+    (sha256 `231c6e30…`).
+  - Flags: `-backend cuda -moe-cache-experts -thinking off`.
+  - tack: `9f4e0e0`, on E0's amendment-9 probes.
+  - Manifest: `eval/e0/nobara-mellum-b2b5e816.toml`.
+- **Thinking: off.** It is enforced three ways:
+  - tack sends thinking disabled on every request: the smoke, the probes and A1;
+  - goinfer-serve runs with `-thinking off`;
+  - goinfer manages Mellum2.1's template (its `enable_thinking` control and history rule), so "off" renders the closed
+    empty think block, as Mellum2.1's own template does.
+
+  `probe_thinking` stays unset, because this model's reasoning can be turned off.
+
+  **Why off:** A1 forces every call, and goinfer renders a forced call with thinking off. So an E0 measured with
+  thinking on would measure a mode the calibration cannot use. Mellum2.1 thinks by default, so the setting is stated
+  rather than left to the template.
+- **Context:** one fit load at 32,768 first.
+  - If it comes up `cuda-resident`, E0 runs at 32,768.
+  - If not, one fit load at 16,384, tack's design window. If that is resident, E0 runs there.
+  - If neither is resident, Mellum2.1 is out on this card, and the record says so.
+  - No other context is tried. The fit load's `decode_path`, `fit` line, VRAM and `forced_tool_call` are recorded.
+- **The rule is unchanged:** the smoke 2×20, eligible at 17/20 or better on both runs with 0 malformed calls; then the
+  probes.
+- **Predictions, before the run:**
+  - **resident at 32,768:** 0.5. The night load's numbers are 1.07 GB of KV at 32k against 0.68 GB free with every
+    expert resident. Streaming experts frees room, but goinfer's cache shrinks to what is left.
+  - **resident at 16,384:** 0.95. goinfer's Gate 2 ran it resident there on 2026-10-09.
+  - **eligible:** 0.7. Gate 2's harness-scale row passed on the template-aware build.
+  - **forced-call mode:** grammar (its JSON tool format).
+  - **cold first token:** about 170 s at 16k, at goinfer's measured 97 tok/s cold prefill. Whether a reused prefix is
+    reused is not predicted: 21 of its 28 layers are sliding-window.
+- **Time:** the fit loads take about 2 minutes, and E0 about 15–30 minutes (45 if the prefix is never reused). It holds
+  nobara's timing lock for this amendment only and releases it at the end.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.

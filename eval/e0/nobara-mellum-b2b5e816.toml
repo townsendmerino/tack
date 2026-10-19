@@ -1,0 +1,17 @@
+# E0 on nobara (Ryzen 7 3700X, RTX 2070 SUPER 8 GB): amendment 10, Mellum2.1 with its experts streamed, on goinfer
+# b2b5e816 (e0-preregistration-2026-10-16.md). By day under the owner's 2026-10-19 rule. The context is the one the
+# amendment's fit load found resident: 32768, or 16384 if 32768 was declined (the runner rewrites ctx for that case).
+
+box = "nobara"
+goinfer_serve = "~/tack-runs/bin/goinfer-serve-cuda-b2b5e816"
+goinfer_rev = "b2b5e816"
+workspace = "~/tack-runs/e0/workspace/tack"
+
+# Thinking off: tack sends thinking disabled on every request; -thinking off is the server default for anything that
+# sends nothing. goinfer manages Mellum2.1's thinking control, so probe_thinking stays unset.
+
+[[arm]]
+name = "mellum2.1-thinking-cuda-moecache"
+model_path = "~/models/mellum2.1-thinking"
+args = ["-backend", "cuda", "-moe-cache-experts", "-thinking", "off"]
+ctx = [32768]
