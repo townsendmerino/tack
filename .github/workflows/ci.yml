@@ -1,8 +1,25 @@
 name: ci
 
+# Push CI runs the Linux job only; the macOS job (darwin-only code: the sandbox, its escape tests, the Swift fixture
+# check) runs on a manual dispatch and on release tags (owner, 2026-10-19: the free plan's minutes). Commits that touch
+# only docs, statements or eval record files do not run CI; the eval files the tests read (eval/e0/*.toml,
+# eval/e1/pilot.jsonl) still do.
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths-ignore:
+      - "docs/**"
+      - "eval/**/*.md"
+      - "eval/e1/calibration*.jsonl"
+      - "eval/e1/e1-order*.jsonl"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "eval/**/*.md"
+      - "eval/e1/calibration*.jsonl"
+      - "eval/e1/e1-order*.jsonl"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,13 +30,14 @@ concurrency:
 
 jobs:
   # The same two gates the day loop uses, over the whole module: tools/touched -all (gofmt, build and vet for GOOS
-  # darwin and linux with cgo off, every package's tests) and tools/lint (staticcheck behind its canary). Linux and
-  # macOS both run them because darwin-only code (sandbox, launchd, Keychain) only executes on darwin.
+  # darwin and linux with cgo off, every package's tests) and tools/lint (staticcheck behind its canary). macOS runs them
+  # too, because darwin-only code (sandbox, launchd, Keychain) only executes on darwin, but only on a manual dispatch or
+  # a release tag: a push runs Linux alone.
   go:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && fromJSON('["ubuntu-24.04", "macos-latest"]') || fromJSON('["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
