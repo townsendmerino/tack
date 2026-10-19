@@ -120,8 +120,25 @@ load by day, through pilot-serve with goinfer `0de92cd9`, holding nobara's lock,
 | Qwen3-4B | 30,720 | `cuda-resident (int4)`: 4.2 GB of KV beside 2.1 GB of weights, 7.3 GB of VRAM |
 | Granite-4.2-3B | 30,720 | `cuda-resident (int4)`: 4.7 GB of KV beside 1.9 GB of weights, 7.4 GB of VRAM |
 | Qwen3-8B | 16,384 | `cuda-resident (int4)`: 2.2 GB of KV beside 4.3 GB of weights, 7.2 GB of VRAM |
-| Mellum2.1 | not loaded | out: about 8,500 positions fit, under the 16k floor |
+| Mellum2.1 | not loaded | ~~out: about 8,500 positions fit, under the 16k floor~~ withdrawn, see the correction below |
 | gemma-4 12B | not loaded | out: nothing fits; the free space is under goinfer's reserve |
+
+**Correction, 2026-10-19 (goinfer, relayed by the owner): Mellum2.1 is not out.**
+- Mellum2.1 is a mixture-of-experts model (12B total, 2.5B active). Its night job loaded it in 17 s, but without
+  `moe-cache-experts`, so every expert's weights had to sit on the card.
+- goinfer declined the resident build at 32k on that basis, and the load fell back to CPU.
+- "About 8,500 positions fit" was computed from that all-resident load, so it does not describe Mellum2.1 with its
+  experts streamed, the way Qwen3.6-35B-A3B came up resident at 32k.
+
+**Mellum2.1 is a candidate after C4 and C5** (owner):
+- **Fit load first,** with `-serve-option moe-cache-experts` on goinfer `b2b5e816` or later, at 32k.
+- **Its prefill is slow today.** goinfer measures its cold prefill at about 97 tok/s and may batch its MoE prefill
+  (2–4× expected). A 10k-token first prompt at today's rate is about 100 s.
+- **It thinks by default, so its amendment states the thinking setting explicitly** (§3 of the calibration
+  pre-registration). A1 forces every call (`tool_choice: any`), and goinfer renders such requests with thinking off.
+  So the amendment must say off, and say how that is enforced, not leave it to the template
+  (`e1-calibration-thinking-arm-draft-2026-10-19.md` §1).
+- **E0's smoke comes before any calibration amendment,** as for every model in this record.
 
 **Nothing was re-queued.** The sidecars are built, and the by-day loads answered the one remaining question.
 
