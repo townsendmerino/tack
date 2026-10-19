@@ -23,6 +23,9 @@ identical to C5, labelled thinking-on.
 - **tack never asks for thinking.** The loop starts every turn with thinking false (`internal/loop/loop.go:Session.Run` and
   `internal/loop/rebuild.go:Rebuild` both call `BeginTurn` with false).
 
+**Build (owner, 2026-10-19):** anything registered from now on runs on goinfer `b2b5e816` or later, named in its
+amendment. This arm would need a later build still, one with the change in 1 below.
+
 So the arm needs two builds before any run:
 
 1. **goinfer: "think, then a forced call."** For `required` / Anthropic `any` with thinking on, let the model think,
