@@ -96,13 +96,20 @@ what each will hold.
 - **A change that forces a long run on the day loop is a modularity bug.** Say so in the report, name the edge that
   caused it, and fix the edge when it is cheap.
 
-## Run budget: quick by day, long by night (owner rule)
+## Run budget: timed runs by day (owner rule, 2026-10-19)
 
-- **Estimate first.** Before any run longer than a minute, state its estimated wall time.
-- **By day, nothing over about ten minutes**, and no timed or graded measurement on the Mac: the owner is using it.
-- **Everything else goes on the night queue.** tack's own queue is P0 work; until it exists, queue jobs with goinfer's
-  `scripts/night.py add` on the box that must run them, and tell the owner what you queued. Do not start the queue,
-  wait on it or poll it; the owner starts it at bedtime.
+- **State the expected wall time before starting** any run longer than a minute.
+- **Timed runs go by day by default,** on both boxes. They go through the timing lock, and through the queue where one
+  is running, as before.
+- **Night is only for:**
+  - Mac jobs the fit guard refuses while the owner's apps are open;
+  - jobs over about two hours.
+
+  Queue those with goinfer's `scripts/night.py add` on the box that must run them (tack's own queue is P0 work), and
+  tell the owner what you queued. Do not start the queue, wait on it or poll it.
+- **Comparisons are interleaved:** A B B A in one session, never one arm's runs and then the other's.
+  - Each cell records the load average and free memory at its start.
+  - A cell started under heavy load is void, not averaged.
 - **One copy of each run.** Check what is queued before adding. Never re-run a check that already passed at this commit;
   cite its log.
 - **A queued job runs with nobody watching:** pinned revisions or pre-built binaries, durable log paths, no prompts.
@@ -114,9 +121,10 @@ what each will hold.
 ## Testing
 
 - **The smallest test that answers** (owner rule). Tier 0, seconds: deterministic counters, bit-identity, cassettes and
-  fixtures — the default for every change. Tier 1, ten minutes or less by day: one small real model at the smallest
-  size that exercises the mechanism. Tier 2, night: only for a number that will be published or a decision that hinges
-  on a small effect, with a stated reason why tiers 0 and 1 cannot answer it.
+  fixtures — the default for every change. Tier 1, minutes: one small real model at the smallest size that exercises
+  the mechanism. Tier 2: only for a number that will be published or a decision that hinges on a small effect, with a
+  stated reason why tiers 0 and 1 cannot answer it. Tiers 1 and 2 run by day like any timed run, with the expected
+  wall time stated first; night only on the run-budget rule's two exceptions.
 - **A skip is not a pass.** `go test` prints `ok` for a package whose tests all skipped. Confirm with `-v` and read for
   `--- PASS`.
 - **Break it first.** A gate that has never seen its own check fail is unproven. A new correctness test perturbs the

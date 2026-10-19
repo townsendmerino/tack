@@ -1194,8 +1194,10 @@ No changes expected. aikit reaches tack through ken (retrieval, the `encoder` re
 ## 15. Evaluation and measurement
 
 The discipline is goinfer's and ken's: pre-registered rules with a parked band; the do-nothing arm as a competitor;
-paired differences, not pooled means; quick by day, long by night; one copy of each run; never re-measure an unchanged
-arm.
+paired differences, not pooled means; comparisons interleaved (A B B A in one session), each cell recording its load
+average and free memory, with a cell started under heavy load void; timed runs by day with the expected wall time stated
+first, and night only for Mac jobs the fit guard refuses while the owner's apps are open, or jobs over about two hours
+(owner, 2026-10-19); one copy of each run; never re-measure an unchanged arm.
 
 ### 15.1 Instruments
 
@@ -1248,10 +1250,11 @@ arm.
   cassettes, estimates inside their bands elsewhere); permission tables, including adversarial compound commands; a
   sandbox-profile compile check; compaction invariants; the fixed-prompt budget (a test fails if tack's system prompt
   plus tool schemas pass it).
-- **Tier 1, ten minutes or less, by day:** one live smoke task on a tiny repo against the smallest agent-capable model,
-  and only when model-server code changed.
-- **Tier 2, night:** E0 and E1, through a night queue on the pattern of goinfer's `night.py`, written in Go, holding the
-  machine's timing lock.
+- **Tier 1, minutes, by day:** one live smoke task on a tiny repo against the smallest agent-capable model, and only
+  when model-server code changed.
+- **Tier 2, by day by default:** E0 and E1, holding the machine's timing lock, through a queue on the pattern of
+  goinfer's `night.py`, written in Go, where one runs. Night is only for a Mac job the fit guard refuses while the
+  owner's apps are open, or a job over about two hours (owner, 2026-10-19).
 
 ### 15.2 Machine time
 
