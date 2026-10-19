@@ -707,6 +707,11 @@ smoke is not clean, C5 stops and the reason is recorded.
   and loops add to that.
 - **Decision rule:** §2's bar. A C5 result is reported with the window confound beside it.
 
+**Outcome (2026-10-19): at the bar.** 4 of 36 passed, over 2 tasks: task 2 once and task 11 three times (4 of 27 over
+the 9). Both predictions missed: 4 passes against 0–3, and 25 window-full stops against 12–20. The window confound is
+the main failure: 10 of the window stops followed a `bash` call whose output overflowed 16k. Whether loop changes are now
+measured on this arm is the owner's decision. Record: `e1-calibration-c5-qwen3-8b-2026-10-19.md`.
+
 **Order and time:** C4, then C5, the same night, each holding nobara's timing lock for its runs. The baseline's 36
 runs took about 70 minutes. Expect about 1–1.5 hours each, plus the fit load and the smoke. C5 may finish sooner,
 because a 16k window fills sooner.
