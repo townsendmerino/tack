@@ -613,3 +613,96 @@ stands after the audit.
 
 **Time:** E0 took 27 minutes for gemma-4 E4B and about an hour for gpt-oss-20b. The four dense models should take
 20–40 minutes each, and Qwen3.6-35B-A3B up to 90. That is about 2.5–4 hours by day in all, holding nobara's lock.
+
+## 10. Amendment C4: Qwen3-4B on the calibration set — registered 2026-10-18 by the owner, before any run
+
+**Why.** Qwen3-4B passed E0's gate in C3 (18/20 on both runs, 0 malformed, 130 tok/s;
+`e0-nobara-c3-2026-10-18.md`). Under §2, the next decision after the Qwen2.5-7B baseline's 0/36 is the model. C4
+measures A1, unchanged, on Qwen3-4B. C5 follows on Qwen3-8B.
+
+**The arm:**
+
+- **Model:** Qwen3-4B (`~/models/qwen3-4b`, bf16, quantized to int4 at load, with its CUDA sidecar built).
+- **Server:** goinfer-serve `f20f0d93`, which C3 ran on.
+- **Context: 30,720.**
+  - That is 2,048 under the registered 32,768: the most this model holds resident on the 8 GB card (goinfer's decline
+    at 32k: 4.83 GB of KV against 5.13 GB free less 384 MB; resident at 30,720 by day and in C3).
+  - A run that would have fit between 30,720 and 32,768 fills the window here. In the baseline, 8 of 36 runs passed
+    30,720, and those 8 filled 32k anyway. So the difference is small, but it is a difference.
+- **Thinking: off** (§3), enforced twice:
+  - tack sends thinking disabled on every request (`client.go:toWire`);
+  - goinfer-serve runs with `-thinking off` (pilot-serve `-serve-option thinking-off`).
+
+  **Why off:** E0's gate measured this model with thinking off. Thinking on would be a separate arm later, under its
+  own amendment.
+- **Forced-call mode: grammar**, as goinfer reported in C3. No post-check resends are expected, and a resend would be a
+  finding.
+- **Everything else as the baseline:**
+  - tack's loop, prompt, tools and limits (failure budget 8, `max_tokens` 2048, 10-minute cap);
+  - sampling 0.7 / 0.8 / 20;
+  - the harness: module download, sandboxed preflight, the disk floor, the Mac kept awake, and the sleep check;
+  - the same 12 tasks with 3 runs each (36 runs);
+  - results reported over 12 and over 9, task by task beside the baseline, never pooled.
+- **tack:** a clean build of this amendment's commit or later.
+
+**Procedure (C1's):**
+
+1. **Fit load** at 30,720 through pilot-serve with the run's server options. It must come up `cuda-resident`, or C4
+   stops.
+2. **One-task smoke,** task 1. tack's session reads it, since this runs unattended (owner). It goes on to the 36 runs
+   only if the smoke is clean:
+   - no void;
+   - no harness error;
+   - request timings that make sense: every request paired; the client's total near goinfer's plus the tailnet time;
+     first-token times in line with C3's.
+
+   Otherwise C4 stops, the reason is recorded, and C5 begins.
+3. **The 36 runs,** as three passes of 12.
+
+**Before the run:** the Mac must be on mains. Each record notes its power source.
+
+**Predictions, before any run:**
+
+- **Passes: 0–3 of 36, below the bar.** The baseline, a larger model of the same family, passed none. Qwen3-4B's E0 smoke
+  equals the baseline's, and nothing in A1 changed.
+- **Window-full stops: 6–12 of 36,** counting the server's prompt-too-long refusals. The baseline filled the window in 8
+  of 36 runs at 32,768, 7 of them through loops of one identical call. Qwen3-4B's context is 2,048 smaller, and its
+  loops are expected at a similar rate.
+- **Decision rule:** §2's bar, at least 4 passes over at least 2 tasks, out of 36.
+
+## 11. Amendment C5: Qwen3-8B on the calibration set — registered 2026-10-18 by the owner, before any run
+
+**Why.** Qwen3-8B passed E0's gate in C3 (19/20 on both runs, 0 malformed, 79 tok/s). It runs after C4, on the same
+night.
+
+**The arm:** as C4, with these differences.
+
+- **Model:** Qwen3-8B `Q4_K_M` (`~/models/qwen3-8b-gguf/Qwen3-8B-Q4_K_M.gguf`, sha256 `d98cdcbd…`, sidecar built).
+- **Context: 16,384,** half the registered 32,768.
+  - That is the most this model holds resident on the card (goinfer's decline at 32k: 4.83 GB of KV against 3.17 GB
+    free; resident at 16,384 by day and in C3).
+  - **It equals tack's 16k design window** (DESIGN §1, CLAUDE.md "Small window first").
+  - **Window-full stops are a confound against the baseline.** A run that fills 16,384 might have passed with the
+    baseline's 32,768. In the baseline:
+    - first prompts ran 0.9k–11.6k tokens (median 8.7k), leaving 5–15k of room at 16k;
+    - 13 of 36 runs passed 16,384 at some point;
+    - tasks 3 and 5 passed it in all 3 runs, and tasks 1 and 4 in 2 of 3.
+
+    A C5 pass rate below C4's could be the window, not the model, so C5 is read beside C4 task by task, not as a
+    verdict on Qwen3-8B.
+- **Thinking: off,** enforced and for the reason as C4.
+- **Forced-call mode: grammar,** as goinfer reported in C3. No resends are expected.
+
+**Procedure:** as C4. Fit load at 16,384, then the one-task smoke read by tack's session, then the 36 runs. If the
+smoke is not clean, C5 stops and the reason is recorded.
+
+**Predictions, before any run:**
+
+- **Passes: 0–3 of 36, below the bar.**
+- **Window-full stops: 12–20 of 36,** counting prompt-too-long refusals. 13 of the baseline's 36 runs grew past 16,384,
+  and loops add to that.
+- **Decision rule:** §2's bar. A C5 result is reported with the window confound beside it.
+
+**Order and time:** C4, then C5, the same night, each holding nobara's timing lock for its runs. The baseline's 36
+runs took about 70 minutes. Expect about 1–1.5 hours each, plus the fit load and the smoke. C5 may finish sooner,
+because a 16k window fills sooner.
