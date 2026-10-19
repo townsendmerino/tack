@@ -247,6 +247,11 @@ packages the model tests, use loopback.
 - **These are A1b's two items, as small additions, not a focus:**
   - an unchanged exact repeat is answered as one, with its count, and counts toward the budget of 8;
   - empty glob and grep results say what to do.
+- **A glob with no matches adds one line** (owner, 2026-10-19): "glob matches file names only; to find a name inside
+  files, use grep."
+  - Its target is C5's task 5. Two runs globbed for the field name `kvF16Decline` as a file name 124 times
+    (`**/kvF16Decline*`, `kvF16Decline.go`), each glob empty.
+  - Test (tier 0, broken once): an empty glob's result carries the line, and an empty grep's does not.
 - **The evidence is in `e1-pilot-a1-2026-10-18.md`.** None of A1's ten runs looped on successful calls, and the
   longest streak was 1. So this is expected to change little, and it is measured as its own amendment for that reason.
 
@@ -399,6 +404,25 @@ The fixed prompt now uses 1,024 of its 3,276-token budget, so the rewrite fits.
   - re-run E0's smoke, 2×20 and a few minutes, on Mellum2.1 and gpt-oss with the rewritten descriptions;
   - against the counts above, with its mechanism metric: glob-instead-of-grep calls.
 - The owner decides whether it is 4.7 under C6, that tier-1 check, or both.
+
+**The diagnostic, registered 2026-10-19 before its runs** (owner: "run E0's smoke with the rewritten descriptions
+today, as a diagnostic (not eligibility), on Mellum2.1, gpt-oss-20b and Qwen3-8B").
+- **What changes:** only the glob and grep descriptions in E0's smoke requests. They come from a labelled instrument
+  variant (`glob-grep-4.7`, `internal/eval/instrument.go:instrumentVariants`); E0's frozen instrument is unchanged.
+- **Each model runs on its registered build, flags and context:**
+  - Mellum2.1 on `b2b5e816` at 32,768 (E0 amendment 10);
+  - gpt-oss-20b on `0de92cd9` with `-moe-cache-experts` (C2);
+  - Qwen3-8B on `f20f0d93` at 16,384 (C3).
+- **The arm stops after the smoke** (2×20, temperature 0) and is graded "diagnostic", never eligible or ineligible.
+- **Read against each model's registered smoke:**
+
+| model | registered score | registered glob-instead-of-grep/read | prediction with the rewrite |
+|---|---|---|---|
+| Mellum2.1 | 11/20, 11/20 | 16 | glob misses 6 or fewer; score 14–18 |
+| gpt-oss-20b | 9/20, 9/20 | 8 | glob misses 3 or fewer; its 8 malformed calls unchanged, since they are a parser matter |
+| Qwen3-8B | 19/20, 19/20 | 0 | unchanged within 1 (the check that it does not hurt a passing model) |
+
+- **Time:** about 25 minutes in all. It holds nobara's lock per model, after Mellum2.1's E0 has released it.
 
 ## 5. A harness fix, not a loop change
 
@@ -895,7 +919,7 @@ shows whether the change did what it is for. **It is never used for adoption.**
 |---|---|
 | 4.6, the window-sized output cap | window-full stops (`window_full` plus prompt-too-long refusals), with the cap's truncations and "nearly full" notes counted |
 | 4.5, the stop rule | stop reasons, `repeat_loop` included |
-| 4.4, repeat and empty-result messages | repeat loops (runs with 8 or more unchanged repeats of one call) and empty-result repeats (an empty glob or grep repeated unchanged) |
+| 4.4, repeat and empty-result messages | repeat loops (runs with 8 or more unchanged repeats of one call), empty-result repeats (an empty glob or grep repeated unchanged), and globs for a code name after an empty result (owner, 2026-10-19) |
 | 4.1, the edit tool | edit failures by kind, in §4.1's table |
 | 4.2, done requires verification | verification runs per run, and window use after `go test`: the prompt's growth from each verification's result, and window stops that follow one |
 | 4.3, loopback | tool-output and oracle failures that name a loopback bind or dial |
