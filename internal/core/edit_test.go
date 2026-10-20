@@ -101,3 +101,23 @@ func TestEditTaskThroughTheCore(t *testing.T) {
 		}
 	}
 }
+
+// TestCloseReleasesTheEditKit: Core.Close calls each auto-mode session's EditKit.Close once, so the sandbox's temporary
+// directory does not outlive the process.
+func TestCloseReleasesTheEditKit(t *testing.T) {
+	f := newFixture(t)
+	closed := 0
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}, Close: func() error { closed++; return nil }}, nil
+	}
+	if _, err := f.sessionIn(t, gitWorkspace(t, ""), proto.ModeAuto); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 0 {
+		t.Fatalf("the kit was closed while its session was open")
+	}
+	f.core.Close()
+	if closed != 1 {
+		t.Fatalf("Core.Close closed the edit kit %d times, want 1", closed)
+	}
+}

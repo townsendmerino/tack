@@ -72,6 +72,8 @@ type Options struct {
 type EditKit struct {
 	Shell  tools.Shell
 	Engine *perms.Engine
+	// Close releases what the kit holds (the sandbox's temporary directory); Core.Close calls it. nil holds nothing.
+	Close func() error
 }
 
 // instructionFiles are the instruction files WholeInstructions looks for at the workspace root, in opencode 1.19.0's
@@ -99,6 +101,7 @@ type session struct {
 	cancel  context.CancelCauseFunc // the running turn's
 	subs    map[*subscriber]bool
 	target  sandbox.Target // what Halt sweeps for this session
+	kit     func() error   // the edit kit's Close, or nil
 	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been.
 	instructions string
 	prompted     bool
@@ -117,7 +120,7 @@ func New(ctx context.Context, opt Options) *Core {
 		searchers: map[string]tools.Searcher{}}
 }
 
-// Close releases the model sources (a supervised child is stopped).
+// Close releases the model sources (a supervised child is stopped) and each session's edit kit.
 func (c *Core) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -128,6 +131,11 @@ func (c *Core) Close() error {
 	for _, s := range c.searchers {
 		if cl, ok := s.(io.Closer); ok {
 			errs = append(errs, cl.Close())
+		}
+	}
+	for _, s := range c.sessions {
+		if s.kit != nil {
+			errs = append(errs, s.kit())
 		}
 	}
 	if c.opt.HaltDir != "" {
@@ -327,6 +335,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
+		s.kit = kit.Close
 		root := ws.Root()
 		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
 	}

@@ -54,6 +54,6 @@ func editKit(stateDir, configDir string) func(root string, group sandbox.Target)
 				return sandbox.Wrap(cc, c)
 			},
 			Sweep: func(t sandbox.Target) (sandbox.Report, error) { return sandbox.Sweep(t, false) }}
-		return core.EditKit{Shell: sh, Engine: eng}, nil
+		return core.EditKit{Shell: sh, Engine: eng, Close: func() error { return os.RemoveAll(tmp) }}, nil
 	}
 }
