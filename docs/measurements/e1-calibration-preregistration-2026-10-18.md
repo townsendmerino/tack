@@ -1196,6 +1196,15 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - the largest distinct failure kinds in A are missing paths and old equal to new, as in the replay;
   - d between −1 and +1.
 - **Also checked in the same runs:** `tools/replayrepeats` confirms every `repeat_loop` stop, as in §12.8.
+- **Interrupted and resumed (owner, 2026-10-20), recorded before the resumed run:**
+  - The first launch (08:21:47–09:58:42) completed tasks 1–3, 18 runs, and 5 of task 4's 6.
+  - The Mac went onto battery about 09:26. Task 4's B-3 cell was then void 30 times in a row, and the harness stopped
+    the job.
+  - **Completeness rule:** a task whose block of six runs did not complete is re-run whole.
+  - Task 4's five earlier runs are recorded as an incomplete block and **not counted**.
+  - The resumed run covers task 4 whole and tasks 5–12: 54 runs, A B B A A B per task, same build and settings. It
+    starts once the Mac is on mains.
+  - 4.1's verdict reads 72 runs: tasks 1–3 from the first launch, tasks 4–12 from the resumed run.
 
 ### 12.11 Change 4.8, instruction files, whole against none: a screen (owner, 2026-10-20), registered before its runs
 
