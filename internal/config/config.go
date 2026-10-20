@@ -96,6 +96,9 @@ type Run struct {
 	// InstructionsHead loads only the instruction file's budgeted head: its first section and an outline of its headings,
 	// capped at 15% of the window (core.Options.InstructionsHead; calibration §12.12).
 	InstructionsHead bool `toml:"instructions_head"`
+	// RefuseDuplicateEdits refuses an edit identical to one already applied to the same file this session
+	// (tools.Options.RefuseDuplicateEdits; calibration §12.14). Default off.
+	RefuseDuplicateEdits bool `toml:"refuse_duplicate_edits"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

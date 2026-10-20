@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -15,7 +17,8 @@ import (
 // editTool replaces an exact string in a file the model has read, and refuses when the part it would change differs
 // from what the model last saw (DESIGN §6.5, §7.5): the model edits only text it has seen.
 type editTool struct {
-	messages bool // Options.EditMessages
+	messages  bool // Options.EditMessages
+	refuseDup bool // Options.RefuseDuplicateEdits
 }
 
 func (editTool) ReadOnly() bool { return false }
@@ -26,6 +29,12 @@ func (editTool) Spec() server.Tool {
 }
 
 func (t editTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+	r, err := t.run(ctx, ws, input)
+	r.State = fileState(ws, input)
+	return r, err
+}
+
+func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path       string `json:"path"`
 		OldString  string `json:"old_string"`
@@ -69,6 +78,12 @@ func (t editTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		return ws.pathError(in.Path, err), nil
 	}
 	cur := string(data)
+	if t.refuseDup {
+		if line, ok := ws.appliedEdit(p, in.OldString, in.NewString); ok {
+			return errorf("this exact edit was already applied to %q at line %d earlier in this session; read %q to see it", in.Path,
+				line, in.Path), nil
+		}
+	}
 	n := strings.Count(cur, in.OldString)
 	switch {
 	case n == 0 && strings.Contains(seen, in.OldString):
@@ -96,7 +111,7 @@ func (t editTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	}
 	ws.saw(p, out)
 	line := strings.Count(cur[:first], "\n") + 1
-	ws.recordChange(p, cur, out, "edit", line)
+	ws.recordChange(p, cur, out, "edit", line, in.OldString, in.NewString)
 	if in.ReplaceAll && n > 1 {
 		return Result{Text: fmt.Sprintf("edited %s: replaced %d occurrences, the first at line %d", in.Path, n, line)}, nil
 	}
@@ -113,7 +128,13 @@ func (writeTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"content":{"type":"string"}},"required":["path","content"]}`)}
 }
 
-func (writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+func (w writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+	r, err := w.run(ws, input)
+	r.State = fileState(ws, input)
+	return r, err
+}
+
+func (writeTool) run(ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -158,7 +179,7 @@ func (writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (R
 		return errorf("%q: %s", in.Path, ws.scrub(err.Error())), nil
 	}
 	ws.saw(p, in.Content)
-	ws.recordChange(p, before, in.Content, "write", 1)
+	ws.recordChange(p, before, in.Content, "write", 1, "", "")
 	lines := strings.Count(in.Content, "\n")
 	if in.Content != "" && !strings.HasSuffix(in.Content, "\n") {
 		lines++
@@ -196,4 +217,29 @@ func writeFile(p, content string) error {
 		return err
 	}
 	return nil
+}
+
+// ContentState is a file content's identity for the repeat rule: a short hash of it.
+func ContentState(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:8])
+}
+
+// fileState is ContentState of the file input's path names, as it is now, or "" when the path does not resolve to a file.
+func fileState(ws *Workspace, input json.RawMessage) string {
+	var in struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(input, &in) != nil || in.Path == "" {
+		return ""
+	}
+	p, err := ws.Resolve(in.Path)
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return ContentState(string(b))
 }

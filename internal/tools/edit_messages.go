@@ -20,13 +20,26 @@ type change struct {
 	before, after string
 	by            string // "edit" or "write"
 	line          int
+	old, new      string // an edit's old_string and new_string
 }
 
 // recordChange notes a successful edit or write of abs.
-func (w *Workspace) recordChange(abs, before, after, by string, line int) {
+func (w *Workspace) recordChange(abs, before, after, by string, line int, old, new string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.changes = append(w.changes, change{abs: abs, before: before, after: after, by: by, line: line})
+	w.changes = append(w.changes, change{abs: abs, before: before, after: after, by: by, line: line, old: old, new: new})
+}
+
+// appliedEdit is the line of an earlier edit of abs in this session with the same old_string and new_string.
+func (w *Workspace) appliedEdit(abs, old, new string) (int, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, c := range w.changes {
+		if c.by == "edit" && c.abs == abs && c.old == old && c.new == new {
+			return c.line, true
+		}
+	}
+	return 0, false
 }
 
 // changeThatRemoved is the session's latest change to abs that took text out of it.

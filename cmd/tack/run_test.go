@@ -213,7 +213,7 @@ func replayMatchesLive(t *testing.T, notes bool) {
 		os.WriteFile(p, stdout.Bytes(), 0o644)
 		return p
 	}
-	off, err := pilot.ReplayRepeats(run(false))
+	off, err := pilot.ReplayRepeats(run(false), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func replayMatchesLive(t *testing.T, notes bool) {
 	if b, _ := os.ReadFile(onPath); notes != strings.Contains(string(b), loop.GrepEmptyNote) {
 		t.Fatalf("result_notes = %v, but the live events carry the empty-grep note: %v", notes, !notes)
 	}
-	on, err := pilot.ReplayRepeats(onPath)
+	on, err := pilot.ReplayRepeats(onPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,12 +56,13 @@ session_tool_calls = 1000000
 // (e1-calibration-preregistration-2026-10-18.md §12). A name outside it is refused, so an arm cannot carry a typo
 // into a measurement.
 var RunSettings = map[string]bool{
-	"fit_window":        true, // §4.6
-	"stop_repeats":      true, // §4.5
-	"result_notes":      true, // §4.4
-	"edit_messages":     true, // §4.1
-	"no_instructions":   true, // §4.8
-	"instructions_head": true, // §12.12
+	"fit_window":             true, // §4.6
+	"stop_repeats":           true, // §4.5
+	"result_notes":           true, // §4.4
+	"edit_messages":          true, // §4.1
+	"no_instructions":        true, // §4.8
+	"instructions_head":      true, // §12.12
+	"refuse_duplicate_edits": true, // §12.14
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

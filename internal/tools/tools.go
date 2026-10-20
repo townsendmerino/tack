@@ -39,6 +39,10 @@ type Result struct {
 	IsError bool
 	// Empty is set by a search (glob, grep) that matched nothing, so the loop can say what to do (loop.Config.ResultNotes).
 	Empty bool
+	// State is set by edit and write: the file's content after the call, as ContentState, or "" when there is no file. The
+	// repeat rule compares it with the text, so a call that changed the file is never an unchanged repeat
+	// (loop.RepeatResult).
+	State string
 }
 
 func errorf(format string, args ...any) Result {
@@ -67,6 +71,8 @@ type Options struct {
 	Done bool
 	// EditMessages makes a failed edit say where the text or the file is instead (edit_messages.go).
 	EditMessages bool
+	// RefuseDuplicateEdits refuses an edit identical to one already applied to the same file this session.
+	RefuseDuplicateEdits bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -80,7 +86,7 @@ func New(o Options) *Set {
 	}
 	ts = append(ts, readTool{}, globTool{}, grepTool{})
 	if o.Write {
-		ts = append(ts, editTool{messages: o.EditMessages}, writeTool{})
+		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits}, writeTool{})
 	}
 	if o.Shell != nil {
 		ts = append(ts, bashTool{sh: o.Shell})

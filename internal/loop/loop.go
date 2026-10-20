@@ -321,7 +321,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			var fin proto.ToolFinished
-			empty := false // the tool matched nothing (tools.Result.Empty)
+			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
 			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
@@ -368,7 +368,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				if fin, full, empty, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
+				if fin, full, ran, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
 					return proto.StopError, err
 				}
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -382,10 +382,10 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			// The repeat count is taken on the result before any note, so a note's own count cannot make a repeat
 			// look changed; a replay recovers that result with StripNotes.
 			if s.cfg.StopRepeats || s.cfg.ResultNotes {
-				n, stop := repeats.Observe(key, fin.Result)
+				n, stop := repeats.Observe(key, RepeatResult(fin.Result, ran.State))
 				repeatLoop = repeatLoop || (s.cfg.StopRepeats && stop)
 				if s.cfg.ResultNotes {
-					fin.Result += resultNotes(b.Name, empty, n, s.cfg.StopRepeats)
+					fin.Result += resultNotes(b.Name, ran.Empty, n, s.cfg.StopRepeats)
 				}
 			}
 			if _, err := s.record(proto.EvToolFinished, callEv.Seq, fin); err != nil {
@@ -507,14 +507,15 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 // runTool records tool.started (fsynced by the store, so a crash leaves the call marked started), runs the tool and
 // returns its tool.finished payload. When the output is too long for the model, the payload names a blob by handle
 // and full holds the bytes; the caller stores them before recording the payload (ADR-004). room, when not nil, is the
-// bytes the window has left for this response's results (Config.FitWindow). empty reports a search that matched nothing.
-func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int) (fin proto.ToolFinished, full []byte, empty bool, err error) {
+// bytes the window has left for this response's results (Config.FitWindow). r is what the tool returned, redacted, for its
+// Empty and State.
+func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int) (fin proto.ToolFinished, full []byte, r tools.Result, err error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
 	if !ok { // checked by the client already; kept so a server that skipped the check cannot reach a nil tool
-		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil, false, nil
+		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil, tools.Result{}, nil
 	}
 	if _, err := s.record(proto.EvToolStarted, callSeq, proto.ToolStarted{ID: b.ID}); err != nil {
-		return proto.ToolFinished{}, nil, false, err
+		return proto.ToolFinished{}, nil, tools.Result{}, err
 	}
 	r, rerr := t.Run(ctx, s.cfg.WS, b.Input)
 	if rerr != nil {
@@ -529,7 +530,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	if room != nil {
 		fin, full, err := s.fit(fin, r.Text, *room)
-		return fin, full, r.Empty, err
+		return fin, full, r, err
 	}
 	if len(r.Text) > s.cfg.MaxResultBytes {
 		full = []byte(r.Text)
@@ -542,7 +543,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 		fin.Result = r.Text[:head] + omitted + r.Text[len(r.Text)-tail:]
 		fin.Truncated, fin.Blob = true, handle
 	}
-	return fin, full, r.Empty, nil
+	return fin, full, r, nil
 }
 
 // stream sends the conversation's next request, emitting deltas live, and retries a full server queue up to three

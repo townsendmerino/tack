@@ -175,3 +175,41 @@ func TestSearchesMarkEmptyResults(t *testing.T) {
 		}
 	}
 }
+
+// TestEditAndWriteReportTheFileState: edit and write set Result.State to ContentState of the file after the call,
+// failed calls included, and "" where there is no file; the read-only tools leave it empty.
+func TestEditAndWriteReportTheFileState(t *testing.T) {
+	ws := workspace(t)
+	run := func(t *testing.T, ws *Workspace, name, input string) Result {
+		tool, _ := New(Options{Write: true}).Get(name)
+		r, err := tool.Run(context.Background(), ws, json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	state := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(ws.root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ContentState(string(b))
+	}
+	if r := run(t, ws, "read", `{"path":"internal/b/doc.go"}`); r.State != "" {
+		t.Errorf("read set a state: %q", r.State)
+	}
+	if r := run(t, ws, "edit", `{"path":"internal/b/doc.go","old_string":"package b","new_string":"package b // x"}`); r.IsError ||
+		r.State != state("internal/b/doc.go") || r.State != ContentState("package b // x\n") {
+		t.Errorf("edit: %+v", r)
+	}
+	if r := run(t, ws, "edit", `{"path":"internal/b/doc.go","old_string":"absent","new_string":"y"}`); !r.IsError ||
+		r.State != ContentState("package b // x\n") {
+		t.Errorf("failed edit: %+v", r)
+	}
+	if r := run(t, ws, "write", `{"path":"internal/b/new.go","content":"package b\n"}`); r.IsError || r.State != ContentState("package b\n") {
+		t.Errorf("write: %+v", r)
+	}
+	if r := run(t, ws, "edit", `{"path":"internal/b/none.go","old_string":"a","new_string":"b"}`); !r.IsError || r.State != "" {
+		t.Errorf("edit of a missing file: %+v", r)
+	}
+}

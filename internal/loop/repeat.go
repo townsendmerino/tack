@@ -39,3 +39,13 @@ func CallKey(name string, input json.RawMessage) string {
 	}
 	return name + "\x00" + string(input)
 }
+
+// RepeatResult is what RepeatGuard compares for one call: the result the model saw and, for edit and write, the file's
+// content after the call (tools.Result.State). A call that changed its file is then never an unchanged repeat, though
+// its reply is the same (e1-calibration-preregistration-2026-10-18.md §12.13).
+func RepeatResult(result, state string) string {
+	if state == "" {
+		return result
+	}
+	return result + "\x00" + state
+}
