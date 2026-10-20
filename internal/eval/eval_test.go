@@ -319,8 +319,12 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatalf("%d smoke records, want 40", n)
 	}
 	ttft := byPhase["fits-8k/ttft"]
-	if len(ttft) != 12 { // 4096 and 7168 (the window minus 1024), each 3 cold + 3 reused
-		t.Fatalf("%d ttft records: %+v", len(ttft), ttft)
+	cells := map[string]int{}
+	for _, r := range ttft {
+		cells[r.Cell]++
+	}
+	if len(ttft) != 18 || cells["cold"] != 6 || cells["append"] != 6 || cells["rewrite"] != 6 { // 4096 and 7168 (the window minus 1024), each 3 of each cell
+		t.Fatalf("%d ttft records, cells %v", len(ttft), cells)
 	}
 	if v := byPhase["fits-8k/verdict"]; len(v) != 1 || v[0].Verdict == "" {
 		t.Fatalf("verdict %+v", v)

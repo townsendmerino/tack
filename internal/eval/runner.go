@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/tools/gate"
 )
@@ -415,7 +417,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 			sizes = append(sizes, n)
 		}
 	}
-	phase("ttft", len(sizes)*8, func() {
+	phase("ttft", len(sizes)*ttftRequests, func() {
 		for _, n := range sizes {
 			if ctx.Err() != nil {
 				return
@@ -508,10 +510,15 @@ func (r *runner) smokeOne(ctx context.Context, srv server.Server, arm Arm, i int
 	return ScoreSmoke(i, resp), nil
 }
 
-// ttft measures time to the first streamed token at about n prompt tokens: three cold repeats (a fresh nonce at the
-// start of the system prompt, so nothing is reused) after one warm-up, and three reused repeats (the previous prompt
-// with only its last 512 tokens changed) after one warm-up. It returns an error when the size could not be built or any
-// repeat, warm-ups included, errored.
+// ttft measures time to the first streamed token at about n prompt tokens, in three cells of three repeats, each after
+// one warm-up (E0 amendment 11):
+//   - cold: a fresh nonce at the start of the system prompt, so nothing is reused;
+//   - append: each repeat is the previous request with its reply and 512 more tokens appended (appended), as tack's
+//     loop grows a conversation; the warm-up is the chain's base, sized so the last repeat is about n;
+//   - rewrite: the previous prompt with only its last 512 tokens changed, a secondary figure for how far the server
+//     rolls back.
+//
+// It returns an error when the size could not be built or any request, warm-ups included, errored.
 func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, filler string, p *progress) error {
 	chars, counted, err := sizeFiller(ctx, srv, arm.Name, filler, n, arm.ProbeThinking)
 	if err != nil {
@@ -526,8 +533,8 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 		off := (chars + i*tailChars) % (len(filler) - tailChars)
 		return filler[off : off+tailChars]
 	}
-	measure := func(cell string, rep int, system, user string) {
-		d, kind, err := firstToken(ctx, srv, arm.Name, system, user, arm.ProbeThinking)
+	measure := func(cell string, rep int, req server.Request) []proto.ModelBlock {
+		d, kind, reply, err := firstTokenOf(ctx, srv, req)
 		p.step()
 		f := map[string]any{"size": n, "counted": counted, "cell": cell, "rep": rep, "ttft_ms": d.Milliseconds(), "first_kind": kind}
 		if err != nil {
@@ -539,16 +546,25 @@ func (r *runner) ttft(ctx context.Context, srv server.Server, arm Arm, n int, fi
 		if rep > 0 {
 			r.record(arm, "ttft", f)
 		}
+		return reply
+	}
+	req := func(system, user string) server.Request {
+		return ttftRequest(arm.Name, system, user, arm.ProbeThinking)
 	}
 	nonce := func() string { return fmt.Sprintf("run %d\n\n", time.Now().UnixNano()) }
 	for rep := 0; rep <= 3; rep++ { // rep 0 is the warm-up
-		measure("cold", rep, nonce()+p0SystemPrompt, prefix+tailAt(rep))
+		measure("cold", rep, req(nonce()+p0SystemPrompt, prefix+tailAt(rep)))
+	}
+	chain := req(p0SystemPrompt, filler[:chars-3*tailChars]) // three appends of a tail each bring it to about n
+	for rep := 0; rep <= 3; rep++ {
+		reply := measure("append", rep, chain)
+		chain = appended(chain, reply, tailAt(20+rep))
 	}
 	for rep := 0; rep <= 3; rep++ {
-		measure("reused", rep, p0SystemPrompt, prefix+tailAt(10+rep))
+		measure("rewrite", rep, req(p0SystemPrompt, prefix+tailAt(10+rep)))
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of 8 requests failed, first %w", failed, firstErr)
+		return fmt.Errorf("%d of %d requests failed, first %w", failed, ttftRequests, firstErr)
 	}
 	return nil
 }
@@ -574,6 +590,9 @@ func sizeFiller(ctx context.Context, srv server.Server, model, filler string, n 
 	return lo, counted, nil
 }
 
+// ttftRequests is the requests ttft sends at one size: three cells of a warm-up and three repeats.
+const ttftRequests = 3 * 4
+
 // ttftMaxTokens is what a first-token request allows. One token is not enough: a reply that opens with tokens that
 // never stream (Harmony's channel header, Qwen3's <think>) would show none. The probe times the first streamed delta,
 // so the few tokens before it add at most a few decode steps to the measured time.
@@ -592,10 +611,16 @@ func ttftRequest(model, system, user string, thinking bool) server.Request {
 
 // firstToken is the time to the first streamed delta of text or thinking, and that delta's kind.
 func firstToken(ctx context.Context, srv server.Server, model, system, user string, thinking bool) (time.Duration, string, error) {
+	d, kind, _, err := firstTokenOf(ctx, srv, ttftRequest(model, system, user, thinking))
+	return d, kind, err
+}
+
+// firstTokenOf is firstToken for a whole request, and the reply's content, which an appended request carries forward.
+func firstTokenOf(ctx context.Context, srv server.Server, req server.Request) (time.Duration, string, []proto.ModelBlock, error) {
 	t0 := time.Now()
 	var first time.Duration
 	kind := ""
-	_, err := srv.Stream(ctx, ttftRequest(model, system, user, thinking), func(d server.Delta) {
+	resp, err := srv.Stream(ctx, req, func(d server.Delta) {
 		if first == 0 && d.Text != "" {
 			first, kind = time.Since(t0), d.Kind
 		}
@@ -603,7 +628,33 @@ func firstToken(ctx context.Context, srv server.Server, model, system, user stri
 	if err == nil && first == 0 {
 		err = fmt.Errorf("no text or thinking was streamed within %d tokens", ttftMaxTokens)
 	}
-	return first, kind, err
+	var content []proto.ModelBlock
+	if resp != nil {
+		content = resp.Content
+	}
+	return first, kind, content, err
+}
+
+// appended is prev followed by its reply and a user message holding text, as tack's loop extends a conversation: the
+// reply's blocks as received (an empty reply as one empty text block), then a tool result for each call it made, then
+// the text. Nothing before the reply changes, so a server that keeps the previous request's prefix reuses all of it.
+func appended(prev server.Request, reply []proto.ModelBlock, text string) server.Request {
+	asst := server.Message{Role: server.Assistant}
+	var user server.Message
+	user.Role = server.User
+	for _, b := range reply {
+		asst.Content = append(asst.Content, server.Block{ModelBlock: b})
+		if b.Type == "tool_use" {
+			user.Content = append(user.Content, server.ToolResultBlock(b.ID, "ok", false))
+		}
+	}
+	if len(asst.Content) == 0 {
+		asst.Content = []server.Block{server.TextBlock("")}
+	}
+	user.Content = append(user.Content, server.TextBlock(text))
+	next := prev
+	next.Messages = append(slices.Clone(prev.Messages), asst, user)
+	return next
 }
 
 // decodeSample is one decode measurement: its rate over the tokens it streamed, and what streamed.
