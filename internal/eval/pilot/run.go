@@ -73,6 +73,17 @@ func abOrder(a, b Arm) (arms []Arm, reps []int) {
 	return []Arm{a, b, b, a, a, b}, []int{1, 1, 2, 2, 3, 3}
 }
 
+// loneOrder is one arm's runs on a task: once with no number for n of 0 or 1, else n numbered from 1.
+func loneOrder(a Arm, n int) (arms []Arm, reps []int) {
+	if n <= 1 {
+		return []Arm{a}, []int{0}
+	}
+	for i := 1; i <= n; i++ {
+		arms, reps = append(arms, a), append(reps, i)
+	}
+	return arms, reps
+}
+
 // OracleResult is one oracle run. Tests maps each oracle test to pass, fail, skip or build-fail; Output is go test's
 // full output, standard output then standard error; Exit is its exit error, empty when it exited 0.
 type OracleResult struct {
@@ -363,9 +374,12 @@ type Options struct {
 	// A1, when set, is tack's binary: the job runs tack's arm alone, `tack run --edit` (amendment 9), instead of A0
 	// and A0k.
 	A1 string
-	// A1Arms, with A1, are two arms of tack to compare, each with its own settings, run A B B A A B per task (abOrder).
-	// Empty means one arm, A1 with no settings.
+	// A1Arms, with A1, are two arms of tack to compare, each with its own settings, run A B B A A B per task (abOrder),
+	// or one arm with its settings, run A1Reps times per task (a mechanism check, calibration §12.9). Empty means one
+	// arm, A1 with no settings, once per task.
 	A1Arms []Arm
+	// A1Reps is how many times a lone arm of A1Arms runs on each task, its runs named <arm>-1, <arm>-2 …; 0 means once.
+	A1Reps int
 	// Cell is checked before each A1 run. state is recorded with the run; a non-empty void means the run would start
 	// under heavy load or on battery: that cell is recorded void and re-run in its place after CellWait, up to
 	// CellTries times, after which the job stops. nil checks nothing.
@@ -447,8 +461,11 @@ func RunPilot(ctx context.Context, o Options) error {
 	if o.ForcedCallMode == "" && o.Server.Direct != "" {
 		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
 	}
-	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) != 2) {
-		return errors.New("pilot: A1Arms compares exactly two arms of A1")
+	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) > 2) {
+		return errors.New("pilot: A1Arms is one arm of A1, or two to compare")
+	}
+	if o.A1Reps != 0 && len(o.A1Arms) != 1 {
+		return errors.New("pilot: A1Reps is for one arm of A1Arms")
 	}
 	for _, a := range o.A1Arms {
 		for _, s := range a.Settings {
@@ -468,6 +485,8 @@ func RunPilot(ctx context.Context, o Options) error {
 	switch {
 	case len(o.A1Arms) == 2:
 		armsPerTask = 6
+	case len(o.A1Arms) == 1:
+		armsPerTask = max(1, o.A1Reps)
 	case o.A1 != "":
 		armsPerTask = 1
 	}
@@ -482,6 +501,8 @@ func RunPilot(ctx context.Context, o Options) error {
 		switch {
 		case len(o.A1Arms) == 2:
 			arms, reps = abOrder(o.A1Arms[0], o.A1Arms[1])
+		case len(o.A1Arms) == 1:
+			arms, reps = loneOrder(o.A1Arms[0], o.A1Reps)
 		case o.A1 != "":
 			arms, reps = []Arm{{Name: "A1"}}, []int{0}
 		}

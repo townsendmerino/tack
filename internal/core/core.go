@@ -69,6 +69,8 @@ type Options struct {
 	// RefuseDuplicateEdits refuses an edit identical to one already applied to the same file this session
 	// (tools.Options.RefuseDuplicateEdits).
 	RefuseDuplicateEdits bool
+	// VerifyDone refuses an edit task's done until a build or test has run since its last change (loop.Config.VerifyDone).
+	VerifyDone bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -329,7 +331,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	}
 	cfg := loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes}
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
+		VerifyDone: c.opt.VerifyDone}
 	if p.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)

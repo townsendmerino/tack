@@ -151,6 +151,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	sort.Strings(servers)
 	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead,
 		RefuseDuplicateEdits: cfg.Run.RefuseDuplicateEdits,
+		VerifyDone:           cfg.Run.VerifyDone,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},

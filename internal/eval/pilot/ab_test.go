@@ -36,7 +36,7 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tack refuses an arm's settings %v: %v", all, err)
 	}
-	if r := c.Run; !r.FitWindow || !r.StopRepeats || !r.ResultNotes || !r.EditMessages || !r.NoInstructions || !r.InstructionsHead || !r.RefuseDuplicateEdits {
+	if r := c.Run; !r.FitWindow || !r.StopRepeats || !r.ResultNotes || !r.EditMessages || !r.NoInstructions || !r.InstructionsHead || !r.RefuseDuplicateEdits || !r.VerifyDone {
 		t.Fatalf("an arm's settings are not all on in its config: %+v", r)
 	}
 	os.WriteFile(p, []byte(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, out)), 0o600)
@@ -47,7 +47,9 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 
 func TestRunPilotRefusesABadComparison(t *testing.T) {
 	for name, o := range map[string]Options{
-		"one arm":         {A1: "tack", A1Arms: []Arm{{Name: "A"}}, Out: t.TempDir()},
+		"three arms":      {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}, {Name: "C"}}, Out: t.TempDir()},
+		"reps, two arms":  {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}}, A1Reps: 2, Out: t.TempDir()},
+		"reps, no arm":    {A1: "tack", A1Reps: 2, Out: t.TempDir()},
 		"unknown setting": {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_windw"}}}, Out: t.TempDir()},
 	} {
 		if err := RunPilot(context.Background(), o); err == nil {

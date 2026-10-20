@@ -73,6 +73,9 @@ type Config struct {
 	// ResultNotes appends a line saying what to do to an empty glob or grep result and to an unchanged repeat (notes.go;
 	// calibration pre-registration §4.4).
 	ResultNotes bool
+	// VerifyDone refuses an edit task's done, up to VerifyRefusals times, until a go build, vet or test has run since the
+	// latest successful edit or write (verify.go; calibration pre-registration §4.2).
+	VerifyDone bool
 	// Perms decides every tool call that changes something, in Mode (DESIGN §6.6). Without it such a call is refused:
 	// a session whose tools can write must have an engine. Approve asks the user when the engine asks; nil means no one
 	// is attached, and a call that needs the user is refused.
@@ -221,6 +224,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
 	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
 	var repeats RepeatGuard               // the turn's unchanged repeats (Config.StopRepeats)
+	var verify verifyState                // the turn's changes and verifications (Config.VerifyDone)
 	repeatLoop := false
 	for {
 		switch el := s.cfg.Now().Sub(start); {
@@ -352,9 +356,17 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if !changed && !doneRefused {
 					doneRefused = true
 					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: DoneNoChange}
+				} else if s.cfg.VerifyDone && !verify.verified() && verify.refusals < VerifyRefusals {
+					// ok, like DoneNoChange, so an identical done after it runs and counts instead of being answered
+					// RepeatedCall.
+					verify.refusals++
+					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: verify.refusal()}
 				} else {
 					finished = true
 					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: "done"}
+					if s.cfg.VerifyDone {
+						fin.Result = verify.finish()
+					}
 				}
 			default:
 				calls++
@@ -371,6 +383,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if fin, full, ran, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
 					return proto.StopError, err
 				}
+				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
 				// recorded, so it is durable before any sync that makes that event durable.
 				if full != nil {

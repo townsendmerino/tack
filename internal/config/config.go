@@ -99,6 +99,9 @@ type Run struct {
 	// RefuseDuplicateEdits refuses an edit identical to one already applied to the same file this session
 	// (tools.Options.RefuseDuplicateEdits; calibration §12.14). Default off.
 	RefuseDuplicateEdits bool `toml:"refuse_duplicate_edits"`
+	// VerifyDone refuses an edit task's done, up to 3 times, until a go build, vet or test has run since the last change
+	// (loop.Config.VerifyDone; calibration §4.2, §12.15). Default off.
+	VerifyDone bool `toml:"verify_done"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

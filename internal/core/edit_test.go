@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/eval/pilot"
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
@@ -278,5 +279,101 @@ func TestDuplicateEditGuard(t *testing.T) {
 		if want := map[bool]int{true: 0, false: 1}[on]; err != nil || d.Calls != 2 || d.Applied != want || d.First != 3 {
 			t.Fatalf("guard %v: replay counts %+v, %v; want 2 calls, %d applied again, first in request 3", on, d, err, want)
 		}
+	}
+}
+
+// scriptShell answers every command with exit status exit and output out, and records the commands.
+type scriptShell struct {
+	exit int
+	out  string
+	ran  *[]string
+}
+
+func (s scriptShell) Run(_ context.Context, command string, _ time.Duration) (shell.Result, error) {
+	*s.ran = append(*s.ran, command)
+	return shell.Result{Output: s.out, Exit: s.exit}, nil
+}
+
+// verifyTurn runs an edit task with Options.VerifyDone set to on, its bash answered by a scriptShell, and returns each
+// call's result by id, the run's summary as the calibration records it, and the commands bash ran.
+func verifyTurn(t *testing.T, on bool, exit int, out string, script ...goinfertest.Reply) (map[string]string, pilot.TackSummary, []string) {
+	t.Helper()
+	var ran []string
+	evs, p := editTurn(t, gitWorkspace(t, ""), func(o *Options) {
+		o.VerifyDone = on
+		o.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+			return EditKit{Shell: scriptShell{exit: exit, out: out, ran: &ran}, Engine: &perms.Engine{Root: root, Sandboxed: true,
+				Path: os.Getenv("PATH")}}, nil
+		}
+	}, script...)
+	return toolResults(evs), pilot.SummarizeTack(p), ran
+}
+
+const (
+	readA  = `{"path":"a.go"}`
+	edit1  = `{"path":"a.go","old_string":"package a","new_string":"package a // 1"}`
+	edit2  = `{"path":"a.go","old_string":"// 1","new_string":"// 2"}`
+	doneIn = `{"reason":"x"}`
+)
+
+// TestVerifyDoneRefusesUntilABuild: with VerifyDone, done after an edit and no build is refused, naming the call that
+// made the change, at most VerifyRefusals times; the next done ends the turn, recorded unverified. Off, the first done
+// ends it.
+func TestVerifyDoneRefusesUntilABuild(t *testing.T) {
+	script := []goinfertest.Reply{goinfertest.Calls("", "r", "read", readA), goinfertest.Calls("", "e", "edit", edit1)}
+	for i := 1; i <= loop.VerifyRefusals+1; i++ {
+		script = append(script, goinfertest.Calls("", fmt.Sprintf("d%d", i), "done", doneIn))
+	}
+	res, sum, _ := verifyTurn(t, true, 0, "", script...)
+	for i := 1; i <= loop.VerifyRefusals; i++ {
+		if r := res[fmt.Sprintf("d%d", i)]; !strings.HasPrefix(r, loop.VerifyRefusal+" your change at call 2.") || !strings.HasSuffix(r, loop.VerifyAdvice) {
+			t.Fatalf("done %d: %q", i, r)
+		}
+	}
+	if r := res[fmt.Sprintf("d%d", loop.VerifyRefusals+1)]; r != loop.DoneUnverified {
+		t.Fatalf("done %d after %d refusals: %q", loop.VerifyRefusals+1, loop.VerifyRefusals, r)
+	}
+	if sum.StopReason != string(proto.StopDone) || sum.VerifyRefused != loop.VerifyRefusals || sum.Done != loop.DoneUnverified {
+		t.Fatalf("summary %+v", sum)
+	}
+	res, sum, _ = verifyTurn(t, false, 0, "", script...)
+	if res["d1"] != "done" || sum.VerifyRefused != 0 || sum.Done != "done" {
+		t.Fatalf("off: %q, %+v", res["d1"], sum)
+	}
+}
+
+// TestVerifyDoneAcceptsAFailedTest: done after an edit and a go test that fails is accepted, and the record says the
+// last verification failed.
+func TestVerifyDoneAcceptsAFailedTest(t *testing.T) {
+	res, sum, ran := verifyTurn(t, true, 1, "--- FAIL: TestA\nFAIL\n",
+		goinfertest.Calls("", "r", "read", readA), goinfertest.Calls("", "e", "edit", edit1),
+		goinfertest.Calls("", "b", "bash", `{"command":"cd . && go test ./..."}`), goinfertest.Calls("", "d1", "done", doneIn))
+	if len(ran) != 1 || res["d1"] != loop.DoneVerifyFailed || sum.Done != loop.DoneVerifyFailed || sum.VerifyRefused != 0 {
+		t.Fatalf("ran %q; done %q; summary %+v", ran, res["d1"], sum)
+	}
+}
+
+// TestVerifyDoneAfterASecondEdit: a build verifies the change before it only; an edit after it makes done refuse again,
+// quoting that build, and a test after the second edit lets done through.
+func TestVerifyDoneAfterASecondEdit(t *testing.T) {
+	res, sum, _ := verifyTurn(t, true, 0, "ok\n",
+		goinfertest.Calls("", "r", "read", readA), goinfertest.Calls("", "e1", "edit", edit1),
+		goinfertest.Calls("", "b1", "bash", `{"command":"go build ./..."}`), goinfertest.Calls("", "e2", "edit", edit2),
+		goinfertest.Calls("", "d1", "done", doneIn), goinfertest.Calls("", "b2", "bash", `{"command":"go -C . test ./..."}`),
+		goinfertest.Calls("", "d2", "done", doneIn))
+	want := loop.VerifyRefusal + " your change at call 4. The last one, `go build ./...` at call 3, exited 0:\nok\n"
+	if !strings.HasPrefix(res["d1"], want) || res["d2"] != "done" || sum.VerifyRefused != 1 || sum.Done != "done" {
+		t.Fatalf("done 1 %q\ndone 2 %q\nsummary %+v", res["d1"], res["d2"], sum)
+	}
+}
+
+// TestVerifyDoneEchoIsNotABuild: a command line that only names go test is not a verification.
+func TestVerifyDoneEchoIsNotABuild(t *testing.T) {
+	res, _, ran := verifyTurn(t, true, 0, "go test\n",
+		goinfertest.Calls("", "r", "read", readA), goinfertest.Calls("", "e", "edit", edit1),
+		goinfertest.Calls("", "b", "bash", `{"command":"echo go test"}`), goinfertest.Calls("", "d1", "done", doneIn),
+		goinfertest.Calls("", "d2", "done", doneIn), goinfertest.Calls("", "d3", "done", doneIn), goinfertest.Calls("", "d4", "done", doneIn))
+	if len(ran) != 1 || !strings.HasPrefix(res["d1"], loop.VerifyRefusal) {
+		t.Fatalf("ran %q; done %q", ran, res["d1"])
 	}
 }

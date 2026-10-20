@@ -317,3 +317,40 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 		t.Fatalf("records %v, want the void cell then A B B A A B", got)
 	}
 }
+
+// TestA1LoneArmRepeatsWithSettings: one arm with settings and A1Reps runs each task that many times, as <arm>-1,
+// <arm>-2, each after its own cell check, each record carrying the settings and its tack config switching them on.
+func TestA1LoneArmRepeatsWithSettings(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	var replies []goinfertest.Reply
+	for i := 0; i < 2; i++ {
+		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+	}
+	script := goinfertest.NewScripted("qwen", 32768, replies...)
+	checks := 0
+	_, out := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
+		o.A1Arms, o.A1Reps = []pilot.Arm{{Name: "A1", Settings: []string{"verify_done", "stop_repeats"}}}, 2
+		o.Cell = func(context.Context) (string, string) { checks++; return "light state", "" }
+	})
+	f, _ := os.Open(filepath.Join(out, "results.jsonl"))
+	defer f.Close()
+	var got []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	for sc.Scan() {
+		var r pilot.Record
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		name := fmt.Sprintf("%s-%d", r.Run.Arm, r.Rep)
+		got = append(got, name)
+		cfg, err := os.ReadFile(filepath.Join(pilot.TackDir(filepath.Join(out, "task-01", name)), "config.toml"))
+		if r.Run.Void != "" || r.Cell != "light state" || strings.Join(r.Settings, ",") != "verify_done,stop_repeats" || err != nil ||
+			!strings.Contains(string(cfg), "verify_done = true") || !strings.Contains(string(cfg), "stop_repeats = true") {
+			t.Errorf("run %s: void %q, cell %q, settings %v; config (%v):\n%s", name, r.Run.Void, r.Cell, r.Settings, err, cfg)
+		}
+	}
+	if strings.Join(got, " ") != "A1-1 A1-2" || checks != 2 {
+		t.Fatalf("records %v after %d cell checks, want A1-1 A1-2 after 2", got, checks)
+	}
+}

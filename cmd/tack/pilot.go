@@ -11,6 +11,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -60,9 +63,11 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	var serveOpts serveOptionList
 	fs.Var(&serveOpts, "serve-option", "a1: "+serveOptionUsage)
 	var settings settingList
-	fs.Var(&settings, "setting", "a1: a [run] setting switched on in every arm (a change already adopted); repeatable; only: "+settingNames())
+	fs.Var(&settings, "setting", "a1: a [run] setting switched on in every arm; with no -compare-setting, one arm runs with these settings; repeatable; only: "+settingNames())
 	compare := fs.String("compare-setting", "", "a1: compare two arms of tack, A without this [run] setting and B with it, A B B A A B per task, each run after a cell check (calibration C6)")
 	cellCheck := fs.Bool("cell-check", false, "a1: start the server as a job would, run the cell check once with the model loaded and idle, print it, and stop")
+	reps := fs.Int("reps", 0, "a1, with no -compare-setting: runs per task of the one arm, named A1-1, A1-2 …, each after a cell check")
+	only := fs.String("only", "", "a1: run only these tasks of -from..-to, by number: 2,3,4")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -84,6 +89,10 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	if *oracleCheck {
 		return oracleCheckCmd(*tasks, *from, *to, *mirrors, *out, *rev, stdout, stderr)
 	}
+	if *only != "" && !*a1 {
+		fmt.Fprintln(stderr, "tack eval pilot: -only is for -a1")
+		return exitUsage
+	}
 	if *a1 {
 		if *tasks == "" || *mirrors == "" || *out == "" || *serve == "" || *modelPath == "" || *remoteHost == "" ||
 			*remoteTack == "" || *remoteOut == "" {
@@ -102,10 +111,14 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "tack eval pilot:", err)
 			return exitError
 		}
+		if ts, err = onlyTasks(ts, *only); err != nil {
+			fmt.Fprintln(stderr, "tack eval pilot:", err)
+			return exitUsage
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return a1Cmd(ctx, ts, *mirrors, *out, *capFlag, tackRev, remote{host: *remoteHost, tack: *remoteTack, serve: *serve,
-			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN, options: serveOpts, settings: settings, compare: *compare, cellCheck: *cellCheck}, stdout, stderr)
+			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN, options: serveOpts, settings: settings, compare: *compare, reps: *reps, cellCheck: *cellCheck}, stdout, stderr)
 	}
 	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
 		*modelPath == "" || *out == "" {
@@ -387,4 +400,36 @@ func e0Gate(results, arm, out string, stdout, stderr io.Writer) (int, bool) {
 	_ = os.WriteFile(filepath.Join(out, "GATE.txt"), []byte(fmt.Sprintf("ran (%s): arm %s in %s: %s\n", at, arm, results, score)), 0o644)
 	fmt.Fprintf(stderr, "tack eval pilot: the E0 gate passed: arm %s, %s\n", arm, score)
 	return 0, true
+}
+
+// onlyTasks is the tasks of ts whose numbers list names, comma-separated, in ts's order; an empty list keeps them all.
+// A number that is not in ts is an error, so a typo cannot shrink a job silently.
+func onlyTasks(ts []pilot.Task, list string) ([]pilot.Task, error) {
+	if list == "" {
+		return ts, nil
+	}
+	want := map[int]bool{}
+	for _, s := range strings.Split(list, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return nil, fmt.Errorf("-only %q: %q is not a task number", list, s)
+		}
+		want[n] = true
+	}
+	var out []pilot.Task
+	for _, t := range ts {
+		if want[t.N] {
+			out = append(out, t)
+			delete(want, t.N)
+		}
+	}
+	if len(want) > 0 {
+		var missing []string
+		for n := range want {
+			missing = append(missing, strconv.Itoa(n))
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("-only: task(s) %s not among the tasks loaded", strings.Join(missing, ","))
+	}
+	return out, nil
 }

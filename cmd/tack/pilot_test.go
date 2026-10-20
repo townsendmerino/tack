@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/townsendmerino/tack/internal/eval/pilot"
 )
 
 // TestPilotRefusesWithoutGo: with no `go` on the PATH, every pilot job refuses before it starts, with an error that
@@ -106,5 +109,62 @@ func TestServeOptionsAreAnAllowlist(t *testing.T) {
 	r := remote{host: "nobara", tack: "tack", serve: "serve", modelPath: "m", out: "o", rev: "r", ctxN: 32768, options: opts}
 	if got := strings.Join(r.serveCmdArgs(), " "); !strings.HasSuffix(got, "-tack-rev r -serve-option moe-cache-experts -serve-option thinking-off") {
 		t.Errorf("pilot-serve over ssh: %s", got)
+	}
+}
+
+// TestOnlyTasks: -only keeps the named tasks in their order, keeps all with no list, and refuses a number that was not
+// loaded or is not a number, so a typo cannot shrink a job silently.
+func TestOnlyTasks(t *testing.T) {
+	var ts []pilot.Task
+	for n := 1; n <= 12; n++ {
+		ts = append(ts, pilot.Task{N: n})
+	}
+	got, err := onlyTasks(ts, "9, 2,3,4,6,8")
+	var ns []int
+	for _, x := range got {
+		ns = append(ns, x.N)
+	}
+	if err != nil || fmt.Sprint(ns) != "[2 3 4 6 8 9]" {
+		t.Fatalf("got %v, %v", ns, err)
+	}
+	if all, err := onlyTasks(ts, ""); err != nil || len(all) != 12 {
+		t.Fatalf("no list: %d tasks, %v", len(all), err)
+	}
+	for _, bad := range []string{"2,13", "2,x", "2,,3"} {
+		if _, err := onlyTasks(ts, bad); err == nil {
+			t.Errorf("-only %q was accepted", bad)
+		}
+	}
+}
+
+// TestA1Arms: -compare-setting makes arms A and B; -setting or -reps alone makes one arm A1 with the settings, run
+// -reps times; both check every cell. With neither, A1 runs as registered, unchecked. -reps with -compare-setting, a
+// negative -reps and an unknown setting are refused.
+func TestA1Arms(t *testing.T) {
+	adopted := settingList{"fit_window", "stop_repeats"}
+	arms, reps, cells, err := remote{settings: adopted, compare: "verify_done"}.arms()
+	if err != nil || len(arms) != 2 || reps != 0 || !cells || fmt.Sprint(arms[0].Settings) != "[fit_window stop_repeats]" ||
+		fmt.Sprint(arms[1].Settings) != "[fit_window stop_repeats verify_done]" {
+		t.Errorf("compare: %+v %d %v %v", arms, reps, cells, err)
+	}
+	arms, reps, cells, err = remote{settings: append(adopted, "verify_done"), reps: 2}.arms()
+	if err != nil || len(arms) != 1 || arms[0].Name != "A1" || reps != 2 || !cells ||
+		fmt.Sprint(arms[0].Settings) != "[fit_window stop_repeats verify_done]" {
+		t.Errorf("one arm: %+v %d %v %v", arms, reps, cells, err)
+	}
+	if arms, _, cells, err = (remote{settings: adopted}).arms(); err != nil || len(arms) != 1 || !cells {
+		t.Errorf("settings alone: %+v %v %v", arms, cells, err)
+	}
+	if arms, reps, cells, err = (remote{}).arms(); err != nil || arms != nil || reps != 0 || cells {
+		t.Errorf("as registered: %+v %d %v %v", arms, reps, cells, err)
+	}
+	for name, r := range map[string]remote{
+		"reps with compare": {compare: "verify_done", reps: 2},
+		"negative reps":     {reps: -1},
+		"unknown compare":   {compare: "verify_dne"},
+	} {
+		if _, _, _, err := r.arms(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

@@ -131,6 +131,7 @@ type remote struct {
 	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
 	settings                               settingList     // [run] settings on in every arm
 	compare                                string          // a [run] setting on in arm B only; "" runs one arm
+	reps                                   int             // runs per task of the one arm, with no -compare-setting; 0 means once
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 }
 
@@ -263,12 +264,9 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		return exitError
 	}
-	if r.compare != "" && !pilot.RunSettings[r.compare] {
-		fmt.Fprintf(stderr, "tack eval pilot: -compare-setting %q is not one an arm may switch on; allowed: %s\n", r.compare, settingNames())
-		return exitUsage
-	}
-	if r.compare == "" && len(r.settings) > 0 {
-		fmt.Fprintln(stderr, "tack eval pilot: -setting needs -compare-setting: a lone arm runs A1 as registered")
+	arms, reps, cells, err := r.arms()
+	if err != nil {
+		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		return exitUsage
 	}
 	err = withRemoteServer(ctx, r, out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
@@ -280,9 +278,8 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		o := pilot.Options{Capture: capture, Tasks: ts, Mirrors: mirrors, A1: self,
 			Server: srv, ServeLog: serveLog, Out: out, Cap: capD, Log: stderr, CountTokens: counter(srv), TackRev: tackRev,
 			ServerOptions: r.options}
-		if r.compare != "" {
-			base := []string(r.settings)
-			o.A1Arms = []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare)}}
+		o.A1Arms, o.A1Reps = arms, reps
+		if cells {
 			o.Cell = hostCell(r.host)
 		}
 		return pilot.RunPilot(ctx, o)
@@ -296,6 +293,24 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		return exitError
 	}
 	return exitOK
+}
+
+// arms is the job r asks for: with -compare-setting, arms A and B, A B B A A B per task; else, with -setting or -reps,
+// one arm A1 with the settings, reps times per task (a mechanism check, calibration §12.9); else nil, A1 as registered,
+// once per task. cells reports whether each run waits for a clean cell check, as every C6 run does.
+func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
+	switch {
+	case r.compare != "" && !pilot.RunSettings[r.compare]:
+		return nil, 0, false, fmt.Errorf("-compare-setting %q is not one an arm may switch on; allowed: %s", r.compare, settingNames())
+	case r.reps < 0 || r.reps > 0 && r.compare != "":
+		return nil, 0, false, errors.New("-reps is for one arm, without -compare-setting")
+	case r.compare != "":
+		base := []string(r.settings)
+		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare)}}, 0, true, nil
+	case len(r.settings) > 0 || r.reps > 0:
+		return []pilot.Arm{{Name: "A1", Settings: []string(r.settings)}}, r.reps, true, nil
+	}
+	return nil, 0, false, nil
 }
 
 // hostCell is an A/B job's cell check (owner, 2026-10-19; e1-calibration-preregistration-2026-10-18.md §12.2). host

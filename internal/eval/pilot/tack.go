@@ -63,6 +63,7 @@ var RunSettings = map[string]bool{
 	"no_instructions":        true, // §4.8
 	"instructions_head":      true, // §12.12
 	"refuse_duplicate_edits": true, // §12.14
+	"verify_done":            true, // §4.2, §12.15
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.
@@ -196,9 +197,13 @@ type TackSummary struct {
 	Requests    int            `json:"requests"`
 	StopReason  string         `json:"stop_reason"`
 	DoneRefused int            `json:"done_refused"`
-	Resends     int            `json:"resends"`          // requests sent again after the server refused one for carrying no tool call
-	Budget      string         `json:"budget,omitempty"` // the budget that tripped, if any
-	Errors      []string       `json:"errors,omitempty"`
+	// VerifyRefused counts done refused for want of a verification (loop.VerifyRefusal), and Done is the answer of the done
+	// that ended the run: "done", loop.DoneUnverified or loop.DoneVerifyFailed; "" when no done ended it.
+	VerifyRefused int      `json:"verify_refused,omitempty"`
+	Done          string   `json:"done,omitempty"`
+	Resends       int      `json:"resends"`          // requests sent again after the server refused one for carrying no tool call
+	Budget        string   `json:"budget,omitempty"` // the budget that tripped, if any
+	Errors        []string `json:"errors,omitempty"`
 }
 
 // SummarizeTack reads tack's event stream for an A1 run.
@@ -230,6 +235,12 @@ func SummarizeTack(path string) TackSummary {
 		case proto.ToolFinished:
 			if p.Result == loop.DoneNoChange {
 				s.DoneRefused++
+			}
+			if strings.HasPrefix(p.Result, loop.VerifyRefusal) {
+				s.VerifyRefused++
+			}
+			if names[p.ID] == "done" && (p.Result == "done" || p.Result == loop.DoneUnverified || p.Result == loop.DoneVerifyFailed) {
+				s.Done = p.Result
 			}
 			if p.Outcome != proto.OutcomeOK {
 				s.Failed[names[p.ID]]++
