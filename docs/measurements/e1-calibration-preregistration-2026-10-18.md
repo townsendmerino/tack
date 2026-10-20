@@ -1058,3 +1058,9 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **A live check for correctness, not the verdict:** two runs with `stop_repeats` on, on tasks where loops occurred
   (task 2 and task 5, with `fit_window` per §12.6). They confirm that `repeat_loop` ends the turn and `tack run` exits 9,
   end to end against goinfer. Done by day under nobara's lock, in about 20 minutes, after the replay.
+- **Outcome (2026-10-19, replayed 21:22 PDT): adopted.**
+  - Over 144 captured runs, the rule would have stopped 36 and no passing run. It would have saved 4,243 requests and
+    102 minutes.
+  - The prediction held: 25–40 runs stopped, none passing.
+  - Record: `e1-calibration-c6-45-replay-2026-10-19.md`.
+  - The live check is still to run.
