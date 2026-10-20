@@ -1139,6 +1139,18 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     - A starting rate of 0 would need still more runs.
     - C4 also ran on goinfer `f20f0d93` without `fit_window` or `stop_repeats`, and the bit-identity check covers only
       Qwen3-8B.
-- **A conditional Qwen3-4B follow-up:** a Qwen3-4B screen runs only if 4.2's screen shows that 4.2 turns empty
-  `done` calls into real attempts. Without that, Qwen3-4B is not run again in C6.
+- **The Qwen3-4B question: a mechanism check run beside 4.2's screen** (owner, 2026-10-19, replacing an earlier
+  condition). 4.2's screen runs on Qwen3-8B, which rarely calls `done` without working, so it cannot show 4.2's
+  effect on Qwen3-4B. Registered before 4.2 runs:
+  - **Runs:** Qwen3-4B at 30,720 on goinfer `b2b5e816`, thinking off.
+    - Settings: 4.2 (`done` requires verification) on, plus `fit_window` and `stop_repeats`.
+    - Two runs on each of tasks 2, 3, 4, 6, 8 and 9: 12 runs, about 20–30 minutes, beside 4.2's screen.
+    - These are the tasks where C4's Qwen3-4B called `done` without working in all three runs: 18 of 18.
+  - **Metric:** runs that make a real edit attempt before `done`, meaning at least one `edit` or `write` call before
+    the first `done` call, whatever its outcome.
+  - **Rule:** a full Qwen3-4B screen (72 runs) follows only if most of the 12 do, 7 or more. Otherwise Qwen3-4B is not
+    run again in C6.
+  - **It is a mechanism check, not a pass-rate measure.** Its passes are recorded, not judged.
+  - **It needs the pilot to run one arm with settings**, which it refuses today. That small harness change is built
+    with 4.2 and shown to the owner with it.
 - **The decision rule** for the bundle is registered with its run, before it.
