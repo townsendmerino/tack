@@ -1063,4 +1063,17 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     102 minutes.
   - The prediction held: 25–40 runs stopped, none passing.
   - Record: `e1-calibration-c6-45-replay-2026-10-19.md`.
-  - The live check is still to run.
+- **Adopted (owner, 2026-10-19).** The code was pushed as `3e2da1e`, a cherry-pick of `898f97a` with the same code.
+
+| job | runs | stopped | passing runs stopped | requests saved | wall time saved |
+|---|---|---|---|---|---|
+| 4.6 (A and B) | 72 | 18 | 0 | 1,150 | 24 min |
+| C5 | 36 | 6 | 0 | 314 | 6 min |
+| C4 | 36 | 12 | 0 | 2,779 | 72 min |
+| **all** | **144** | **36** | **0** | **4,243** | **102 min** |
+
+- **The separate live check is dropped (owner).** `stop_repeats` is on in both arms of 4.4, as an adopted change under
+  stacking, and 4.4's runs are the live check.
+  - 4.4's record runs `tools/replayrepeats` over its live runs and confirms that every `repeat_loop` stop came at a real
+    8th unchanged repeat. It also counts the exit-9 runs.
+  - Any disagreement is reported before 4.4's verdict.

@@ -46,7 +46,7 @@ file.
 
 ## What follows
 
-- **4.5 is adopted.** It ships with `stop_repeats` on once the owner approves the push of `898f97a`. Under §12.1's
+- **4.5 is adopted.** It was pushed as `3e2da1e` (a cherry-pick of `898f97a`). Under §12.1's
   stacking, it is on in both arms of every later change, beside §12.6's `fit_window` background condition.
-- **The live check (§12.7) is still to run:** two runs with `stop_repeats` on, on tasks 2 and 5. It is for
-  correctness, not the verdict: it confirms that `repeat_loop` ends the turn and `tack run` exits 9 against goinfer.
+- **No separate live check (owner).** 4.4's runs, with `stop_repeats` on in both arms, are the live check. Their record
+  replays them and confirms every `repeat_loop` stop and the exit-9 count.
