@@ -1029,3 +1029,32 @@ shows whether the change did what it is for. **It is never used for adoption.**
   - The sd in §12.3 stays as registered, from C5's per-task rates. 4.6's arms show the cap did not move passes (A 1, B
     2), so those rates are the nearest registered estimate.
   - Each change's record names this condition.
+
+### 12.7 Change 4.5, the stop rule for repeated identical calls: judged by replay (owner, 2026-10-19)
+
+**Registered before the replay ran.** The rule is §4.5's, built as `loop.RepeatGuard` and `[run] stop_repeats`: within a
+turn, the 8th unchanged repeat of one call (same tool and input, same result as its last) ends the turn with
+`repeat_loop`, exit status 9. The build is tack `898f97a` on the local branch `c6-45`, unpushed until the owner approves.
+
+- **4.5 is judged by replay, not by a 72-run comparison. This criterion replaces §12.3's d-based rule, for 4.5 only.**
+  - **Adopted** if the rule would have stopped no passing run.
+  - **Not adopted** if it would have stopped any.
+- **Why:**
+  - A stop rule only ends runs. It never changes what a run did before its stop.
+  - So applying the rule's own code to the captured requests and results of a run that went on shows exactly where
+    the run would have ended.
+  - Passes do not measure a guard: one that stops only failing runs cannot add passes, and the question is whether it
+    ever costs one.
+- **The replay** (`tools/replayrepeats`, `pilot.ReplayRepeats`):
+  - It feeds every captured run's tool calls, with the results the model saw, through the same `RepeatGuard` the loop
+    uses. The stop takes effect after the stopping response's results, as in the loop.
+  - It runs over 4.6's 72 runs, C5's 36 and C4's 36: 144 runs.
+  - For each stopped run it records where it stopped, its unchanged repeats, and the requests and wall time it would
+    have saved.
+  - A test (`TestReplayRepeatsMatchesTheLiveRule`) holds the replay to the live rule: replaying a run made with the
+    rule off stops at the request where the same run with it on ended.
+- **Prediction, before the replay:** it stops 25–40 of the 144 runs and no passing run. In 4.6 alone, 21 of 72 runs
+  reached 8 or more repeats by the input-and-summary approximation, and none of them passed.
+- **A live check for correctness, not the verdict:** two runs with `stop_repeats` on, on tasks where loops occurred
+  (task 2 and task 5, with `fit_window` per §12.6). They confirm that `repeat_loop` ends the turn and `tack run` exits 9,
+  end to end against goinfer. Done by day under nobara's lock, in about 20 minutes, after the replay.
