@@ -273,7 +273,7 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	}
 	err = withRemoteServer(ctx, r, out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
 		if r.cellCheck {
-			state, void := hostCell(r.host, srv.Fit)(ctx)
+			state, void := hostCell(r.host)(ctx)
 			fmt.Fprintf(stdout, "cell: %s\nvoid: %q\nfit: %s\n", state, void, srv.Fit)
 			return nil
 		}
@@ -283,7 +283,7 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		if r.compare != "" {
 			base := []string(r.settings)
 			o.A1Arms = []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare)}}
-			o.Cell = hostCell(r.host, srv.Fit)
+			o.Cell = hostCell(r.host)
 		}
 		return pilot.RunPilot(ctx, o)
 	})
@@ -299,10 +299,10 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 }
 
 // hostCell is an A/B job's cell check (owner, 2026-10-19; e1-calibration-preregistration-2026-10-18.md §12.2). host
-// does the timed work: a 1-minute load over half its cores, or less available memory than the load's fit needs plus
-// 2 GB, voids the cell. So does this Mac on battery. The Mac only drives the runs: its load is recorded, never voids.
-func hostCell(host, fit string) func(context.Context) (state, void string) {
-	need := pilot.FitNeedGB(fit)
+// does the timed work, with the model already loaded: a 1-minute load over half its cores, or less than cellMinFreeGB
+// of available memory, voids the cell. So does this Mac on battery. The Mac only drives the runs: its load is recorded,
+// never voids.
+func hostCell(host string) func(context.Context) (state, void string) {
 	return func(ctx context.Context) (string, string) {
 		out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host,
 			"nproc; cut -d' ' -f1 /proc/loadavg; awk '/^MemAvailable:/{print $2}' /proc/meminfo").Output()
@@ -314,23 +314,28 @@ func hostCell(host, fit string) func(context.Context) (state, void string) {
 			_, err = fmt.Sscan(string(out), &cores, &load, &kb)
 		}
 		avail := float64(kb) / (1 << 20)
-		state := fmt.Sprintf("%s load %.2f of %d cores, %.1f GB available (the fit needs %.1f GB); Mac load %s, power %s",
-			host, load, cores, avail, need, strings.Trim(strings.TrimSpace(string(mac)), "{} "), power)
-		return state, cellVoid(err, cores, load, avail, need, power)
+		state := fmt.Sprintf("%s load %.2f of %d cores, %.1f GB available with the model loaded; Mac load %s, power %s",
+			host, load, cores, avail, strings.Trim(strings.TrimSpace(string(mac)), "{} "), power)
+		return state, cellVoid(err, cores, load, avail, power)
 	}
 }
 
+// cellMinFreeGB is the headroom a cell needs on the host with the model loaded. The loaded model's own memory is already
+// out of what the host reports available, so it is not counted again (e1-calibration-preregistration-2026-10-18.md §12.5).
+const cellMinFreeGB = 2
+
 // cellVoid is hostCell's rule on what it read: why the cell is void, or "".
-func cellVoid(readErr error, cores int, load, availGB, needGB float64, power string) string {
+func cellVoid(readErr error, cores int, load, availGB float64, power string) string {
 	switch {
 	case readErr != nil:
 		return "could not read the host's load: " + readErr.Error()
 	case load > float64(cores)/2:
 		return fmt.Sprintf("heavy load: %.2f over half of %d cores", load, cores)
-	case needGB > 0 && availGB < needGB+2:
-		return fmt.Sprintf("heavy load: %.1f GB available, under the fit's %.1f GB plus 2", availGB, needGB)
+	case availGB < cellMinFreeGB:
+		return fmt.Sprintf("heavy load: %.1f GB available with the model loaded, under %d", availGB, cellMinFreeGB)
 	case power == "battery":
 		return "this Mac is on battery"
 	}
 	return ""
+
 }

@@ -905,8 +905,11 @@ its commit, its setting and its predictions.
 - **Per task, six runs back to back:** A B B A A B. Then the next task.
 - **A cell is one run.** Its start records nobara's load, its free memory and the Mac's power. The Mac's load is
   recorded and never voids.
-- **A cell is void if it starts under heavy load on nobara:** a 1-minute load over 8.0, or free memory under the fit's
-  need plus 2 GB. It is also void if it starts with the Mac on battery.
+- **A cell is void if it starts under heavy load on nobara:** a 1-minute load over 8.0, or, from 4.5 on, less than 2 GB
+  of memory available with the model loaded. It is also void if it starts with the Mac on battery.
+  - Through 4.6, the memory rule was "under the fit's need plus 2 GB". That double-counted the loaded model, whose
+    memory is already out of "available". It was inert at nobara's 55 GB (§12.5), and the owner approved the fix,
+    `cmd/tack/pilot_a1.go:cellVoid`, on 2026-10-19.
 - A void cell is re-run in its place and listed in the record, never averaged.
 
 ### 12.3 The decision rule and the effect size that counts
@@ -1001,6 +1004,28 @@ shows whether the change did what it is for. **It is never used for adoption.**
     model loaded: at least 2 GB available.
   - The load rule is different: if the standalone cell check shows it would void a loaded, idle box, it is fixed
     before 4.6's runs.
-- **Outcome (2026-10-19, 18:08–20:23 PDT): d = +1 (B 2/36, A 1/36), so 4.6 is not adopted.** Window-full stops fell from
-  25 to 12, as predicted. A's 1/36 against C5's 4 is reported as a possible build effect, though it may be chance (task
-  11 went 3/3 → 2/6). There were 0 void cells. Record: `e1-calibration-c6-46-2026-10-19.md`.
+- **Outcome (2026-10-19, 18:08–20:23 PDT): d = +1 (B 2/36, A 1/36), so 4.6 is not adopted.**
+  - **Verdict, as registered (owner):** not adopted, d = +1.
+  - **Mechanism, beside it:** window-full stops fell from 25 to 12, against a prediction of at least 5 fewer: met.
+  - A's 1/36 against C5's 4 was checked for a build effect. Qwen3-8B is greedy bit-identical across goinfer
+    `f20f0d93` and `b2b5e816` (the determinism check, in the record), so the drop is read as sampling.
+  - There were 0 void cells. Record: `e1-calibration-c6-46-2026-10-19.md`.
+
+### 12.6 Amendment: `fit_window` is a background condition for the rest of C6 (owner, 2026-10-19)
+
+**Decided after seeing 4.6's result, and registered before any run of 4.5.**
+
+- **For every remaining C6 change, `[run] fit_window = true` is on in both arms,** A and B alike. In the harness it is
+  `-setting fit_window`, beside the change's `-compare-setting`.
+- **It is a background condition, not an adoption.** 4.6 stays "not adopted" at d = +1 (§12.5), and no claim is made for
+  `fit_window`, in passes or otherwise. §12.1's stacking rule is unchanged; this is the one exception it names.
+- **Why:**
+  - In 4.6, window-full stops halved (25 → 12) with no cost in passes (B 2/36, A 1/36).
+  - 4.2 (done requires verification) makes the model run `go build` and `go test`. At 16k without the cap, that output
+    would add window stops in B that A does not suffer, so 4.2 could not be measured fairly.
+  - Holding the condition the same for every remaining change keeps them comparable with one another.
+- **What it changes for the remaining changes:**
+  - Each A now differs from C5's arm by `fit_window`.
+  - The sd in §12.3 stays as registered, from C5's per-task rates. 4.6's arms show the cap did not move passes (A 1, B
+    2), so those rates are the nearest registered estimate.
+  - Each change's record names this condition.

@@ -5,11 +5,14 @@
 This is change 4.6 under amendment C6 (`e1-calibration-preregistration-2026-10-18.md` §12, registered in §12.5 before
 any run). A is A1 as is; B is A with `[run] fit_window = true`. The two arms ran interleaved, A B B A A B per task.
 
-**Result: d = +1. B passed 2 of 36 and A passed 1 of 36. Under §12.3's rule (adopted at d ≥ 3, parked at d = 2), 4.6
-is not adopted.** Under §12.1's stacking, it is off in both arms of the next change.
+**Verdict, as registered: not adopted, d = +1.** B passed 2 of 36 and A passed 1 of 36. §12.3's rule adopts at
+d ≥ 3 and parks at d = 2.
 
-**The mechanism worked as designed:** 12 window-full stops in B against 25 in A, counting prompt-too-long refusals. It
-did not turn into passes.
+**Mechanism, beside it: met.** Window-full stops fell from 25 in A to 12 in B, counting prompt-too-long refusals,
+against a prediction of at least 5 fewer. It did not turn into passes.
+
+**After this result, the owner made `fit_window` a background condition** for the rest of C6 (§12.6). It is on in both
+arms of each later change. That is not an adoption, makes no claim for it, and does not change this verdict.
 
 ## What ran
 

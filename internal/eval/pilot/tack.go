@@ -11,9 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -372,17 +370,4 @@ func ForcedToolCall(ctx context.Context, baseURL, key, model string) string {
 		}
 	}
 	return ""
-}
-
-var fitNeedRe = regexp.MustCompile(`needs ([0-9.]+) GB KV \(weights ([0-9.]+) GB`)
-
-// FitNeedGB is the memory a load needs by goinfer's fit line, KV plus weights, or 0 when the line does not say.
-func FitNeedGB(fit string) float64 {
-	m := fitNeedRe.FindStringSubmatch(fit)
-	if m == nil {
-		return 0
-	}
-	kv, _ := strconv.ParseFloat(m[1], 64)
-	w, _ := strconv.ParseFloat(m[2], 64)
-	return kv + w
 }

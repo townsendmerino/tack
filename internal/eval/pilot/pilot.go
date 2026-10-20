@@ -43,8 +43,7 @@ type Server struct {
 	// Direct is goinfer's own URL when BaseURL is the recording proxy: tack's count_tokens calls use it, so they are
 	// neither recorded nor counted as the run's requests.
 	Direct string
-	// Fit is goinfer's fit line for the load ("fit: N-token cap needs X GB KV (weights Y GB, …)"), for the cell check's
-	// memory floor (FitNeedGB).
+	// Fit is goinfer's fit line for the load ("fit: N-token cap needs X GB KV (weights Y GB, …)"), printed by -cell-check.
 	Fit string
 }
 

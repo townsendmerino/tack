@@ -55,12 +55,3 @@ func TestRunPilotRefusesABadComparison(t *testing.T) {
 		}
 	}
 }
-
-func TestFitNeedGB(t *testing.T) {
-	if got := FitNeedGB("fit: 16384-token cap needs 2.2 GB KV (weights 4.3 GB, budget 38.9 GB, 36.7 GB left)"); got < 6.49 || got > 6.51 {
-		t.Fatalf("need %v, want 6.5", got)
-	}
-	if got := FitNeedGB("fit: unknown"); got != 0 {
-		t.Fatalf("need %v for a line that does not say", got)
-	}
-}
