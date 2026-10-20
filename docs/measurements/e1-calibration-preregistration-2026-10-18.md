@@ -449,6 +449,33 @@ reduce it. Both reduction predictions missed.**
   - **§4.4's glob no-match line stays the fix for C5's glob loop.** It acts after an empty glob, where task 5's 124
     globs of `kvF16Decline` happened.
 
+### 4.9 Candidate, not registered and not built: an edit by line range (owner, 2026-10-20)
+
+**To be considered after 4.8.**
+
+- **The change:** `edit` also takes `start_line`, `end_line` and `new_string`, and replaces those lines.
+  - It is refused unless those lines match what the model last read of the file (the workspace's `lastSeen`).
+  - So a range whose numbers have shifted, after the model's own earlier edit or anything else, is caught instead of
+    editing the wrong place.
+  - old_string matching stays as it is. The range is an alternative way to name the text, not a replacement.
+- **Why:**
+  - 4.1 showed the model cannot copy text exactly, and resends identical failing text whatever the reply says. After
+    a failed edit, 26 and 27 of the next failed edits in A and B sent the same old_string again
+    (`e1-calibration-c6-41-2026-10-20.md`).
+  - 4.4 showed it can switch tools when told: after an empty glob, B turned to grep 57% of the time against A's 9%
+    (`e1-calibration-c6-44-2026-10-19.md`).
+  - Line numbers are what `read` shows it, so a range asks it to copy two numbers, not a block of text.
+- **What §4.1 said against line-number edits, and the answer:**
+  - Numbers that no longer match the file would edit the wrong place.
+  - The refusal unless the lines equal what the model last read is the guard for that.
+  - The guard's test must show a shifted range refused, both after the model's own edit and after an outside change.
+- **The fixed-prompt cost:**
+  - Two optional integer properties and a sentence in the edit tool's description, estimated at 40–60 tokens.
+  - The fixed prompt is now 1,024 of its 3,276-token budget, so it fits.
+  - `TestFixedPromptBudget` measures the real cost when it is built.
+- **Its mechanism metric, if registered:** edit failures by kind, and how often the model uses a range after an
+  old_string failure.
+
 ## 5. A harness fix, not a loop change
 
 **The ssh port forward the A1 harness opens leaked into ssh's shared connections.**
