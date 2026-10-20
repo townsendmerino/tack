@@ -79,3 +79,12 @@ build.
     misses.
 - **The amendment ran over its stated time:** 64 minutes against "15–30 (45 if the prefix is never reused)". The
   estimate priced the 31.7k probes from goinfer's 97 tok/s, but the probe's reused cells were cold too, so each of the six took about 343 s.
+
+## Later, 2026-10-19: goinfer's rollback fix
+
+goinfer `1ea85681` (P34, cause 2) gives an expert-cache load of a windowed model its rollback grant. A follow-up request
+may now diverge up to 1,024 positions before the newest and still reuse, up from 448.
+- nobara's probe at `-ctx 8192`: a 600-token edit at the end was re-prefilled on the old build (17.4 s) and reused on the
+  fix (1.9 s). Record: goinfer `docs/measurements/p34-mellum-rollback-2026-10-19/README.md`.
+- **This confirms the reading above, and does not change the wait.** Mellum2.1's E0 re-runs only on a trigger that could
+  change its tool choice. When one comes, the E0 uses a build at or after `1ea85681` and amendment 11's append probe.
