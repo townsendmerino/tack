@@ -1111,6 +1111,15 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **4.5's live check, in the same runs:** `tools/replayrepeats` over all 72 confirms that every `repeat_loop` stop came
   at a real 8th unchanged repeat. The exit-9 runs are counted. A disagreement is reported before 4.4's verdict.
 - **Time:** about 1 h 50 m, done by about 00:10 PDT.
+- **Outcome (2026-10-20, 22:21–00:15 PDT): 4.4 enters the bundle.**
+  - Glob mechanism: B's next call after an empty glob was a glob 8 times out of 35 (23%), against A's 16 out of 22
+    (73%). Held.
+  - d = +1 (B 3/36, A 2/36), so d ≥ −1.
+  - `repeat_loop` stops: 6 against 14. Held.
+  - 4.5's live check: 20 `repeat_loop` stops, all exit 9, all at a real 8th unchanged repeat by the replay. No
+    disagreement.
+  - 0 void cells after a disk-floor relaunch.
+  - Record: `e1-calibration-c6-44-2026-10-19.md`.
 
 ### 12.9 The pass-rate question: one bundle arm against the baseline (owner, 2026-10-19), registered before 4.4 runs
 
