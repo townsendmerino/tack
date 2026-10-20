@@ -104,3 +104,24 @@ grammar, or serve's tool, think or Anthropic stream code. What did change should
 Bit-identity of Qwen3-8B across the two builds is not verified. One greedy request with a fixed prompt on each build
 (same `-ctx 16384`, thinking off) would separate a build effect from sampling in minutes. Until that runs, A's drop to
 1/36 is read as sampling: 4/36 against 1/36 over 3 runs per task is within its noise.
+
+## The determinism check (owner, 2026-10-19, 20:31–20:33 PDT)
+
+Qwen3-8B `Q4_K_M` at `-ctx 16384`, thinking off, through pilot-serve (tack `c7d5c05`), holding nobara's lock.
+- **Two cold loads per build,** f20f0d93 and b2b5e816. Each answered two fixed requests greedily (temperature 0).
+- **A text request:** about 1.7k tokens, a Go file and a question, 200 tokens allowed, with the top 5
+  log-probabilities at every token.
+- **A tool request** with `tool_choice` required, the grammar path A1 uses.
+- **The card at the start held nothing but the desktop compositor (17 MiB).**
+- **Records:** `~/tack-runs/e1/determinism-2026-10-19/` on nobara.
+
+**Result: each build repeats itself exactly, and the two builds agree.**
+- The text reply is the same 121 tokens on all four loads, with **bit-identical log-probabilities**. The full top-5
+  lists, 605 entries, hash to `1518c46108b09c40` on every load. The smallest gap between the top two tokens along the
+  way is 0.086, so a numeric difference large enough to matter would likely have changed a token.
+- The tool reply is the same call on all four loads: `grep {"pattern": "applyTokenBudget", "path": "tack"}`, 27
+  tokens. goinfer returns no log-probabilities for a grammar-forced call, so the tool path is compared by output only.
+- **No build effect is shown, so A's 1/36 against C5's 4/36 is read as sampling** at temperature 0.7 over 3 runs per
+  task.
+- **The check's limit:** one prompt of about 1.7k tokens. A1's prompts run 10–16k, and a kernel path that only
+  longer prefills take would not be exercised. goinfer's reading of the diff (above) finds no such change for Qwen3-8B.
