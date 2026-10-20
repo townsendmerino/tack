@@ -1077,3 +1077,58 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - 4.4's record runs `tools/replayrepeats` over its live runs and confirms that every `repeat_loop` stop came at a real
     8th unchanged repeat. It also counts the exit-9 runs.
   - Any disagreement is reported before 4.4's verdict.
+
+### 12.8 Change 4.4, repeat and empty-result messages: a screen (owner, 2026-10-19), registered before its runs
+
+- **Arms:**
+  - A is A1 with `fit_window` (§12.6, background) and `stop_repeats` (4.5, adopted).
+  - B is A plus `[run] result_notes`: the glob-only line on an empty glob ("glob matches file names only; to find a
+    name inside files, use grep."), a line on an empty grep, and an unchanged-repeat note with its count.
+  - The repeat note does not count toward the error budget, because `stop_repeats` ends loops. The owner accepted
+    that departure from §4.4 as filed.
+- **Builds:**
+  - tack `987eb2f`, clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:**
+  - `-setting fit_window -setting stop_repeats -compare-setting result_notes`;
+  - the 12 tasks, A B B A A B, 72 runs, each after the cell check (memory rule: at least 2 GB available with the model
+    loaded);
+  - starts about 22:20 PDT (owner).
+- **It is a screen.** At 72 runs, passes can show only gains of 25 points or more (§12.9), so "not adopted" means "not
+  shown".
+- **Decision rule, replacing §12.3's for 4.4.** It enters the bundle (§12.9) if both hold:
+  - its glob mechanism moves as predicted: after an empty glob, B's next call is glob at most half as often as A's;
+  - d ≥ −1.
+- **Mechanism metrics, recorded per arm:**
+  - for each empty glob result, whether the run's next call is a glob (the confusion) or a grep (the hint taken);
+  - `repeat_loop` stops;
+  - empty-result repeats: an empty glob or grep repeated unchanged.
+- **Predictions:**
+  - after an empty glob, B's next call is glob at most half as often as A's;
+  - B has fewer `repeat_loop` stops than A (4.6's replay: about 9 a side);
+  - d between −1 and +1.
+- **4.5's live check, in the same runs:** `tools/replayrepeats` over all 72 confirms that every `repeat_loop` stop came
+  at a real 8th unchanged repeat. The exit-9 runs are counted. A disagreement is reported before 4.4's verdict.
+- **Time:** about 1 h 50 m, done by about 00:10 PDT.
+
+### 12.9 The pass-rate question: one bundle arm against the baseline (owner, 2026-10-19), registered before 4.4 runs
+
+- **The baseline.** C5's 36 runs and 4.6's arm A ran the same configuration on bit-identical builds (§12.5). Pooled,
+  they are the Qwen3-8B baseline: **5 of 72, about 7%**, with task 11 at 4/6, task 2 at 1/6, and the other ten tasks at
+  0/6.
+- **The screens.** 4.4, 4.1, 4.2 and 4.3 are each measured as screens of 72 runs. At that size passes can show only
+  gains of about 25 points (7% → 33% at 80% power), so a screen decides by its change's mechanism metric and a floor on
+  d. A screen that does not adopt means "not shown".
+- **The bundle comparison.** Once 4.1–4.3 are built and screened:
+  - one bundle arm (every adopted change) against the baseline arm;
+  - 14 runs per task per arm, 336 runs, interleaved per task, each after the cell check;
+  - run as a night job, about 9 hours.
+- **Power: about 80% to see 7% → 17%,** a gain of 10 points, about one more task in ten. That is the smallest gain
+  that would matter for E1's A0-against-A1 comparison. At 7%, the set sits below the 20–80% band where E1 has power
+  (DESIGN §15.1).
+- **Pass credit cannot be split between changes.** The bundle's d belongs to the bundle. Each change's own effect is
+  read only through its mechanism metric, from the same runs.
+- **The model the bundle runs on** is the owner's choice, made before that night, with C4's Qwen3-4B results set beside
+  this baseline.
+- **The decision rule** for the bundle is registered with its run, before it.
