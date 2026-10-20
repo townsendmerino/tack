@@ -1302,6 +1302,7 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **A noted fallback, not an arm (owner).** If the window matters but section loading must wait, a budgeted head is the
   cheap stand-in: the file's headings plus its first section, capped at 15% of the window (2,457 tokens at 16k), with
   no ranking.
+  - **Chosen by the owner after the outcome:** adopted as §12.12, with a mechanism check only.
 - **Outcome (2026-10-20, 12:50–14:23 PDT): the window cost of whole instructions is shown, thinly.**
   - Window-full stops fell from 4 in A to 1 in B.
   - d = +2 (B 4/36, A 2/36).
@@ -1311,3 +1312,116 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     new_string contains its old_string repeated with the same reply while the file grew. The stop cost no pass.
   - Next, under the rule: section loading (4.8b), or the owner's cheaper fallback, the budgeted head.
   - Record: `e1-calibration-c6-48-2026-10-20.md`.
+
+### 12.12 The budgeted head of the instruction file: adopted on 4.8's evidence, with a mechanism check only (owner, 2026-10-20)
+
+- **What it is:** `[run] instructions_head` (`internal/core/instructions.go:instructionHead`). Under
+  `--instructions whole`, tack loads the instruction file's head instead of the whole file:
+  - a line naming the file and saying to read it for any section;
+  - the file's first section, which runs to the first heading after some body text, so a file that opens with only
+    its title (goinfer's) takes in the section after it;
+  - an outline of the file's other headings (headings inside code fences are not headings).
+- **The cap:** 15% of the served window, 2,457 tokens at 16k.
+  - It is enforced in bytes at 3 bytes per token, 7,371 bytes. The calibration's `CLAUDE.md` files measure 3.6–3.8
+    bytes per token (§12.11's table against their sizes).
+  - Over the cap, the outline is cut from its end first, then the first section at a line. Each cut says so in the
+    text the model reads.
+- **Adopted without a screen (owner).** The evidence is 4.8's (§12.11):
+  - neither "whole" nor "none" beat the other on passes (A 2/36, B 4/36);
+  - whole's window cost is shown, thinly;
+  - the head sits between them.
+- **It enters the bundle** from the next screen (4.2) on, in both arms, and in §12.9's bundle arm.
+- **Section loading (4.8b, ken K9) stays in P1's schedule** (DESIGN §16). The head stands in until then.
+- **Mechanism check only, in 4.2's arm A:**
+  - A task's head share is its first prompt (goinfer's token count) less its first prompt with no instructions (4.8's
+    arm B, §12.11's outcome).
+  - **It must be under the cap, 2,457 tokens, on every task.** A share over the cap on any task is a defect, fixed
+    before the next screen.
+  - The predictions below are reported against, not judged.
+- **Predictions.** Heads were measured through `instructionHead` itself on each task's `CLAUDE.md` at its base commit;
+  none is cut. The predicted share is bytes / 3.7, and the band is bytes / 4.0 to bytes / 3.4.
+
+| task | repo | whole file's share (§12.11) | head, bytes | head share, predicted | first prompt, predicted (4.8 B + share) |
+|---|---|---|---|---|---|
+| 1 | goinfer | 9,693 | 2,108 | 570 | 1,448 |
+| 2 | goinfer | 10,702 | 2,142 | 579 | 1,494 |
+| 3 | goinfer | 9,693 | 2,108 | 570 | 1,542 |
+| 4 | goinfer | 5,959 | 2,027 | 548 | 1,474 |
+| 5 | goinfer | 9,693 | 2,108 | 570 | 1,511 |
+| 6 | goinfer | 7,748 | 2,070 | 559 | 1,487 |
+| 7 | ken | 4,360 | 642 | 174 | 1,087 |
+| 8 | goinfer | 5,533 | 2,027 | 548 | 1,469 |
+| 9 | goinfer | 8,685 | 2,091 | 565 | 1,564 |
+| 10 | ken | 5,327 | 642 | 174 | 1,067 |
+| 11 | ken | 3,180 | 616 | 166 | 1,041 |
+| 12 | aikit | 0 | none | 0 | 906 |
+
+- **What it does not check:** whether the model follows rules that are now only headings. As §12.11 says, the oracles
+  do not check rules.
+
+### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write (owner, 2026-10-20)
+
+- **The finding** (4.8, task 12 B-3, §12.11's outcome):
+  - An edit whose new_string contains its old_string applied 9 times with the same reply while the file grew.
+  - The rule read "unchanged" from the reply and ended the run at the 8th repeat. The run passed anyway.
+- **The amendment:**
+  - For edit and write, the rule compares the reply together with the file's content after the call, failed calls
+    included (`tools.Result.State`, a hash of the file; `loop.RepeatResult`). A call that changed its file is never an
+    unchanged repeat.
+  - Every other tool, and every call the tool did not run (a "not run" reply), is compared on the reply alone, as
+    before.
+  - `result_notes`' "same result" note reads the same guard's count, so it follows the amendment.
+  - A write that succeeds always leaves the same content, so for write the state changes only a failed write's
+    comparison.
+- **Judged as 4.5 was, by replay (§12.7).**
+  - **Adopted** if the amended rule stops no passing run.
+  - The replay is re-run over all captured runs, and every stop that moves is reported.
+- **The replay** (`tools/replayrepeats -mirrors`, `pilot.ReplayRepeats` with a base tree):
+  - It rebuilds each file from the task's base commit (the bare mirrors) plus the run's own successful edits and
+    writes.
+  - A file a bash call changed is not rebuilt. A successful edit whose text the rebuilt file lacks is counted as lost,
+    and each stop is printed with its losses.
+  - `TestRepeatRuleSeesTheFileChange` holds the replay to the live rule. Replaying a run made with the rule off stops at
+    the request where the same run with it on ended. Replayed on replies alone, the same run stops three requests
+    earlier.
+- **Outcome (2026-10-20, replayed 15:23 PDT): adopted under the criterion.**
+  - Over 406 counted runs (23 passing), the amended rule stops 98 runs and no passing run.
+  - The registered rule stops 102 over the same runs, one passing: 4.8's task 12 B-3.
+  - 4 stops move. Each is an edit stop that goes to "does not stop". No new stop appears. No stopped run has a lost
+    rebuild.
+  - Record: `e1-calibration-c6-45-amended-replay-2026-10-20.md`.
+
+| run | registered rule | amended rule | passed | note |
+|---|---|---|---|---|
+| 4.6 task 5 B-2 | stops after request 16 | does not stop (26 requests) | no | 17 re-applications of one edit |
+| 4.8 task 10 A-1 | stops after request 26 | does not stop | no | live-stopped: what follows is not seen |
+| 4.8 task 10 A-3 | stops after request 24 | does not stop | no | live-stopped |
+| 4.8 task 12 B-3 | stops after request 18 | does not stop | **yes** | live-stopped; the finding above |
+
+- **What the amendment gives up.** All four moved runs are loops of an edit that applies itself again. The registered
+  rule ended them; the amended rule lets them run until another stop or the budget. 4.6's task 5 B-2 shows the cost: 10
+  more requests, in a failing run. The duplicate-edit guard (§12.14) is what ends that loop without a stop.
+
+### 12.14 The duplicate-edit guard: built, counted by replay (owner, 2026-10-20)
+
+- **What it is:** `[run] refuse_duplicate_edits` (`tools.Options.RefuseDuplicateEdits`), off by default.
+  - Edit refuses a call whose path, old_string and new_string equal those of an edit that already succeeded on that
+    file this session.
+  - The reply is `error: this exact edit was already applied to "P" at line N earlier in this session; read "P" to see
+    it`.
+  - The check comes after the file is read and before old_string is looked for. So it answers both cases: a
+    re-application (new_string contains old_string), and a resend whose text is gone, which is now told "this text
+    isn't in …".
+- **The count** (`pilot.ReplayDuplicateEdits`, run by `tools/replayrepeats -mirrors`). Over the same 406 counted runs,
+  the guard would have:
+  - touched 21 runs, 8 of them passing;
+  - refused 92 calls, 61 of which the run applied again.
+- **The 8 passing runs it touches:**
+  - **Seven are task 11** (4.1 A-3, 4.4 A-2 and A-3, 4.6 A-2, 4.8 B-2, C5 pass-1 and pass-3).
+    - The model resent its successful edit at request 5, once or several times between reads.
+    - Each resend was told "this text isn't in … the edit may already have been made".
+    - The guard would have said "already applied at line N".
+  - **The eighth is 4.8's task 12 B-3:** 8 re-applications, which the guard would have refused.
+  - The replay cannot say what the model does after a different reply.
+- **Not in the bundle.** It changes replies in passing runs, so it cannot be judged by replay as a stop can. Whether it
+  enters, and by what test, is the owner's decision.
