@@ -1359,7 +1359,7 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **What it does not check:** whether the model follows rules that are now only headings. As §12.11 says, the oracles
   do not check rules.
 
-### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write (owner, 2026-10-20)
+### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write; adopted (owner, 2026-10-20)
 
 - **The finding** (4.8, task 12 B-3, §12.11's outcome):
   - An edit whose new_string contains its old_string applied 9 times with the same reply while the file grew.
@@ -1390,6 +1390,8 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - 4 stops move. Each is an edit stop that goes to "does not stop". No new stop appears. No stopped run has a lost
     rebuild.
   - Record: `e1-calibration-c6-45-amended-replay-2026-10-20.md`.
+- **Adopted (owner, 2026-10-20), together with the duplicate-edit guard (§12.14).** Without the guard the amendment
+  leaves re-applying loops unstopped. Both are in the bundle from 4.2 on, in both arms, and in §12.9's bundle arm.
 
 | run | registered rule | amended rule | passed | note |
 |---|---|---|---|---|
@@ -1402,7 +1404,7 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   rule ended them; the amended rule lets them run until another stop or the budget. 4.6's task 5 B-2 shows the cost: 10
   more requests, in a failing run. The duplicate-edit guard (§12.14) is what ends that loop without a stop.
 
-### 12.14 The duplicate-edit guard: built, counted by replay (owner, 2026-10-20)
+### 12.14 The duplicate-edit guard: counted by replay, adopted with §12.13 (owner, 2026-10-20)
 
 - **What it is:** `[run] refuse_duplicate_edits` (`tools.Options.RefuseDuplicateEdits`), off by default.
   - Edit refuses a call whose path, old_string and new_string equal those of an edit that already succeeded on that
@@ -1423,5 +1425,11 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     - The guard would have said "already applied at line N".
   - **The eighth is 4.8's task 12 B-3:** 8 re-applications, which the guard would have refused.
   - The replay cannot say what the model does after a different reply.
-- **Not in the bundle.** It changes replies in passing runs, so it cannot be judged by replay as a stop can. Whether it
-  enters, and by what test, is the owner's decision.
+- **Adopted (owner, 2026-10-20), together with §12.13's amendment,** which without it leaves re-applying loops
+  unstopped. A replay cannot judge it: it changes replies in passing runs, and a replay cannot say what follows a
+  different reply.
+- **It enters the bundle from 4.2 on,** in both arms, and in §12.9's bundle arm.
+- **Mechanism check, in 4.2's runs (both arms):**
+  - the guard's refusals, per task and arm;
+  - on task 11, what the model does after "already applied at line N": its next call, and whether the run passes;
+  - the stops of the amended rule, checked against `tools/replayrepeats -mirrors`, as 4.5's live check is.

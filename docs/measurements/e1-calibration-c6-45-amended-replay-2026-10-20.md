@@ -106,5 +106,7 @@ Over the same 406 runs, the guard would have:
   budget. The guard and the amendment are two halves of one fix:
   - the amendment stops counting a changing file as a repeat;
   - the guard stops the change from repeating.
-- The guard changes replies in 8 passing runs, so a replay cannot judge it. Whether it enters the bundle, and by what
-  test, is the owner's decision (§12.14).
+- The guard changes replies in 8 passing runs, so a replay cannot judge it.
+- **Owner's decision (2026-10-20):** the amendment and the guard are adopted together, and both enter the bundle from 4.2
+  on. 4.2's runs check the guard's mechanism: its refusals, and on task 11 what the model does after "already applied
+  at line N" (§12.14).
