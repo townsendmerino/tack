@@ -67,6 +67,12 @@ build.
 ## What it means
 
 - **Mellum2.1 is out for calibration on `b2b5e816`** by E0's rule.
+- **It waits, and its E0 is not re-run for a faster build** (owner, 2026-10-19). Its failure is tool choice, and goinfer's
+  grouped MoE prefill (option A, #105) does not touch that. Its E0 is re-run only when something could change tool
+  choice:
+  - a new Mellum release;
+  - a goinfer sampling or grammar change;
+  - §4.4's empty-result guidance, once C6 adopts it.
 - **Two things would change that, each needing a new E0 on a later build:**
   - prefix reuse for the requests a loop makes, measured as above (and goinfer's batched MoE prefill, for speed);
   - a smoke at or above 17. §4.7's description diagnostic (run today) shows whether the descriptions move the glob
