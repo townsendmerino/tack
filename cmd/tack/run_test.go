@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/kenrun"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
@@ -140,5 +141,76 @@ func TestRunFitWindowReachesTheLoop(t *testing.T) {
 	}
 	if off := run(false); strings.Contains(off, "window nearly full") || !strings.Contains(off, "a line of a long file") {
 		t.Errorf("fit_window = false changed the result: %.300s", off)
+	}
+}
+
+// TestRunStopRepeatsExitsNine: [run] stop_repeats reaches the loop through tack run, and a turn the repeat rule ends
+// exits with exitRepeatLoop. Off, the same model runs to its own answer and exits 0.
+func TestRunStopRepeatsExitsNine(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644)
+	run := func(on bool) int {
+		t.Helper()
+		var replies []goinfertest.Reply
+		for i := 0; i <= 8; i++ {
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"nothing matches this"}`))
+		}
+		script := goinfertest.NewScripted("m", 16384, append(replies, goinfertest.Says("gave up"))...)
+		ts := httptest.NewServer(script)
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprintf(f, "[run]\nstop_repeats = %v\n", on)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		return dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "find it"}, &stdout, &stderr)
+	}
+	if code := run(true); code != exitRepeatLoop {
+		t.Errorf("stop_repeats = true: exit %d, want %d", code, exitRepeatLoop)
+	}
+	if code := run(false); code != exitOK {
+		t.Errorf("stop_repeats = false: exit %d, want 0", code)
+	}
+}
+
+// TestReplayRepeatsMatchesTheLiveRule: the same scripted loop through tack run, once with stop_repeats off and once
+// on. Replaying the off run's events (pilot.ReplayRepeats) stops at the request where the live rule ended the on run,
+// and counts every later request of the off run as saved.
+func TestReplayRepeatsMatchesTheLiveRule(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644)
+	run := func(on bool) string {
+		t.Helper()
+		replies := []goinfertest.Reply{goinfertest.Calls("", "r0", "read", `{"path":"a.go"}`)}
+		for i := 0; i < 12; i++ { // two calls a response: one repeats unchanged, one varies
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"nothing matches this"}`,
+				fmt.Sprintf("v%d", i), "glob", fmt.Sprintf(`{"pattern":"*%d.go"}`, i)))
+		}
+		script := goinfertest.NewScripted("m", 16384, append(replies, goinfertest.Says("gave up"))...)
+		ts := httptest.NewServer(script)
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprintf(f, "[run]\nstop_repeats = %v\nmax_tool_calls = 100\n", on)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "find it"}, &stdout, &stderr)
+		p := filepath.Join(t.TempDir(), "events.jsonl")
+		os.WriteFile(p, stdout.Bytes(), 0o644)
+		return p
+	}
+	off, err := pilot.ReplayRepeats(run(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	on, err := pilot.ReplayRepeats(run(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !off.Stopped || off.StopRequest != on.Requests || off.StopTool != "grep" || off.Repeats != 8 {
+		t.Fatalf("replay of the off run %+v; the live rule ended the on run after request %d", off, on.Requests)
+	}
+	if off.SavedRequests != off.Requests-on.Requests || off.SavedSecs < 0 {
+		t.Fatalf("saved %d requests (%v s); the off run sent %d, the on run %d", off.SavedRequests, off.SavedSecs, off.Requests, on.Requests)
 	}
 }

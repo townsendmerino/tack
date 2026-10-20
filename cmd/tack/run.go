@@ -36,7 +36,8 @@ import (
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
 // hit max_tokens; 5 tack is halted (tack halt); 7 the context window filled (6 is eval pilot's gated "not run"); 8 the
-// --preflight command failed, before any model request.
+// --preflight command failed, before any model request; 9 one call repeated unchanged until [run] stop_repeats ended the
+// turn.
 const (
 	exitOK         = 0
 	exitError      = 1
@@ -46,6 +47,7 @@ const (
 	exitHalted     = 5
 	exitWindowFull = 7
 	exitPreflight  = 8
+	exitRepeatLoop = 9
 )
 
 func runCmd(args []string, stdout, stderr io.Writer) int {
@@ -147,7 +149,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		servers = append(servers, "goinfer@"+n)
 	}
 	sort.Strings(servers)
-	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow,
+	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
@@ -315,6 +317,8 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 		return exitMaxTokens
 	case proto.StopWindowFull:
 		return exitWindowFull
+	case proto.StopRepeatLoop:
+		return exitRepeatLoop
 	case proto.StopHalted:
 		return exitHalted
 	}

@@ -58,6 +58,8 @@ type Options struct {
 	EditTask bool
 	// FitWindow caps every session's tool results at the room its window has left (loop.Config.FitWindow).
 	FitWindow bool
+	// StopRepeats ends a session's turn when one call repeats unchanged (loop.Config.StopRepeats).
+	StopRepeats bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -310,7 +312,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	}
 	cfg := loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow}
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats}
 	if p.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)

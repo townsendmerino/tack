@@ -67,6 +67,9 @@ type Config struct {
 	// and every cut says how much it cut and how to narrow it. Off, results are capped by MaxResultBytes alone
 	// (calibration pre-registration §4.6).
 	FitWindow bool
+	// StopRepeats ends a turn with repeat_loop when one call repeats RepeatLimit times with an unchanged result
+	// (RepeatGuard; calibration pre-registration §4.5).
+	StopRepeats bool
 	// Perms decides every tool call that changes something, in Mode (DESIGN §6.6). Without it such a call is refused:
 	// a session whose tools can write must have an engine. Approve asks the user when the engine asks; nil means no one
 	// is attached, and a call that needs the user is refused.
@@ -214,6 +217,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	lastFailed := "\x00"                  // the last call's key when it failed (callKey); no call has that key
 	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
 	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
+	var repeats RepeatGuard               // the turn's unchanged repeats (Config.StopRepeats)
+	repeatLoop := false
 	for {
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
@@ -377,6 +382,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			if room != nil {
 				*room = max(0, *room-len(fin.Result))
 			}
+			if s.cfg.StopRepeats {
+				if _, stop := repeats.Observe(key, fin.Result); stop {
+					repeatLoop = true
+				}
+			}
 			switch fin.Outcome {
 			case proto.OutcomeOK:
 				errorsInARow, lastFailed = 0, ""
@@ -394,6 +404,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)
+		}
+		if repeatLoop {
+			return end(proto.StopRepeatLoop)
 		}
 		if errorsInARow >= bud.MaxErrors {
 			return trip("consecutive_errors", float64(bud.MaxErrors), float64(errorsInARow))
@@ -570,12 +583,4 @@ func notRun(ctx context.Context) string {
 
 // callKey identifies a tool call by its tool and its input, with the input's JSON normalised so a repeat with its keys
 // in another order is the same call. A malformed input keys by its raw bytes.
-func callKey(b proto.ModelBlock) string {
-	var v any
-	if json.Unmarshal(b.Input, &v) == nil {
-		if n, err := json.Marshal(v); err == nil {
-			return b.Name + "\x00" + string(n)
-		}
-	}
-	return b.Name + "\x00" + string(b.Input)
-}
+func callKey(b proto.ModelBlock) string { return CallKey(b.Name, b.Input) }

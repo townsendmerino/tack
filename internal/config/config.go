@@ -82,6 +82,9 @@ type Run struct {
 	// FitWindow caps each tool result at the room the window has left (loop.Config.FitWindow). Default off until the
 	// calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.6).
 	FitWindow bool `toml:"fit_window"`
+	// StopRepeats ends a turn when one call repeats unchanged (loop.Config.StopRepeats). Default off until the calibration
+	// adopts it (e1-calibration-preregistration-2026-10-18.md §4.5).
+	StopRepeats bool `toml:"stop_repeats"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

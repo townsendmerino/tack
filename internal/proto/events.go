@@ -213,6 +213,8 @@ const (
 	StopDone      = "done"   // an edit task called the done tool (loop.Config.EditTask)
 	// StopWindowFull: the prompt filled the context window, so the reply was cut off short of its own token limit.
 	StopWindowFull = "window_full"
+	// StopRepeatLoop: one call repeated with an unchanged result until the loop's repeat rule ended the turn.
+	StopRepeatLoop = "repeat_loop"
 	StopError      = "error"
 )
 

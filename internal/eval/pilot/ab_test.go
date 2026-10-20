@@ -36,8 +36,8 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tack refuses an arm's settings %v: %v", all, err)
 	}
-	if !c.Run.FitWindow {
-		t.Fatal("fit_window is not on in the arm's config")
+	if !c.Run.FitWindow || !c.Run.StopRepeats {
+		t.Fatalf("an arm's settings are not on in its config: fit_window %v, stop_repeats %v", c.Run.FitWindow, c.Run.StopRepeats)
 	}
 	os.WriteFile(p, []byte(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, out)), 0o600)
 	if c, err := config.Load(p); err != nil || c.Run.FitWindow {
