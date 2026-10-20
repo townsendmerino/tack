@@ -1189,6 +1189,8 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - **It is a mechanism check, not a pass-rate measure.** Its passes are recorded, not judged.
   - **It needs the pilot to run one arm with settings**, which it refuses today. That small harness change is built
     with 4.2 and shown to the owner with it.
+  - **Dropped (owner, 2026-10-20):** 4.2 cannot reach a run that changes nothing. After 4.2's screen, the bundle runs
+    on Qwen3-4B as an exploratory point instead (§12.15).
 - **The decision rule** for the bundle is registered with its run, before it.
 
 ### 12.10 Change 4.1, edit messages: a screen (owner, 2026-10-20), registered before its runs
@@ -1433,3 +1435,74 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - the guard's refusals, per task and arm;
   - on task 11, what the model does after "already applied at line N": its next call, and whether the run passes;
   - the stops of the amended rule, checked against `tools/replayrepeats -mirrors`, as 4.5's live check is.
+
+### 12.15 Change 4.2, done requires verification: a screen (owner, 2026-10-20), registered before its runs
+
+- **The rule, as built** (`[run] verify_done`, `internal/loop/verify.go`; §4.2):
+  - After an edit or write succeeds, `done` is refused until a verification has run since.
+  - A verification is a bash call whose command line, as tack's shell parser reads it (`perms.Engine.Analyze`), runs
+    `go build`, `go vet` or `go test` (also through `cd … &&`, pipes and `go -C`). `echo go test` is not one.
+  - The refusal names the call that made the change, quotes the latest verification before it (command, exit status,
+    the last 20 lines of its output), and ends "Run go build ./..., or go test on the package you changed, then call
+    done." (owner: §4.2's "or the task's tests" is replaced. ken's whole-repository go test fails on the sandbox's
+    loopback refusal, task 11, and the model should not be pushed into a failure it cannot fix.)
+  - A pass is not required. The 4th `done` in a turn ends it whatever the state.
+  - The record says how the run ended: `done`, `done (unverified …)` or `done (the last build or test … failed)`
+    (`pilot.TackSummary.Done`), and counts the refusals (`VerifyRefused`).
+  - It sits beside the refusal of `done` with no file changed, which is unchanged.
+- **Arms:**
+  - A is the bundle as §12.12–12.14 leave it: `fit_window`, `stop_repeats` (as amended), `result_notes`,
+    `instructions_head` and `refuse_duplicate_edits`, under `--instructions whole`.
+  - B is A plus `verify_done`.
+- **Build:**
+  - tack at the commit that carries `verify_done`, clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:** the 12 tasks, A B B A A B, 72 runs, each after the cell check, holding both machines' locks. By day, about
+  1 h 45 m (4.8 took 1 h 33 m; B adds build and test calls). The sandbox cache is warmed untimed first, and free disk
+  is checked against the 20 GB floor.
+- **Base rates,** from the captured Qwen3-8B bundle screens (4.1 with its incomplete blocks, 4.4, 4.8: 224 runs), with
+  the rule's own parser:
+  - 37 runs ended in `done` after a change.
+  - 27 of them (73%) had run a verification after the last change. The last verification failed in 25 of those 27,
+    often from the model's own flags (`-mod=vendor` with no vendor directory, `-race` with `-covermode=set`).
+  - 10 ended unverified, 6 of them passing. In 4.8, all three of B's unverified passes are task 11's.
+- **Mechanism metrics:**
+  1. Of each arm's runs that end in `done` after a change, the share with a verification after the last change.
+  2. In B, the model's next call after each refusal: a verification, an edit, or `done` again.
+  3. In B, refusals per run.
+  4. B runs that end at the 4th `done`, unverified.
+  5. Which verification command each B run used: its build and test command lines.
+  6. The cost: requests per run and window-full stops, per arm.
+- **Predictions:**
+  - metric 1: B at least 90%, A between 55% and 90%;
+  - metric 2: a verification after at least half of B's refusals;
+  - metric 3: refusals in 3–12 of B's 36 runs;
+  - metric 4: at most 2 B runs end unverified;
+  - d between −2 and +1. The risk is task 11, whose passing runs often finish without a build: a refusal there sends
+    the model to tests that may fail for reasons of their own.
+- **Decision rule,** the same as the other screens: 4.2 enters the bundle if metric 1 moves as predicted (B at least
+  90%, and above A) and d ≥ −1. At 72 runs, "not adopted" means "not shown".
+  - **B's 90% is close to certain by construction** (owner): every B run that ends in `done` after a change has
+    verified, unless it reached the 4th `done`. So d ≥ −1 is the effective test.
+- **Checks that ride on these runs** (§12.12–12.14):
+  - **The head,** in arm A: each task's first prompt less 4.8's arm B's first prompt is under 2,457 tokens. Reported
+    against §12.12's predicted figures.
+  - **The duplicate-edit guard,** in both arms: its refusals per task and arm. On task 11, what the model does after
+    "already applied at line N": its next call, and whether the run passes.
+  - **The amended stop rule:** `tools/replayrepeats -mirrors` over the 72 runs stops exactly the runs that ended live
+    with `repeat_loop`.
+- **The harness:** `tack eval pilot -a1 … -setting fit_window -setting stop_repeats -setting result_notes -setting
+  instructions_head -setting refuse_duplicate_edits -compare-setting verify_done`.
+- **The Qwen3-4B check (§12.9) is dropped from 4.2 (owner).** 4.2's rule starts only after a change, and every one of
+  C4's 18 runs on tasks 2, 3, 4, 6, 8 and 9 was `done`, refused once as "no files changed", then `done` again, with no
+  other call. 4.2 never reaches such a run.
+- **After 4.2's screen: the bundle on Qwen3-4B, an exploratory point** (owner).
+  - The bundle as 4.2's verdict leaves it, as one arm: `-only 2,3,4,6,8,9 -reps 2 -ctx 30720`, 12 runs. Qwen3-4B as
+    C4 loaded it (bf16, int4 at load), on goinfer `b2b5e816`, thinking off. By day, about 20–30 minutes.
+  - It counts the runs that make an edit attempt before `done`: at least one `edit` or `write` call before the first
+    `done`, whatever its outcome. Passes are recorded, not judged.
+  - **It is exploratory.** There is no A arm, and C4, the only comparison, ran an older setup: goinfer `f20f0d93`,
+    without `fit_window` or `stop_repeats`, the whole instruction file. No rule follows from it.
+- **A candidate for Qwen3-4B, not registered:** how `done` with no change is refused. Today it is refused once, and the
+  next `done` ends the turn.
