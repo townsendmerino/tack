@@ -1302,3 +1302,12 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **A noted fallback, not an arm (owner).** If the window matters but section loading must wait, a budgeted head is the
   cheap stand-in: the file's headings plus its first section, capped at 15% of the window (2,457 tokens at 16k), with
   no ranking.
+- **Outcome (2026-10-20, 12:50–14:23 PDT): the window cost of whole instructions is shown, thinly.**
+  - Window-full stops fell from 4 in A to 1 in B.
+  - d = +2 (B 4/36, A 2/36).
+  - B's first prompts were 9 tokens under the predicted figures on every task.
+  - Task 12, whose arms are identical, differed by a pass and a window-full stop: that is the noise at this size.
+  - 4.5's live check agreed on all 19 stops (all exit 9). One stopped run, task 12 B-3, passed: an edit whose
+    new_string contains its old_string repeated with the same reply while the file grew. The stop cost no pass.
+  - Next, under the rule: section loading (4.8b), or the owner's cheaper fallback, the budgeted head.
+  - Record: `e1-calibration-c6-48-2026-10-20.md`.
