@@ -1129,6 +1129,16 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   (DESIGN §15.1).
 - **Pass credit cannot be split between changes.** The bundle's d belongs to the bundle. Each change's own effect is
   read only through its mechanism metric, from the same runs.
-- **The model the bundle runs on** is the owner's choice, made before that night, with C4's Qwen3-4B results set beside
-  this baseline.
+- **The bundle runs on Qwen3-8B** (owner, 2026-10-19). The choice is fixed before any screen result.
+  - **Its failures are mostly the window,** which the adopted changes target. It filled the window in 47 of its 72
+    baseline runs; `fit_window` halved those stops in 4.6, and `stop_repeats` (4.5) ends its loops.
+  - **It has passes to build on:** task 11 at 4/6, and task 2 at 1/6.
+  - **Qwen3-4B (C4) never produced a passing fix:** 0/36, with 19 runs calling `done` with no work done.
+    - It gives the bundle no baseline to improve on.
+    - Its main failure is one that only 4.2 addresses.
+    - A starting rate of 0 would need still more runs.
+    - C4 also ran on goinfer `f20f0d93` without `fit_window` or `stop_repeats`, and the bit-identity check covers only
+      Qwen3-8B.
+- **A conditional Qwen3-4B follow-up:** a Qwen3-4B screen runs only if 4.2's screen shows that 4.2 turns empty
+  `done` calls into real attempts. Without that, Qwen3-4B is not run again in C6.
 - **The decision rule** for the bundle is registered with its run, before it.
