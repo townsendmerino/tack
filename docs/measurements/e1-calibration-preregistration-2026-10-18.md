@@ -1360,6 +1360,9 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 
 - **What it does not check:** whether the model follows rules that are now only headings. As §12.11 says, the oracles
   do not check rules.
+- **Found in 4.2's screen (2026-10-20): the head as built breaks goinfer's tasks.** Qwen3-8B called `done` with no work on
+  35 of 36 goinfer runs, reading the head as its task (`e1-calibration-c6-42-stopped-2026-10-20.md`). The token check
+  above cannot see this. The head is not used again until it is fixed and checked at tier 1.
 
 ### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write; adopted (owner, 2026-10-20)
 
@@ -1506,3 +1509,9 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     without `fit_window` or `stop_repeats`, the whole instruction file. No rule follows from it.
 - **A candidate for Qwen3-4B, not registered:** how `done` with no change is refused. Today it is refused once, and the
   next `done` ends the turn.
+- **Outcome (2026-10-20, 16:39–16:51 PDT): stopped at 41 of 72 runs, no verdict.**
+  - The budgeted head (§12.12), as built, led Qwen3-8B to call `done` with no work on 35 of 36 goinfer runs, in both
+    arms. Its `done` reasons read the instructions as the task.
+  - 4.2's rule acts only after a change, so it never fired.
+  - Record: `e1-calibration-c6-42-stopped-2026-10-20.md`. The head is to be fixed, and checked at tier 1, before
+    4.2 is screened again.
