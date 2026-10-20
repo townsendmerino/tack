@@ -91,6 +91,8 @@ type Run struct {
 	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages). Default off until
 	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.1).
 	EditMessages bool `toml:"edit_messages"`
+	// NoInstructions loads no instruction file, even under --instructions whole (calibration §4.8: whole against none).
+	NoInstructions bool `toml:"no_instructions"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

@@ -226,3 +226,30 @@ func replayMatchesLive(t *testing.T, notes bool) {
 		t.Fatalf("saved %d requests (%v s); the off run sent %d, the on run %d", off.SavedRequests, off.SavedSecs, off.Requests, on.Requests)
 	}
 }
+
+// TestRunNoInstructionsOverridesWhole: [run] no_instructions keeps the workspace's CLAUDE.md out of the first message
+// even under --instructions whole, as calibration §4.8's arm B needs; without it, the file is loaded whole.
+func TestRunNoInstructionsOverridesWhole(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("Rule: stage explicit paths.\n"), 0o644)
+	first := func(none bool) string {
+		t.Helper()
+		ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("ok")))
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprintf(f, "[run]\nno_instructions = %v\n", none)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("no_instructions %v: exit %d: %s", none, code, stderr.String())
+		}
+		return strings.SplitN(stdout.String(), "\n", 2)[0]
+	}
+	if l := first(false); !strings.Contains(l, "Rule: stage explicit paths.") {
+		t.Errorf("whole: the first message lacks CLAUDE.md: %s", l)
+	}
+	if l := first(true); strings.Contains(l, "Rule: stage explicit paths.") || strings.Contains(l, "Project instructions") {
+		t.Errorf("no_instructions: the first message carries CLAUDE.md: %s", l)
+	}
+}
