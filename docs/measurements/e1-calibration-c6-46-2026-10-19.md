@@ -92,3 +92,15 @@ Over the 9 tasks without tasks 3, 8 and 9: A 1/27, B 2/27.
   that stands. But a do-nothing arm this close to zero leaves the rule able to see only changes that create passes. The
   owner may want C5's arm re-checked on `b2b5e816` before 4.5, so as not to measure the next change on a baseline that
   has moved.
+
+## goinfer's answer on a build effect (2026-10-19, after the run)
+
+goinfer's Mac session read `git diff f20f0d93 b2b5e816`. It found no non-test change under `chat/`, the sampler, the
+grammar, or serve's tool, think or Anthropic stream code. What did change should not reach Qwen3-8B:
+- the windowed-KV `PrefillPartial` fix acts only on windowed models, and Qwen3-8B is not one;
+- the kv3-tiled split-KV prefill is routed to Gemma 2 and dense Gemma 4 only;
+- the CUDA stream-pack, load-time, fit and swap-guard changes affect loading, not numerics.
+
+Bit-identity of Qwen3-8B across the two builds is not verified. One greedy request with a fixed prompt on each build
+(same `-ctx 16384`, thinking off) would separate a build effect from sampling in minutes. Until that runs, A's drop to
+1/36 is read as sampling: 4/36 against 1/36 over 3 runs per task is within its noise.
