@@ -219,6 +219,9 @@ func runPreflight(ctx context.Context, edit func(string, sandbox.Target) (core.E
 	if err != nil {
 		return fail(err.Error())
 	}
+	if kit.Close != nil {
+		defer kit.Close()
+	}
 	res, err := kit.Shell.Run(shell.WithApproval(ctx, perms.ByMode), command, time.Minute)
 	switch {
 	case err != nil:

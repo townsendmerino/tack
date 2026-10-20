@@ -2,18 +2,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/townsendmerino/tack/internal/core"
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/kenrun"
 	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/shell"
 )
 
 var update = flag.Bool("update", false, "re-record testdata/run-ken.json against the scripted model")
@@ -252,4 +258,25 @@ func TestRunNoInstructionsOverridesWhole(t *testing.T) {
 	if l := first(true); strings.Contains(l, "Rule: stage explicit paths.") || strings.Contains(l, "Project instructions") {
 		t.Errorf("no_instructions: the first message carries CLAUDE.md: %s", l)
 	}
+}
+
+// TestPreflightClosesItsKit: the preflight's edit kit is closed when the preflight ends, pass or fail, so its sandbox
+// temporary directory does not outlive it.
+func TestPreflightClosesItsKit(t *testing.T) {
+	for _, exit := range []int{0, 1} {
+		closed := 0
+		edit := func(root string, _ sandbox.Target) (core.EditKit, error) {
+			return core.EditKit{Shell: fixedShell{exit: exit}, Close: func() error { closed++; return nil }}, nil
+		}
+		runPreflight(context.Background(), edit, t.TempDir(), "go version", io.Discard)
+		if closed != 1 {
+			t.Errorf("preflight exiting %d closed its kit %d times, want 1", exit, closed)
+		}
+	}
+}
+
+type fixedShell struct{ exit int }
+
+func (s fixedShell) Run(context.Context, string, time.Duration) (shell.Result, error) {
+	return shell.Result{Exit: s.exit, Output: "go version go1\n"}, nil
 }
