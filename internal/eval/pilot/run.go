@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -64,6 +65,12 @@ func ArmOrder(n int, a0, a0k Arm) []Arm {
 		return []Arm{a0, a0k}
 	}
 	return []Arm{a0k, a0}
+}
+
+// abOrder is the order of a task's six runs when two A1 arms are compared: A B B A A B (owner, 2026-10-19:
+// comparisons are interleaved; e1-calibration-preregistration-2026-10-18.md §12.2). rep numbers each arm's runs from 1.
+func abOrder(a, b Arm) (arms []Arm, reps []int) {
+	return []Arm{a, b, b, a, a, b}, []int{1, 1, 2, 2, 3, 3}
 }
 
 // OracleResult is one oracle run. Tests maps each oracle test to pass, fail, skip or build-fail; Output is go test's
@@ -356,6 +363,15 @@ type Options struct {
 	// A1, when set, is tack's binary: the job runs tack's arm alone, `tack run --edit` (amendment 9), instead of A0
 	// and A0k.
 	A1 string
+	// A1Arms, with A1, are two arms of tack to compare, each with its own settings, run A B B A A B per task (abOrder).
+	// Empty means one arm, A1 with no settings.
+	A1Arms []Arm
+	// Cell is checked before each A1 run. state is recorded with the run; a non-empty void means the run would start
+	// under heavy load or on battery: that cell is recorded void and re-run in its place after CellWait, up to
+	// CellTries times, after which the job stops. nil checks nothing.
+	Cell      func(ctx context.Context) (state, void string)
+	CellWait  time.Duration // default 1 minute
+	CellTries int           // default 30
 	// ForcedCallMode is how the server enforces a forced tool call on the model; RunPilot asks the server for it
 	// (ForcedToolCall) when it is empty, and each record falls back to the banner (ServerFeatures) when neither knows.
 	ForcedCallMode string
@@ -402,7 +418,12 @@ type Record struct {
 	ServerOptions  []string `json:"server_options"` // see Options.ServerOptions; [] when none
 	// Power is what the host ran on: "ac" or "battery", from its start to its end ("battery→ac" when it changed), or
 	// "unknown" off darwin (PowerSource).
-	Power        string         `json:"power"`
+	Power string `json:"power"`
+	// Settings, Rep and Cell are A1's: the [run] settings this arm switched on, the arm's run number within the task in
+	// an A/B job, and the cell check's state at the run's start (Options.Cell).
+	Settings     []string       `json:"settings,omitempty"`
+	Rep          int            `json:"rep,omitempty"`
+	Cell         string         `json:"cell,omitempty"`
 	KenIndexSecs float64        `json:"ken_index_secs,omitempty"` // A0k's untimed warm-up
 	Requests     []Request      `json:"requests"`
 	Prompt       PromptStats    `json:"prompt"`
@@ -426,8 +447,28 @@ func RunPilot(ctx context.Context, o Options) error {
 	if o.ForcedCallMode == "" && o.Server.Direct != "" {
 		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
 	}
+	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) != 2) {
+		return errors.New("pilot: A1Arms compares exactly two arms of A1")
+	}
+	for _, a := range o.A1Arms {
+		for _, s := range a.Settings {
+			if !RunSettings[s] {
+				return fmt.Errorf("pilot: arm %s: %q is not one of the [run] settings an arm may switch on", a.Name, s)
+			}
+		}
+	}
+	cellWait, cellTries := o.CellWait, o.CellTries
+	if cellWait == 0 {
+		cellWait = time.Minute
+	}
+	if cellTries == 0 {
+		cellTries = 30
+	}
 	armsPerTask := 2
-	if o.A1 != "" {
+	switch {
+	case len(o.A1Arms) == 2:
+		armsPerTask = 6
+	case o.A1 != "":
 		armsPerTask = 1
 	}
 	total := len(o.Tasks) * armsPerTask
@@ -435,18 +476,47 @@ func RunPilot(ctx context.Context, o Options) error {
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(o.Log, time.Now().Format("15:04:05")+" pilot: "+format+"\n", args...)
 	}
-	logf("start %s, %d tasks x %d arm(s), cap %s per run", start.Format("15:04 MST"), len(o.Tasks), armsPerTask, o.Cap)
+	logf("start %s, %d tasks x %d run(s), cap %s per run", start.Format("15:04 MST"), len(o.Tasks), armsPerTask, o.Cap)
 	for _, t := range o.Tasks {
-		arms := ArmOrder(t.N, o.A0, o.A0k)
-		if o.A1 != "" {
-			arms = []Arm{{Name: "A1"}}
+		arms, reps := ArmOrder(t.N, o.A0, o.A0k), []int{0, 0}
+		switch {
+		case len(o.A1Arms) == 2:
+			arms, reps = abOrder(o.A1Arms[0], o.A1Arms[1])
+		case o.A1 != "":
+			arms, reps = []Arm{{Name: "A1"}}, []int{0}
 		}
-		for _, arm := range arms {
+		for i, arm := range arms {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			done++
-			rec := runOne(ctx, o, t, arm)
+			cell := ""
+			for try := 1; o.A1 != "" && o.Cell != nil; try++ {
+				state, void := o.Cell(ctx)
+				if void == "" {
+					cell = state
+					break
+				}
+				// A void cell is listed, never averaged, and re-run in its place (§12.2).
+				vr := Record{Tack: o.TackRev, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, Settings: arm.Settings,
+					Rep: reps[i], Cell: state, ServerOptions: append([]string{}, o.ServerOptions...), Power: PowerSource(),
+					Run: Result{Arm: arm.Name, Exit: -1, Void: "cell: " + void}, At: time.Now().UTC().Format(time.RFC3339)}
+				if err := enc.Encode(vr); err != nil {
+					return err
+				}
+				logf("%d/%d task %d %s %s: cell VOID (%s), try %d of %d; re-running in its place in %s",
+					done, total, t.N, t.Repo, arm.Name, void, try, cellTries, cellWait)
+				if try == cellTries {
+					return fmt.Errorf("pilot: task %d %s: the cell was void %d times in a row: %s", t.N, arm.Name, try, void)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(cellWait):
+				}
+			}
+			rec := runOne(ctx, o, t, arm, reps[i])
+			rec.Cell = cell
 			if err := enc.Encode(rec); err != nil {
 				return err
 			}
@@ -456,7 +526,7 @@ func RunPilot(ctx context.Context, o Options) error {
 			}
 			graded++
 			if graded == 1 && o.Capture != nil { // amendment 6: the sampling must reach goinfer, or nothing after this measures it
-				if err := CheckSampling(filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name, "requests")); err != nil {
+				if err := CheckSampling(filepath.Join(runDir(o.Out, t, arm, reps[i]), "requests")); err != nil {
 					logf("stopping the job: %v", err)
 					return err
 				}
@@ -471,11 +541,20 @@ func RunPilot(ctx context.Context, o Options) error {
 	return nil
 }
 
-func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
+// runDir is a run's directory: task-NN/<arm>, or task-NN/<arm>-<rep> for an arm run more than once in a task.
+func runDir(out string, t Task, arm Arm, rep int) string {
+	name := arm.Name
+	if rep > 0 {
+		name = fmt.Sprintf("%s-%d", arm.Name, rep)
+	}
+	return filepath.Join(out, fmt.Sprintf("task-%02d", t.N), name)
+}
+
+func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Record) {
 	rec = Record{Tack: o.TackRev, Sampling: Sampling, Task: t.N, Repo: t.Repo, Commit: t.Commit, Base: t.Base, At: time.Now().UTC().Format(time.RFC3339),
-		ServerOptions: append([]string{}, o.ServerOptions...)}
+		ServerOptions: append([]string{}, o.ServerOptions...), Settings: arm.Settings, Rep: rep}
 	rec.Run = Result{Arm: arm.Name, Exit: -1}
-	dir := filepath.Join(o.Out, fmt.Sprintf("task-%02d", t.N), arm.Name)
+	dir := runDir(o.Out, t, arm, rep)
 	repo := filepath.Join(dir, "repo")
 	mirror := filepath.Join(o.Mirrors, t.Repo+".git")
 	fail := func(err error) Record {
@@ -532,7 +611,8 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm) (rec Record) {
 			rec.Run.Void = "module download: " + err.Error()
 			return rec
 		}
-		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap)
+		rec.Run = RunTack(ctx, o.A1, o.Server, repo, t.Statement, dir, o.Cap, arm.Settings...)
+		rec.Run.Arm = arm.Name
 		if o.Capture != nil && rec.Run.Void == "" {
 			rec.Run.Void = o.Capture.Slept()
 		}

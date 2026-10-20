@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -127,6 +129,9 @@ type remote struct {
 	host, tack, serve, modelPath, out, rev string
 	ctxN                                   int
 	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
+	settings                               settingList     // [run] settings on in every arm
+	compare                                string          // a [run] setting on in arm B only; "" runs one arm
+	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 }
 
 // serveCmdArgs is the remote command that starts pilot-serve for r.
@@ -216,7 +221,7 @@ func withRemoteServer(ctx context.Context, r remote, out string, log io.Writer, 
 	}
 	defer capture.Close()
 	logf(log, "pilot a1: requests are recorded raw through %s, forwarded to %s; sampling %v", capture.URL, r.host, pilot.Sampling)
-	return fn(pilot.Server{BaseURL: capture.URL, APIKey: ep.Key, Model: "qwen", Context: r.ctxN, Direct: url}, serveLog, capture)
+	return fn(pilot.Server{BaseURL: capture.URL, APIKey: ep.Key, Model: "qwen", Context: r.ctxN, Direct: url, Fit: ep.Fit}, serveLog, capture)
 }
 
 // forwardCmd is the ssh port forward from local on this machine to port on host's loopback. ControlPath=none gives it
@@ -258,10 +263,29 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		return exitError
 	}
+	if r.compare != "" && !pilot.RunSettings[r.compare] {
+		fmt.Fprintf(stderr, "tack eval pilot: -compare-setting %q is not one an arm may switch on; allowed: %s\n", r.compare, settingNames())
+		return exitUsage
+	}
+	if r.compare == "" && len(r.settings) > 0 {
+		fmt.Fprintln(stderr, "tack eval pilot: -setting needs -compare-setting: a lone arm runs A1 as registered")
+		return exitUsage
+	}
 	err = withRemoteServer(ctx, r, out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
-		return pilot.RunPilot(ctx, pilot.Options{Capture: capture, Tasks: ts, Mirrors: mirrors, A1: self,
+		if r.cellCheck {
+			state, void := hostCell(r.host, srv.Fit)(ctx)
+			fmt.Fprintf(stdout, "cell: %s\nvoid: %q\nfit: %s\n", state, void, srv.Fit)
+			return nil
+		}
+		o := pilot.Options{Capture: capture, Tasks: ts, Mirrors: mirrors, A1: self,
 			Server: srv, ServeLog: serveLog, Out: out, Cap: capD, Log: stderr, CountTokens: counter(srv), TackRev: tackRev,
-			ServerOptions: r.options})
+			ServerOptions: r.options}
+		if r.compare != "" {
+			base := []string(r.settings)
+			o.A1Arms = []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare)}}
+			o.Cell = hostCell(r.host, srv.Fit)
+		}
+		return pilot.RunPilot(ctx, o)
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
@@ -272,4 +296,41 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 		return exitError
 	}
 	return exitOK
+}
+
+// hostCell is an A/B job's cell check (owner, 2026-10-19; e1-calibration-preregistration-2026-10-18.md §12.2). host
+// does the timed work: a 1-minute load over half its cores, or less available memory than the load's fit needs plus
+// 2 GB, voids the cell. So does this Mac on battery. The Mac only drives the runs: its load is recorded, never voids.
+func hostCell(host, fit string) func(context.Context) (state, void string) {
+	need := pilot.FitNeedGB(fit)
+	return func(ctx context.Context) (string, string) {
+		out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host,
+			"nproc; cut -d' ' -f1 /proc/loadavg; awk '/^MemAvailable:/{print $2}' /proc/meminfo").Output()
+		mac, _ := exec.CommandContext(ctx, "sysctl", "-n", "vm.loadavg").Output()
+		power := pilot.PowerSource()
+		var cores, kb int
+		var load float64
+		if err == nil {
+			_, err = fmt.Sscan(string(out), &cores, &load, &kb)
+		}
+		avail := float64(kb) / (1 << 20)
+		state := fmt.Sprintf("%s load %.2f of %d cores, %.1f GB available (the fit needs %.1f GB); Mac load %s, power %s",
+			host, load, cores, avail, need, strings.Trim(strings.TrimSpace(string(mac)), "{} "), power)
+		return state, cellVoid(err, cores, load, avail, need, power)
+	}
+}
+
+// cellVoid is hostCell's rule on what it read: why the cell is void, or "".
+func cellVoid(readErr error, cores int, load, availGB, needGB float64, power string) string {
+	switch {
+	case readErr != nil:
+		return "could not read the host's load: " + readErr.Error()
+	case load > float64(cores)/2:
+		return fmt.Sprintf("heavy load: %.2f over half of %d cores", load, cores)
+	case needGB > 0 && availGB < needGB+2:
+		return fmt.Sprintf("heavy load: %.1f GB available, under the fit's %.1f GB plus 2", availGB, needGB)
+	case power == "battery":
+		return "this Mac is on battery"
+	}
+	return ""
 }

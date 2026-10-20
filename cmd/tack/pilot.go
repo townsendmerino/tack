@@ -59,6 +59,10 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	remoteOut := fs.String("remote-out", "", "a1: where the remote host keeps its copy of the server's log")
 	var serveOpts serveOptionList
 	fs.Var(&serveOpts, "serve-option", "a1: "+serveOptionUsage)
+	var settings settingList
+	fs.Var(&settings, "setting", "a1: a [run] setting switched on in every arm (a change already adopted); repeatable; only: "+settingNames())
+	compare := fs.String("compare-setting", "", "a1: compare two arms of tack, A without this [run] setting and B with it, A B B A A B per task, each run after a cell check (calibration C6)")
+	cellCheck := fs.Bool("cell-check", false, "a1: start the server as a job would, run the cell check once with the model loaded and idle, print it, and stop")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -101,7 +105,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return a1Cmd(ctx, ts, *mirrors, *out, *capFlag, tackRev, remote{host: *remoteHost, tack: *remoteTack, serve: *serve,
-			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN, options: serveOpts}, stdout, stderr)
+			modelPath: *modelPath, out: *remoteOut, rev: *rev, ctxN: *ctxN, options: serveOpts, settings: settings, compare: *compare, cellCheck: *cellCheck}, stdout, stderr)
 	}
 	if (!*smoke && *tasks == "") || *mirrors == "" || *opencode == "" || *kenMCP == "" || *kenModel == "" || *serve == "" ||
 		*modelPath == "" || *out == "" {

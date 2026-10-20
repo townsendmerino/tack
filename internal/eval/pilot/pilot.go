@@ -43,6 +43,9 @@ type Server struct {
 	// Direct is goinfer's own URL when BaseURL is the recording proxy: tack's count_tokens calls use it, so they are
 	// neither recorded nor counted as the run's requests.
 	Direct string
+	// Fit is goinfer's fit line for the load ("fit: N-token cap needs X GB KV (weights Y GB, …)"), for the cell check's
+	// memory floor (FitNeedGB).
+	Fit string
 }
 
 // Arm is one configuration of opencode.
@@ -54,6 +57,8 @@ type Arm struct {
 	// NoTitle turns off opencode's title agent, so opencode makes no title request on small_model; the pilot sets it the same on
 	// both arms (pre-registration, amendment 3).
 	NoTitle bool
+	// Settings are A1's: the [run] settings switched on in this arm's config.toml, each one of RunSettings.
+	Settings []string
 }
 
 // replyLimit is opencode's limit.output: the tokens a reply may take, and so what goinfer reserves beyond the prompt

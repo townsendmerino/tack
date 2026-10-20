@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,8 +26,9 @@ import (
 
 // tackConfig is the config.toml an A1 run gets: the pilot's server through the capture and the registered Sampling.
 // tack's consecutive-failure budget is its design's, 8 (owner, after the task-7 smoke); every other budget is out of
-// reach, so the cap otherwise limits the run, as it does opencode's. max_tokens is opencode's reply limit.
-func tackConfig(s Server, out string) string {
+// reach, so the cap otherwise limits the run, as it does opencode's. max_tokens is opencode's reply limit. settings are
+// [run] settings switched on for the arm, each one of RunSettings.
+func tackConfig(s Server, out string, settings ...string) string {
 	f := func(k string) any { return Sampling[k] }
 	return fmt.Sprintf(`main = "pilot"
 state_dir = %q
@@ -48,7 +51,23 @@ turn_tokens = 1000000000
 max_errors = 8
 session_tokens = 1000000000
 session_tool_calls = 1000000
-`, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), replyLimit)
+`, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), replyLimit) + runLines(settings)
+}
+
+// RunSettings are the boolean [run] settings an A1 arm may switch on, each a loop change under the calibration's C6
+// (e1-calibration-preregistration-2026-10-18.md §12). A name outside it is refused, so an arm cannot carry a typo
+// into a measurement.
+var RunSettings = map[string]bool{
+	"fit_window": true, // §4.6
+}
+
+// runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.
+func runLines(settings []string) string {
+	var b strings.Builder
+	for _, s := range settings {
+		fmt.Fprintf(&b, "%s = true\n", s)
+	}
+	return b.String()
 }
 
 // PreflightCommand is what A1 runs in the sandbox, in the task's repository, before the model starts (`tack run
@@ -73,9 +92,9 @@ func DownloadModules(ctx context.Context, repo string, log io.Writer) error {
 // RunTack runs `tack run --edit --instructions whole --json` once in repo with the statement, under cap, after
 // PreflightCommand. tack's own files, the config, the API key (mode 0600) and its state, go in TackDir(out): tack
 // refuses to run with them inside the workspace or above it. Its event stream (events.jsonl) and its stderr go in out.
-// A failed preflight sets Void. At the cap tack is sent SIGTERM, so it cancels its turn and its shell kills what each
-// command started, then SIGKILL after 10 s.
-func RunTack(ctx context.Context, tack string, s Server, repo, statement, out string, cap time.Duration) Result {
+// settings are the [run] settings switched on in its config (RunSettings). A failed preflight sets Void. At the cap
+// tack is sent SIGTERM, so it cancels its turn and its shell kills what each command started, then SIGKILL after 10 s.
+func RunTack(ctx context.Context, tack string, s Server, repo, statement, out string, cap time.Duration, settings ...string) Result {
 	r := Result{Arm: "A1", Exit: -1}
 	own := TackDir(out)
 	err := errors.Join(os.MkdirAll(out, 0o755), os.MkdirAll(own, 0o755))
@@ -83,7 +102,7 @@ func RunTack(ctx context.Context, tack string, s Server, repo, statement, out st
 		err = os.WriteFile(filepath.Join(own, "token"), []byte(s.APIKey+"\n"), 0o600)
 	}
 	if err == nil {
-		err = os.WriteFile(filepath.Join(own, "config.toml"), []byte(tackConfig(s, own)), 0o600)
+		err = os.WriteFile(filepath.Join(own, "config.toml"), []byte(tackConfig(s, own, settings...)), 0o600)
 	}
 	if err != nil {
 		r.Err = err.Error()
@@ -353,4 +372,17 @@ func ForcedToolCall(ctx context.Context, baseURL, key, model string) string {
 		}
 	}
 	return ""
+}
+
+var fitNeedRe = regexp.MustCompile(`needs ([0-9.]+) GB KV \(weights ([0-9.]+) GB`)
+
+// FitNeedGB is the memory a load needs by goinfer's fit line, KV plus weights, or 0 when the line does not say.
+func FitNeedGB(fit string) float64 {
+	m := fitNeedRe.FindStringSubmatch(fit)
+	if m == nil {
+		return 0
+	}
+	kv, _ := strconv.ParseFloat(m[1], 64)
+	w, _ := strconv.ParseFloat(m[2], 64)
+	return kv + w
 }

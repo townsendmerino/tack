@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/townsendmerino/tack/internal/eval/pilot"
 )
 
 // serveOptions are the goinfer-serve options the pilot passes through, by name, and none other (owner, 2026-10-18): a
@@ -51,3 +53,31 @@ func (l serveOptionList) args() []string {
 }
 
 const serveOptionUsage = "a goinfer-serve option to pass through, by name; repeatable; only: moe-cache-experts, thinking-off"
+
+// settingList is the repeatable -setting flag: [run] settings an A1 arm switches on, each one of pilot.RunSettings,
+// refused when the flag is parsed otherwise. A repeat is kept once.
+type settingList []string
+
+func (l *settingList) String() string { return strings.Join(*l, ",") }
+
+func (l *settingList) Set(v string) error {
+	if !pilot.RunSettings[v] {
+		return fmt.Errorf("[run] setting %q is not one an arm may switch on; allowed: %s", v, settingNames())
+	}
+	for _, s := range *l {
+		if s == v {
+			return nil
+		}
+	}
+	*l = append(*l, v)
+	return nil
+}
+
+func settingNames() string {
+	var names []string
+	for n := range pilot.RunSettings {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}

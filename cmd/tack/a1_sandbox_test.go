@@ -265,3 +265,55 @@ func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Sc
 	}
 	return rec, out
 }
+
+// TestA1CompareInterleavesAndChecksCells drives an A/B job through RunPilot with tack's own binary: a cell the check
+// voids is listed and re-run in its place, the six runs go A B B A A B, each records its cell state and settings, and
+// only arm B's tack gets fit_window in its config.
+func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	var replies []goinfertest.Reply
+	for i := 0; i < 6; i++ { // done with nothing changed is refused once, then accepted
+		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+	}
+	script := goinfertest.NewScripted("qwen", 32768, replies...)
+	checks := 0
+	_, out := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
+		o.A1Arms = []pilot.Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_window"}}}
+		o.CellWait = 10 * time.Millisecond
+		o.Cell = func(context.Context) (string, string) {
+			if checks++; checks == 1 {
+				return "heavy state", "test: heavy load"
+			}
+			return "light state", ""
+		}
+	})
+	f, _ := os.Open(filepath.Join(out, "results.jsonl"))
+	defer f.Close()
+	var got []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	for sc.Scan() {
+		var r pilot.Record
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Run.Void != "" {
+			if r.Run.Void != "cell: test: heavy load" || r.Cell != "heavy state" {
+				t.Errorf("void record %+v", r)
+			}
+			got = append(got, "void")
+			continue
+		}
+		if r.Cell != "light state" || (r.Run.Arm == "B") != (strings.Join(r.Settings, ",") == "fit_window") {
+			t.Errorf("run %s-%d: cell %q, settings %v", r.Run.Arm, r.Rep, r.Cell, r.Settings)
+		}
+		got = append(got, fmt.Sprintf("%s%d", r.Run.Arm, r.Rep))
+		cfg, err := os.ReadFile(filepath.Join(pilot.TackDir(filepath.Join(out, "task-01", fmt.Sprintf("%s-%d", r.Run.Arm, r.Rep))), "config.toml"))
+		if err != nil || strings.Contains(string(cfg), "fit_window = true") != (r.Run.Arm == "B") {
+			t.Errorf("run %s-%d's config (%v):\n%s", r.Run.Arm, r.Rep, err, cfg)
+		}
+	}
+	if strings.Join(got, " ") != "void A1 B1 B2 A2 A3 B3" {
+		t.Fatalf("records %v, want the void cell then A B B A A B", got)
+	}
+}
