@@ -424,6 +424,29 @@ today, as a diagnostic (not eligibility), on Mellum2.1, gpt-oss-20b and Qwen3-8B
 
 - **Time:** about 25 minutes in all. It holds nobara's lock per model, after Mellum2.1's E0 has released it.
 
+**Outcome (2026-10-19, 17:28–17:33 PDT; tack `015b0c0` on a local side branch, unpushed; records in
+`~/tack-runs/e0/diag47-2026-10-19/` on nobara): the rewrite moves the glob confusion between prompts. It does not
+reduce it. Both reduction predictions missed.**
+
+| model | glob instead of grep or read | malformed | smoke passes of 40 |
+|---|---|---|---|
+| Mellum2.1 | 16 → **16** (predicted 6 or fewer) | 0 → 0 | 22 → 24 |
+| gpt-oss-20b | 8 → **8** (predicted 3 or fewer) | 8 → 2 | 18 → 20 |
+| Qwen3-8B | 0 → 0 | 0 → 0 | 38 → 38 (unchanged, as predicted) |
+
+- **The same count, on other prompts.** The smoke runs at temperature 0, so each difference comes from the descriptions,
+  not from sampling.
+  - Mellum2.1 stopped choosing glob for task 12 ("Find every call to os.Exit.") and started for task 15 ("Where in the
+    code do we handle HTTP status 529?").
+  - gpt-oss stopped for tasks 11 and 12, and started for tasks 5 ("Find all TODO comments") and 18 ("Which test checks
+    the fixed prompt budget?").
+- **gpt-oss's malformed calls fell from 8 to 2.** Its malformed names (`greplicate`, `grepaste`) are variants of grep's
+  name, so grep's new description may change how it spells the call. That is one run pair, not registered as a
+  measure, and the parser fix stays the remedy.
+- **Reading:** the descriptions alone are not the lever for these models. **4.7 is not proposed for C6 as written.** A
+  different form (an example per tool, or §4.4's glob no-match line, which acts after the mistake) would need its own
+  diagnostic first.
+
 ## 5. A harness fix, not a loop change
 
 **The ssh port forward the A1 harness opens leaked into ssh's shared connections.**
