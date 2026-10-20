@@ -1163,3 +1163,36 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - **It needs the pilot to run one arm with settings**, which it refuses today. That small harness change is built
     with 4.2 and shown to the owner with it.
 - **The decision rule** for the bundle is registered with its run, before it.
+
+### 12.10 Change 4.1, edit messages: a screen (owner, 2026-10-20), registered before its runs
+
+- **Arms:**
+  - A is A1 with `fit_window` (§12.6), `stop_repeats` (4.5, adopted) and `result_notes` (4.4, in the bundle), all on in
+    both arms (owner).
+  - B is A plus `[run] edit_messages`, 4.1 as messages only (`e1-calibration-c6-41-replay-2026-10-20.md`):
+    - a missing path names the nearest existing file;
+    - text the session's own earlier edit or write replaced names that edit's line;
+    - text in another file names it;
+    - text found nowhere shows the 12 lines that best match it, numbered;
+    - an edit that changes nothing says to verify with a build or test.
+- **Builds:**
+  - tack `6743122` (the messages; `95eab38`, the temp-directory leak fix, is in both arms), clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:**
+  - `-setting fit_window -setting stop_repeats -setting result_notes -compare-setting edit_messages`;
+  - the 12 tasks, A B B A A B, 72 runs, each after the cell check;
+  - by day (owner), about 2 hours.
+- **It is a screen.** "Not adopted" means "not shown" (§12.9).
+- **Decision rule, as 4.4's.** It enters the bundle if both of its edit mechanisms move as predicted and d ≥ −1.
+- **Mechanism metrics, per arm:**
+  - edit failures by kind, in the replay's classes;
+  - after each failed edit, whether the next edit to that file succeeds;
+  - whether that next edit sends the identical old_string again.
+- **Predictions, from the replay and from 4.4's runs** (without 4.1, after a failed edit, the next edit to that file
+  succeeded 4 times in 36, and 31 of the 32 that failed again sent the identical text):
+  - after a failed edit, B's next edit to that file succeeds at least twice as often as A's;
+  - B sends the identical failing old_string again at most half as often as A;
+  - the largest distinct failure kinds in A are missing paths and old equal to new, as in the replay;
+  - d between −1 and +1.
+- **Also checked in the same runs:** `tools/replayrepeats` confirms every `repeat_loop` stop, as in §12.8.
