@@ -967,3 +967,12 @@ shows whether the change did what it is for. **It is never used for adoption.**
   - **Verdicts:** about 25% adopted (d ≥ 3), 25% parked (d = 2), 50% not adopted.
   - **A against C5:** about 4 passes (3–6), the same arm on a newer goinfer build.
 - **Time:** about 2¼ hours of runs plus any void cells re-run. It holds nobara's lock for this comparison only.
+- **A known, inert flaw in the cell check's memory rule** (owner, 2026-10-19). The rule compares available memory with the
+  fit's need (KV plus weights) plus 2 GB.
+  - For a model resident on the GPU, that need is mostly GPU memory, and the server's own host memory is already out
+    of "available". So the rule double-counts the loaded model.
+  - It cannot void here: nobara has about 55 GB available against about 8.5 GB.
+  - **It stays as registered for 4.6's runs.** It is fixed and tested before 4.5's runs, to measure headroom with the
+    model loaded: at least 2 GB available.
+  - The load rule is different: if the standalone cell check shows it would void a loaded, idle box, it is fixed
+    before 4.6's runs.
