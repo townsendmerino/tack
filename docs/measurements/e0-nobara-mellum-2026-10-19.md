@@ -46,18 +46,30 @@ build.
 | 8,192 | 86,659–87,404 | 86,310–87,530 |
 | 31,744 | 343,075–344,003 | 342,502–344,287 |
 
-- **The prefix is never reused.** The reused times equal the cold ones at every size. Qwen3.5-9B showed the same in C3
-  (goinfer P34).
+- **The probe's reused cell found no reuse:** its times equal the cold ones at every size. **Correction, 2026-10-19
+  (goinfer's reading of its code, P34 reopened at goinfer `6ce495c4`, not yet confirmed by a run): this measures a
+  rewrite of the prompt's end, not an append.**
+  - E0's reused cell changes the last 512 tokens (`internal/eval/runner.go:ttft`). With the template's end-of-turn
+    tokens and the generated token, it diverges about 518 positions back.
+  - Mellum2.1's sliding-window layers keep KV for the window plus a rollback. On an expert-cache load goinfer grants no
+    extra rollback, so a request can diverge only about 448–512 positions back and still reuse. The probe's 518 falls
+    outside that.
+  - **A request that only appends, as tack's loop does, is unaffected by this cause.** One that rewrites more than
+    about 448 tokens of the end is cold on this load.
+  - Qwen3.5-9B's cold-equals-reused in C3 has a different cause (its DeltaNet state, goinfer B35).
 - 21 of Mellum2.1's 28 layers are sliding-window.
 - **Prefill is about 93 tok/s at every size,** in line with goinfer's 97 tok/s.
-- A tack loop on this build would pay a full cold prefill on every request: about 115 s at a 10.6k first prompt.
+- ~~A tack loop on this build would pay a full cold prefill on every request~~: **withdrawn.** It assumed the probe's
+  no-reuse applies to appends. A loop's own reuse on this load is unmeasured. A rerun with `-log-requests` (goinfer's
+  `reused=` and `div=`), or an E0 reused cell that appends, would measure it. A cold first prompt of 10.6k still costs
+  about 115 s.
 
 ## What it means
 
 - **Mellum2.1 is out for calibration on `b2b5e816`** by E0's rule.
 - **Two things would change that, each needing a new E0 on a later build:**
-  - prefix reuse (and goinfer's batched MoE prefill, for speed);
+  - prefix reuse for the requests a loop makes, measured as above (and goinfer's batched MoE prefill, for speed);
   - a smoke at or above 17. §4.7's description diagnostic (run today) shows whether the descriptions move the glob
     misses.
 - **The amendment ran over its stated time:** 64 minutes against "15–30 (45 if the prefix is never reused)". The
-  estimate priced the 31.7k probes from goinfer's 97 tok/s, but with no reuse each of the six took about 343 s.
+  estimate priced the 31.7k probes from goinfer's 97 tok/s, but the probe's reused cells were cold too, so each of the six took about 343 s.
