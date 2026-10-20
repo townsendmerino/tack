@@ -14,7 +14,9 @@ import (
 
 // editTool replaces an exact string in a file the model has read, and refuses when the part it would change differs
 // from what the model last saw (DESIGN §6.5, §7.5): the model edits only text it has seen.
-type editTool struct{}
+type editTool struct {
+	messages bool // Options.EditMessages
+}
 
 func (editTool) ReadOnly() bool { return false }
 func (editTool) Spec() server.Tool {
@@ -23,7 +25,7 @@ func (editTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"]}`)}
 }
 
-func (editTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+func (t editTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path       string `json:"path"`
 		OldString  string `json:"old_string"`
@@ -37,11 +39,20 @@ func (editTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 		return errorf("old_string is empty; to create a file, use write"), nil
 	}
 	if in.OldString == in.NewString {
+		if t.messages {
+			return Result{Text: unchangedEdit, IsError: true}, nil
+		}
 		return errorf("old_string and new_string are the same; nothing to change"), nil
 	}
 	p, err := ws.Resolve(in.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if t.messages {
+				if near := nearestPath(ctx, ws, in.Path); near != "" {
+					return errorf("no such file %q; %q exists. Paths are relative to the repo root, and write creates a new file",
+						in.Path, near), nil
+				}
+			}
 			return errorf("no such file %q; paths are relative to the repo root, and write creates a new file", in.Path), nil
 		}
 		return ws.pathError(in.Path, err), nil
@@ -62,6 +73,8 @@ func (editTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 	switch {
 	case n == 0 && strings.Contains(seen, in.OldString):
 		return errorf("%q changed since you last read it, in the part you are editing; read it again", in.Path), nil
+	case n == 0 && t.messages:
+		return notFound(ctx, ws, in.Path, p, cur, in.OldString), nil
 	case n == 0:
 		return errorf("this text isn't in %q; the edit may already have been made. Read the file again before editing: "+
 			"old_string must match it exactly, whitespace included", in.Path), nil
@@ -83,6 +96,7 @@ func (editTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 	}
 	ws.saw(p, out)
 	line := strings.Count(cur[:first], "\n") + 1
+	ws.recordChange(p, cur, out, "edit", line)
 	if in.ReplaceAll && n > 1 {
 		return Result{Text: fmt.Sprintf("edited %s: replaced %d occurrences, the first at line %d", in.Path, n, line)}, nil
 	}
@@ -117,6 +131,7 @@ func (writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (R
 	if inGit(ws, p) {
 		return errorf("%q is inside .git, which tools never change", in.Path), nil
 	}
+	before := ""
 	verb := "created"
 	switch st, err := os.Lstat(p); {
 	case err == nil && st.IsDir():
@@ -131,6 +146,7 @@ func (writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (R
 		if data, err := os.ReadFile(p); err != nil || string(data) != seen {
 			return errorf("%q changed since you last read it; read it again before overwriting it", in.Path), nil
 		}
+		before = seen
 		verb = "wrote"
 	case !os.IsNotExist(err):
 		return ws.pathError(in.Path, err), nil
@@ -142,6 +158,7 @@ func (writeTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (R
 		return errorf("%q: %s", in.Path, ws.scrub(err.Error())), nil
 	}
 	ws.saw(p, in.Content)
+	ws.recordChange(p, before, in.Content, "write", 1)
 	lines := strings.Count(in.Content, "\n")
 	if in.Content != "" && !strings.HasSuffix(in.Content, "\n") {
 		lines++

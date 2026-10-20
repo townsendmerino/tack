@@ -65,6 +65,8 @@ type Options struct {
 	Ask  Asker
 	// Done adds done, which ends an edit task (loop.Config.EditTask).
 	Done bool
+	// EditMessages makes a failed edit say where the text or the file is instead (edit_messages.go).
+	EditMessages bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -78,7 +80,7 @@ func New(o Options) *Set {
 	}
 	ts = append(ts, readTool{}, globTool{}, grepTool{})
 	if o.Write {
-		ts = append(ts, editTool{}, writeTool{})
+		ts = append(ts, editTool{messages: o.EditMessages}, writeTool{})
 	}
 	if o.Shell != nil {
 		ts = append(ts, bashTool{sh: o.Shell})
@@ -125,6 +127,8 @@ type Workspace struct {
 	// seen is each file's content as the model last saw it: after it read any part of the file, or wrote or edited it.
 	// edit and write check a file against it (DESIGN §7.5). It starts empty, so after a restart the model reads again.
 	seen map[string]string
+	// changes is the session's successful edits and writes, in order (edit_messages.go).
+	changes []change
 }
 
 // saw records that the model has seen abs with this content.

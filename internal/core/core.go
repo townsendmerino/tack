@@ -62,6 +62,8 @@ type Options struct {
 	StopRepeats bool
 	// ResultNotes adds the loop's notes to tool results (loop.Config.ResultNotes).
 	ResultNotes bool
+	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages).
+	EditMessages bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -333,7 +335,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			c.unregister(id)
 			return "", fmt.Errorf("auto mode: %w", err)
 		}
-		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask})
+		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
+			EditMessages: c.opt.EditMessages})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		s.kit = kit.Close
 		root := ws.Root()

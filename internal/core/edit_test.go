@@ -102,6 +102,35 @@ func TestEditTaskThroughTheCore(t *testing.T) {
 	}
 }
 
+// TestEditMessagesThroughTheCore: Options.EditMessages reaches the edit tool of an auto-mode session; off, the same
+// call gets the old reply.
+func TestEditMessagesThroughTheCore(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		f := newFixture(t,
+			goinfertest.Calls("", "e1", "edit", `{"path":"a.go","old_string":"package a","new_string":"package a"}`),
+			goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+		f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+			return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+		}
+		f.core.opt.EditTask, f.core.opt.EditMessages = true, on
+		sid, err := f.sessionIn(t, gitWorkspace(t, ""), proto.ModeAuto)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("x")}}, nil)
+		var result string
+		for _, ev := range f.waitTurnEnd(t) {
+			if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished && result == "" {
+				result = v.(proto.ToolFinished).Result
+			}
+		}
+		if want := map[bool]string{true: "this edit changes nothing", false: "old_string and new_string are the same"}[on]; !strings.Contains(result, want) {
+			t.Errorf("EditMessages %v: %q", on, result)
+		}
+	}
+}
+
 // TestCloseReleasesTheEditKit: Core.Close calls each auto-mode session's EditKit.Close once, so the sandbox's temporary
 // directory does not outlive the process.
 func TestCloseReleasesTheEditKit(t *testing.T) {

@@ -88,6 +88,9 @@ type Run struct {
 	// ResultNotes says what to do after an empty search or an unchanged repeat (loop.Config.ResultNotes). Default off until
 	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.4).
 	ResultNotes bool `toml:"result_notes"`
+	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages). Default off until
+	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.1).
+	EditMessages bool `toml:"edit_messages"`
 }
 
 // Duration is a time.Duration written as a string ("10m").
