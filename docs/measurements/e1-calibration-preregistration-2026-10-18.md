@@ -1001,3 +1001,6 @@ shows whether the change did what it is for. **It is never used for adoption.**
     model loaded: at least 2 GB available.
   - The load rule is different: if the standalone cell check shows it would void a loaded, idle box, it is fixed
     before 4.6's runs.
+- **Outcome (2026-10-19, 18:08–20:23 PDT): d = +1 (B 2/36, A 1/36), so 4.6 is not adopted.** Window-full stops fell from
+  25 to 12, as predicted. A's 1/36 against C5's 4 is reported as a possible build effect, though it may be chance (task
+  11 went 3/3 → 2/6). There were 0 void cells. Record: `e1-calibration-c6-46-2026-10-19.md`.
