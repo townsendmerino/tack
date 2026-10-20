@@ -443,9 +443,11 @@ reduce it. Both reduction predictions missed.**
 - **gpt-oss's malformed calls fell from 8 to 2.** Its malformed names (`greplicate`, `grepaste`) are variants of grep's
   name, so grep's new description may change how it spells the call. That is one run pair, not registered as a
   measure, and the parser fix stays the remedy.
-- **Reading:** the descriptions alone are not the lever for these models. **4.7 is not proposed for C6 as written.** A
-  different form (an example per tool, or §4.4's glob no-match line, which acts after the mistake) would need its own
-  diagnostic first.
+- **Reading:** the descriptions alone are not the lever for these models.
+- **Decision (owner, 2026-10-19): 4.7 does not proceed.** The rewrite moved the confusion without reducing it.
+  - The diagnostic's code and manifests stay unpushed on the local side branch `diag-4.7` (`015b0c0`), as its record.
+  - **§4.4's glob no-match line stays the fix for C5's glob loop.** It acts after an empty glob, where task 5's 124
+    globs of `kvF16Decline` happened.
 
 ## 5. A harness fix, not a loop change
 
