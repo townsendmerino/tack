@@ -943,3 +943,27 @@ shows whether the change did what it is for. **It is never used for adoption.**
 - **The prompt-too-long label** (§4.5, "also filed") changes no outcome, so it lands as a harness fix, not an arm.
 - **Each change is product code.** It is built with tier-0 tests broken once, shown to the owner, and pushed on his
   yes. Then its registration line goes here, and then its runs.
+
+### 12.5 Change 4.6, the window-sized output cap — registered 2026-10-19, before its runs (owner-approved)
+
+- **Arms:**
+  - A is A1 as is. No change has been adopted yet, so A includes none.
+  - B is A with `[run] fit_window = true`.
+- **Builds:**
+  - tack `c7d5c05` (the cap is `e515410`; the A/B harness is `c7d5c05`), clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:** `tack eval pilot -a1 -compare-setting fit_window`, the 12 calibration tasks, A B B A A B per task, 72 runs,
+  each after the cell check. By day, this evening (owner).
+- **Before the runs:**
+  - a fit load that must come up `cuda-resident`;
+  - then the cell check once on its own, with the model loaded and idle (`-cell-check`). Its numbers are recorded here.
+    If it would void a loaded, idle box, the rule is fixed first, and the fix is recorded here.
+- **Predictions, before any run:**
+  - **Mechanism:** B has at least 5 fewer window-full stops than A, counting prompt-too-long refusals. C5 had 25, and 10
+    of them followed a `bash` output.
+  - **d:** between −1 and +3. The cap lets runs go on, but most of C5's failures are wrong or missing fixes that more
+    room does not repair.
+  - **Verdicts:** about 25% adopted (d ≥ 3), 25% parked (d = 2), 50% not adopted.
+  - **A against C5:** about 4 passes (3–6), the same arm on a newer goinfer build.
+- **Time:** about 2¼ hours of runs plus any void cells re-run. It holds nobara's lock for this comparison only.
