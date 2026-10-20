@@ -1205,6 +1205,19 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - The resumed run covers task 4 whole and tasks 5–12: 54 runs, A B B A A B per task, same build and settings. It
     starts once the Mac is on mains.
   - 4.1's verdict reads 72 runs: tasks 1–3 from the first launch, tasks 4–12 from the resumed run.
+- **A second stop, and a warm-up (owner, 2026-10-20), recorded before the second resumption:**
+  - The resumed run (10:32:06–11:16:59) completed tasks 4 and 5 and 3 of task 6's 6 runs.
+  - The Mac then fell under the 20 GB disk floor, and the remaining 39 runs were void before any started.
+  - Task 6's three runs are an incomplete block, not counted.
+  - With the owner's yes, Go's build cache and tack's sandbox build cache were cleared (19 → 31 GB free).
+  - **The warm-up, untimed** (11:19:54–11:22:00, holding the Mac's lock shared):
+    - at each of tasks 6–12's base commits, `go build ./...` and `go test -count=1 -run '^$' ./...` ran as a run's sandbox
+      runs them (`GOCACHE` = tack's sandbox cache, `GOPROXY=off`);
+    - all seven built and compiled their tests cleanly, leaving a 1.0 GB cache;
+    - Go keys a package's compile on its directory, so the standard library and every dependency are warm, but each
+      run still compiles the task repository's own packages. Both arms are treated alike.
+  - The second resumption covers tasks 6–12, 42 runs, task 6 re-run whole.
+  - 4.1's verdict reads 72 runs: tasks 1–3 (first launch), 4–5 (first resumption) and 6–12 (second resumption).
 
 ### 12.11 Change 4.8, instruction files, whole against none: a screen (owner, 2026-10-20), registered before its runs
 
