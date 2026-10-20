@@ -64,6 +64,8 @@ type Options struct {
 	ResultNotes bool
 	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages).
 	EditMessages bool
+	// InstructionsHead loads the budgeted head of the instruction file instead of the whole file (instructions.go).
+	InstructionsHead bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -342,7 +344,11 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		root := ws.Root()
 		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
 	}
-	if c.opt.WholeInstructions {
+	if c.opt.WholeInstructions && c.opt.InstructionsHead {
+		if name, content := readInstructionFile(ws.Root()); name != "" {
+			s.instructions = instructionHead(name, content, servedWindow(c.ctx, src))
+		}
+	} else if c.opt.WholeInstructions {
 		s.instructions = readInstructions(ws.Root())
 	}
 	s.loop = loop.New(cfg)
@@ -545,10 +551,18 @@ func workspaceChanged(root string) (bool, error) {
 
 // readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".
 func readInstructions(root string) string {
-	for _, name := range instructionFiles {
-		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
-			return "Project instructions, from " + name + ":\n\n" + string(b)
-		}
+	if name, content := readInstructionFile(root); name != "" {
+		return "Project instructions, from " + name + ":\n\n" + content
 	}
 	return ""
+}
+
+// readInstructionFile is the first of instructionFiles at root and its content, or "".
+func readInstructionFile(root string) (name, content string) {
+	for _, name := range instructionFiles {
+		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
+			return name, string(b)
+		}
+	}
+	return "", ""
 }

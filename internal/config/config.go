@@ -93,6 +93,9 @@ type Run struct {
 	EditMessages bool `toml:"edit_messages"`
 	// NoInstructions loads no instruction file, even under --instructions whole (calibration §4.8: whole against none).
 	NoInstructions bool `toml:"no_instructions"`
+	// InstructionsHead loads only the instruction file's budgeted head: its first section and an outline of its headings,
+	// capped at 15% of the window (core.Options.InstructionsHead; calibration §12.12).
+	InstructionsHead bool `toml:"instructions_head"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

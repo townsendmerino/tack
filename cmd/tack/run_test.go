@@ -280,3 +280,24 @@ type fixedShell struct{ exit int }
 func (s fixedShell) Run(context.Context, string, time.Duration) (shell.Result, error) {
 	return shell.Result{Exit: s.exit, Output: "go version go1\n"}, nil
 }
+
+// TestRunInstructionsHead: [run] instructions_head loads the instruction file's budgeted head, not the whole file, under
+// --instructions whole.
+func TestRunInstructionsHead(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\n## Rules\n\nStage explicit paths.\n\n## Tests\n\nRun the canary.\n"), 0o644)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("ok")))
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprint(f, "[run]\ninstructions_head = true\n")
+	f.Close()
+	var stdout, stderr bytes.Buffer
+	if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	first := strings.SplitN(stdout.String(), "\n", 2)[0]
+	if !strings.Contains(first, "Stage explicit paths.") || strings.Contains(first, "Run the canary.") || !strings.Contains(first, "## Tests") {
+		t.Fatalf("the first message is not the head: %s", first)
+	}
+}
