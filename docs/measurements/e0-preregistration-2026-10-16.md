@@ -276,6 +276,34 @@ by-day reading. Both came from these probes counting tokens that never streamed.
 - **Time:** the fit loads take about 2 minutes, and E0 about 15–30 minutes (45 if the prefix is never reused). It holds
   nobara's timing lock for this amendment only and releases it at the end.
 
+**Amendment 11, 2026-10-19: the reused-prefix probe appends** (owner). Registered now. It applies from the next E0 run,
+and nothing is re-run for it.
+
+- **What changes.** The first-token probe's reused cell (`internal/eval/runner.go:ttft`) now **appends to the previous
+  request**, as tack's loop does between compactions (CLAUDE.md, "Append-only context").
+  - Before, it was the previous prompt with its last 512 tokens rewritten.
+  - The appended text is the same length the rewrite used (512 tokens), so the work after the reused prefix is
+    comparable.
+- **The 512-token rewrite stays as a recorded secondary figure, outside the gate.** It shows how much a server can roll
+  back. It is reported beside the append figure, never in its place. E0's gate (the smoke) is unchanged, and neither
+  figure decides eligibility.
+- **Why.** The rewrite read "never reused" on Mellum2.1 (amendment 10) for a cause that does not touch appends.
+  - On an expert-cache load, goinfer grants Mellum2.1's sliding-window layers no extra rollback, so a request may
+    diverge only about 448–512 positions back. The rewrite diverges about 518 back.
+  - goinfer's logged probe confirms that reading (owner, 2026-10-19; goinfer P34, reopened at `6ce495c4`).
+  - So the rewrite measured something tack's loop does not do.
+- **Results across the line are not comparable.** Every "prefix reused" figure recorded before this amendment is a
+  rewrite figure:
+  - C3's table;
+  - `e0-nobara-c3-2026-10-18.md`;
+  - `e0-nobara-mellum-2026-10-19.md`.
+
+  A model is compared across the line only by re-measuring it.
+- **Tests (tier 0, each broken once, with the code):**
+  - the append cell's request is the previous request with a message added at its end, byte for byte;
+  - the rewrite cell is unchanged and recorded under its own name;
+  - the gate reads neither.
+
 DESIGN §15.1 defines E0. This page fixes the arms, the instruments, the
 repeat counts and the decision rule. A rule changes only with a mechanism, recorded here as a dated amendment above
 the results. Results go in `e0-<box>-<date>.md` beside this page, graded against this rule.
