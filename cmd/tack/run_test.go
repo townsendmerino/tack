@@ -12,6 +12,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/kenrun"
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
@@ -174,9 +175,16 @@ func TestRunStopRepeatsExitsNine(t *testing.T) {
 }
 
 // TestReplayRepeatsMatchesTheLiveRule: the same scripted loop through tack run, once with stop_repeats off and once
-// on. Replaying the off run's events (pilot.ReplayRepeats) stops at the request where the live rule ended the on run,
-// and counts every later request of the off run as saved.
+// on, with result_notes off and then on. Replaying the off run's events (pilot.ReplayRepeats) stops at the request
+// where the live rule ended the on run, and counts every later request of the off run as saved; notes, whose repeat
+// counts change every call, do not move the stop.
 func TestReplayRepeatsMatchesTheLiveRule(t *testing.T) {
+	for _, notes := range []bool{false, true} {
+		replayMatchesLive(t, notes)
+	}
+}
+
+func replayMatchesLive(t *testing.T, notes bool) {
 	ws := t.TempDir()
 	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644)
 	run := func(on bool) string {
@@ -191,7 +199,7 @@ func TestReplayRepeatsMatchesTheLiveRule(t *testing.T) {
 		defer ts.Close()
 		cfg := writeConfig(t, ts.URL)
 		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
-		fmt.Fprintf(f, "[run]\nstop_repeats = %v\nmax_tool_calls = 100\n", on)
+		fmt.Fprintf(f, "[run]\nstop_repeats = %v\nresult_notes = %v\nmax_tool_calls = 100\n", on, notes)
 		f.Close()
 		var stdout, stderr bytes.Buffer
 		dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "find it"}, &stdout, &stderr)
@@ -203,12 +211,16 @@ func TestReplayRepeatsMatchesTheLiveRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	on, err := pilot.ReplayRepeats(run(true))
+	onPath := run(true)
+	if b, _ := os.ReadFile(onPath); notes != strings.Contains(string(b), loop.GrepEmptyNote) {
+		t.Fatalf("result_notes = %v, but the live events carry the empty-grep note: %v", notes, !notes)
+	}
+	on, err := pilot.ReplayRepeats(onPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !off.Stopped || off.StopRequest != on.Requests || off.StopTool != "grep" || off.Repeats != 8 {
-		t.Fatalf("replay of the off run %+v; the live rule ended the on run after request %d", off, on.Requests)
+		t.Fatalf("notes %v: replay of the off run %+v; the live rule ended the on run after request %d", notes, off, on.Requests)
 	}
 	if off.SavedRequests != off.Requests-on.Requests || off.SavedSecs < 0 {
 		t.Fatalf("saved %d requests (%v s); the off run sent %d, the on run %d", off.SavedRequests, off.SavedSecs, off.Requests, on.Requests)

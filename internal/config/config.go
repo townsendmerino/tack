@@ -85,6 +85,9 @@ type Run struct {
 	// StopRepeats ends a turn when one call repeats unchanged (loop.Config.StopRepeats). Default off until the calibration
 	// adopts it (e1-calibration-preregistration-2026-10-18.md §4.5).
 	StopRepeats bool `toml:"stop_repeats"`
+	// ResultNotes says what to do after an empty search or an unchanged repeat (loop.Config.ResultNotes). Default off until
+	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.4).
+	ResultNotes bool `toml:"result_notes"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

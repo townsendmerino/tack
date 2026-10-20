@@ -119,7 +119,7 @@ func (globTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 	}
 	if total == 0 {
 		return Result{Text: "no files match " + in.Pattern + "; patterns are relative to the repo root, and **/name finds a " +
-			"name at any depth"}, nil
+			"name at any depth", Empty: true}, nil
 	}
 	out := strings.Join(sortedUnique(hits), "\n") + "\n"
 	if total > len(hits) {
@@ -192,7 +192,7 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 		return Result{}, err
 	}
 	if matches == 0 {
-		return Result{Text: "no matches for " + in.Pattern}, nil
+		return Result{Text: "no matches for " + in.Pattern, Empty: true}, nil
 	}
 	if matches > grepMaxMatches {
 		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", grepMaxMatches))

@@ -156,3 +156,22 @@ func TestSearchOnlyWithASearcher(t *testing.T) {
 		t.Fatalf("search = %q", r.Text)
 	}
 }
+
+// TestSearchesMarkEmptyResults: glob and grep set Empty when nothing matched, and only then; their text is unchanged.
+func TestSearchesMarkEmptyResults(t *testing.T) {
+	ws := workspace(t)
+	for _, c := range []struct {
+		tool, input string
+		empty       bool
+	}{
+		{"glob", `{"pattern":"**/*.nothing"}`, true},
+		{"grep", `{"pattern":"zzz_no_such_text_zzz"}`, true},
+		{"glob", `{"pattern":"**/*.go"}`, false},
+		{"grep", `{"pattern":"package"}`, false},
+	} {
+		r := run(t, ws, c.tool, c.input)
+		if r.Empty != c.empty {
+			t.Errorf("%s %s: empty %v (text %.60q); want empty %v", c.tool, c.input, r.Empty, r.Text, c.empty)
+		}
+	}
+}

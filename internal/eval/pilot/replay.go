@@ -24,7 +24,8 @@ type RepeatReplay struct {
 	SavedSecs     float64 `json:"saved_secs,omitempty"`
 }
 
-// ReplayRepeats feeds every tool call of the events log at path, with the result the model saw, through a RepeatGuard,
+// ReplayRepeats feeds every tool call of the events log at path, with the result the model saw less its notes
+// (loop.StripNotes), through a RepeatGuard,
 // one guard per turn, as the loop does with Config.StopRepeats.
 func ReplayRepeats(path string) (RepeatReplay, error) {
 	var r RepeatReplay
@@ -67,7 +68,7 @@ func ReplayRepeats(path string) (RepeatReplay, error) {
 			if r.Stopped {
 				continue
 			}
-			if n, stop := g.Observe(keys[p.ID], p.Result); stop {
+			if n, stop := g.Observe(keys[p.ID], loop.StripNotes(p.Result)); stop {
 				r.Stopped, r.StopRequest, r.StopTool, r.Repeats, stopAt = true, request, names[p.ID], n, ev.Time
 			}
 		}

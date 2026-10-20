@@ -37,6 +37,8 @@ type Tool interface {
 type Result struct {
 	Text    string
 	IsError bool
+	// Empty is set by a search (glob, grep) that matched nothing, so the loop can say what to do (loop.Config.ResultNotes).
+	Empty bool
 }
 
 func errorf(format string, args ...any) Result {

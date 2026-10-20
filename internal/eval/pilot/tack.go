@@ -58,6 +58,7 @@ session_tool_calls = 1000000
 var RunSettings = map[string]bool{
 	"fit_window":   true, // §4.6
 	"stop_repeats": true, // §4.5
+	"result_notes": true, // §4.4
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.
