@@ -1196,3 +1196,54 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - the largest distinct failure kinds in A are missing paths and old equal to new, as in the replay;
   - d between −1 and +1.
 - **Also checked in the same runs:** `tools/replayrepeats` confirms every `repeat_loop` stop, as in §12.8.
+
+### 12.11 Change 4.8, instruction files, whole against none: a screen (owner, 2026-10-20), registered before its runs
+
+- **Arms:**
+  - A is the bundle as 4.1's verdict leaves it (`fit_window`, `stop_repeats`, `result_notes`, and `edit_messages` if
+    4.1 enters), with the repository's instruction file loaded whole (`--instructions whole`), as now.
+  - B is A plus `[run] no_instructions`: no instruction file is loaded.
+- **Build:**
+  - tack at or after `1ea11e7`, clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:** the 12 tasks, A B B A A B, 72 runs, each after the cell check. By day, about 2 hours, after 4.1's verdict
+  (owner).
+- **What "none" is for.** It measures what the whole file costs in window. It never enters the bundle: it drops the
+  repositories' own rules, and the calibration's oracles do not check whether rules are followed.
+- **Exact first-prompt tokens per task.** These are goinfer's own counts, from 4.4's 72 runs; they are identical in every
+  run of a task. The owner's byte estimates are replaced by these:
+
+| task | repo | A: first prompt | of it, `CLAUDE.md` | B predicted (tack's own prompt + statement) | A leaves of 16,384 |
+|---|---|---|---|---|---|
+| 1 | goinfer | 10,580 | 9,693 | 887 | 5,804 |
+| 2 | goinfer | 11,626 | 10,702 | 924 | 4,758 |
+| 3 | goinfer | 10,674 | 9,693 | 981 | 5,710 |
+| 4 | goinfer | 6,894 | 5,959 | 935 | 9,490 |
+| 5 | goinfer | 10,643 | 9,693 | 950 | 5,741 |
+| 6 | goinfer | 8,685 | 7,748 | 937 | 7,699 |
+| 7 | ken | 5,282 | 4,360 | 922 | 11,102 |
+| 8 | goinfer | 6,463 | 5,533 | 930 | 9,921 |
+| 9 | goinfer | 9,693 | 8,685 | 1,008 | 6,691 |
+| 10 | ken | 6,229 | 5,327 | 902 | 10,155 |
+| 11 | ken | 4,064 | 3,180 | 884 | 12,320 |
+| 12 | aikit | 906 | 0 | 906 | 15,478 |
+
+  Task 12 loads no instruction file, so its two arms are identical: a control.
+- **Mechanism metrics, per arm:**
+  - first-prompt tokens per task;
+  - window-full stops (`window_full` plus prompt-too-long refusals);
+  - requests per run before the stop.
+- **Predictions:**
+  - B's first prompt equals the predicted figure, within 20 tokens, on every task;
+  - B has fewer window-full stops than A, mostly on tasks 1, 2, 3, 5 and 9, which carry the most instruction tokens;
+  - task 12's two arms end alike;
+  - d between −1 and +2.
+- **Decision rule (owner):** the window cost of whole instructions is shown if B's window-full stops fall as predicted and
+  d ≥ −1, the same harm guard as the other screens. At 72 runs, d cannot carry more than that.
+  - Shown: section loading (4.8b: ken K9 sections, which needs ken v1.10.0) is built and screened against whole.
+  - Not shown: section loading waits for its place in P1's schedule (DESIGN §16).
+  - Either way, "none" never enters the bundle.
+- **A noted fallback, not an arm (owner).** If the window matters but section loading must wait, a budgeted head is the
+  cheap stand-in: the file's headings plus its first section, capped at 15% of the window (2,457 tokens at 16k), with
+  no ranking.
