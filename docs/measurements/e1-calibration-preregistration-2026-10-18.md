@@ -1218,6 +1218,12 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
       run still compiles the task repository's own packages. Both arms are treated alike.
   - The second resumption covers tasks 6–12, 42 runs, task 6 re-run whole.
   - 4.1's verdict reads 72 runs: tasks 1–3 (first launch), 4–5 (first resumption) and 6–12 (second resumption).
+- **Outcome (2026-10-20, ended 12:23 PDT): 4.1 does not enter the bundle ("not shown").**
+  - Neither edit mechanism moved: after a failed edit, the next edit to that file succeeded 3 times in each arm, and
+    every failed next edit resent the identical old_string (B 27, A 26).
+  - d = +1 (B 3/36, A 2/36).
+  - 4.5's live check agreed on all 18 `repeat_loop` stops, all exit 9.
+  - Record: `e1-calibration-c6-41-2026-10-20.md`.
 
 ### 12.11 Change 4.8, instruction files, whole against none: a screen (owner, 2026-10-20), registered before its runs
 
