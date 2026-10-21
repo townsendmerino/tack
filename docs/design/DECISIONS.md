@@ -199,3 +199,15 @@ that meant:
 
 **Known gap, accepted by the owner.** A listener started outside the sandbox while a command runs is reachable from
 that command. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it, and DESIGN §6.6 records it.
+
+**Implementation blocked, 2026-10-21 (owner).** Seatbelt cannot restrict listening to 127.0.0.1: a host in a network
+rule can only be `*` or `localhost`, and its `localhost` covers every address of the machine, the Tailscale address
+included. Inbound is checked only at `listen`, by local address.
+- **What was shown.** The built form (each ephemeral port allowed by name, for `go test` commands only) let a test
+  server inside the sandbox listen on all addresses, and nobara connected to it over Tailscale.
+- **Where it is kept.** The code, its escape tests and the failing cross-machine test are on branch `c6-43-loopback`.
+  The record is `docs/measurements/e1-calibration-c6-43-held-2026-10-21.md`.
+- **The known cost of leaving loopback denied:** tests that start a local server fail in the sandbox. ken's
+  `internal/modelfetch` is the case seen: `httptest: failed to listen on a port: listen tcp6 [::1]:0: bind: operation
+  not permitted`.
+- **Open design question:** run `go test` outside Seatbelt, in a VM, or under a port-scoped firewall rule.

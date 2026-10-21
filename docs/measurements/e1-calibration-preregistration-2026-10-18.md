@@ -901,6 +901,9 @@ changes are now measured on this arm, with the effect size that would count regi
 **This section fixes how every change is measured.** Each change still gets its own line here, before its runs, with
 its commit, its setting and its predictions.
 
+**Where C6 stands (2026-10-21):** `e1-calibration-c6-status-2026-10-21.md` lists what is in the bundle, what is not,
+the candidates, the bundle night's plan, the triggers and the open decisions.
+
 ### 12.1 The arms
 
 - **A, the do-nothing arm:** C5's configuration.
@@ -1555,3 +1558,14 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
       passed);
     - the amended stop rule's 26 live stops match the replay exactly.
   - Record: `e1-calibration-c6-42-2026-10-20.md`.
+
+### 12.16 Change 4.3, loopback in the sandbox: held, no screen (owner, 2026-10-21)
+
+- **Built on branch `c6-43-loopback`, held before its screen.** That branch holds the code, the escape tests, the
+  proposed registration and the ADR-005 draft.
+- **Why it is held.** Seatbelt cannot restrict listening to 127.0.0.1: its `localhost` covers every address of the
+  machine. A test server inside the sandbox, started by a `go test` command, was reachable from nobara over Tailscale.
+- **Record:** `e1-calibration-c6-43-held-2026-10-21.md`. The sandbox keeps loopback denied. Its known cost is that
+  tests which start a local server fail in the sandbox, as ken's `internal/modelfetch` does.
+- **No screen runs,** and 4.3 is not in the bundle. The open design question, for the owner: run `go test` outside
+  Seatbelt, in a VM, or under a port-scoped firewall rule.
