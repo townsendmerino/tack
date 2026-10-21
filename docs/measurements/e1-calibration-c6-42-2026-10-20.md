@@ -74,13 +74,15 @@ Over the 9 tasks without tasks 3, 8 and 9: A 6/27, B 5/27.
 | 6. requests per run; window-full stops | 18.2; 3 | 17.9; 1 | — | reported |
 | d | | −1 | between −2 and +1 | held |
 
-**5. The verification commands B used.** Most were whole-repository tests, which failed:
-- `go test -v ./...` or `go test ./...`: tasks 1 (3 runs), 2, 5 (2), 11 (2), 12 (3);
-- `go mod tidy && go test ./...`: tasks 5, 8, 11. In the sandbox, `go mod tidy` cannot download.
-- one package or file: tasks 2, 6 (four times, `go test -v internal/serveapp/banner.go`), 7.
+**5. The verification commands B used.** 17 B runs ran one. Most were whole-repository tests:
+- `go test ./...` (with `-v` or `-race`): 9 runs, on tasks 1 (3), 2, 5, 11 and 12 (3);
+- `go mod tidy && go test ./...`: 4 runs, on tasks 5, 8 and 11 (2). In the sandbox, `go mod tidy` cannot download;
+- one package or file: 4 runs, on tasks 2, 6 and 7 (2). Task 6 B-1 ran `go test -v internal/serveapp/banner.go` four
+  times.
 
-So 12 of the 14 `done` endings after a verification are recorded "the last build or test after the last change
-failed", passing runs included: tasks 1 and 11.
+Of the 14 B runs that ended in `done` after a verification, 10 are recorded "the last build or test after the last
+change failed", including the passing runs on tasks 1 and 11. The other 4 (task 7 B-1, and task 12's three) ended
+with a verification that passed.
 
 The refusal's advice ("go build ./..., or go test on the package you changed") reached the model once. Task 11's runs
 ran ken's whole-repository test on their own, the failure the owner asked the advice to steer away from.
