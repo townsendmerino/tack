@@ -1363,6 +1363,25 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 - **Found in 4.2's screen (2026-10-20): the head as built breaks goinfer's tasks.** Qwen3-8B called `done` with no work on
   35 of 36 goinfer runs, reading the head as its task (`e1-calibration-c6-42-stopped-2026-10-20.md`). The token check
   above cannot see this. The head is not used again until it is fixed and checked at tier 1.
+- **The fix (owner, 2026-10-20): the notes come first, the task last.**
+  - The head now opens the first message, framed "Project notes from CLAUDE.md, for reference:". Its outline is
+    headed "Other sections of CLAUDE.md, to read when you need one:".
+  - The task statement follows it and ends the message, under an explicit "Task:" label.
+  - The cap stays at 15% of the window.
+- **Adopting any prompt change now needs a tier-1 live check (owner, 2026-10-20),** not only a size check. A change to
+  what the model reads first (system prompt, tool descriptions, first message) is run live on a small set of tasks
+  before it enters a screen or the bundle.
+- **The head's tier-1 check, registered before it runs** (by day, under nobara's lock):
+  - **Qwen3-8B** (`Q4_K_M`, 16,384, thinking off, goinfer `b2b5e816`): tasks 2, 4 and 6, two runs each, with the
+    bundle settings (`fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`).
+    **It passes if at least 5 of the 6 make a call other than `done` before their first `done`.** If it fails, the head
+    stays out and 4.2's screen does not restart.
+  - **Qwen3-4B, exploratory** (as C4 loaded it, at 30,720, thinking off, goinfer `b2b5e816`): the same three tasks, two
+    runs each, with the same settings and the new layout. It records how many runs make an edit attempt (an `edit` or
+    `write` call before the first `done`). C4 quit on all of these tasks with the old layout, possibly for the same
+    reason. No rule follows from it.
+  - 4.2's screen restarts only after the Qwen3-8B half passes.
+- **A candidate, not registered:** a refusal of `done` with no change that restates the task.
 
 ### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write; adopted (owner, 2026-10-20)
 
