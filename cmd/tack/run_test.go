@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -282,7 +283,7 @@ func (s fixedShell) Run(context.Context, string, time.Duration) (shell.Result, e
 }
 
 // TestRunInstructionsHead: [run] instructions_head loads the instruction file's budgeted head, not the whole file, under
-// --instructions whole.
+// --instructions whole, framed as reference notes and placed before the statement, which ends the message under "Task:".
 func TestRunInstructionsHead(t *testing.T) {
 	ws := t.TempDir()
 	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\n## Rules\n\nStage explicit paths.\n\n## Tests\n\nRun the canary.\n"), 0o644)
@@ -299,5 +300,16 @@ func TestRunInstructionsHead(t *testing.T) {
 	first := strings.SplitN(stdout.String(), "\n", 2)[0]
 	if !strings.Contains(first, "Stage explicit paths.") || strings.Contains(first, "Run the canary.") || !strings.Contains(first, "## Tests") {
 		t.Fatalf("the first message is not the head: %s", first)
+	}
+	var ev struct {
+		Payload struct {
+			Content []struct{ Text string }
+		}
+	}
+	if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
+		t.Fatalf("first event: %v %s", err, first)
+	}
+	if msg := ev.Payload.Content[0].Text; !strings.HasPrefix(msg, "Project notes from CLAUDE.md, for reference:\n\n") || !strings.HasSuffix(msg, "\n\nTask: hi") {
+		t.Fatalf("the notes come first and the task last, labelled:\n%s", msg)
 	}
 }

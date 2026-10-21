@@ -21,10 +21,15 @@ const headShare = 15
 // cap for denser text.
 const headBytesPerToken = 3
 
-// instructionHead is name's content cut to its budgeted head for a window of window tokens: its first section, which runs
-// to the first heading after some body text (so a file that opens with only its title takes in the section after it),
-// then the headings of the rest as an outline. When the two exceed the
-// cap, the outline is cut from its end first, then the first section at a line, and each cut is said.
+// headTaskLabel introduces the task statement after the head. The head comes first and the statement last, so the
+// message ends with the task: placed after the statement, the head was read as the task
+// (docs/measurements/e1-calibration-c6-42-stopped-2026-10-20.md).
+const headTaskLabel = "Task: "
+
+// instructionHead is name's content cut to its budgeted head for a window of window tokens, framed as reference notes:
+// its first section, which runs to the first heading after some body text (so a file that opens with only its title
+// takes in the section after it), then the headings of the rest as an outline. When the two exceed the cap, the outline
+// is cut from its end first, then the first section at a line, and each cut is said.
 func instructionHead(name, content string, window int) string {
 	capBytes := window * headShare / 100 * headBytesPerToken
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
@@ -48,8 +53,7 @@ func instructionHead(name, content string, window int) string {
 			outline = append(outline, l)
 		}
 	}
-	intro := fmt.Sprintf("Project instructions, from %s: its first section, then the headings of the rest. Read %s for "+
-		"any section you need.\n\n", name, name)
+	intro := fmt.Sprintf("Project notes from %s, for reference:\n\n", name)
 	build := func(first, outline []string, cutFirst bool, moreHeadings int) string {
 		var b strings.Builder
 		b.WriteString(intro)
@@ -58,7 +62,7 @@ func instructionHead(name, content string, window int) string {
 			b.WriteString("\n[… the rest of this section is cut to fit the window; read " + name + " for it]")
 		}
 		if len(outline) > 0 || moreHeadings > 0 {
-			b.WriteString("\n\nOther sections of " + name + ":\n")
+			b.WriteString("\n\nOther sections of " + name + ", to read when you need one:\n")
 			b.WriteString(strings.Join(outline, "\n"))
 			if moreHeadings > 0 {
 				fmt.Fprintf(&b, "\n[… %d more headings]", moreHeadings)

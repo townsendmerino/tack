@@ -9,7 +9,7 @@ func TestInstructionHeadFirstSectionAndOutline(t *testing.T) {
 	titleOnly := "# repo notes\n\n## Rules\n\nStage explicit paths.\n\n## Tests\n\nRun go test.\n\n```\n# not a heading\n```\n\n## Releases\n\nTag it.\n"
 	h := instructionHead("CLAUDE.md", titleOnly, 16384)
 	if !strings.Contains(h, "## Rules\n\nStage explicit paths.") || strings.Contains(h, "Run go test.") ||
-		!strings.Contains(h, "Other sections of CLAUDE.md:\n## Tests\n## Releases") || strings.Contains(h, "not a heading") {
+		!strings.Contains(h, "Other sections of CLAUDE.md, to read when you need one:\n## Tests\n## Releases") || strings.Contains(h, "not a heading") {
 		t.Errorf("a title-only opening takes in the next section, and the outline lists the rest:\n%s", h)
 	}
 	withIntro := "# repo\n\nIntro text.\n\n## Rules\n\nStage explicit paths.\n"

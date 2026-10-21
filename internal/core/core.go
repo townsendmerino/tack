@@ -111,8 +111,10 @@ type session struct {
 	subs    map[*subscriber]bool
 	target  sandbox.Target // what Halt sweeps for this session
 	kit     func() error   // the edit kit's Close, or nil
-	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been.
+	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been. notesFirst puts it
+	// before the prompt, which then follows under "Task:" (the budgeted head, instructions.go); else it follows the prompt.
 	instructions string
+	notesFirst   bool
 	prompted     bool
 }
 
@@ -352,7 +354,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	}
 	if c.opt.WholeInstructions && c.opt.InstructionsHead {
 		if name, content := readInstructionFile(ws.Root()); name != "" {
-			s.instructions = instructionHead(name, content, servedWindow(c.ctx, src))
+			s.instructions, s.notesFirst = instructionHead(name, content, servedWindow(c.ctx, src)), true
 		}
 	} else if c.opt.WholeInstructions {
 		s.instructions = readInstructions(ws.Root())
@@ -448,7 +450,13 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	s.running, s.cancel = true, cancel
 	// The instructions join the first message itself, so the log holds exactly what the model was sent.
-	if s.instructions != "" && !s.prompted {
+	switch {
+	case s.instructions == "" || s.prompted:
+	case s.notesFirst:
+		statement := text.String()
+		text.Reset()
+		text.WriteString(s.instructions + "\n\n" + headTaskLabel + statement)
+	default:
 		text.WriteString("\n\n" + s.instructions)
 	}
 	s.prompted = true
