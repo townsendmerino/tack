@@ -39,6 +39,10 @@ jobs:
       matrix:
         os: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) && fromJSON('["ubuntu-24.04", "macos-latest"]') || fromJSON('["ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
+    # The loopback escape tests need a host on another machine that answers on connect (ADR-005); locally they use
+    # nobara's ssh port.
+    env:
+      TACK_ESCAPE_OUTSIDE: github.com:22
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

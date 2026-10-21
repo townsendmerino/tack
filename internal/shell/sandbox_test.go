@@ -28,7 +28,7 @@ func TestShellInsideTheSandbox(t *testing.T) {
 	cfg := sandbox.Config{Workspace: ws, Temp: tmp, GoCache: cache, Home: home}
 	e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
 	s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
-		Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
+		Wrap: func(c *exec.Cmd, group, mark string, _ bool) *exec.Cmd {
 			cfg := cfg
 			cfg.Group, cfg.Mark = group, mark
 			return sandbox.Wrap(cfg, c)
@@ -80,7 +80,7 @@ func TestCancelReachesDetachedProcesses(t *testing.T) {
 		os.Remove(filepath.Join(ws, "detached.pid"))
 		e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
 		s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
-			Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
+			Wrap: func(c *exec.Cmd, group, mark string, _ bool) *exec.Cmd {
 				cfg := cfg
 				cfg.Group, cfg.Mark = group, mark
 				return sandbox.Wrap(cfg, c)

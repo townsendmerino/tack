@@ -6,8 +6,9 @@
 //
 // What it allows: reading the file system, except tack's own files and the secrets deny-list; writing the workspace
 // (except files that would later run outside the sandbox), the session's temp directory and tack's own Go build
-// cache; running programs, except those that launch work outside the sandbox. The network is denied outright (P1;
-// a per-domain proxy arrives with web_fetch in P5).
+// cache; running programs, except those that launch work outside the sandbox. The network is denied, except TCP on
+// loopback when Config.Loopback is set (ADR-005): then a command may listen on loopback and connect to the ports of
+// the ephemeral range that were not listening when it started. A per-domain proxy arrives with web_fetch in P5.
 package sandbox
 
 import (
@@ -33,22 +34,30 @@ type Config struct {
 	// between sessions.
 	Group string
 	Mark  string
+	// Loopback lets a command use TCP on loopback (ADR-005): bind and accept on loopback, and connect to each port of
+	// the ephemeral range that was not listening when the command started. Ports is that state, read as each command's
+	// profile is built (Wrap, Command). With Loopback set and Ports nil, the read failed, and loopback stays closed.
+	// The profile allows each port by name: Seatbelt ignores a port's denial once "localhost:*" is allowed. Compiling
+	// it takes seconds, so only commands that run go test get Loopback (shell.Session.Wrap).
+	Loopback bool
+	Ports    *LoopbackPorts
 	// Without drops named sections. Only the escape tests use it, to show each section is what catches its escape.
 	Without []string
 }
 
 // Sections, in the order they are written.
 const (
-	SecBase    = "base"    // what every process needs: fork, exec, signals within the sandbox, sysctl, mach lookups
-	SecRead    = "read"    // reading the file system
-	SecWrite   = "write"   // writing only the workspace, the session's temp directory and tack's own Go cache
-	SecLaunch  = "launch"  // open, launchctl, osascript and LaunchServices: a program they start runs outside
-	SecMount   = "mount"   // mounting volumes: a mounted volume is another way out
-	SecNetwork = "network" // all network access
-	SecTack    = "tack"    // tack's own files: a command must not approve its own request or read transcripts
-	SecLater   = "later"   // workspace files that would run later, outside the sandbox: git hooks and config, agent config
-	SecSecrets = "secrets" // the secrets deny-list, enforced by the kernel
-	SecMark    = "mark"    // the names that let halt and cancel find every process inside, detached or not
+	SecBase      = "base"      // what every process needs: fork, exec, signals within the sandbox, sysctl, mach lookups
+	SecRead      = "read"      // reading the file system
+	SecWrite     = "write"     // writing only the workspace, the session's temp directory and tack's own Go cache
+	SecLaunch    = "launch"    // open, launchctl, osascript and LaunchServices: a program they start runs outside
+	SecMount     = "mount"     // mounting volumes: a mounted volume is another way out
+	SecNetwork   = "network"   // all network access but, with Config.Loopback, TCP on loopback
+	SecListeners = "listeners" // with Config.Loopback, the ports listening when the command started, left out of it
+	SecTack      = "tack"      // tack's own files: a command must not approve its own request or read transcripts
+	SecLater     = "later"     // workspace files that would run later, outside the sandbox: git hooks and config, agent config
+	SecSecrets   = "secrets"   // the secrets deny-list, enforced by the kernel
+	SecMark      = "mark"      // the names that let halt and cancel find every process inside, detached or not
 )
 
 // Secrets are the paths under the owner's home that no sandboxed command may read or write: credentials, tokens and
@@ -128,9 +137,18 @@ func Profile(c Config) string {
 		`(deny process-exec (literal "/usr/bin/hdiutil") (literal "/usr/sbin/diskutil") (literal "/sbin/mount") (regex #"^/sbin/mount_") (literal "/usr/bin/hdik"))`,
 		`(deny mach-lookup (global-name "com.apple.DiskArbitration.diskarbitrationd") (global-name-prefix "com.apple.diskimages"))`,
 	)
-	if skip[SecNetwork] {
+	switch {
+	case skip[SecNetwork]:
 		b.WriteString("(allow network*)\n") // the hole (deny default) and this section close, for its escape tests
-	} else {
+	case c.Loopback && c.Ports != nil:
+		sec(SecNetwork, append([]string{"(deny network*)",
+			`(allow network-bind (local tcp "localhost:*"))`,
+			`(allow network-inbound (local tcp "localhost:*"))`},
+			c.Ports.outbound(!skip[SecListeners])...)...)
+		if !skip[SecListeners] {
+			fmt.Fprintf(&b, "; %s: %d ports left out\n", SecListeners, len(c.Ports.Listening))
+		}
+	default:
 		sec(SecNetwork, "(deny network*)")
 	}
 	if len(c.Tack) > 0 {
@@ -209,13 +227,24 @@ func within(dir, p string) bool {
 
 // Command returns name with args, run under c's profile.
 func Command(c Config, name string, args ...string) *exec.Cmd {
-	return exec.Command(Exe, append([]string{"-p", Profile(c), name}, args...)...)
+	return exec.Command(Exe, append([]string{"-p", Profile(withPorts(c)), name}, args...)...)
 }
 
 // Wrap returns cmd re-pointed to run under c's profile, keeping its environment, directory, files and process
 // attributes.
 func Wrap(c Config, cmd *exec.Cmd) *exec.Cmd {
-	cmd.Args = append([]string{Exe, "-p", Profile(c), cmd.Path}, cmd.Args[1:]...)
+	cmd.Args = append([]string{Exe, "-p", Profile(withPorts(c)), cmd.Path}, cmd.Args[1:]...)
 	cmd.Path = Exe
 	return cmd
+}
+
+// withPorts is c with Ports read from the kernel now, when c.Loopback is set and Ports is not: the state as the command
+// starts. A failed read leaves it nil, which keeps loopback closed.
+func withPorts(c Config) Config {
+	if c.Loopback && c.Ports == nil {
+		if p, err := ReadLoopbackPorts(); err == nil {
+			c.Ports = p
+		}
+	}
+	return c
 }

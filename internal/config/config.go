@@ -102,6 +102,9 @@ type Run struct {
 	// VerifyDone refuses an edit task's done, up to 3 times, until a go build, vet or test has run since the last change
 	// (loop.Config.VerifyDone; calibration §4.2, §12.15). Default off.
 	VerifyDone bool `toml:"verify_done"`
+	// SandboxLoopback lets a sandboxed command that runs go test use TCP on loopback, except ports already listening when
+	// it starts (ADR-005; calibration §4.3, §12.16). Default off.
+	SandboxLoopback bool `toml:"sandbox_loopback"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

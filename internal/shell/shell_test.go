@@ -48,7 +48,7 @@ func session(t *testing.T, sandboxed bool, rules ...string) *Session {
 
 // pretendSandbox stands in for the sandbox in tests of the run-time check; confinement itself is tested by
 // internal/sandbox's escape tests and TestShellInsideTheSandbox (build tag sandboxtest).
-func pretendSandbox(c *exec.Cmd, _, _ string) *exec.Cmd { return c }
+func pretendSandbox(c *exec.Cmd, _, _ string, _ bool) *exec.Cmd { return c }
 
 func pretendSweep(sandbox.Target) (sandbox.Report, error) { return sandbox.Report{}, nil }
 
@@ -212,5 +212,28 @@ func TestEngineAndSandboxMustAgree(t *testing.T) {
 	s.Group = sandbox.Target{}
 	if _, err := s.Run(context.Background(), "echo hi", time.Second); err == nil || !strings.Contains(err.Error(), "a Group") {
 		t.Fatalf("a sandboxed shell with no session group ran: %v", err)
+	}
+}
+
+// TestOnlyGoTestIsOfferedLoopback: Run tells Wrap a command runs go test only when the engine's parse finds go with the
+// literal subcommand test, through cd, && and go -C; any other command, text that only names go test included, is not.
+func TestOnlyGoTestIsOfferedLoopback(t *testing.T) {
+	s := session(t, true)
+	var got bool
+	s.Wrap = func(c *exec.Cmd, _, _ string, goTest bool) *exec.Cmd { got = goTest; return c }
+	for cmd, want := range map[string]bool{
+		"go test ./...":                  true,
+		"cd sub && go test -run X ./.":   true,
+		"go -C sub test ./...":           true,
+		"go build ./... && go vet ./...": false,
+		"echo go test":                   false,
+		"curl -s http://127.0.0.1:1/":    false,
+		"go version":                     false,
+	} {
+		got = !want
+		s.Run(context.Background(), cmd, 10*time.Second)
+		if got != want {
+			t.Errorf("%q: Wrap was told goTest=%v, want %v", cmd, got, want)
+		}
 	}
 }

@@ -64,6 +64,7 @@ var RunSettings = map[string]bool{
 	"instructions_head":      true, // §12.12
 	"refuse_duplicate_edits": true, // §12.14
 	"verify_done":            true, // §4.2, §12.15
+	"sandbox_loopback":       true, // §4.3, §12.16
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

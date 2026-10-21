@@ -17,7 +17,7 @@ import (
 // marked with the session's group and each command's own mark. They may write only the workspace, a temp directory
 // of the session's own and tack's Go cache (under the user cache directory); tack's state directory and config directory are out of their reach.
 // It refuses a workspace that overlaps either directory (sandbox.Config.Check).
-func editKit(stateDir, configDir string) func(root string, group sandbox.Target) (core.EditKit, error) {
+func editKit(stateDir, configDir string, loopback bool) func(root string, group sandbox.Target) (core.EditKit, error) {
 	return func(root string, group sandbox.Target) (core.EditKit, error) {
 		if err := (sandbox.Config{Workspace: root, Tack: []string{stateDir, configDir}}).Check(); err != nil {
 			return core.EditKit{}, err
@@ -48,9 +48,10 @@ func editKit(stateDir, configDir string) func(root string, group sandbox.Target)
 		sh := &shell.Session{Exe: exe, Args: []string{"shell"}, Engine: eng, Group: group,
 			// GOPROXY=off: the sandbox has no network, so a module missing from the cache fails as missing.
 			Env: []string{"TMPDIR=" + tmp, "GOCACHE=" + gocache, "GOPROXY=off"},
-			Wrap: func(c *exec.Cmd, g, mark string) *exec.Cmd {
+			Wrap: func(c *exec.Cmd, g, mark string, goTest bool) *exec.Cmd {
 				cc := cfg
 				cc.Group, cc.Mark = g, mark
+				cc.Loopback = loopback && goTest // [run] sandbox_loopback, for go test only (ADR-005)
 				return sandbox.Wrap(cc, c)
 			},
 			Sweep: func(t sandbox.Target) (sandbox.Report, error) { return sandbox.Sweep(t, false) }}

@@ -173,7 +173,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true
-		opts.Edit = editKit(stateDir, filepath.Dir(*cfgPath))
+		opts.Edit = editKit(stateDir, filepath.Dir(*cfgPath), cfg.Run.SandboxLoopback)
 		if *preflight != "" {
 			if code := runPreflight(ctx, opts.Edit, ws, *preflight, stderr); code != exitOK {
 				return code

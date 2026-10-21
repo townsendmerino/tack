@@ -86,8 +86,9 @@ type Session struct {
 	// target (internal/sandbox.Sweep): when Run kills a command it sweeps the command's mark from when the command
 	// started, so a process that left the process group (setsid, setpgid) dies with it. Env adds what the sandbox
 	// expects: tack's own GOCACHE and the session's TMPDIR. Engine.Sandboxed must be true exactly when Wrap is set, and
-	// Wrap needs Sweep and Group.
-	Wrap  func(cmd *exec.Cmd, group, mark string) *exec.Cmd
+	// Wrap needs Sweep and Group. goTest says the command, as the engine parses it, runs go test: only such a command may be
+	// given loopback (internal/sandbox.Config.Loopback; ADR-005).
+	Wrap  func(cmd *exec.Cmd, group, mark string, goTest bool) *exec.Cmd
 	Sweep func(sandbox.Target) (sandbox.Report, error)
 	Group sandbox.Target
 	Env   []string
@@ -113,10 +114,12 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	}
 	req := request{Command: command, State: s.state, Root: s.Engine.Root, Path: s.Engine.Path, Sandboxed: s.Engine.Sandboxed,
 		ApprovedBy: approvedBy(ctx)}
+	goTest := false
 	for _, c := range s.Engine.Analyze(command) {
 		if c.Program == "" {
 			continue
 		}
+		goTest = goTest || perms.GoSubcommand(c) == "test"
 		req.Approved = append(req.Approved, c.Program)
 		for i, a := range c.Args {
 			if c.Literal[i] && perms.RunFlag(c.Program, a) != "" {
@@ -147,7 +150,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	cmd.Env = append(os.Environ(), s.Env...)
 	target := sandbox.Target{Mark: sandbox.NewMark("c"), Since: time.Now()} // before the child exists
 	if s.Wrap != nil {
-		cmd = s.Wrap(cmd, s.Group.Mark, target.Mark)
+		cmd = s.Wrap(cmd, s.Group.Mark, target.Mark, goTest)
 	}
 	if err := cmd.Start(); err != nil {
 		wr.Close()

@@ -476,3 +476,19 @@ func sortedKeys(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// GoSubcommand is the subcommand s runs when s is the go program with its subcommand written literally (build, test,
+// vet, …), looking past go -C dir; otherwise "".
+func GoSubcommand(s Simple) string {
+	if filepath.Base(s.Program) != "go" {
+		return ""
+	}
+	args, lit := s.Args, s.Literal
+	if len(args) >= 2 && args[0] == "-C" {
+		args, lit = args[2:], lit[2:]
+	}
+	if len(args) == 0 || !lit[0] {
+		return ""
+	}
+	return args[0]
+}

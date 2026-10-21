@@ -3,7 +3,6 @@ package loop
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -126,14 +125,7 @@ func IsVerification(eng *perms.Engine, command string) bool {
 		return false
 	}
 	for _, s := range eng.Analyze(command) {
-		if filepath.Base(s.Program) != "go" {
-			continue
-		}
-		args, lit := s.Args, s.Literal
-		if len(args) >= 2 && args[0] == "-C" { // go -C dir test
-			args, lit = args[2:], lit[2:]
-		}
-		if len(args) > 0 && lit[0] && (args[0] == "build" || args[0] == "vet" || args[0] == "test") {
+		if sub := perms.GoSubcommand(s); sub == "build" || sub == "vet" || sub == "test" {
 			return true
 		}
 	}

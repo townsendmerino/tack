@@ -8,6 +8,7 @@ package sandbox
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -310,5 +311,300 @@ func TestSweepTouchesNothingElse(t *testing.T) {
 	}
 	if !alive(plain) {
 		t.Fatal("a session's sweep killed an unsandboxed process")
+	}
+}
+
+// lanIPv4 is this machine's first non-loopback IPv4 address: a way to reach a listener without loopback and without
+// the internet.
+func lanIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+			return n.IP.String()
+		}
+	}
+	t.Fatal("no non-loopback IPv4 address to test the outside network with")
+	return ""
+}
+
+// serveMark serves mark over HTTP on addr until the test ends, and returns the address it listens on.
+func serveMark(t *testing.T, addr, mark string) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, mark) }))
+	return ln.Addr().String()
+}
+
+// socks5 is a SOCKS5 proxy (no authentication, CONNECT only) on loopback, standing in for ssh -D: a local listener
+// that relays a command to wherever it asks.
+func socks5(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				b := make([]byte, 262)
+				if _, err := io.ReadFull(c, b[:2]); err != nil {
+					return
+				}
+				io.ReadFull(c, b[:b[1]])
+				c.Write([]byte{5, 0})
+				if _, err := io.ReadFull(c, b[:4]); err != nil || b[1] != 1 {
+					return
+				}
+				var host string
+				switch b[3] {
+				case 1:
+					io.ReadFull(c, b[:4])
+					host = net.IP(b[:4]).String()
+				case 3:
+					io.ReadFull(c, b[:1])
+					n := int(b[0])
+					io.ReadFull(c, b[:n])
+					host = string(b[:n])
+				default:
+					return
+				}
+				io.ReadFull(c, b[:2])
+				port := int(b[0])<<8 | int(b[1])
+				up, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+				if err != nil {
+					c.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
+					return
+				}
+				defer up.Close()
+				c.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+				go io.Copy(up, c)
+				io.Copy(c, up)
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestLoopbackEscapes (ADR-005): with Config.Loopback, the profile a go test command gets, every listener that was
+// there before the command stays out of reach, plain or a SOCKS proxy to elsewhere, on loopback or through the LAN
+// address; so do another host (outsideHost) and UDP. Each escape gets out with
+// no sandbox, is stopped by the full profile, and gets out again with only its own sections removed.
+func TestLoopbackEscapes(t *testing.T) {
+	f := setup(t)
+	f.cfg.Loopback = true
+	lan := lanIPv4(t)
+	outside := outsideHost(t)
+	os.MkdirAll(filepath.Join(f.ws, "out"), 0o755)
+	os.WriteFile(filepath.Join(f.ws, "out", "out_test.go"), []byte(`package out
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"testing"
+	"time"
+)
+
+func TestDialOut(t *testing.T) {
+	c, err := net.DialTimeout("tcp", os.Getenv("OUT"), 5*time.Second)
+	if err != nil {
+		t.Log(err)
+		return
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	b := make([]byte, 8)
+	if n, _ := c.Read(b); n > 0 {
+		fmt.Printf("ESCAPED-outside %q\n", b[:n])
+	}
+}
+`), 0o644)
+	local := serveMark(t, "127.0.0.1:0", "ESCAPED-loopback-listener")
+	local6 := serveMark(t, "[::1]:0", "ESCAPED-loopback6-listener")
+	wide := serveMark(t, ":0", "ESCAPED-off-loopback")
+	_, widePort, _ := net.SplitHostPort(wide)
+	far := serveMark(t, ":0", "ESCAPED-through-socks")
+	_, farPort, _ := net.SplitHostPort(far)
+	proxy := socks5(t)
+	udp, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	_, udpPort, _ := net.SplitHostPort(udp.LocalAddr().String())
+	go func() {
+		b := make([]byte, 64)
+		for {
+			n, from, err := udp.ReadFrom(b)
+			if err != nil {
+				return
+			}
+			udp.WriteTo(append([]byte("ESCAPED-udp-"), b[:n]...), from)
+		}
+	}()
+
+	cases := []struct {
+		name     string
+		sections []string
+		script   string
+		mark     string
+	}{
+		{"a loopback listener started before the command", secs(SecListeners), `/usr/bin/curl -s -m 5 http://` + local + `/`, "ESCAPED-loopback-listener"},
+		{"an IPv6 loopback listener started before the command", secs(SecListeners), `/usr/bin/curl -s -m 5 http://` + local6 + `/`, "ESCAPED-loopback6-listener"},
+		{"a SOCKS proxy started before the command", secs(SecListeners), `/usr/bin/curl -s -m 5 --socks5 ` + proxy + ` http://` + lan + `:` + farPort + `/`, "ESCAPED-through-socks"},
+		{"a listener started before the command, through the LAN address", secs(SecListeners), `/usr/bin/curl -s -m 5 http://` + lan + `:` + widePort + `/`, "ESCAPED-off-loopback"},
+		{"an outside host from a go test command", secs(SecNetwork), `OUT=` + outside + ` go test -count=1 -v ./out/`, "ESCAPED-outside"},
+		{"UDP off loopback", secs(SecNetwork), `printf x | /usr/bin/nc -u -w 2 ` + lan + ` ` + udpPort, "ESCAPED-udp-x"},
+		{"UDP on loopback", secs(SecNetwork), `printf y | /usr/bin/nc -u -w 2 127.0.0.1 ` + udpPort, "ESCAPED-udp-y"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if out := f.run(nil, tc.script); !strings.Contains(out, tc.mark) {
+				t.Fatalf("with no sandbox the escape did not get out, so this test cannot see it: %q", out)
+			}
+			if out := f.run(&f.cfg, tc.script); strings.Contains(out, tc.mark) {
+				t.Errorf("the profile let it out: %q", out)
+			}
+			if out := f.run(f.without(tc.sections...), tc.script); !strings.Contains(out, tc.mark) {
+				t.Errorf("with %v removed it still did not get out, so they are not what stops it: %q", tc.sections, out)
+			}
+		})
+	}
+}
+
+// TestLoopbackWorkRuns (ADR-005): with Config.Loopback, a test that serves on loopback and calls itself passes in the
+// sandbox, over IPv4 (httptest's pattern) and IPv6 (ken's internal/modelfetch binds [::1]:0); without it, it fails, so
+// Loopback is what lets it run.
+func TestLoopbackWorkRuns(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.ws, "lb"), 0o755)
+	os.WriteFile(filepath.Join(f.ws, "lb", "lb_test.go"), []byte(`package lb
+
+import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestServeAndCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") }))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func TestIPv6SelfConnect(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			c.Close()
+		}
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+}
+`), 0o644)
+	script := `go test -count=1 ./lb/ && echo OK-loopback`
+	if out := f.run(&f.cfg, script); strings.Contains(out, "OK-loopback") {
+		t.Fatalf("without Loopback the loopback tests passed, so this test cannot show Loopback is what lets them: %q", out)
+	}
+	on := f.cfg
+	on.Loopback = true
+	if out := f.run(&on, script); !strings.Contains(out, "OK-loopback") {
+		t.Fatalf("with Loopback the loopback tests failed: %q", out)
+	}
+}
+
+// TestLoopbackGap_ListenerStartedDuringCommand shows ADR-005's accepted gap: a listener started outside the sandbox
+// while a command runs is not on that command's deny-list, so the command reaches it.
+func TestLoopbackGap_ListenerStartedDuringCommand(t *testing.T) {
+	f := setup(t)
+	f.cfg.Loopback = true
+	portFile := filepath.Join(f.cfg.Temp, "port")
+	cmd := Command(f.cfg, "/bin/sh", "-c", `i=0; while [ ! -s "$TMPDIR/port" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; `+
+		`/usr/bin/curl -s -m 5 "http://127.0.0.1:$(cat "$TMPDIR/port")/"`)
+	cmd.Dir, cmd.Env = f.ws, f.env
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // the profile, and its deny-list, were fixed when the command started
+	addr := serveMark(t, "127.0.0.1:0", "REACHED-later-listener")
+	_, port, _ := net.SplitHostPort(addr)
+	os.WriteFile(portFile, []byte(port), 0o644)
+	cmd.Wait()
+	if !strings.Contains(out.String(), "REACHED-later-listener") {
+		t.Fatalf("the gap did not show: a listener started during the command was not reached: %q", out.String())
+	}
+}
+
+// outsideHost is a TCP address on another machine that answers on connect: TACK_ESCAPE_OUTSIDE, or nobara's ssh port
+// from the owner's ssh config. With neither, the test fails: an escape test that cannot reach outside proves nothing.
+func outsideHost(t *testing.T) string {
+	t.Helper()
+	if a := os.Getenv("TACK_ESCAPE_OUTSIDE"); a != "" {
+		return a
+	}
+	out, _ := exec.Command("ssh", "-G", "nobara").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		if h, ok := strings.CutPrefix(line, "hostname "); ok && h != "nobara" {
+			return net.JoinHostPort(h, "22")
+		}
+	}
+	t.Fatal("no outside host: set TACK_ESCAPE_OUTSIDE to host:port, or have nobara in the ssh config")
+	return ""
+}
+
+// TestNoLoopbackWithoutIt (ADR-005): a command not given Loopback, as every command but go test is not
+// (TestOnlyGoTestIsOfferedLoopback), cannot reach even a listener started after it began, which no deny-list holds;
+// given Loopback, it can (the accepted gap), so Loopback is what keeps it out.
+func TestNoLoopbackWithoutIt(t *testing.T) {
+	f := setup(t)
+	for _, loopback := range []bool{false, true} {
+		cfg := f.cfg
+		cfg.Loopback = loopback
+		os.Remove(filepath.Join(cfg.Temp, "port"))
+		cmd := Command(cfg, "/bin/sh", "-c", `i=0; while [ ! -s "$TMPDIR/port" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; `+
+			`/usr/bin/curl -s -m 5 "http://127.0.0.1:$(cat "$TMPDIR/port")/"`)
+		cmd.Dir, cmd.Env = f.ws, f.env
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(300 * time.Millisecond)
+		_, port, _ := net.SplitHostPort(serveMark(t, "127.0.0.1:0", "REACHED-later-listener"))
+		os.WriteFile(filepath.Join(cfg.Temp, "port"), []byte(port), 0o644)
+		cmd.Wait()
+		if got := strings.Contains(out.String(), "REACHED-later-listener"); got != loopback {
+			t.Errorf("Loopback %v: reached a listener started during the command: %v (%q)", loopback, got, out.String())
+		}
 	}
 }
