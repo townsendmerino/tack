@@ -199,3 +199,39 @@ that meant:
 
 **Known gap, accepted by the owner.** A listener started outside the sandbox while a command runs is reachable from
 that command. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it, and DESIGN §6.6 records it.
+
+**Amended 2026-10-21 by the owner: per-port allowances, for `go test` commands only.**
+
+- **Why the form changed.** Seatbelt ignores a port's denial once `(remote tcp "localhost:*")` is allowed. Probes on
+  macOS 26 found no form that both allows loopback and holds a port back:
+  - a denial after the allowance, whether written `localhost:PORT`, `*:PORT` or as an `ip` filter;
+  - a denial before the allowance;
+  - an exclusion inside the allowance (`require-all` with `require-not`).
+
+  Each of them left a pre-existing listener reachable. `TestLoopbackEscapes` went red on exactly that.
+- **What is built.**
+  - The profile allows connecting to each port of the kernel's ephemeral range (`net.inet.ip.portrange`, 49152–65535)
+    by name, in rules of 256, leaving out every port listening when the command starts. Binding and accepting on
+    loopback are allowed. Nothing else is: UDP, unix sockets and every port outside the range stay denied.
+  - The listening ports are read from the kernel's TCP socket table (`sysctl net.inet.tcp.pcblist_n`, XNU's
+    `xinpcb_n` ports; `internal/sandbox/listen_darwin.go`). `TestListeningTCPPortsMatchesNetstat` holds the parse to
+    `netstat`.
+  - A failed read, or a command not parsed as running `go test`, gets no loopback.
+- **Why only `go test`.** Seatbelt takes about 5 seconds to compile a profile naming 16,000 ports (4.94 s measured,
+  against 0.01 s without loopback). tack builds a profile for every bash command. The shell decides from the parse it
+  already makes (`perms.GoSubcommand`), so every other command keeps the profile with no network, and pays nothing.
+- **What `localhost` means to Seatbelt.** It includes this machine's own LAN address, not just 127.0.0.1 and `::1`. A
+  connection to the LAN address reaches only this machine's listeners, which the same leaving-out covers.
+- **The accepted gap, restated.** A new ephemeral listener, opened by another program after the snapshot and while a
+  `go test` command runs, is reachable from that command. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates
+  it.
+- **Escape tests, each red first** (`internal/sandbox/sandbox_test.go`): every case gets out with no sandbox, is
+  stopped by the profile, and gets out again with only its own section removed.
+  - a pre-existing listener on 127.0.0.1, on `[::1]`, and through the LAN address;
+  - a pre-existing SOCKS proxy relaying elsewhere;
+  - another machine (nobara's ssh port, `TACK_ESCAPE_OUTSIDE` in CI) from a `go test` command;
+  - UDP on and off loopback;
+  - a command without loopback cannot reach even a listener started after it began (`TestNoLoopbackWithoutIt`), and
+    only `go test` commands are given loopback (`TestOnlyGoTestIsOfferedLoopback`, `TestEditKitLoopbackOnlyForGoTest`).
+- **Shown on ken.** In the sandbox, ken's `internal/modelfetch` fails without loopback (`httptest: failed to listen …
+  [::1]:0: bind: operation not permitted`), and passes with it (ken `ac71bae4`, 2026-10-21).

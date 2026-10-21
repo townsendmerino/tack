@@ -534,17 +534,27 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **Network** is denied by default; through P4 it is denied outright, with an escape test proving it. From P5, with
     `web_fetch`, opening it per domain goes through a local proxy that enforces the list, because
     Seatbelt filters addresses, not host names.
-  - **Loopback is allowed, except to what was already listening** (ADR-005; built after the calibration baseline,
-    `e1-calibration-preregistration-2026-10-18.md` §4.3).
-    - A command may bind, accept and connect on loopback, so tests that start a local server (`httptest`) run.
-    - Every loopback port already listening when the command starts is denied to it. This covers the owner's local
-      services, such as an editor's helper servers, ssh forwards and an ssh SOCKS proxy, any of which could reach
-      the outside network.
-    - Everything off loopback stays denied. Escape tests prove it, each red first: an outside address, a pre-existing
-      listener, an ssh SOCKS proxy, and DNS and UDP.
-    - **Known gap, accepted by the owner (2026-10-18):** a listener started outside the sandbox *while* a command runs
-      is reachable from that command, because its port was not listening when the command's profile was built.
-      `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it and lands with the change.
+  - **Loopback, for `go test` commands only, except to what was already listening** (ADR-005, amended 2026-10-21;
+    `[run] sandbox_loopback`, `e1-calibration-preregistration-2026-10-18.md` §4.3).
+    - Only a command whose parsed command line runs `go test` gets it. Every other command keeps the profile with no
+      network.
+    - Such a command may bind and accept on loopback, and connect to each port of the ephemeral range by name, except
+      those listening when it starts. So tests that start a local server (`httptest`, on 127.0.0.1 or `[::1]`) run.
+    - Leaving out the listening ports covers the owner's local services, such as an editor's helper servers, ssh
+      forwards and an ssh SOCKS proxy, any of which could reach the outside network. Ports outside the ephemeral range
+      are never allowed.
+    - Seatbelt's `localhost` includes this machine's own LAN address. That reaches only this machine's listeners, which
+      the same rule covers.
+    - Everything else stays denied. Escape tests prove it, each red first:
+      - a pre-existing listener, on loopback and through the LAN address;
+      - an ssh SOCKS proxy;
+      - another machine (nobara's ssh port) from a `go test` command;
+      - UDP;
+      - a non-test command with no network at all.
+    - **The cost:** about 5 seconds of profile compilation per `go test` command, and none for any other command.
+    - **Known gap, accepted by the owner (2026-10-18, restated 2026-10-21):** a listener started outside the sandbox
+      *while* a `go test` command runs, on an ephemeral port, is reachable from that command, because its port was not
+      listening when the command's profile was built. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it.
   - **tack itself is out of reach.** The profile denies tack's socket, lock, token, state directory and config, so a
     command cannot approve its own request, change the mode, lift a halt or read transcripts. Methods that change
     permissions, mode, trust or halt state also require the token in `client.token`, which only unsandboxed clients can

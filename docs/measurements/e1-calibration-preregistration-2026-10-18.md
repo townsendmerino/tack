@@ -242,6 +242,9 @@ reachable from that command.
 **This change is measured like the others.** On the calibration set it matters only where a task's tests, or the
 packages the model tests, use loopback.
 
+**Amended 2026-10-21 (owner):** Seatbelt ignores a port's denial once `localhost:*` is allowed, so the built form allows
+each ephemeral port by name, for `go test` commands only. See ADR-005's amendment, and §12.16 for the screen.
+
 ### 4.4 Small additions: repeat and empty-result messages
 
 - **These are A1b's two items, as small additions, not a focus:**
@@ -1555,3 +1558,52 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
       passed);
     - the amended stop rule's 26 live stops match the replay exactly.
   - Record: `e1-calibration-c6-42-2026-10-20.md`.
+
+### 12.16 Change 4.3, loopback for go test commands: a screen — proposed 2026-10-21, awaiting the owner's approval
+
+- **The change, as built** (`[run] sandbox_loopback`; ADR-005 as amended 2026-10-21; DESIGN §6.6):
+  - Only a bash command that the shell's parse finds running `go test` gets loopback. Every other command keeps the
+    profile with no network.
+  - That command may bind and accept on loopback, and connect to each port of the ephemeral range by name, except the
+    ports listening when it starts. A failed read of the socket table gives no loopback.
+  - The cost is the profile's compile time: 4.94 s per `go test` command against 0.01 s (the mean of 3, on the Mac,
+    2026-10-21).
+  - In the sandbox, ken's `internal/modelfetch` fails without it (`bind: operation not permitted` on `[::1]:0`) and
+    passes with it.
+- **Arms:**
+  - A is the bundle as 4.2's verdict leaves it: `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits` and `verify_done`.
+  - B is A plus `sandbox_loopback`.
+- **Build:**
+  - tack at the commit that carries `sandbox_loopback`, clean, on both machines;
+  - goinfer `b2b5e816`;
+  - Qwen3-8B `Q4_K_M` at 16,384, thinking off.
+- **Run:** the 12 tasks, A B B A A B, 72 runs, each after the cell check, holding both machines' locks. By day, about
+  1 h 45 m. Before it: the sandbox cache warmed untimed, Go's build cache cleared if the disk needs it, and free disk
+  checked.
+- **Base rates,** from captured runs: runs with a loopback-denied failure (a tool result containing `bind: operation
+  not permitted` or `failed to listen on a port`):
+  - 4.1 (resume): 8 of 42;
+  - 4.4: 5 of 72;
+  - 4.8: 6 of 72;
+  - 4.2: 1 of 72.
+
+  They are mostly ken's tasks 10 and 11, with some goinfer runs (tasks 1, 3 and 6). `fit_window` trims long test
+  output, so these counts are lower bounds.
+- **Mechanism metrics:**
+  1. Runs with a loopback-denied failure, per arm, by the rule above.
+  2. The per-command cost: the mean wall time of bash calls that run `go test` (tool started to finished), per arm,
+     and their number per run.
+  3. The mean wall time of every other bash call, per arm.
+  4. Requests per run and window-full stops, per arm.
+- **Predictions:**
+  - metric 1: B at 0, A between 1 and 8;
+  - metric 2: B's `go test` calls 4–7 s slower than A's;
+  - metric 3: within 0.5 s between the arms;
+  - d between −1 and +2. The likely gains are on ken's tasks 10 and 11, whose tests start local servers.
+- **Decision rule,** as for the other screens: 4.3 enters the bundle if metric 1 moves as predicted (B at 0, A above
+  0) and d ≥ −1.
+  - If A also has no loopback-denied failure, the mechanism is not shown, and 4.3 does not enter.
+  - At 72 runs, "not adopted" means "not shown".
+- **The escape tests ride on every change to the profile.** They run in the day-loop gate (`touched`) and in CI's
+  macOS job, and they passed at the build's commit.
