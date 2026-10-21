@@ -235,3 +235,26 @@ that command. `TestLoopbackGap_ListenerStartedDuringCommand` demonstrates it, an
     only `go test` commands are given loopback (`TestOnlyGoTestIsOfferedLoopback`, `TestEditKitLoopbackOnlyForGoTest`).
 - **Shown on ken.** In the sandbox, ken's `internal/modelfetch` fails without loopback (`httptest: failed to listen …
   [::1]:0: bind: operation not permitted`), and passes with it (ken `ac71bae4`, 2026-10-21).
+
+**Held 2026-10-21 by the owner: the per-port form lets another machine reach a test server.**
+
+- **The test.** `TestLoopbackNotReachableFromAnotherMachine`: a sandboxed `go test` listens on all addresses
+  (`0.0.0.0`) and on each of the Mac's own addresses, and nobara tries to connect. It fails with this profile.
+- **What another machine reached** (probe and test, 2026-10-21; nobara reaches the Mac only over Tailscale, its LAN
+  being another subnet):
+
+| profile | all addresses | Mac's Tailscale address | Mac's LAN address | 127.0.0.1 |
+|---|---|---|---|---|
+| no sandbox | nobara connected | nobara connected | listening, no route from nobara | refused |
+| per-port loopback (`go test`) | **nobara connected** | **nobara connected** | listening, no route from nobara | refused |
+| no network (every other command) | listen refused | listen refused | listen refused | listen refused |
+
+- **Why the profile cannot close it.**
+  - A host in a network rule can only be written `*` or `localhost`, and to Seatbelt `localhost` covers every address
+    of the machine, the Tailscale address included.
+  - Seatbelt checks inbound once, at `listen`, against the local address. A rule on the remote address made every
+    `listen` fail, 127.0.0.1 included.
+- **The risk.** While a `go test` command runs, a server it starts on all addresses, or on a fixed port, can be
+  reached from the LAN or the tailnet. The process behind it can read the workspace. Outbound stays blocked, so a
+  peer that connects in is the way out.
+- **Open design question:** run `go test` outside Seatbelt, in a VM, or under a port-scoped firewall rule.

@@ -608,3 +608,126 @@ func TestNoLoopbackWithoutIt(t *testing.T) {
 		}
 	}
 }
+
+// inboundHost is an ssh host on another machine that can try to connect back to this one: TACK_ESCAPE_INBOUND_FROM,
+// or nobara. Without one the test fails: it cannot show what another machine reaches.
+func inboundHost(t *testing.T) string {
+	t.Helper()
+	if h := os.Getenv("TACK_ESCAPE_INBOUND_FROM"); h != "" {
+		return h
+	}
+	if out, _ := exec.Command("ssh", "-G", "nobara").Output(); strings.Contains(string(out), "\nhostname ") &&
+		!strings.Contains(string(out), "\nhostname nobara\n") {
+		return "nobara"
+	}
+	t.Fatal("no machine to connect from: set TACK_ESCAPE_INBOUND_FROM to an ssh host, or have nobara in the ssh config")
+	return ""
+}
+
+// TestLoopbackNotReachableFromAnotherMachine (ADR-005): a go test command's server, listening on all addresses and on
+// each of this machine's own addresses, is not reachable from another machine. With no sandbox another machine reaches
+// at least one, so the test can see the escape.
+//
+// It fails with the per-port profile: Seatbelt's localhost covers every address of the machine, so the profile lets
+// the server listen on all of them, and Seatbelt checks inbound only at listen, by local address (2026-10-21: nobara
+// connected over Tailscale). This is why 4.3 is held (docs/design/DECISIONS.md, ADR-005).
+func TestLoopbackNotReachableFromAnotherMachine(t *testing.T) {
+	f := setup(t)
+	from := inboundHost(t)
+	var mine []string
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+			mine = append(mine, n.IP.String())
+		}
+	}
+	listen := []string{"0.0.0.0:0"}
+	for _, a := range mine {
+		listen = append(listen, a+":0")
+	}
+	os.MkdirAll(filepath.Join(f.ws, "srv"), 0o755)
+	os.WriteFile(filepath.Join(f.ws, "srv", "srv_test.go"), []byte(`package srv
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestListen(t *testing.T) {
+	p, _ := os.Create(os.Getenv("TMPDIR") + "/ports.tmp")
+	for _, a := range strings.Fields(os.Getenv("ADDRS")) {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			fmt.Println("LISTEN-REFUSED", a, err)
+			continue
+		}
+		fmt.Fprintf(p, "%s %d\n", a, ln.Addr().(*net.TCPAddr).Port)
+		go func(ln net.Listener) {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				fmt.Println("ACCEPTED", c.RemoteAddr())
+				c.Close()
+			}
+		}(ln)
+	}
+	p.Close()
+	os.Rename(os.Getenv("TMPDIR")+"/ports.tmp", os.Getenv("TMPDIR")+"/ports")
+	time.Sleep(10 * time.Second)
+}
+`), 0o644)
+	reached := func(cfg *Config) (int, string) {
+		os.Remove(filepath.Join(f.cfg.Temp, "ports"))
+		script := `ADDRS="` + strings.Join(listen, " ") + `" go test -count=1 -v ./srv/`
+		var cmd *exec.Cmd
+		if cfg == nil {
+			cmd = exec.Command("/bin/sh", "-c", script)
+		} else {
+			cmd = Command(*cfg, "/bin/sh", "-c", script)
+		}
+		cmd.Dir, cmd.Env = f.ws, f.env
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		var ports []byte
+		for i := 0; i < 600 && len(ports) == 0; i++ {
+			time.Sleep(100 * time.Millisecond)
+			ports, _ = os.ReadFile(filepath.Join(f.cfg.Temp, "ports"))
+		}
+		var tries strings.Builder
+		for _, line := range strings.Split(strings.TrimSpace(string(ports)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			hosts := mine
+			if h, _, _ := net.SplitHostPort(fields[0]); h != "0.0.0.0" {
+				hosts = []string{h}
+			}
+			for _, h := range hosts {
+				fmt.Fprintf(&tries, "timeout 3 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>/dev/null && echo connected %s:%s\n", h, fields[1], h, fields[1])
+			}
+		}
+		ssh := exec.Command("ssh", "-o", "BatchMode=yes", from, "bash", "-s")
+		ssh.Stdin = strings.NewReader(tries.String())
+		got, _ := ssh.Output()
+		cmd.Wait()
+		return strings.Count(string(got), "connected "), string(got) + out.String()
+	}
+	if n, out := reached(nil); n == 0 {
+		t.Fatalf("with no sandbox %s reached none of the listeners, so this test cannot see the escape: %s", from, out)
+	}
+	cfg := f.cfg
+	cfg.Loopback = true
+	if n, out := reached(&cfg); n > 0 {
+		t.Errorf("a go test command's server was reached from %s %d times: %s", from, n, out)
+	}
+}
