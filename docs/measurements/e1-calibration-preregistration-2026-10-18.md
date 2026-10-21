@@ -1544,3 +1544,14 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - 4.2's rule acts only after a change, so it never fired.
   - Record: `e1-calibration-c6-42-stopped-2026-10-20.md`. The head is to be fixed, and checked at tier 1, before
     4.2 is screened again.
+- **Outcome of the restart (2026-10-20, 20:12–21:51 PDT, tack `9b71ee0`): 4.2 enters the bundle, at the floor.**
+  - Metric 1: B verified in 10 of its 10 runs ending in `done` after a change, A in 7 of 9.
+  - d = −1 (B 5/36, A 6/36), exactly the floor. The one difference is task 11 B-2, wrong from its first edit and
+    never refused.
+  - The rule refused `done` in one B run of 36, and that run verified next. No run ended unverified.
+  - Riding checks:
+    - the head's shares are under the cap on every task;
+    - the duplicate-edit guard refused 10 calls in 8 runs, and on task 11 every refusal was followed by a read (5 of 6
+      passed);
+    - the amended stop rule's 26 live stops match the replay exactly.
+  - Record: `e1-calibration-c6-42-2026-10-20.md`.
