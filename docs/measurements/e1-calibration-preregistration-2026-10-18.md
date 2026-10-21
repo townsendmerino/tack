@@ -1381,6 +1381,16 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
     `write` call before the first `done`). C4 quit on all of these tasks with the old layout, possibly for the same
     reason. No rule follows from it.
   - 4.2's screen restarts only after the Qwen3-8B half passes.
+- **Outcome (2026-10-20, 17:02–17:23 PDT, tack `9b71ee0`, goinfer `b2b5e816`): the Qwen3-8B half passes, 6 of 6.**
+  - Every run made other calls before any `done`. Three reached `done` after an edit and a bash call (task 4 once,
+    task 6 twice). Two ended on `repeat_loop` (task 2, task 4), and one on a window-full refusal (task 2: 16,392
+    tokens). None passed.
+  - Both halves' first messages opened with "Project notes from CLAUDE.md, for reference:" and ended "Task: …".
+  - **Qwen3-4B, exploratory: 0 of 6 made an edit attempt.** Unlike C4, all 6 searched first (grep, read) and none
+    began with `done`. Three ended on `repeat_loop` after 10 greps, and three on `done` refused once, then accepted.
+  - Cells: all clean. goinfer-3f reported a read-only file scan on nobara, 17:02–17:05:30, beside task 2's two
+    Qwen3-8B runs. This check counts calls, not time, so they were kept.
+  - Records: `~/tack-runs/e1/c6-head-t1-2026-10-20/` on the Mac.
 - **A candidate, not registered:** a refusal of `done` with no change that restates the task.
 
 ### 12.13 Amendment to 4.5: the repeat rule compares the file's state after edit and write; adopted (owner, 2026-10-20)
