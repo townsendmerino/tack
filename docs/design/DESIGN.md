@@ -1118,6 +1118,12 @@ serving every other agent.
 | K7 | a measurement: N workspaces in one process cost one model's resident memory (ADR-045's mmap should already give this) | several workspaces on a 16 GB Mac | P2 |
 | K8 | latency and memory records for the in-process engine at the owner's repo sizes (goinfer, aikit, ken) | the daemon's admission budgets | P2 |
 | K9 | section-level retrieval over markdown instruction files, with a section's heading path in each hit | long `CLAUDE.md` files read by section (§2.3) | P1 |
+| K10 | hit text exactly as in the file: the enrichment label out of `Hit.Text`, and `Hit.Hash` over the text without it (a fix; ken-mcp already strips it) | the model sees only real lines; ledger identity (§7.5) | P1 |
+| K11 | lines on every structural result: definition end lines, outline spans, each call site with its line and enclosing function | reads by symbol; `read`'s outline (§7.3) | P1 |
+| K12 | the symbol at a line, with its span | step summaries; staleness by symbol (§7.5) | P1 |
+| K13 | a structural index that follows edits: `Refresh(changed, deleted)`, and the watcher updating it | spans stay right after the session's own edits | P1 |
+| K14 | qualified names: Go `pkg.Func` and `pkg.Type.Method`; a file holding only a type's methods is not its definition | names in a task resolve (§7.4) | P1 |
+| K15 | the tests that call a symbol, with the directory to run them in; the calls a symbol makes | focused verification; `symbol`'s `tests` and `callees` (§7.3) | P1 |
 
 - **ken-mcp moves onto `ken/engine` in the same release**, so the MCP face and the library face cannot drift. ken's
   `TestPublicSurfaceDocumented` pattern extends to the new package. A ken ADR records it ("public engine package;
@@ -1151,6 +1157,9 @@ serving every other agent.
   search over it.
 
 **Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements).
+
+**Sent 2026-10-22:** K10–K15 and K8's structural half, in `docs/briefs/ken-k10-k15-structural.md`. The calibration runs
+pulled them into P1: none of them used ken, and the stopped runs show what a symbol lookup with spans would have saved.
 
 **How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
 (`WatchedIndex()`, `StructuralIfBuilt()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's internal packages
