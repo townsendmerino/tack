@@ -2,6 +2,14 @@
 
 <!-- citations-at: ken d63f507, tack d14cbfe -->
 
+**Outcome (2026-10-22):** delivered in ken v1.11.0 (DESIGN §12). ken's note,
+`~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`, lists where this brief was wrong. Three points matter:
+- The structural index shared enrichment's 64 KiB file cap. That hid `decoder.Model.ResidentDecline` (task 6, in the
+  K14 table) and `decoder.Options` until ken gave the index its own cap.
+- ken's GitHub Actions minutes were never exhausted, because ken is public. tack, which is private, is the repository
+  that is out of minutes.
+- The K8 measurements are timed runs. They hold goinfer's timing lock exclusive, not shared as the Process section says.
+
 **From:** tack (DESIGN §12, asks K10–K15, added to the table with this brief). Drafted in the claude app on the owner's
 word, 2026-10-22.
 

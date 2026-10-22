@@ -1156,17 +1156,55 @@ serving every other agent.
   silently returns no hits, so check a file with `Sections` (which errors on an unindexed path) before trusting a
   search over it.
 
-**Still open:** K3 (change events), K5 (symbol bundle), K7 and K8 (measurements).
+**Delivered in ken v1.11.0** (2026-10-22, ken ADR-048; tagged at `5ab3888`). The brief is
+`docs/briefs/ken-k10-k15-structural.md`, and ken's note on it is `~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`. The
+calibration runs pulled these into P1: none of them used ken, and the stopped runs show what a symbol lookup with spans
+would have saved.
 
-**Sent 2026-10-22:** K10–K15 and K8's structural half, in `docs/briefs/ken-k10-k15-structural.md`. The calibration runs
-pulled them into P1: none of them used ken, and the stopped runs show what a symbol lookup with spans would have saved.
+- **K10:** `Hit.Text` is the file's lines `StartLine..EndLine`, without the enrichment label, and `Hit.Hash` is its
+  sha256, from `Search`, `SearchMode`, `SearchFiles` and `FindRelated`. The stored chunks keep the label, so ranking is
+  unchanged.
+- **K11:** `DefinitionSite.EndLine`; `OutlineEntry.StartLine` and `EndLine`; `CallSite.Calls` (`Call{Line, Caller}`);
+  `Reference.Lines` (calls only); and, for Go, `DocLine`, the first line of the doc comment. All are computed at query
+  time.
+- **K12:** `Workspace.SymbolAt(ctx, path, line)` gives the symbols whose spans hold the line, innermost first, and
+  `ErrFileNotIndexed` for a file the structural index doesn't hold.
+- **K13:** `Workspace.Refresh(ctx, changed, deleted)` brings both indexes up to date before it returns, and the watcher
+  now updates the structural index too. `Status.StructuralGeneration` counts its versions. A path outside the root gets
+  `ErrPathOutsideRoot` before anything is read.
+- **K14:** `A.B` is the methods `B` of type `A` and, in Go, a function or type `B` in package `A`. `A.B.C` is, in Go,
+  method `C` of type `B` in package `A`. A file holding only a type's methods is no longer one of its definitions.
+- **K15:** `Workspace.TestsFor(ctx, symbol, maxDepth)` (Go and Python; `TestSite.Dir` is where to run each test) and
+  `Workspace.Callees(ctx, symbol)`.
+- **Also in it:**
+  - The structural index has its own file-size cap, 1 MiB by default (`Options.StructuralMaxFileBytes`, or the
+    environment variable `KEN_STRUCTURAL_MAX_FILE_BYTES`).
+  - Before, it shared enrichment's 64 KiB cap, which left out 24 of goinfer's files at its head. At the task bases that
+    hid `decoder.Options` and `decoder.Model.ResidentDecline`.
+  - ken-mcp's structural tools now follow edits and show the lines.
+- **Checked against the calibration tasks:**
+  - The five package-qualified names in the statements resolve.
+  - Task 2's `modelBannerFrom` is lines 128–282, and `TestsFor` finds the 12 tests in task 2 that call it.
+  - It finds none for task 11, whose test reaches `resolveRepo` through the MCP SDK, as the brief expected.
+- **Pinned when tack resumes, not before;** tack stays on v1.9.0 until then.
+- **On adoption:**
+  - call `Refresh` after every edit and write;
+  - `Close` the workspace at the end of a run: with `Snapshot` on, `Refresh` defers the snapshot write to `Close`, or
+    to the next watcher flush;
+  - when `TestsFor` comes back empty, run the edited file's package;
+  - `engine.Open` sets no parse budget unless `KEN_ENRICH_FILE_BUDGET_MS` is set, so set one if a pathological file
+    turns up.
+
+**Still open:** K3 (change events), K5 (symbol bundle), K7, and K8 (measurements). K8's structural half has a harness,
+ken's `tools/k8-structural`, and waits for a quiet night. It is a timed run, so it holds goinfer's timing lock exclusive,
+not shared as the brief said.
 
 **How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
-(`WatchedIndex()`, `StructuralIfBuilt()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's internal packages
-are for ken's own binaries; tack does not touch them, so ken stays free to change what sits behind them. Two
-consequences of ken's defaults: the tree-sitter chunker is registered by the importing binary (`tackd` must import it,
-as `ken` and `ken-mcp` do), and `ModelDir` defaults to `~/.ken/model`, so the app passes the bundled model's path in
-`Contents/Resources/` (§11.11).
+(`WatchedIndex()`, `StructuralIfBuilt()`, `Structural()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's
+internal packages are for ken's own binaries; tack does not touch them, so ken stays free to change what sits behind
+them. Two consequences of ken's defaults: the tree-sitter chunker is registered by the importing binary (`tackd` must
+import it, as `ken` and `ken-mcp` do), and `ModelDir` defaults to `~/.ken/model`, so the app passes the bundled model's
+path in `Contents/Resources/` (§11.11).
 
 ---
 
