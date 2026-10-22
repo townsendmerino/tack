@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tack: a stopped run</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+a{color:#0B5E57}a:hover{color:#08443F}
+button:focus-visible,a:focus-visible{outline:2px solid #0B5E57;outline-offset:2px}
+</style>
+</helmet>
+<div style="min-height: 100vh; box-sizing: border-box; padding: 24px 16px; background: #E9ECEF; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif; color: #1D2024; font-size: 14px; line-height: 1.5;">
+<div style="max-width: 1232px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D3D8DE; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column;">
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #E1E5EA; background: #F6F7F9;">
+  <div aria-hidden="true" style="display: flex; gap: 8px;">
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #E0605A;"></span>
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #E3B341;"></span>
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #5DB55D;"></span>
+  </div>
+  <div style="font-weight: 600; font-size: 13px; flex: 1 1 260px; min-width: 0;">goinfer: the KV banner shouldn't say "auto (lossy)"</div>
+  <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 10px; border-radius: 999px; background: #E2F1EF; color: #0B5E57; font-weight: 600;">Auto · sandboxed</span>
+  <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 10px; border-radius: 999px; background: #EEF0F3; color: #3F4650;">Qwen3-8B on nobara</span>
+  <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #A1221A; font-weight: 600;" title="CLAUDE.md 10,702 · tack and task 924 · this run's work 4,286">
+    <span>Window</span>
+    <span aria-hidden="true" style="display: flex; width: 120px; height: 8px; border-radius: 4px; overflow: hidden; background: #E3E7EB;">
+      <span style="width: 65%; background: #C98A2E;"></span>
+      <span style="width: 6%; background: #8C939C;"></span>
+      <span style="width: 26%; background: #B3261E;"></span>
+    </span>
+    <span style="font-variant-numeric: tabular-nums;">15.9k of 16k</span>
+  </div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap;">
+
+  <nav aria-label="Sessions" style="flex: 1 1 200px; max-width: 100%; box-sizing: border-box; padding: 16px 12px; background: #F6F7F9; border-right: 1px solid #E1E5EA; display: flex; flex-direction: column; gap: 4px;">
+    <div style="font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #5A616B; padding: 0 8px 6px;">Sessions</div>
+    <a href="Main.dc.html" style="display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; text-decoration: none; color: #1D2024;">
+      <span style="font-size: 13px; font-weight: 600;">resolveRepo error style</span>
+      <span style="font-size: 12px; color: #1E6B2A;">ken · done · 22 s</span>
+    </a>
+    <a href="#s-task" style="display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; background: #FFFFFF; border: 1px solid #DCE1E6; text-decoration: none; color: #1D2024;">
+      <span style="font-size: 13px; font-weight: 600;">KV banner wording</span>
+      <span style="font-size: 12px; color: #A1221A;">goinfer · stopped · 68 s</span>
+    </a>
+    <a href="#s-task" style="display: flex; flex-direction: column; gap: 2px; padding: 8px; border-radius: 8px; text-decoration: none; color: #1D2024;">
+      <span style="font-size: 13px; font-weight: 600;">HNSW persistence check</span>
+      <span style="font-size: 12px; color: #5A616B;">aikit · not started</span>
+    </a>
+  </nav>
+
+  <main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 14px; padding: 20px 24px 24px; box-sizing: border-box;">
+
+    <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; align-items: center;">
+      <div style="font-size: 12px; color: #5A616B;">Turn 1 · 28 requests · 68 s</div>
+      <div style="display: flex; gap: 8px;">
+        <button type="button" onClick="{{ expandAll }}" style="font: inherit; font-size: 12px; padding: 6px 12px; min-height: 32px; border-radius: 6px; border: 1px solid #CBD1D8; background: #FFFFFF; color: #1D2024; cursor: pointer;">Expand all</button>
+        <button type="button" onClick="{{ collapseAll }}" style="font: inherit; font-size: 12px; padding: 6px 12px; min-height: 32px; border-radius: 6px; border: 1px solid #CBD1D8; background: #FFFFFF; color: #1D2024; cursor: pointer;">Collapse all</button>
+      </div>
+    </div>
+
+    <section id="s-task" aria-label="Task" style="border: 1px solid #DCE1E6; border-radius: 10px; padding: 14px 16px; background: #FAFBFC; display: flex; flex-direction: column; gap: 10px; max-width: 760px;">
+      <div style="font-size: 12px; font-weight: 600; color: #5A616B;">You asked</div>
+      <div style="font-size: 15px; line-height: 1.55; max-width: 68ch;">Off the resident path, with <code style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; background: #EEF0F3; padding: 1px 4px; border-radius: 4px;">--kv auto</code> (the default), serve's model banner should say <code style="font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; background: #EEF0F3; padding: 1px 4px; border-radius: 4px;">KV f32</code> and not call it lossy. A resident load still reports the precision its runner actually uses.</div>
+      <div style="align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid #F0C6C1; background: #FCEDEB; color: #8E1D16;">
+        Project notes from CLAUDE.md · whole file · 10,702 tokens, 65% of the window
+      </div>
+    </section>
+
+    <section id="s-search" aria-label="Searched in the wrong place" style="border: 1px solid #E1E5EA; border-radius: 10px; max-width: 760px; overflow: hidden;">
+      <button type="button" onClick="{{ toggleSearch }}" aria-expanded="{{ searchExp }}" style="width: 100%; text-align: left; font: inherit; display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; min-height: 44px; border: 0; background: #FFFFFF; color: #1D2024; cursor: pointer;">
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 10 10" style="margin-top: 5px; flex: none; transform: rotate({{ searchRot }}deg); transition: transform .15s;"><path d="M3 1.5 L7 5 L3 8.5" fill="none" stroke="#5A616B" stroke-width="1.6"></path></svg>
+        <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;">
+          <span style="font-weight: 600;">Searched in the wrong folder</span>
+          <span style="color: #3F4650;">Looked for “KV auto” and “KV” in internal/sampling: nothing there. Guessed a file, internal/sampling/banner.go, that doesn't exist.</span>
+        </span>
+        <span style="font-size: 12px; color: #5A616B; white-space: nowrap;">10 steps · 4 s</span>
+      </button>
+      <sc-if value="{{ searchOpen }}" hint-placeholder-val="{{ false }}">
+        <ol style="list-style: none; margin: 0; padding: 4px 16px 14px 40px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #EEF0F3;">
+          <li><span style="color: #5A616B;">Search</span> “KV auto” in internal/sampling, banner.go <span style="color: #5A616B;">· no matches</span> <span style="font-size: 12px; color: #7A4300;">×2</span></li>
+          <li><span style="color: #5A616B;">Search</span> “KV” in internal/sampling, banner.go and *.go <span style="color: #5A616B;">· no matches</span> <span style="font-size: 12px; color: #7A4300;">×3</span></li>
+          <li><span style="color: #5A616B;">Find files</span> internal/sampling/banner.go <span style="color: #5A616B;">· none</span>
+            <div style="font-size: 12px; color: #7A4300; background: #FBF3E4; border-radius: 6px; padding: 4px 8px; margin-top: 4px; display: inline-block;">tack: glob matches file names only; to find a name inside files, use grep.</div></li>
+          <li><span style="color: #5A616B;">Read</span> internal/sampling/banner.go <span style="color: #A1221A;">· no such file</span></li>
+          <li><span style="color: #5A616B;">Find files</span> internal/sampling/*.go <span style="color: #5A616B;">· 12 files, no banner</span></li>
+          <li><span style="color: #5A616B;">Search</span> “KV auto”, “KV”, “modelBannerFrom” in internal/sampling <span style="color: #5A616B;">· no matches</span> <span style="font-size: 12px; color: #7A4300;">×3</span></li>
+        </ol>
+      </sc-if>
+    </section>
+
+    <section id="s-found" aria-label="Found the code" style="border: 1px solid #E1E5EA; border-radius: 10px; max-width: 760px; padding: 12px 16px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;">
+      <span style="font-weight: 600;">Found it</span>
+      <span style="color: #3F4650; flex: 1; min-width: 0;">Searching the whole repo for <b>modelBannerFrom</b>: internal/serveapp/banner.go:128</span>
+      <span style="font-size: 12px; color: #5A616B;">request 11</span>
+    </section>
+
+    <section id="s-read" aria-label="Could not show the file" style="border: 1px solid #F0C6C1; border-radius: 10px; max-width: 760px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; background: #FFF8F7;">
+      <div style="display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;">
+        <span style="font-weight: 600; color: #8E1D16;">Couldn't show the file</span>
+        <span style="color: #3F4650; flex: 1; min-width: 0;">Read internal/serveapp/banner.go, lines 1–200 (10,957 bytes)</span>
+      </div>
+      <div style="font-size: 13px; color: #3F4650; max-width: 68ch;">Only about 500 tokens of the window were left, so tack withheld the file and told the model to finish. The model never saw the code it was about to edit.</div>
+    </section>
+
+    <section id="s-loop" aria-label="Repeated the same edit" style="border: 1px dashed #E0A59E; border-radius: 10px; max-width: 760px; overflow: hidden; background: #FFFBFA;">
+      <button type="button" onClick="{{ toggleLoop }}" aria-expanded="{{ loopExp }}" style="width: 100%; text-align: left; font: inherit; display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; min-height: 44px; border: 0; background: transparent; color: #1D2024; cursor: pointer;">
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 10 10" style="margin-top: 5px; flex: none; transform: rotate({{ loopRot }}deg); transition: transform .15s;"><path d="M3 1.5 L7 5 L3 8.5" fill="none" stroke="#8E1D16" stroke-width="1.6"></path></svg>
+        <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;">
+          <span style="font-weight: 600; color: #8E1D16;">Tried the same edit 8 times</span>
+          <span style="color: #3F4650;">Each edit's text wasn't in the file, and each re-read was withheld for lack of room. Nothing changed between attempts.</span>
+        </span>
+        <span style="display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: #FCE3E0; color: #8E1D16; white-space: nowrap;">×8</span>
+      </button>
+      <sc-if value="{{ loopOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="border-top: 1px dashed #EDC5BF; padding: 10px 16px 14px 40px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-size: 13px;"><span style="color: #5A616B;">The edit it kept sending</span> (identical each time):</div>
+          <pre style="margin: 0; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12.5px; line-height: 1.6; padding: 8px 0; overflow-x: auto; background: #FFFFFF; border: 1px solid #EEF0F3; border-radius: 8px;"><span style="display: block; padding: 0 12px; background: #FCE9E7; color: #7D1A14;">−         if kvPrec != "f32" {
+−             kvPrec = "lossy"
+−         }</span><span style="display: block; padding: 0 12px; background: #E7F4EA; color: #1E5A26;">+         if kvPrec != "f32" {
++             kvPrec = "lossy"
++         } else { …</span></pre>
+          <div style="font-size: 13px; color: #8E1D16;">Each time: “this text isn't in internal/serveapp/banner.go”.</div>
+          <div style="font-size: 12px; color: #5A616B;">Requests 12–28 · 8 edits and 8 reads, alternating.</div>
+        </div>
+      </sc-if>
+    </section>
+
+    <section id="s-stop" aria-label="Result" style="border: 1px solid #F0C6C1; border-radius: 10px; max-width: 760px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: #FFFFFF;">
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <span style="display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #FCE3E0; color: #8E1D16;">Stopped</span>
+        <span style="font-size: 12px; color: #5A616B;">28 requests · 68 s · no files changed</span>
+      </div>
+      <div style="font-size: 15px; line-height: 1.55; max-width: 68ch;">tack stopped the run because the model repeated the same calls 8 times with nothing changing.</div>
+      <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #3F4650; background: #F6F7F9; border-radius: 8px; padding: 10px 12px; max-width: 68ch;">
+        <span style="font-weight: 600; color: #1D2024;">Why it got stuck</span>
+        <span>The project notes took 65% of the window before any work began. By the time the model found the right file, there was no room left to show it, so it edited from a guess.</span>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <a href="#s-task" style="display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: 8px; background: #0B5E57; color: #FFFFFF; text-decoration: none; font-weight: 600;">Retry with shorter notes</a>
+        <a href="#s-found" style="display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid #CBD1D8; color: #1D2024; text-decoration: none;">Retry, starting at banner.go</a>
+        <a href="#s-read" style="display: inline-flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid #CBD1D8; color: #1D2024; text-decoration: none;">Open banner.go</a>
+      </div>
+    </section>
+
+    <a href="#s-stop" style="position: sticky; bottom: 16px; align-self: flex-end; display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; background: #1D2024; color: #FFFFFF; text-decoration: none; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.18);">Jump to latest ↓</a>
+  </main>
+
+  <aside aria-label="Steps in this turn" style="flex: 1 1 180px; max-width: 100%; box-sizing: border-box; padding: 20px 16px; border-left: 1px solid #E1E5EA;">
+    <div style="font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #5A616B; padding-bottom: 8px;">This turn</div>
+    <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px;">
+      <li><a href="#s-task" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #1D2024;"><span>Task</span><span style="color: #5A616B;">0 s</span></a></li>
+      <li><a href="#s-search" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #1D2024;"><span>Searched · 10</span><span style="color: #5A616B;">20 s</span></a></li>
+      <li><a href="#s-found" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #1D2024;"><span>Found it</span><span style="color: #5A616B;">24 s</span></a></li>
+      <li><a href="#s-read" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #8E1D16;"><span>Not shown</span><span style="color: #5A616B;">27 s</span></a></li>
+      <li><a href="#s-loop" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #8E1D16;"><span>Same edit · ×8</span><span style="color: #5A616B;">66 s</span></a></li>
+      <li><a href="#s-stop" style="display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: #8E1D16; font-weight: 600;"><span>Stopped</span><span style="color: #5A616B; font-weight: 400;">68 s</span></a></li>
+    </ol>
+  </aside>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1480}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { search: false, loop: false };
+  }
+  flip(key) {
+    return () => this.setState({ [key]: !this.state[key] });
+  }
+  renderVals() {
+    const s = this.state;
+    const rot = (open) => (open ? 90 : 0);
+    const exp = (open) => (open ? 'true' : 'false');
+    return {
+      searchOpen: s.search, searchRot: rot(s.search), searchExp: exp(s.search), toggleSearch: this.flip('search'),
+      loopOpen: s.loop, loopRot: rot(s.loop), loopExp: exp(s.loop), toggleLoop: this.flip('loop'),
+      expandAll: () => this.setState({ search: true, loop: true }),
+      collapseAll: () => this.setState({ search: false, loop: false })
+    };
+  }
+}
+</script>
+</body>
+</html>
