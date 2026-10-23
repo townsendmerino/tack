@@ -1392,6 +1392,27 @@ gain a C++ emitter when `apps/linux/` starts (or the Qt app reads JSON through g
 toolkit on nobara's KDE Plasma desktop. The Linux daemon is useful before any Linux GUI exists: the CLI and TUI run on
 nobara from P1, next to its GPU.
 
+**An alternative to try first: MyGo** (noted 2026-10-23; `github.com/egoist/mygo`, MIT). It is a Go framework for desktop
+apps on macOS, Windows and Linux. A window shows either a web page in the system's web view (WebKitGTK on Linux) or
+native widgets written in Go and drawn on the GPU.
+
+- **For it:**
+  - The Linux client would be written in Go and import `internal/proto` directly, so it would need neither a C++
+    emitter nor copied headers (§4).
+  - Its web-page mode suits the transcript (rich text, code, diffs, folding, scrolling), and the mocks in
+    `docs/design/mocks/` are already HTML.
+  - The same page would run on Windows if Windows ever comes into scope (§19).
+- **Against it, as of 2026-10-23:**
+  - It is four weeks old: first commit 2026-09-26, v0.6.3, with releases almost daily. Nearly all of it is one
+    maintainer's work, so expect the API to keep changing.
+  - Its native widgets don't look like KDE's, and KDE is why Qt was chosen.
+  - "No cgo" still means loading the system's libraries at run time (WebKitGTK and OpenGL, through purego).
+  - Its screen-reader support, and how it runs under Wayland on nobara, are unverified.
+- **Decided when `apps/linux/` starts, not before** (no Qt before P5, R8 in §17). The trial takes about a day on nobara:
+  - build the finished-run mock in MyGo's web-page mode, fed by a recorded session;
+  - check scrolling, typing through an input method, a screen reader, Wayland and memory use;
+  - if it passes, the Linux app uses MyGo; if not, Qt 6 as above.
+
 ## 19. Not in scope for v1
 
 Hosted models of any kind, iOS and iPadOS (a phone companion for approvals is the obvious next step once the remote
