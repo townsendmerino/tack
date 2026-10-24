@@ -40,7 +40,33 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
   - As a prompt change, it needs a tier-1 live check before any screen (§12.12).
 - **Edit by line range** (§4.9): refused unless the lines match what was last read.
 - **ken's symbol tools:** show a symbol, edit by symbol, and the tests covering a symbol. Each comes to tack through a
-  ken release.
+  ken release. Delivered in ken v1.11.0 (DESIGN §12); tack still pins v1.9.0.
+
+Added 2026-10-24, from LangChain's Terminal-Bench harness post and the "coding agent from scratch" course (sources below).
+Neither measured its changes one by one, except LangChain's reasoning split, so these are ideas to screen, not results.
+- **A build after every edit.** After a successful edit or write to a `.go` file, tack builds that package and appends
+  up to 10 error lines to the tool's result. It stays silent when the package builds.
+  - The evidence is in tack's own runs. Across the recorded C6 runs, 62 changed code and still failed, and 23 of those
+    left the model's own code not compiling, over 8 of the 12 tasks. Examples: two `default` cases in one switch, a
+    field that doesn't exist, a missing closing brace.
+  - Those runs had 30 passes in all. The cost is about a second per edit, against a median model request of 1.1 s.
+  - The mechanism metric: edits followed by a broken build, and whether the next edit fixes it.
+- **Thinking on only for planning and checking.** tack runs Qwen3 with thinking off. The variant: thinking on for the
+  first request and for the final check, off in between.
+  - LangChain's one measured change: 66.5% with this split, against 63.6% at one level throughout. The highest level
+    throughout scored 53.9%, mostly from timeouts.
+  - It must measure decode time and window use, since thinking costs both on nobara.
+- **The current code after repeated edits to one file.** tack's repeat guard catches the same call repeated. LangChain
+  adds a note after several edits to one file, even when they differ.
+  - tack's version shows the exact current lines of the symbol being edited, from ken v1.11.0's spans.
+  - It aims at the 4.1 replay's largest failure kind: edit text that isn't in the file (217 of 370).
+- **A cheap first stage of compaction** (for the P1 compaction design, not a C6 screen). At 60% of the window, replace
+  old tool results with short placeholders, with no model call; summarize only at 80%.
+  - The cost is one break in prompt-prefix reuse. It aims at window-full stops.
+- **Not taken:** telling the model it is graded by tests. That tunes the agent to the benchmark, not to real work.
+
+Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engineering>,
+<https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course>.
 
 ## The bundle night (§12.9)
 
