@@ -1628,6 +1628,14 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   instructions_head -setting refuse_duplicate_edits -setting verify_done -compare-setting build_after_edit`.
 - **Checks that ride on these runs:** `tools/replayrepeats -mirrors` over the 72 runs stops exactly the runs that ended
   live with `repeat_loop`, which also shows the build note leaves the repeat rule as it was.
+- **Outcome (2026-10-25, 14:43–16:11 PDT, tack `e3fdf99`, goinfer `b2b5e816`): not adopted, "not shown."**
+  - Metric 3: A 6, B 6; the rule needed B at most 3. d = −1 (B 4/36, A 5/36).
+  - Metric 2: after 0 of B's 7 notes did the next `.go` change build.
+  - The oracle's `[build failed]` also counts an API the model never added; with that taken out, the model's own code
+    failed to compile in A 4 runs and B 2. That split was read after the runs and decides nothing.
+  - The replay check: `tools/replayrepeats -mirrors` stops exactly the 30 runs that ended live with `repeat_loop`, and
+    no passing run.
+  - Record: `e1-calibration-c6-build-2026-10-25.md`. The setting stays in tack, off.
 
 ### 12.18 A no-change `done` refusal that restates the task: tier-1 check (owner, 2026-10-25), registered before its runs
 
