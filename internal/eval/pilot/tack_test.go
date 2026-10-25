@@ -2,6 +2,7 @@ package pilot
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,5 +125,21 @@ func TestForcedToolCall(t *testing.T) {
 	defer old.Close()
 	if m := ForcedToolCall(context.Background(), old.URL, "k", "qwen"); m != "" {
 		t.Fatalf("an older server: %q", m)
+	}
+}
+
+// TestSummarizeTackCountsRestatedRefusals: a refusal that quotes the task (loop.DoneNoChangeRestated, [run]
+// restate_task) counts in DoneRefused like the plain one.
+func TestSummarizeTackCountsRestatedRefusals(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	refusal, _ := json.Marshal(loop.DoneNoChangeRestated("Rename the flag."))
+	lines := []string{
+		`{"seq":3,"time":"2026-10-25T12:00:01Z","type":"tool.call","cause":2,"payload":{"id":"a","name":"done","input":{"reason":"x"}}}`,
+		`{"seq":4,"time":"2026-10-25T12:00:01Z","type":"tool.finished","cause":3,"payload":{"id":"a","outcome":"ok","result":` + string(refusal) + `,"truncated":false}}`,
+		`{"seq":7,"time":"2026-10-25T12:00:03Z","type":"turn.end","cause":1,"payload":{"stop_reason":"done"}}`,
+	}
+	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	if s := SummarizeTack(p); s.DoneRefused != 1 {
+		t.Fatalf("summary %+v", s)
 	}
 }

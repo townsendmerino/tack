@@ -64,7 +64,8 @@ var RunSettings = map[string]bool{
 	"instructions_head":      true, // §12.12
 	"refuse_duplicate_edits": true, // §12.14
 	"verify_done":            true, // §4.2, §12.15
-	"build_after_edit":       true, // a C6 candidate (e1-calibration-c6-status-2026-10-21.md), not yet registered
+	"build_after_edit":       true, // §12.17
+	"restate_task":           true, // a C6 candidate (e1-calibration-c6-status-2026-10-21.md), not yet registered
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.
@@ -234,7 +235,7 @@ func SummarizeTack(path string) TackSummary {
 		case proto.RequestSent:
 			s.Requests++
 		case proto.ToolFinished:
-			if p.Result == loop.DoneNoChange {
+			if loop.IsDoneNoChange(p.Result) {
 				s.DoneRefused++
 			}
 			if strings.HasPrefix(p.Result, loop.VerifyRefusal) {

@@ -105,6 +105,9 @@ type Run struct {
 	// BuildAfterEdit builds a .go file's package after each successful edit or write and appends its errors when it does not
 	// build (loop.Config.BuildAfterEdit; a C6 candidate, not yet registered). Default off.
 	BuildAfterEdit bool `toml:"build_after_edit"`
+	// RestateTask makes the refusal of an edit task's done with no change quote the task back (loop.Config.RestateTask; a C6
+	// candidate, not yet registered). Default off.
+	RestateTask bool `toml:"restate_task"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

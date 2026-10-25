@@ -38,6 +38,8 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
   - It aims at Qwen3-4B's 7 of 12 runs that searched and then quit (`-c6-4b-bundle-2026-10-21`), and at task 9, which
     every model ends at once.
   - As a prompt change, it needs a tier-1 live check before any screen (§12.12).
+  - Built 2026-10-25 as `[run] restate_task`, off by default. The tier-1 check and screen are proposed, not
+    registered: `e1-calibration-c6-restate-task-proposed-2026-10-25.md`.
 - **Edit by line range** (§4.9): refused unless the lines match what was last read.
 - **ken's symbol tools:** show a symbol, edit by symbol, and the tests covering a symbol. Each comes to tack through a
   ken release. Delivered in ken v1.11.0 (DESIGN §12); tack still pins v1.9.0.

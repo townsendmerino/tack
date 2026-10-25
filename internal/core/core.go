@@ -74,6 +74,8 @@ type Options struct {
 	// BuildAfterEdit builds the package of each .go file an auto-mode session edits or writes, in its shell, and appends the
 	// errors to the result (loop.Config.BuildAfterEdit).
 	BuildAfterEdit bool
+	// RestateTask quotes the task in the refusal of a done with no change (loop.Config.RestateTask).
+	RestateTask bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -338,7 +340,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	symbols, _ := searcher.(tools.Symbols)
 	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
-		VerifyDone: c.opt.VerifyDone}
+		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if p.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)

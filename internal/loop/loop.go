@@ -76,6 +76,9 @@ type Config struct {
 	// VerifyDone refuses an edit task's done, up to VerifyRefusals times, until a go build, vet or test has run since the
 	// latest successful edit or write (verify.go; calibration pre-registration §4.2).
 	VerifyDone bool
+	// RestateTask makes the refusal of a done with no change quote the turn's task back (DoneNoChangeRestated) instead of
+	// DoneNoChange alone. It changes only that refusal's text: still once per turn, still ended by the second done.
+	RestateTask bool
 	// BuildAfterEdit builds the package of a .go file after each successful edit or write, in Shell, and appends the
 	// errors to the result when it does not build (build.go). Shell is the session's shell, the one bash runs in; without
 	// it, nothing is built.
@@ -361,6 +364,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if !changed && !doneRefused {
 					doneRefused = true
 					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: DoneNoChange}
+					if s.cfg.RestateTask {
+						fin.Result = DoneNoChangeRestated(text)
+					}
 				} else if s.cfg.VerifyDone && !verify.verified() && verify.refusals < VerifyRefusals {
 					// ok, like DoneNoChange, so an identical done after it runs and counts instead of being answered
 					// RepeatedCall.

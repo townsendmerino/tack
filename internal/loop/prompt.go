@@ -1,6 +1,9 @@
 package loop
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // SystemPrompt is tack's fixed instructions. It is the start of the stable prefix (DESIGN §7.2): no dates, ids or
 // workspace facts, which go in the tail (UserText), so every session's prefix matches the last one's in goinfer's
@@ -28,6 +31,31 @@ const EditSystemPrompt = `You are tack, a coding agent working in one repository
 // DoneNoChange answers an edit task's first done call when no file has changed (Config.EditTask). The second call ends
 // the turn whatever the files say: R13's loop mitigation (DESIGN §17).
 const DoneNoChange = "no files changed; make the change, or call done again with the reason none is needed"
+
+// doneNoChangeOpen starts every answer to a done with no change, DoneNoChange and DoneNoChangeRestated alike.
+const doneNoChangeOpen = "no files changed;"
+
+// MaxRestatedTask caps the task text DoneNoChangeRestated quotes, in bytes.
+const MaxRestatedTask = 2000
+
+// DoneNoChangeRestated is DoneNoChange quoting the turn's task back (Config.RestateTask; the C6 candidate "a no-change
+// done refusal that restates the task", e1-calibration-c6-status-2026-10-21.md): the model that searched and then quit
+// sees what it was asked. A task over MaxRestatedTask is cut at a line and marked.
+func DoneNoChangeRestated(task string) string {
+	task = strings.TrimSpace(task)
+	if len(task) > MaxRestatedTask {
+		cut := task[:MaxRestatedTask]
+		if i := strings.LastIndexByte(cut, '\n'); i > 0 {
+			cut = cut[:i]
+		}
+		task = strings.TrimRight(strings.ToValidUTF8(cut, ""), " \n") + "\n…"
+	}
+	return "no files changed; the task asks for a change. The task was:\n\n" + task +
+		"\n\nMake the change it asks for, or call done again with the reason none is needed."
+}
+
+// IsDoneNoChange reports whether result is the answer to a done with no change, in either form.
+func IsDoneNoChange(result string) bool { return strings.HasPrefix(result, doneNoChangeOpen) }
 
 // RepeatedCall answers an exact repeat (same tool, same input) of the call that just failed: it is not run, because
 // it would fail the same way, and it counts as a failure toward the consecutive-error budget.
