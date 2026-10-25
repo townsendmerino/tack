@@ -51,7 +51,7 @@ Neither measured its changes one by one, except LangChain's reasoning split, so 
     field that doesn't exist, a missing closing brace.
   - Those runs had 30 passes in all. The cost is about a second per edit, against a median model request of 1.1 s.
   - The mechanism metric: edits followed by a broken build, and whether the next edit fixes it.
-  - Built 2026-10-25 as `[run] build_after_edit`, off by default. The screen is proposed, not registered:
+  - Built 2026-10-25 as `[run] build_after_edit`, off by default. Registered as §12.17 (owner, 2026-10-25); the draft:
     `e1-calibration-c6-build-after-edit-proposed-2026-10-25.md`.
 - **Thinking on only for planning and checking.** tack runs Qwen3 with thinking off. The variant: thinking on for the
   first request and for the final check, off in between.

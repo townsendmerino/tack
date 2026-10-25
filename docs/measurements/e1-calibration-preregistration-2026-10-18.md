@@ -1569,3 +1569,62 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   tests which start a local server fail in the sandbox, as ken's `internal/modelfetch` does.
 - **No screen runs,** and 4.3 is not in the bundle. The open design question, for the owner: run `go test` outside
   Seatbelt, in a VM, or under a port-scoped firewall rule.
+
+### 12.17 Build after every edit: a screen (owner, 2026-10-25), registered before its runs
+
+- **The change, as built** (`[run] build_after_edit`, `internal/loop/build.go:Session.buildNote`; tack `8ce3bcc`, on
+  main at `0a60b61`):
+  - After a successful `edit` or `write` of a `.go` file, tack builds that file's package in the session's own shell,
+    inside the sandbox. The command is `go -C <module root> build -o /dev/null ./<package>`, or `go test -c -o
+    /dev/null ./<package>` for a `_test.go` file. Nothing is run.
+  - When the package does not build, the result gains a note: "[tack: this change does not build (go build ./p):", then
+    go's first 10 error lines, each cut at 200 characters.
+  - It adds nothing when the package builds, when the file is in no module, when the build runs past 60 s or is
+    stopped, or when the permission engine would not run the same `bash` call unasked. Every A1 run is in auto mode in
+    the sandbox, where it runs.
+  - It is not a verification for `verify_done`, and the repeat rule compares results without the note
+    (`loop.StripNotes`).
+  - The fixed prompt is unchanged.
+- **Arms** (owner, 2026-10-25):
+  - A is the adopted bundle: `fit_window`, `stop_repeats` (as amended), `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits` and `verify_done`, under `--instructions whole`. This measures what `build_after_edit`
+    adds on top of it.
+  - B is A plus `build_after_edit`.
+- **Build:**
+  - tack at this registration's commit, clean, on both machines;
+  - goinfer `b2b5e816`, as §12.15's screen;
+  - Qwen3-8B `Q4_K_M` at 16,384, `-serve-option thinking-off`.
+- **Run:**
+  - the 12 tasks, A B B A A B, 72 runs, each after the cell check, interleaved per task;
+  - holding both machines' timing locks, started only when nobara's queue is idle and its lock free, behind every job
+    already queued or waiting there;
+  - about 1 h 45 m, as §12.15's (1 h 39 m), plus about a second per edit in B. If it cannot start by day, it runs that
+    night (owner).
+  - Before it: Go's build cache cleared if the Mac is under the 23 GiB floor (owner's standing permission), and tack's
+    sandbox cache warmed untimed for all 12 tasks.
+- **Base rate:** across the recorded C6 runs, 62 changed code and still failed, and 23 of those left the model's own
+  code not compiling, over 8 of the 12 tasks (`e1-calibration-c6-status-2026-10-21.md`). §12.15's arm B, the closest
+  arm to A, had 5 passes in 36.
+- **Mechanism metrics:**
+  1. In B, the share of `.go` edits and writes whose result carries the note.
+  2. In B, after each note, whether the run's next `.go` edit or write builds (no note), carries the note again, or
+     never comes.
+  3. **Per arm, the runs that end with code not compiling:** the oracle's `go test` for the run reports a build failure
+     (`[build failed]` or `[setup failed]`).
+  4. The cost per arm: wall time per run, requests per run, window-full stops; and in B, the build time per edit.
+- **Predictions:**
+  - metric 3: B at most half A's count;
+  - metric 2: the next `.go` change builds after at least half of B's notes;
+  - d between −1 and +3.
+- **Decision rule** (owner, 2026-10-25, the draft as written):
+  - **Enters the bundle:** B's count on metric 3 is at most half A's, and d ≥ −1 (B passes at most one task fewer
+    than A).
+  - **Parked** (examined, not adopted): metric 3 moves but d < −1; or d ≥ +2 with metric 3 unmoved, since a gain with
+    no mechanism needs one before it moves a bar.
+  - **Not adopted:** neither. At 72 runs, "not adopted" means "not shown".
+  - Read literally at the edge: if A has no run ending uncompiled, "at most half" asks B for none either. The record
+    reports that case as it falls.
+- **The harness:** `tack eval pilot -a1 … -setting fit_window -setting stop_repeats -setting result_notes -setting
+  instructions_head -setting refuse_duplicate_edits -setting verify_done -compare-setting build_after_edit`.
+- **Checks that ride on these runs:** `tools/replayrepeats -mirrors` over the 72 runs stops exactly the runs that ended
+  live with `repeat_loop`, which also shows the build note leaves the repeat rule as it was.

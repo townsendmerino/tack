@@ -1,8 +1,8 @@
 # C6 candidate: a build after every edit — a proposed screen, 2026-10-25
 
-**Status: PROPOSED, not registered, not run.** The setting is built and tested at tier 0 (branch
-`c6-build-after-edit`). Nothing here is queued. The decision rule below is a draft for the owner to set before any
-run, as the pre-registration's §12 requires.
+**Status: registered 2026-10-25 as §12.17 of the pre-registration** (owner: arm A carries `verify_done`, and the
+decision rule is the draft as written). §12.17 is the authority; this page stays as it was proposed. The setting was
+built and tested at tier 0 on branch `c6-build-after-edit`.
 
 The candidate comes from `e1-calibration-c6-status-2026-10-21.md`, "Candidates, not registered": the 2026-10-24
 addition, "A build after every edit".
