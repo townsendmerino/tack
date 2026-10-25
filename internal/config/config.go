@@ -102,6 +102,9 @@ type Run struct {
 	// VerifyDone refuses an edit task's done, up to 3 times, until a go build, vet or test has run since the last change
 	// (loop.Config.VerifyDone; calibration §4.2, §12.15). Default off.
 	VerifyDone bool `toml:"verify_done"`
+	// BuildAfterEdit builds a .go file's package after each successful edit or write and appends its errors when it does not
+	// build (loop.Config.BuildAfterEdit; a C6 candidate, not yet registered). Default off.
+	BuildAfterEdit bool `toml:"build_after_edit"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

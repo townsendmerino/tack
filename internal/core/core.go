@@ -71,6 +71,9 @@ type Options struct {
 	RefuseDuplicateEdits bool
 	// VerifyDone refuses an edit task's done until a build or test has run since its last change (loop.Config.VerifyDone).
 	VerifyDone bool
+	// BuildAfterEdit builds the package of each .go file an auto-mode session edits or writes, in its shell, and appends the
+	// errors to the result (loop.Config.BuildAfterEdit).
+	BuildAfterEdit bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -348,6 +351,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
+		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
 		root := ws.Root()
 		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
