@@ -1,8 +1,8 @@
 # C6 candidate: a no-change `done` refusal that restates the task — proposed tier-1 check and screen, 2026-10-25
 
-**Status: PROPOSED, not registered, not run.** The setting is built and tested at tier 0 (branch
-`c6-done-restates-task`). It changes what the model reads, so it needs a tier-1 live check before any screen
-(§12.12, owner 2026-10-20). Both rules below are drafts for the owner to set.
+**Status: the tier-1 check is registered as §12.18 of the pre-registration** (owner, 2026-10-25: both rules as drafted).
+The screen's rule is approved and is registered with its run after a passed check. §12.18 is the authority; this page
+stays as it was proposed.
 
 The candidate is in `e1-calibration-c6-status-2026-10-21.md` ("A no-change `done` refusal that restates the task")
 and at the end of §12.12.

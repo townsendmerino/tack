@@ -1628,3 +1628,51 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   instructions_head -setting refuse_duplicate_edits -setting verify_done -compare-setting build_after_edit`.
 - **Checks that ride on these runs:** `tools/replayrepeats -mirrors` over the 72 runs stops exactly the runs that ended
   live with `repeat_loop`, which also shows the build note leaves the repeat rule as it was.
+
+### 12.18 A no-change `done` refusal that restates the task: tier-1 check (owner, 2026-10-25), registered before its runs
+
+- **The change, as built** (`[run] restate_task`, `loop.DoneNoChangeRestated`; tack `4b2c208`, on main at `55ecef2`): the
+  refusal of an edit task's first `done` with no file changed quotes the turn's task back: "no files changed; the task
+  asks for a change. The task was:", the task as the user gave it (cut at a line past 2,000 bytes), then "Make the
+  change it asks for, or call done again with the reason none is needed." The rule is unchanged: once per turn, and
+  the second `done` ends it. Proposal: `e1-calibration-c6-restate-task-proposed-2026-10-25.md`.
+- **The tier-1 check** (owner: the draft as written). It repeats the Qwen3-4B bundle check of 2026-10-21
+  (`e1-calibration-c6-4b-bundle-2026-10-21.md`) with the setting on:
+  - Qwen3-4B as C4 loaded it (bf16, int4 at load), at 30,720, thinking off, goinfer `b2b5e816`;
+  - `fit_window`, `stop_repeats` (as amended), `result_notes`, `instructions_head`, `refuse_duplicate_edits`,
+    `verify_done` and `restate_task`; `build_after_edit` stays off until §12.17 reads;
+  - tasks 2, 3, 4, 6, 8 and 9, two runs each, 12 runs;
+  - tack at this registration's commit; on nobara after §12.17's screen and goinfer's jobs, holding both locks.
+- **Baseline:** 7 of 12 runs were refused for no change, and 0 of the 7 made an `edit` or `write` after the refusal.
+- **Pass rule:** at least 3 of the runs refused with the restated text make an `edit` or `write` after the refusal.
+  - If fewer than 4 runs are refused at all, the check reads "not shown", not failed.
+  - Every run's first message must match the 2026-10-21 layout; only the refusal's text changes.
+- **The screen, if it passes** (owner, rule approved now, registered with its run after the pass): A is the bundle as
+  adopted then; B is A plus `restate_task`; Qwen3-8B `Q4_K_M` at 16,384, thinking off, goinfer `b2b5e816`; the 12
+  tasks, A B B A A B, 72 runs.
+  - **Enters:** B's runs ending with no file changed are at most two thirds of A's, and d ≥ −1.
+  - **Parked:** an `edit` or `write` follows at least half of B's refusals but the endings do not move, or d < −1.
+  - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
+- **If it fails,** the setting stays in tack, off, as 4.1's did, and no screen runs.
+
+### 12.19 Change 4.9, edit by line range: tier-1 check (owner, 2026-10-25), registered before its runs
+
+- **The change, as built** (`[run] edit_lines`, `internal/tools/edit_lines.go:editTool.byLines`; tack `4b41ff3`, on main
+  at `55ecef2`): `edit` also takes `start_line` and `end_line` with `new_string`, which replaces those lines. It is
+  refused unless every line of the range was shown by `read` or `symbol` and is the same now as when shown. tack keeps
+  that record apart from `lastSeen`, which its own edits update. The largest fixed prompt is 1,197 tokens. Proposal:
+  `e1-calibration-c6-edit-lines-proposed-2026-10-25.md`.
+- **The tier-1 check** (owner: the draft as written):
+  - Qwen3-8B `Q4_K_M` at 16,384, thinking off, goinfer `b2b5e816`;
+  - the bundle (`fit_window`, `stop_repeats` as amended, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done`) plus `edit_lines`; `build_after_edit` stays off until §12.17 reads;
+  - tasks 2, 4 and 6, two runs each, 6 runs (§12.12's tasks);
+  - tack at this registration's commit; on nobara after §12.18's check, holding both locks.
+- **Pass rule:** at least 3 of the 6 runs make at least one line edit, and at least half of all line edits apply (are
+  not refused). Every first message must match the bundle's layout; only `edit`'s schema and description change.
+- **The screen, if it passes** (owner, rule approved now, registered with its run after the pass): A is the bundle as
+  adopted then; B is A plus `edit_lines`; Qwen3-8B as above; the 12 tasks, A B B A A B, 72 runs.
+  - **Enters:** B's failed edits whose text is not in the file are at most half of A's, and d ≥ −1.
+  - **Parked:** the failure kind moves but d < −1, or d ≥ +2 with no change in edit failures.
+  - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
+- **If the model never uses the range,** the setting stays off and no screen runs.

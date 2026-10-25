@@ -1,8 +1,8 @@
 # C6 candidate 4.9: edit by line range — proposed tier-1 check and screen, 2026-10-25
 
-**Status: PROPOSED, not registered, not run.** The setting is built and tested at tier 0 (branch `c6-edit-lines`). It
-changes a tool's description and schema, so it needs a tier-1 live check before any screen (§12.12, owner
-2026-10-20). Both rules below are drafts for the owner to set. The candidate is §4.9 of the pre-registration.
+**Status: the tier-1 check is registered as §12.19 of the pre-registration** (owner, 2026-10-25: both rules as drafted).
+The screen's rule is approved and is registered with its run after a passed check. §12.19 is the authority; this page
+stays as it was proposed. The candidate is §4.9 of the pre-registration.
 
 ## The change, as built
 
