@@ -22,7 +22,7 @@ type Config struct {
 	Main    string            `toml:"main"`
 	Servers map[string]Server `toml:"servers"`
 	Run     Run               `toml:"run"`
-	// Ken turns on ken's engine and the search tool; absent means no search tool (DESIGN §12).
+	// Ken turns on ken's engine, the search and symbol tools and edit's symbol form; absent means none of them (DESIGN §12).
 	Ken *Ken `toml:"ken"`
 	// StateDir overrides where sessions, blobs and the supervised goinfer's files live; empty means the platform's
 	// default (StateDir).
@@ -61,7 +61,7 @@ type Server struct {
 	TopK        *int     `toml:"top_k"`       // at least 1
 }
 
-// Ken configures ken's engine (ken v1.9.0, engine.Options). ModelDir is always explicit: tack does not rely on ken's
+// Ken configures ken's engine (ken v1.11.0, engine.Options). ModelDir is always explicit: tack does not rely on ken's
 // ~/.ken/model default (DESIGN §12).
 type Ken struct {
 	Mode     string `toml:"mode"`      // "bm25", "semantic", "hybrid" (default) or "hybrid-rerank"

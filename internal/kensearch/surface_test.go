@@ -11,7 +11,7 @@ import (
 
 // forbidden is ken/engine's surface that is for ken's own binaries (DESIGN §12, "How tack uses it"): the escape hatches,
 // and the aliases into ken's internal packages.
-var forbidden = regexp.MustCompile(`\.(WatchedIndex|StructuralIfBuilt|SetReranker|SetExtraChunks)\(|` +
+var forbidden = regexp.MustCompile(`\.(WatchedIndex|StructuralIfBuilt|Structural|SetReranker|SetExtraChunks)\(|` +
 	`engine\.(Index|WatchedIndex|StructuralIndex|VecCache|Reranker|RerankerOption|WithRerankN|WithRerankBlendBeta|Mode)\b`)
 
 var kenImport = regexp.MustCompile(`"github\.com/townsendmerino/ken(/[^"]*)?"`)

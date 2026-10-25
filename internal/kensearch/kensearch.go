@@ -1,6 +1,6 @@
-// Package kensearch is tack's Searcher over ken's public engine (ken v1.9.0, ken ADR-046; DESIGN §12, D6). It uses
-// only engine.Open, the Workspace methods and the value types. ken's escape hatches (WatchedIndex, StructuralIfBuilt,
-// SetReranker, SetExtraChunks) and its aliases into ken's internal packages are for ken's own binaries, so ken stays
+// Package kensearch is tack's Searcher and Symbols over ken's public engine (ken v1.11.0; DESIGN §12, D6). It uses
+// only engine.Open, the Workspace methods and the value types. ken's escape hatches (WatchedIndex, Structural,
+// StructuralIfBuilt, SetReranker, SetExtraChunks) and its aliases into ken's internal packages are for ken's own binaries, so ken stays
 // free to change what sits behind them.
 //
 // The tree-sitter chunker is not registered here: as with ken and ken-mcp, registering it is the binary's job
@@ -11,6 +11,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/townsendmerino/aikit/chunk"
 	"github.com/townsendmerino/ken/engine"
@@ -33,7 +36,14 @@ type Options struct {
 
 // Searcher is one workspace's engine.
 type Searcher struct {
-	ws *engine.Workspace
+	ws   *engine.Workspace
+	root string // absolute
+	// opened is when Open began: ken's index holds every file as it was at Open, so a file not modified since is current.
+	opened time.Time
+
+	mu sync.Mutex
+	// synced is each file's state (Searcher.state) when Sync last refreshed it.
+	synced map[string]string
 }
 
 // Open builds (or loads) ken's index over root.
@@ -50,16 +60,21 @@ func Open(ctx context.Context, root string, o Options) (*Searcher, error) {
 	default:
 		return nil, fmt.Errorf("kensearch: mode %q, want bm25, semantic, hybrid or hybrid-rerank", o.Mode)
 	}
+	opened := time.Now()
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
 	log := o.Log
 	if log == nil {
 		log = io.Discard // never stdout: a stdio mode's stdout is protocol (CLAUDE.md, "Stdio modes")
 	}
-	ws, err := engine.Open(ctx, root, engine.Options{Mode: o.Mode, Chunker: Chunker, ModelDir: o.ModelDir,
+	ws, err := engine.Open(ctx, abs, engine.Options{Mode: o.Mode, Chunker: Chunker, ModelDir: o.ModelDir,
 		Watch: o.Watch, Snapshot: o.Snapshot, MmapModel: true, LogWriter: log})
 	if err != nil {
 		return nil, err
 	}
-	return &Searcher{ws: ws}, nil
+	return &Searcher{ws: ws, root: abs, opened: opened, synced: map[string]string{}}, nil
 }
 
 // Search implements tools.Searcher.

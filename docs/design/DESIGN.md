@@ -491,11 +491,11 @@ tool-use smoke set compares this merged set against the split one before it is f
 |---|---|---|---|
 | `search` | ken hybrid search; results packed to a share of the window | read | allow |
 | `find_related` | ken | read | allow |
-| `symbol` | ken structural: a definition, with callers, callees, references or tests on request; given a path instead of a name, the symbols defined there (§7.3) | read | allow |
+| `symbol` | ken structural: a definition with its lines, by name (`pkg.Func`, `Type.Method`), with its callers, callees or tests on request; given a path instead of a name, the symbols defined there (§7.3) | read | allow |
 | `recently_changed` | tack: recent commits (`git log`) and uncommitted changes (`git status`), git run directly, never through a shell; ken's change events (K3) can feed it in P2 | read | allow |
 | `read` | file ranges with line numbers; large files return ken's outline first (§7.3) | read | allow inside the workspace |
 | `glob`, `grep` | Go implementations; exhaustive enumeration stays grep's job | read | allow |
-| `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5) | write | by mode |
+| `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5); with ken, `symbol` in place of the old string replaces that definition whole, under the same checks | write | by mode |
 | `write` | create or overwrite | write | ask |
 | `bash` | tack's own sandboxed shell (§6.6); the working directory and exported variables persist per session; background jobs | exec | ask, or a matching allow rule |
 | `read_output` | pages a truncated output out of the blob store | read | allow |
@@ -698,9 +698,10 @@ type Item struct {
 
 - **`search(query or queries[], k, max_tokens, path)`** returns hits with file, lines, score and text, packed by ken's
   `applyTokenBudget` to a budget that defaults to a share of the window (*proposed* 15%).
-- **`symbol(name or path, with: callers, callees, references, tests)`** given a name, returns the definition's text,
-  plus the requested sites as `file:line` and one line of context each, not their full text; given a path, the symbols
-  defined there. Next to search, this is the main token lever: a function instead of a 2,000-line file, which in a 16k
+- **`symbol(name, path, with: callers, callees or tests)`** given a name, returns the definition's text with its line
+  numbers, plus the requested sites as `file:line` and one line of context each, not their full text, and for tests
+  the `go test -run` command that runs them; given only a path, the symbols defined there. `references` stays with
+  `grep`. Next to search, this is the main token lever: a function instead of a 2,000-line file, which in a 16k
   window is the difference between fitting and not.
 - **`read(path, lines?)`.** Over a size threshold (*proposed* 200 lines, set by E1), a whole-file read returns ken's
   outline and the first screen, with a hint to read a range or a symbol. Explicit ranges always work.
@@ -1186,7 +1187,7 @@ would have saved.
   - The five package-qualified names in the statements resolve.
   - Task 2's `modelBannerFrom` is lines 128–282, and `TestsFor` finds the 12 tests in task 2 that call it.
   - It finds none for task 11, whose test reaches `resolveRepo` through the MCP SDK, as the brief expected.
-- **Pinned when tack resumes, not before;** tack stays on v1.9.0 until then.
+- **Pinned in tack 2026-10-25** (branch `ken-v1.11-symbols`), with Go 1.27.3, which v1.11.0's `go.mod` requires.
 - **On adoption:**
   - call `Refresh` after every edit and write;
   - `Close` the workspace at the end of a run: with `Snapshot` on, `Refresh` defers the snapshot write to `Close`, or
@@ -1194,6 +1195,19 @@ would have saved.
   - when `TestsFor` comes back empty, run the edited file's package;
   - `engine.Open` sets no parse budget unless `KEN_ENRICH_FILE_BUDGET_MS` is set, so set one if a pathological file
     turns up.
+- **What tack does with it** (`internal/kensearch`, `internal/tools/symbol.go`):
+  - K10 needs nothing of tack: `search` prints `Hit.Text`, which is now the file's own lines.
+  - The `symbol` tool (§6.5, §7.3) shows a definition by name (K11, K14), with its callers, callees or tests on
+    request (K11, K15). For tests it prints the `go test -run` command for each package; with none, the definition's
+    package.
+  - `edit` takes `symbol` in place of `old_string` and replaces that definition (K11). A plain edit's result names the
+    symbol the change is in (K12).
+  - tack syncs a file before it trusts a span. `kensearch.Searcher.Sync` calls `Refresh` for a file whose content
+    differs from the last sync, or, never synced, that was modified after `Open`, since `bash` and the user's editor
+    change files ken's index does not follow without the watcher. Every edit and write syncs its file.
+  - `Refresh` republishes the whole search index even when the file is unchanged, so `Sync` skips what it can show is
+    current. Its cost on goinfer, the largest repository, belongs with K8's records.
+  - `Close` already runs when the core closes (`core.Core.Close`).
 
 **Still open:** K3 (change events), K5 (symbol bundle), K7, and K8 (measurements). K8's structural half has a harness,
 ken's `tools/k8-structural`, and waits for a quiet night. It is a timed run, so it holds goinfer's timing lock exclusive,

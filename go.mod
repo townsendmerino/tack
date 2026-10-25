@@ -1,13 +1,13 @@
 module github.com/townsendmerino/tack
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ebitengine/purego v0.10.1
 	github.com/townsendmerino/aikit v1.70.1
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.9.0
+	github.com/townsendmerino/ken v1.11.0
 	golang.org/x/sys v0.48.0
 	mvdan.cc/sh/v3 v3.14.1
 )

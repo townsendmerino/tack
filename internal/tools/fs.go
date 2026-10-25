@@ -23,7 +23,8 @@ const (
 	grepMaxMatches = 100
 )
 
-type readTool struct{}
+// readTool reads a file. With symbols, a whole-file read cut at readMaxLines also says how to list the file's symbols.
+type readTool struct{ symbols bool }
 
 func (readTool) ReadOnly() bool { return true }
 func (readTool) Spec() server.Tool {
@@ -32,7 +33,7 @@ func (readTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
 }
 
-func (readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -80,6 +81,9 @@ func (readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Re
 	}
 	if !explicit && len(lines) > readMaxLines {
 		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), readMaxLines)
+		if t.symbols {
+			fmt.Fprintf(&b, "symbol with path %q lists its functions and types with their lines.\n", in.Path)
+		}
 	}
 	return Result{Text: b.String()}, nil
 }

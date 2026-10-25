@@ -1,5 +1,6 @@
 // Package tools implements the tools the model calls (DESIGN §6.5): read, glob, grep, and search when a Searcher (ken's
-// engine, DESIGN §12 K1/K2) is supplied; edit and write; read_output, todo and ask_user. Every schema and description
+// engine, DESIGN §12 K1/K2) is supplied, and symbol when Symbols (K11–K15) is; edit and write; read_output, todo and
+// ask_user. Every schema and description
 // counts against the fixed-prompt budget (DESIGN §2.3), so they are short.
 //
 // Paths are relative to the repository root, and every path parameter says so. An error the model sees says what to do
@@ -59,6 +60,8 @@ type Set struct {
 // Options choose a session's tools. read, glob and grep are always present.
 type Options struct {
 	Searcher Searcher // adds search
+	// Symbols adds symbol, gives edit its symbol form, and keeps the index current after every edit and write.
+	Symbols Symbols
 	// Write adds edit and write. Set it only where the permission engine decides each call (DESIGN §6.6).
 	Write bool
 	// Shell adds bash, which runs command lines in it. Like Write, only where the permission engine decides each call.
@@ -84,9 +87,13 @@ func New(o Options) *Set {
 	if o.Searcher != nil {
 		ts = append(ts, searchTool{s: o.Searcher})
 	}
-	ts = append(ts, readTool{}, globTool{}, grepTool{})
+	if o.Symbols != nil {
+		ts = append(ts, symbolTool{sym: o.Symbols})
+	}
+	ts = append(ts, readTool{symbols: o.Symbols != nil}, globTool{}, grepTool{})
 	if o.Write {
-		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits}, writeTool{})
+		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols},
+			writeTool{sym: o.Symbols})
 	}
 	if o.Shell != nil {
 		ts = append(ts, bashTool{sh: o.Shell})
