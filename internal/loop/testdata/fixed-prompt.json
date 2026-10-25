@@ -126,7 +126,7 @@
             },
             {
               "name": "edit",
-              "description": "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all. Or give symbol instead of old_string: new_string replaces that whole definition.",
+              "description": "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all. Or give symbol instead of old_string: new_string replaces that whole definition. Or give start_line and end_line, as read numbers them, instead of old_string: new_string replaces those lines.",
               "input_schema": {
                 "type": "object",
                 "properties": {
@@ -146,6 +146,12 @@
                   "symbol": {
                     "type": "string",
                     "description": "a function, type or method in path"
+                  },
+                  "start_line": {
+                    "type": "integer"
+                  },
+                  "end_line": {
+                    "type": "integer"
                   }
                 },
                 "required": [
@@ -290,7 +296,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":1159}\n"
+        "body": "{\"input_tokens\":1197}\n"
       }
     }
   ]

@@ -75,6 +75,7 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 		return errorf("%s has %d lines; offset %d is past the end", in.Path, len(lines), start), nil
 	}
 	end := min(start-1+n, len(lines))
+	ws.showed(p, string(data), start, end)
 	var b strings.Builder
 	for i := start - 1; i < end; i++ {
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, cut(lines[i]))

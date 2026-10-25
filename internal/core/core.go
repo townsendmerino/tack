@@ -76,6 +76,8 @@ type Options struct {
 	BuildAfterEdit bool
 	// RestateTask quotes the task in the refusal of a done with no change (loop.Config.RestateTask).
 	RestateTask bool
+	// EditLines gives edit its line form (tools.Options.LineEdits).
+	EditLines bool
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -352,7 +354,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			return "", fmt.Errorf("auto mode: %w", err)
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
-			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits})
+			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close

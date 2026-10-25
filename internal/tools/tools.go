@@ -76,6 +76,8 @@ type Options struct {
 	EditMessages bool
 	// RefuseDuplicateEdits refuses an edit identical to one already applied to the same file this session.
 	RefuseDuplicateEdits bool
+	// LineEdits gives edit its line form: start_line and end_line in place of old_string (edit_lines.go).
+	LineEdits bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -92,7 +94,7 @@ func New(o Options) *Set {
 	}
 	ts = append(ts, readTool{symbols: o.Symbols != nil}, globTool{}, grepTool{})
 	if o.Write {
-		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols},
+		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits},
 			writeTool{sym: o.Symbols})
 	}
 	if o.Shell != nil {
@@ -142,6 +144,10 @@ type Workspace struct {
 	seen map[string]string
 	// changes is the session's successful edits and writes, in order (edit_messages.go).
 	changes []change
+	// shown is, for each file read showed with line numbers (read, symbol), its content then and the line ranges shown of
+	// that content. A line edit checks against it (edit_lines.go). Unlike seen, edit and write do not update it: the
+	// model has not seen the new line numbers.
+	shown map[string]shownLines
 }
 
 // saw records that the model has seen abs with this content.

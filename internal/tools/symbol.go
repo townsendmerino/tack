@@ -201,6 +201,7 @@ func show(ws *Workspace, b *strings.Builder, d Def) error {
 	}
 	fmt.Fprintf(b, "%s:%d-%d %s %s\n", d.File, d.StartLine, d.EndLine, d.Kind, d.Name)
 	last := min(end, start-1+readMaxLines)
+	ws.showed(abs, content, start, last)
 	for i := start; i <= last; i++ {
 		fmt.Fprintf(b, "%6d\t%s\n", i, cut(lines[i-1]))
 	}

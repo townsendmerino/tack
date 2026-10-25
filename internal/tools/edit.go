@@ -19,23 +19,32 @@ import (
 // from what the model last saw (DESIGN §6.5, §7.5): the model edits only text it has seen.
 //
 // With Symbols, edit also takes symbol in place of old_string (bySymbol), and a plain edit's result names the symbol
-// the change is in. The schema without Symbols is unchanged, so a session without ken sends the same prefix.
+// the change is in. With LineEdits, it also takes start_line and end_line in place of old_string (byLines). Each form
+// adds to the schema only when it is on, so a session with neither sends the same prefix as before.
 type editTool struct {
 	messages  bool    // Options.EditMessages
 	refuseDup bool    // Options.RefuseDuplicateEdits
 	sym       Symbols // Options.Symbols
+	lines     bool    // Options.LineEdits
 }
 
 func (editTool) ReadOnly() bool { return false }
 func (t editTool) Spec() server.Tool {
+	desc := "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all."
+	props := `"path":{"type":"string","description":"relative to the repo root"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}`
+	required := `["path","old_string","new_string"]`
 	if t.sym != nil {
-		return server.Tool{Name: "edit",
-			Description: "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all. Or give symbol instead of old_string: new_string replaces that whole definition.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"symbol":{"type":"string","description":"a function, type or method in path"}},"required":["path","new_string"]}`)}
+		desc += " Or give symbol instead of old_string: new_string replaces that whole definition."
+		props += `,"symbol":{"type":"string","description":"a function, type or method in path"}`
+		required = `["path","new_string"]`
 	}
-	return server.Tool{Name: "edit",
-		Description: "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"}},"required":["path","old_string","new_string"]}`)}
+	if t.lines {
+		desc += " Or give start_line and end_line, as read numbers them, instead of old_string: new_string replaces those lines."
+		props += `,"start_line":{"type":"integer"},"end_line":{"type":"integer"}`
+		required = `["path","new_string"]`
+	}
+	return server.Tool{Name: "edit", Description: desc,
+		InputSchema: json.RawMessage(`{"type":"object","properties":{` + props + `},"required":` + required + `}`)}
 }
 
 func (t editTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
@@ -51,12 +60,22 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		NewString  string `json:"new_string"`
 		ReplaceAll bool   `json:"replace_all"`
 		Symbol     string `json:"symbol"`
+		StartLine  int    `json:"start_line"`
+		EndLine    int    `json:"end_line"`
 	}
-	if err := decode(input, &in); err != nil || in.Symbol != "" && t.sym == nil {
-		if err == nil {
+	if err := decode(input, &in); err != nil || in.Symbol != "" && t.sym == nil || (in.StartLine != 0 || in.EndLine != 0) && !t.lines {
+		if err == nil && in.Symbol != "" && t.sym == nil {
 			err = errors.New("unknown field \"symbol\"")
+		} else if err == nil {
+			err = errors.New("unknown field \"start_line\"")
 		}
 		return errorf("bad input: %v; edit takes path, old_string, new_string, and optionally replace_all", err), nil
+	}
+	if in.StartLine != 0 || in.EndLine != 0 {
+		if in.OldString != "" || in.Symbol != "" {
+			return errorf("give one of old_string, symbol, or start_line and end_line"), nil
+		}
+		return t.byLines(ctx, ws, in.Path, in.StartLine, in.EndLine, in.NewString), nil
 	}
 	if in.Symbol != "" {
 		if in.OldString != "" {
