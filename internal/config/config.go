@@ -108,6 +108,9 @@ type Run struct {
 	// RestateTask makes the refusal of an edit task's done with no change quote the task back (loop.Config.RestateTask; a C6
 	// candidate, not yet registered). Default off.
 	RestateTask bool `toml:"restate_task"`
+	// EditLines gives edit its line form, start_line and end_line in place of old_string (tools.Options.LineEdits;
+	// calibration §4.9, a candidate, not yet registered). Default off.
+	EditLines bool `toml:"edit_lines"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

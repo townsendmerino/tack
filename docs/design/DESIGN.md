@@ -158,10 +158,11 @@ and in how much memory, before the loop is built around them.
     window: 3,276 tokens at 16k, more on a larger window (owner, 2026-10-16, ADR-003; to be reconsidered as goinfer
     serves larger windows). For scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
     the whole window (`docs/integrations/claude-code.md`).
-    Measured: tack's largest fixed prompt, an edit task's with ken (its system prompt and every tool, `done`, `symbol`
-    and `edit`'s symbol form included), is 1,159 tokens (`TestFixedPromptBudget`, 2026-10-25); without ken, as in every
-    calibration arm, it is 1,024, and P0's read-only set measured 447 on 2026-10-16. opencode 1.19.0's own system prompt
-    and tool schemas, before any instruction file, are 11,180 tokens with the same Qwen2.5 tokenizer: about 10 times
+    Measured: tack's largest fixed prompt, an edit task's with ken and `edit_lines` (its system prompt and every tool,
+    `done`, `symbol` and `edit`'s symbol and line forms included), is 1,197 tokens (`TestFixedPromptBudget`,
+    2026-10-25); 1,159 without the line form; without ken or line edits, as in every calibration arm, it is 1,024, and
+    P0's read-only set measured 447 on 2026-10-16. opencode 1.19.0's own system prompt
+    and tool schemas, before any instruction file, are 11,180 tokens with the same Qwen2.5 tokenizer: about 9 times
     tack's largest, and 68% of a 16k window. With ken-mcp's schemas they are 14,694 (E1 pilot smoke, 2026-10-16;
     `docs/measurements/e0-mac-2026-10-16.md`).
   - **Long instruction files are read by section.** goinfer's `CLAUDE.md` is 44 KB, about 11,000 tokens: two-thirds of
@@ -496,7 +497,7 @@ tool-use smoke set compares this merged set against the split one before it is f
 | `recently_changed` | tack: recent commits (`git log`) and uncommitted changes (`git status`), git run directly, never through a shell; ken's change events (K3) can feed it in P2 | read | allow |
 | `read` | file ranges with line numbers; large files return ken's outline first (§7.3) | read | allow inside the workspace |
 | `glob`, `grep` | Go implementations; exhaustive enumeration stays grep's job | read | allow |
-| `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5); with ken, `symbol` in place of the old string replaces that definition whole, under the same checks | write | by mode |
+| `edit` | exact-string replace, refused if the region it changes holds a change the model has not seen (§7.5); with ken, `symbol` in place of the old string replaces that definition whole, under the same checks; with `[run] edit_lines`, `start_line` and `end_line` in its place, refused unless every line was shown by `read` or `symbol` and is unchanged since (calibration §4.9) | write | by mode |
 | `write` | create or overwrite | write | ask |
 | `bash` | tack's own sandboxed shell (§6.6); the working directory and exported variables persist per session; background jobs | exec | ask, or a matching allow rule |
 | `read_output` | pages a truncated output out of the blob store | read | allow |

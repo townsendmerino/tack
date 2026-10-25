@@ -66,6 +66,7 @@ var RunSettings = map[string]bool{
 	"verify_done":            true, // §4.2, §12.15
 	"build_after_edit":       true, // §12.17
 	"restate_task":           true, // a C6 candidate (e1-calibration-c6-status-2026-10-21.md), not yet registered
+	"edit_lines":             true, // §4.9, a candidate, not yet registered
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

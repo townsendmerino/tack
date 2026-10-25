@@ -41,6 +41,8 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
   - Built 2026-10-25 as `[run] restate_task`, off by default. The tier-1 check and screen are proposed, not
     registered: `e1-calibration-c6-restate-task-proposed-2026-10-25.md`.
 - **Edit by line range** (§4.9): refused unless the lines match what was last read.
+  - Built 2026-10-25 as `[run] edit_lines`, off by default. The tier-1 check and screen are proposed, not registered:
+    `e1-calibration-c6-edit-lines-proposed-2026-10-25.md`.
 - **ken's symbol tools:** show a symbol, edit by symbol, and the tests covering a symbol. Each comes to tack through a
   ken release. Delivered in ken v1.11.0 (DESIGN §12); tack still pins v1.9.0.
 
