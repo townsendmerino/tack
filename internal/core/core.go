@@ -38,9 +38,9 @@ type Options struct {
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
 	// per name and keeps the result.
 	Source func(model string) (models.Source, error)
-	// OpenSearcher, when set, opens ken's engine over a workspace root, giving its sessions the search tool (DESIGN
-	// §12). The Core opens one per root, shares it between that root's sessions, and closes it in Close when it is an
-	// io.Closer.
+	// OpenSearcher, when set, opens ken's engine over a workspace root, giving its sessions the search tool, and symbol
+	// and edit's symbol form when it is also a tools.Symbols (DESIGN §12, §6.5). The Core opens one per root, shares it
+	// between that root's sessions, and closes it in Close when it is an io.Closer.
 	OpenSearcher func(ctx context.Context, root string) (tools.Searcher, error)
 	Budget       loop.Budget
 	// Sampling is every session's sampling (the configured server's).
@@ -332,7 +332,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			return "", err
 		}
 	}
-	cfg := loop.Config{Source: src, Tools: tools.NewSet(searcher), WS: ws, Log: log,
+	symbols, _ := searcher.(tools.Symbols)
+	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone}
 	if p.Mode == proto.ModeAuto {
@@ -345,7 +346,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			c.unregister(id)
 			return "", fmt.Errorf("auto mode: %w", err)
 		}
-		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
+		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		s.kit = kit.Close

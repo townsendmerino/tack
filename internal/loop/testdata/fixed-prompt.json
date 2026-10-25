@@ -1,5 +1,5 @@
 {
-  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-10-17",
+  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-10-25",
   "interactions": [
     {
       "request": {
@@ -36,6 +36,30 @@
                 "required": [
                   "query"
                 ]
+              }
+            },
+            {
+              "name": "symbol",
+              "description": "Show a function, type or method with line numbers, by name: Name, pkg.Name or Type.Method. with adds its callers, callees or tests. A path alone lists the symbols defined there.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "file or directory, relative to the repo root"
+                  },
+                  "with": {
+                    "type": "string",
+                    "enum": [
+                      "callers",
+                      "callees",
+                      "tests"
+                    ]
+                  }
+                }
               }
             },
             {
@@ -102,7 +126,7 @@
             },
             {
               "name": "edit",
-              "description": "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all.",
+              "description": "Replace old_string with new_string in a file you have read. old_string must match exactly, and once unless replace_all. Or give symbol instead of old_string: new_string replaces that whole definition.",
               "input_schema": {
                 "type": "object",
                 "properties": {
@@ -118,11 +142,14 @@
                   },
                   "replace_all": {
                     "type": "boolean"
+                  },
+                  "symbol": {
+                    "type": "string",
+                    "description": "a function, type or method in path"
                   }
                 },
                 "required": [
                   "path",
-                  "old_string",
                   "new_string"
                 ]
               }
@@ -263,7 +290,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":1024}\n"
+        "body": "{\"input_tokens\":1159}\n"
       }
     }
   ]

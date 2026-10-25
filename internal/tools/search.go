@@ -9,9 +9,8 @@ import (
 	"github.com/townsendmerino/tack/internal/server"
 )
 
-// Searcher is the seam for ken's engine (DESIGN §12, D6: in-process, through ken's public engine package). tack
-// imports no ken package until K1 (ken/engine) and K2 (structured hits) are tagged; then an adapter in its own package
-// implements Searcher over engine.Workspace, and NewSet gains the search tool. Nothing else changes.
+// Searcher is the seam for ken's engine (DESIGN §12, D6: in-process, through ken's public engine package);
+// internal/kensearch implements it over engine.Workspace. Hit.Text is the file's lines StartLine..EndLine exactly (K10).
 type Searcher interface {
 	Search(ctx context.Context, query string, k int) ([]Hit, error)
 }

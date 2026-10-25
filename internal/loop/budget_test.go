@@ -18,8 +18,8 @@ import (
 var countURL = flag.String("count-url", "", "re-record testdata/fixed-prompt.json with this goinfer-serve's count_tokens "+
 	"(a Qwen2.5 model: the tokenizer and chat template of the default model)")
 
-// anySearcher, anyBlobs and anyShell stand in for ken, the blob store and the shell so every optional tool's schema is counted: the
-// budget holds for the largest tool set.
+// anySearcher, budgetSymbols, anyBlobs and anyShell stand in for ken, its symbol index, the blob store and the shell so
+// every optional tool's schema is counted, edit's symbol form included: the budget holds for the largest tool set.
 type anySearcher struct{}
 
 func (anySearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
@@ -37,7 +37,7 @@ func (anyShell) Run(context.Context, string, time.Duration) (shell.Result, error
 // fixedPromptRequest is the largest fixed prompt as goinfer renders it: the edit task's system prompt, the longer of
 // the two, every tool's schema including done, and a one-word user message, the least a request can carry.
 func fixedPromptRequest(model string) server.Request {
-	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true}).Specs(),
+	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true}).Specs(),
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 
