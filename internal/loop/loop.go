@@ -76,6 +76,11 @@ type Config struct {
 	// VerifyDone refuses an edit task's done, up to VerifyRefusals times, until a go build, vet or test has run since the
 	// latest successful edit or write (verify.go; calibration pre-registration §4.2).
 	VerifyDone bool
+	// BuildAfterEdit builds the package of a .go file after each successful edit or write, in Shell, and appends the
+	// errors to the result when it does not build (build.go). Shell is the session's shell, the one bash runs in; without
+	// it, nothing is built.
+	BuildAfterEdit bool
+	Shell          tools.Shell
 	// Perms decides every tool call that changes something, in Mode (DESIGN §6.6). Without it such a call is refused:
 	// a session whose tools can write must have an engine. Approve asks the user when the engine asks; nil means no one
 	// is attached, and a call that needs the user is refused.
@@ -400,6 +405,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if s.cfg.ResultNotes {
 					fin.Result += resultNotes(b.Name, ran.Empty, n, s.cfg.StopRepeats)
 				}
+			}
+			if s.cfg.BuildAfterEdit && fin.Outcome == proto.OutcomeOK && !ran.IsError && (b.Name == "edit" || b.Name == "write") {
+				fin.Result += s.buildNote(ctx, b.Input)
 			}
 			if _, err := s.record(proto.EvToolFinished, callEv.Seq, fin); err != nil {
 				return proto.StopError, err

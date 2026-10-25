@@ -40,9 +40,12 @@ func resultNotes(tool string, empty bool, repeats int, stopRepeats bool) string 
 	return b.String()
 }
 
-// StripNotes is result without the notes resultNotes appended to it: what the tool returned, as RepeatGuard compares
-// it. A result with no notes is returned unchanged.
+// StripNotes is result without the notes resultNotes and buildNote appended to it: what the tool returned, as
+// RepeatGuard compares it. A result with no notes is returned unchanged.
 func StripNotes(result string) string {
+	if i := strings.LastIndex(result, buildOpen); i >= 0 && strings.HasSuffix(result, "]") {
+		result = result[:i]
+	}
 	for strings.HasSuffix(result, "]") {
 		i := strings.LastIndex(result, noteOpen)
 		if i < 0 || strings.Contains(result[i+len(noteOpen):], "\n") {
