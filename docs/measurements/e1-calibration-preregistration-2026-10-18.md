@@ -1662,6 +1662,9 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - **Parked:** an `edit` or `write` follows at least half of B's refusals but the endings do not move, or d < −1.
   - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
 - **If it fails,** the setting stays in tack, off, as 4.1's did, and no screen runs.
+- **Outcome (2026-10-26, 03:36–03:40 PDT, tack `a2679df`): fails.** 8 runs were refused with the restated text, and
+  0 of the 8 made an `edit` or `write` after it; each called `done` again at once. First messages matched the
+  2026-10-21 layout. No screen runs; the setting stays off. Record: `e1-calibration-c6-t1-restate-edit-lines-2026-10-26.md`.
 
 ### 12.19 Change 4.9, edit by line range: tier-1 check (owner, 2026-10-25), registered before its runs
 
@@ -1684,3 +1687,7 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   - **Parked:** the failure kind moves but d < −1, or d ≥ +2 with no change in edit failures.
   - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
 - **If the model never uses the range,** the setting stays off and no screen runs.
+- **Outcome (2026-10-26, 03:40–03:56 PDT, tack `a2679df`): fails.** 0 of 6 runs made a line edit; the model made 21
+  `edit` calls, all with `old_string`, 17 of them failing. The line form was in the schema it received; first messages
+  matched the bundle's layout. No screen runs; the setting stays off. Record:
+  `e1-calibration-c6-t1-restate-edit-lines-2026-10-26.md`.

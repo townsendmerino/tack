@@ -22,6 +22,10 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
 
 - **Build after every edit:** not shown (§12.17, 2026-10-25): runs ending with code not compiling, A 6 and B 6; d = −1;
   the next change built after none of B's 7 notes (`-c6-build-2026-10-25`). The setting stays in tack, off.
+- **The no-change refusal that restates the task:** its tier-1 check fails (§12.18, 2026-10-26): 0 of 8 refused runs
+  acted after it (`-c6-t1-restate-edit-lines-2026-10-26`). The setting stays in tack, off; no screen.
+- **4.9, edit by line range:** its tier-1 check fails (§12.19, 2026-10-26): 0 of 6 runs used it. The setting stays in
+  tack, off; no screen.
 - **4.1, edit messages:** not shown; the model resends the same text whatever the message says (§12.10). The setting
   stays in tack, off.
 - **4.7, glob and grep descriptions:** proposed, never registered.
