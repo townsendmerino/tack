@@ -1697,6 +1697,14 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
 The owner chose this candidate on 2026-10-27 at 15:05 PDT (from the C6 status note's list), and asked for its tier-1
 check to be registered before any code. The line naming the commit it was built at is added here before the first run.
 
+- **Built (2026-10-27, before the first run):** tack `8c29530`, on branch `c6-current-symbol` (product code, on main after
+  the owner's yes). Built as registered.
+  - ken's bm25 index costs about 14 s at a run's first note: 8.8 s to open and 5.0 s for the first `SymbolAt`, on
+    task 5's goinfer base (7,490 files). A run with no note pays nothing.
+  - A note that would not fit the room `fit_window` leaves is dropped.
+  - Tier-0 tests, each broken once, are listed in the commit message.
+  - Run time: about 25 minutes plus those opens.
+
 - **The change, as it is to be built** (`[run] current_symbol`, off by default):
   - **When:** an `edit` with `old_string` fails because the text is not in the file (either of edit's two replies for
     that), and the session has already made an earlier `edit` call to the same file, whatever that call's outcome.
