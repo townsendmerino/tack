@@ -1765,3 +1765,22 @@ check to be registered before any code. The line naming the commit it was built 
     those aim at a struct whose field names match rather than the code.
   - The setting stays in tack, off, on branch `c6-current-symbol`. Record:
     `e1-calibration-c6-t1-current-symbol-2026-10-27.md`.
+- **Amendment: the aim fixed, and a targeted second check (owner, 2026-10-27, option 3 of the decision after the
+  first check), registered before its run.**
+  - **The fix** (tack `3e80dd5`, on main with the setting off). When the line most like `old_string` is in a type, the
+    note shows the function or method holding a line that scores at least as high. Of equal scores, the line whose
+    shared words are longer wins. A type that scores higher than every function line stays.
+    - Replayed against ken at each task's base, the 33 base failures still give 18 notes.
+    - Task 6's six that showed `bannerFacts` now show `modelBannerFrom`, lines 173–212, which hold the target line.
+    - `base-replay-aim.txt` in the records.
+  - **The check:** as above, with three changes:
+    - tack `3e80dd5`;
+    - tasks 2, 5 and 6, eight runs each, 24 runs (the tasks that hold all 18 notes the replay finds);
+    - by day, about 25–35 minutes, holding both machines' timing locks only for the runs.
+  - **Pass rule:** unchanged.
+    - After at least half of the notes, the next `edit` call to that file applies.
+    - At least 4 notes; with fewer, "not shown".
+    - The first requests carry no new tool or schema field.
+  - **Prediction:** from the base runs, 5–8 notes. Following the four text nudges before it, the next edit applies
+    after fewer than half of them.
+  - **If it fails or reads "not shown" again,** the setting stays off for good in C6, and no screen runs.
