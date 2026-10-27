@@ -3,6 +3,8 @@ package loop
 import (
 	"fmt"
 	"strings"
+
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Result notes (Config.ResultNotes; e1-calibration-preregistration-2026-10-18.md §4.4) say what to do after an empty
@@ -40,9 +42,12 @@ func resultNotes(tool string, empty bool, repeats int, stopRepeats bool) string 
 	return b.String()
 }
 
-// StripNotes is result without the notes resultNotes and buildNote appended to it: what the tool returned, as
-// RepeatGuard compares it. A result with no notes is returned unchanged.
+// StripNotes is result without the notes resultNotes, buildNote and edit's current-symbol note appended to it: what the
+// tool returned, as RepeatGuard compares it. A result with no notes is returned unchanged.
 func StripNotes(result string) string {
+	if i := strings.LastIndex(result, tools.CurrentSymbolOpen); i >= 0 && strings.HasSuffix(result, "]") {
+		result = result[:i]
+	}
 	if i := strings.LastIndex(result, buildOpen); i >= 0 && strings.HasSuffix(result, "]") {
 		result = result[:i]
 	}

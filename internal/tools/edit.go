@@ -26,6 +26,7 @@ type editTool struct {
 	refuseDup bool    // Options.RefuseDuplicateEdits
 	sym       Symbols // Options.Symbols
 	lines     bool    // Options.LineEdits
+	cur       Symbols // Options.CurrentSymbol
 }
 
 func (editTool) ReadOnly() bool { return false }
@@ -108,6 +109,7 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if inGit(ws, p) {
 		return errorf("%q is inside .git, which tools never change", in.Path), nil
 	}
+	repeated := ws.countEditCall(p)
 	seen, ok := ws.lastSeen(p)
 	if !ok {
 		return errorf("read %q before editing it", in.Path), nil
@@ -125,13 +127,12 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	}
 	n := strings.Count(cur, in.OldString)
 	switch {
-	case n == 0 && strings.Contains(seen, in.OldString):
-		return errorf("%q changed since you last read it, in the part you are editing; read it again", in.Path), nil
-	case n == 0 && t.messages:
-		return notFound(ctx, ws, in.Path, p, cur, in.OldString), nil
 	case n == 0:
-		return errorf("this text isn't in %q; the edit may already have been made. Read the file again before editing: "+
-			"old_string must match it exactly, whitespace included", in.Path), nil
+		r := t.notIn(ctx, ws, in.Path, p, seen, cur, in.OldString)
+		if t.cur != nil && repeated {
+			r.Note = currentSymbolNote(ctx, ws, t.cur, in.Path, p, cur, in.OldString)
+		}
+		return r, nil
 	case n > 1 && !in.ReplaceAll:
 		return errorf("old_string occurs %d times in %q; include more surrounding lines to make it unique, or set "+
 			"replace_all", n, in.Path), nil
@@ -156,6 +157,19 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		return Result{Text: fmt.Sprintf("edited %s: replaced %d occurrences, the first at line %d%s", in.Path, n, line, where)}, nil
 	}
 	return Result{Text: fmt.Sprintf("edited %s at line %d%s", in.Path, line, where)}, nil
+}
+
+// notIn is edit's reply when old is not in cur, the content of rel (abs): changed since the model saw it, when what it
+// last saw holds old; else, with the messages on, where the text is (notFound); else that it is not there.
+func (t editTool) notIn(ctx context.Context, ws *Workspace, rel, abs, seen, cur, old string) Result {
+	switch {
+	case strings.Contains(seen, old):
+		return errorf("%q changed since you last read it, in the part you are editing; read it again", rel)
+	case t.messages:
+		return notFound(ctx, ws, rel, abs, cur, old)
+	}
+	return errorf("this text isn't in %q; the edit may already have been made. Read the file again before editing: "+
+		"old_string must match it exactly, whitespace included", rel)
 }
 
 // where syncs the symbol index with the edited file abs and names the innermost symbol holding line, as ", in Name", or

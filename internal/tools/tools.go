@@ -44,6 +44,9 @@ type Result struct {
 	// repeat rule compares it with the text, so a call that changed the file is never an unchanged repeat
 	// (loop.RepeatResult).
 	State string
+	// Note is set by edit with Options.CurrentSymbol: a note the loop appends to Text after the repeat rule has compared
+	// the result, so the rule sees what the tool said (loop.StripNotes removes it again).
+	Note string
 }
 
 func errorf(format string, args ...any) Result {
@@ -78,6 +81,9 @@ type Options struct {
 	RefuseDuplicateEdits bool
 	// LineEdits gives edit its line form: start_line and end_line in place of old_string (edit_lines.go).
 	LineEdits bool
+	// CurrentSymbol, when set, gives a repeated edit whose text is not in the file a note with the current text of the
+	// symbol it aimed at (current_symbol.go). Only its spans are read: unlike Symbols it adds no tool and no schema field.
+	CurrentSymbol Symbols
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -94,7 +100,8 @@ func New(o Options) *Set {
 	}
 	ts = append(ts, readTool{symbols: o.Symbols != nil}, globTool{}, grepTool{})
 	if o.Write {
-		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits},
+		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits,
+			cur: o.CurrentSymbol},
 			writeTool{sym: o.Symbols})
 	}
 	if o.Shell != nil {
@@ -148,6 +155,8 @@ type Workspace struct {
 	// that content. A line edit checks against it (edit_lines.go). Unlike seen, edit and write do not update it: the
 	// model has not seen the new line numbers.
 	shown map[string]shownLines
+	// editCalls is how many edit calls named each file, whatever their outcome (current_symbol.go).
+	editCalls map[string]int
 }
 
 // saw records that the model has seen abs with this content.

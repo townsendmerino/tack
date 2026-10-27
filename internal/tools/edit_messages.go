@@ -111,10 +111,40 @@ const bestLinesShown = 12
 
 var wordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*|[0-9]+`)
 
-// bestLines is the bestLinesShown consecutive lines of content most like text, numbered as read numbers them, or ""
-// when no line shares a word with it. A line scores 3 when it equals one of text's lines (spacing aside), plus one for
-// each of text's distinct words it holds.
+// bestLines is the bestLinesShown consecutive lines of content most like text (bestWindow), numbered as read numbers
+// them, or "" when no line shares a word with it.
 func bestLines(content, text string) string {
+	lines, _, at, n := bestWindow(content, text)
+	if n == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := at; i < at+n; i++ {
+		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
+	}
+	return b.String()
+}
+
+// bestLine is the line of content most like text, 1-based: the highest-scoring line of bestWindow's lines, the first
+// of equals. It is 0 when no line shares a word with text.
+func bestLine(content, text string) int {
+	_, score, at, n := bestWindow(content, text)
+	if n == 0 {
+		return 0
+	}
+	best := at
+	for i := at + 1; i < at+n; i++ {
+		if score[i] > score[best] {
+			best = i
+		}
+	}
+	return best + 1
+}
+
+// bestWindow is content's lines, each line's score against text, and the start and length of the bestLinesShown
+// consecutive lines with the highest total; the length is 0 when no line shares a word with text. A line scores 3
+// when it equals one of text's lines (spacing aside), plus one for each of text's distinct words it holds.
+func bestWindow(content, text string) (lines []string, score []int, at, n int) {
 	words := map[string]bool{}
 	for _, w := range wordRe.FindAllString(text, -1) {
 		if len(w) > 1 {
@@ -127,8 +157,8 @@ func bestLines(content, text string) string {
 			whole[t] = true
 		}
 	}
-	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-	score := make([]int, len(lines))
+	lines = strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	score = make([]int, len(lines))
 	for i, l := range lines {
 		if whole[strings.TrimSpace(l)] {
 			score[i] += 3
@@ -141,12 +171,12 @@ func bestLines(content, text string) string {
 			}
 		}
 	}
-	n := min(bestLinesShown, len(lines))
+	n = min(bestLinesShown, len(lines))
 	sum := 0
 	for i := 0; i < n; i++ {
 		sum += score[i]
 	}
-	best, at := sum, 0
+	best := sum
 	for i := n; i < len(lines); i++ {
 		sum += score[i] - score[i-n]
 		if sum > best {
@@ -154,13 +184,9 @@ func bestLines(content, text string) string {
 		}
 	}
 	if best == 0 {
-		return ""
+		return lines, score, 0, 0
 	}
-	var b strings.Builder
-	for i := at; i < at+n; i++ {
-		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
-	}
-	return b.String()
+	return lines, score, at, n
 }
 
 // Message texts that do not depend on the call.
