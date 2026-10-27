@@ -111,6 +111,10 @@ type Run struct {
 	// EditLines gives edit its line form, start_line and end_line in place of old_string (tools.Options.LineEdits;
 	// calibration §4.9, a candidate, not yet registered). Default off.
 	EditLines bool `toml:"edit_lines"`
+	// CurrentSymbol gives a repeated edit whose text is not in the file a note with the current text of the symbol it aimed
+	// at (core.Options.CurrentSymbol; calibration §12.20, a candidate). Without [ken], tack opens ken's index in bm25 mode
+	// for the spans alone, at the first note, and adds no tool. Default off.
+	CurrentSymbol bool `toml:"current_symbol"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

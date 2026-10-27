@@ -415,6 +415,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			if s.cfg.BuildAfterEdit && fin.Outcome == proto.OutcomeOK && !ran.IsError && (b.Name == "edit" || b.Name == "write") {
 				fin.Result += s.buildNote(ctx, b.Input)
 			}
+			// edit's current-symbol note (tools.Options.CurrentSymbol) goes last, after the repeat count, and only where it
+			// fits in the room fit_window leaves with the result.
+			if ran.Note != "" && (room == nil || len(fin.Result)+len(ran.Note) <= *room) {
+				fin.Result += ran.Note
+			}
 			if _, err := s.record(proto.EvToolFinished, callEv.Seq, fin); err != nil {
 				return proto.StopError, err
 			}

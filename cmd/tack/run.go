@@ -155,6 +155,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		BuildAfterEdit:       cfg.Run.BuildAfterEdit,
 		RestateTask:          cfg.Run.RestateTask,
 		EditLines:            cfg.Run.EditLines,
+		CurrentSymbol:        cfg.Run.CurrentSymbol,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
@@ -169,6 +170,19 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		opts.OpenSearcher = func(ctx context.Context, root string) (tools.Searcher, error) {
 			fmt.Fprintf(stderr, "tack: opening ken (%s) over %s\n", k.Mode, root)
 			return kensearch.Open(ctx, root, kensearch.Options{Mode: k.Mode, ModelDir: k.ModelDir, Snapshot: true, Log: stderr})
+		}
+	}
+	if cfg.Run.CurrentSymbol && cfg.Ken == nil {
+		// The spans alone, for current_symbol: bm25 needs no model, and no snapshot leaves the workspace as it was.
+		opts.OpenSpans = func(ctx context.Context, root string) (tools.Symbols, error) {
+			start := time.Now()
+			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
+			if err != nil {
+				fmt.Fprintf(stderr, "tack: current_symbol: opening ken (bm25) over %s: %v\n", root, err)
+				return nil, err
+			}
+			fmt.Fprintf(stderr, "tack: current_symbol: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
+			return s, nil
 		}
 	}
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir

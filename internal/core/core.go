@@ -78,6 +78,13 @@ type Options struct {
 	RestateTask bool
 	// EditLines gives edit its line form (tools.Options.LineEdits).
 	EditLines bool
+	// CurrentSymbol gives an auto-mode session's repeated edits whose text is not in the file a note with the current text
+	// of the symbol aimed at (tools.Options.CurrentSymbol). Its spans come from the session's symbol index when it has
+	// one, else from OpenSpans, opened at the first note; with neither, there is no note.
+	CurrentSymbol bool
+	// OpenSpans opens a symbol index over a workspace root for CurrentSymbol alone: it adds no tool. The Core opens one per
+	// root on first use, shares it between that root's sessions, and closes it in Close when it is an io.Closer.
+	OpenSpans func(ctx context.Context, root string) (tools.Symbols, error)
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -105,6 +112,7 @@ type Core struct {
 	sessions  map[proto.SessionID]*session
 	sources   map[string]models.Source
 	searchers map[string]tools.Searcher // by workspace root
+	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
 	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
 }
 
@@ -135,7 +143,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}}
+		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}}
 }
 
 // Close releases the model sources (a supervised child is stopped) and each session's edit kit.
@@ -150,6 +158,9 @@ func (c *Core) Close() error {
 		if cl, ok := s.(io.Closer); ok {
 			errs = append(errs, cl.Close())
 		}
+	}
+	for _, l := range c.spans {
+		errs = append(errs, l.Close())
 	}
 	for _, s := range c.sessions {
 		if s.kit != nil {
@@ -354,7 +365,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			return "", fmt.Errorf("auto mode: %w", err)
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
-			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines})
+			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols)})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
@@ -588,4 +600,25 @@ func readInstructionFile(root string) (name, content string) {
 		}
 	}
 	return "", ""
+}
+
+// currentSymbol is the index an auto-mode session's current-symbol note reads (Options.CurrentSymbol): symbols when the
+// session has one, else the root's lazily opened OpenSpans index, else nil, which turns the note off.
+func (c *Core) currentSymbol(root string, symbols tools.Symbols) tools.Symbols {
+	switch {
+	case !c.opt.CurrentSymbol:
+		return nil
+	case symbols != nil:
+		return symbols
+	case c.opt.OpenSpans == nil:
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l, ok := c.spans[root]
+	if !ok {
+		l = &lazySpans{root: root, open: c.opt.OpenSpans}
+		c.spans[root] = l
+	}
+	return l
 }
