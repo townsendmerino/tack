@@ -1757,3 +1757,11 @@ check to be registered before any code. The line naming the commit it was built 
   - **Parked:** that share moves but d < −1, or d ≥ +2 with the share unmoved.
   - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
 - **If it fails,** the setting stays in tack, off, and no screen runs.
+- **Outcome (2026-10-27, 15:32–15:52 PDT, tack `8c29530`): not shown.**
+  - The 9 runs produced 1 note; the rule needed at least 4.
+  - After that note (task 5 run 1), the model's next 7 calls were the identical failed edit, refused unrun.
+  - Task 1 passed 3 of 3 and carried no note: its failures' best line is a file-scope `const`.
+  - A replay of the 33 base failures through the note found that 18 would carry one, all on tasks 2, 5 and 6; 6 of
+    those aim at a struct whose field names match rather than the code.
+  - The setting stays in tack, off, on branch `c6-current-symbol`. Record:
+    `e1-calibration-c6-t1-current-symbol-2026-10-27.md`.

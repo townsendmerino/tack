@@ -26,6 +26,9 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
   acted after it (`-c6-t1-restate-edit-lines-2026-10-26`). The setting stays in tack, off; no screen.
 - **4.9, edit by line range:** its tier-1 check fails (§12.19, 2026-10-26): 0 of 6 runs used it. The setting stays in
   tack, off; no screen.
+- **The current text of a symbol after a repeated failed edit:** its tier-1 check reads "not shown" (§12.20,
+  2026-10-27): 1 note in 9 runs, and the model resent the failed edit 7 times after it
+  (`-c6-t1-current-symbol-2026-10-27`). The setting stays off, on branch `c6-current-symbol`.
 - **4.1, edit messages:** not shown; the model resends the same text whatever the message says (§12.10). The setting
   stays in tack, off.
 - **4.7, glob and grep descriptions:** proposed, never registered.
