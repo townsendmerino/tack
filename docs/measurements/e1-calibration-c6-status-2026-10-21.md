@@ -51,7 +51,7 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
   - Built 2026-10-25 as `[run] edit_lines`, off by default. Tier-1 check registered as §12.19 (owner, 2026-10-25):
     `e1-calibration-c6-edit-lines-proposed-2026-10-25.md`.
 - **ken's symbol tools:** show a symbol, edit by symbol, and the tests covering a symbol. Each comes to tack through a
-  ken release. Delivered in ken v1.11.0 (DESIGN §12); tack still pins v1.9.0.
+  ken release. Delivered in ken v1.11.0 (DESIGN §12), which tack now pins. Calibration arms still run without ken.
 
 Added 2026-10-24, from LangChain's Terminal-Bench harness post and the "coding agent from scratch" course (sources below).
 Neither measured its changes one by one, except LangChain's reasoning split, so these are ideas to screen, not results.
@@ -73,6 +73,9 @@ Neither measured its changes one by one, except LangChain's reasoning split, so 
   adds a note after several edits to one file, even when they differ.
   - tack's version shows the exact current lines of the symbol being edited, from ken v1.11.0's spans.
   - It aims at the 4.1 replay's largest failure kind: edit text that isn't in the file (217 of 370).
+  - **Chosen next (owner, 2026-10-27), tier-1 check registered as §12.20 before its code,** as `[run] current_symbol`:
+    the note follows a repeated edit to one file whose text is not in it. With the bundle, such failures are 33 in 144
+    runs (the 217 of 370 were mostly loops the bundle now ends), and the next edit to that file applied after 5 of them.
 - **A cheap first stage of compaction** (for the P1 compaction design, not a C6 screen). At 60% of the window, replace
   old tool results with short placeholders, with no model call; summarize only at 80%.
   - The cost is one break in prompt-prefix reuse. It aims at window-full stops.
@@ -104,7 +107,8 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
 ## Open decisions for Francis
 
 1. 4.3's path: a VM, `go test` outside Seatbelt, a port-scoped firewall rule, or keep loopback denied.
-2. The bundle night: its date, its decision rule and the baseline arm's settings.
-3. Whether to register the no-change refusal that restates the task.
-4. Whether to start on ken's symbol tools, which need ken releases.
-5. Whether tack moves to Go 1.27.3, as goinfer did for a security fix (tack's `go.mod` says 1.27.2).
+2. The bundle comparison: its size (owner, 2026-10-27: probably about 72 runs by day, not the 336-run night), its
+   decision rule and the baseline arm's settings. It comes after §12.20.
+
+Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
+symbol tools are in tack; tack is on Go 1.27.3.

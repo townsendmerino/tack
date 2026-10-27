@@ -901,8 +901,8 @@ changes are now measured on this arm, with the effect size that would count regi
 **This section fixes how every change is measured.** Each change still gets its own line here, before its runs, with
 its commit, its setting and its predictions.
 
-**Where C6 stands (2026-10-21):** `e1-calibration-c6-status-2026-10-21.md` lists what is in the bundle, what is not,
-the candidates, the bundle night's plan, the triggers and the open decisions.
+**Where C6 stands (2026-10-21; updated 2026-10-27):** `e1-calibration-c6-status-2026-10-21.md` lists what is in the
+bundle, what is not, the candidates, the bundle night's plan, the triggers and the open decisions.
 
 ### 12.1 The arms
 
@@ -1691,3 +1691,61 @@ turn, the 8th unchanged repeat of one call (same tool and input, same result as 
   `edit` calls, all with `old_string`, 17 of them failing. The line form was in the schema it received; first messages
   matched the bundle's layout. No screen runs; the setting stays off. Record:
   `e1-calibration-c6-t1-restate-edit-lines-2026-10-26.md`.
+
+### 12.20 The current text of a symbol after repeated edits to one file: tier-1 check (owner, 2026-10-27), registered before its code
+
+The owner chose this candidate on 2026-10-27 at 15:05 PDT (from the C6 status note's list), and asked for its tier-1
+check to be registered before any code. The line naming the commit it was built at is added here before the first run.
+
+- **The change, as it is to be built** (`[run] current_symbol`, off by default):
+  - **When:** an `edit` with `old_string` fails because the text is not in the file (either of edit's two replies for
+    that), and the session has already made an earlier `edit` call to the same file, whatever that call's outcome.
+  - **What:** a note appended to the result, after the repeat count, like the build note. It shows the symbol the edit
+    was aimed at: the function, method or type holding the line most like `old_string` (4.1's line score), with its
+    span taken from ken v1.11.0's index (`SymbolAt`).
+  - The lines are given **exactly as the file has them**, without `read`'s line-number prefixes, so `old_string` can be
+    copied from them. The note names the symbol and its line range, and is cut to 40 lines around the best line when the
+    symbol is longer.
+  - **No note:** at file scope, when no line shares a word with `old_string`, or when the index cannot place the file.
+  - **The fixed prompt is unchanged.** Calibration arms run without ken, so with the setting on tack opens ken's index
+    in bm25 mode for the spans alone. No search or symbol tool is added, and edit gets no symbol form.
+  - The repeat rule compares results without the note (`loop.StripNotes`).
+- **Why the trigger is a failure, not every repeated edit.** In the 144 runs with the bundle (§12.15's restart, both
+  arms; §12.17, both arms), the next edit to the file was refused for stale text after 1 of 38 repeated edits that
+  applied. After the 33 repeated edits whose text was not in the file, the next edit to that file applied after 5
+  (15%). Of the other 28:
+  - 15 failed the same way again;
+  - 7 failed in another way;
+  - 2 resent the same failed call, which the loop refused without running it;
+  - 4 had no next edit to that file.
+  - Method and counts: `~/tack-runs/e1/c6-cursym-2026-10-27/` on the Mac, `editstats.go` and `base-rates.txt`.
+- **What 4.1 already tried, and how this differs.** 4.1's message for text found nowhere showed the 12 lines most like
+  `old_string`, numbered as `read` numbers them, on every such failure. It did not change what the model resent
+  (§12.10). This change shows the whole symbol, unnumbered, and only once the model is editing the same file again.
+  - **The prior is against it.** Qwen3-8B has ignored four kinds of added text in a row (§12.10, §12.17, §12.18,
+    §12.19). In the base runs, its most-repeated failure (task 6) adds a `;` the file does not have, after reading the
+    file eight times.
+- **The tier-1 check:**
+  - Qwen3-8B `Q4_K_M` at 16,384, thinking off, goinfer `b2b5e816`;
+  - the bundle (`fit_window`, `stop_repeats` as amended, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done`) plus `current_symbol`; `build_after_edit`, `restate_task` and `edit_lines`
+    off;
+  - tasks 1, 5 and 6, three runs each, 9 runs. These hold 32 of the 33 base failures (task 1 15, task 5 4, task 6
+    13). Task 1 also passes in 11 of 12 recent bundle runs, so it shows whether the note costs a passing task;
+  - tack at the commit named on the line above, clean, on both machines;
+  - by day, holding both machines' timing locks, started only when both are free and nobara's queue is idle. About
+    20 minutes, plus ken's index build per run, which is timed in the tier-0 work and stated before the run.
+- **Pass rule:**
+  - after at least half of the notes, the next `edit` call to that file applies (base 5 of 33);
+  - at least 4 notes are shown; with fewer, the check reads "not shown", not failed;
+  - every run's first request carries the same system prompt and tool schemas as the bundle's, byte for byte.
+- **Reported, not decided on:** whether the next edit's `old_string` is copied from the note's lines; the window used by
+  notes; passes per task (task 1 against its 11 of 12); stops by reason.
+- **The screen, if it passes** (registered with its run after the pass):
+  - A is the bundle as adopted then; B is A plus `current_symbol`; Qwen3-8B as above; the 12 tasks, A B B A A B, 72
+    runs.
+  - **Enters:** the share of repeated not-found failures followed by an applying edit to that file is in B at least
+    twice A's, and d ≥ −1.
+  - **Parked:** that share moves but d < −1, or d ≥ +2 with the share unmoved.
+  - **Not adopted:** otherwise. At 72 runs, "not adopted" means "not shown".
+- **If it fails,** the setting stays in tack, off, and no screen runs.
