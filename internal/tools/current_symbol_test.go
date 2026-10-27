@@ -158,3 +158,62 @@ func TestCurrentSymbolLeavesThePrompt(t *testing.T) {
 type notIndexed struct{ *fakeSymbols }
 
 func (notIndexed) SymbolAt(context.Context, string, int) ([]Def, error) { return nil, ErrNotIndexed }
+
+// structAndCode is a struct whose field names and comments match the text the model gets wrong, and the function
+// that uses those fields, as task 6's banner.go has them.
+const structAndCode = "package serveapp\n\ntype facts struct {\n" +
+	"\t// resident and residentReuseOff: the runner's state.\n\tresident bool\n" +
+	"\t// residentReuseOff: the resident path's prefix reuse is off.\n\tresidentReuseOff bool\n}\n\n" +
+	"func early(f facts) bool {\n\tif !f.resident {\n\t\treturn true\n\t}\n\treturn false\n}\n\n" +
+	"func describe(f facts) string {\n\tswitch {\n\tcase f.resident && f.residentReuseOff:\n\t\treturn \"no reuse\"\n\t}\n" +
+	"\treturn \"\"\n}\n"
+
+// TestCurrentSymbolPrefersCodeOverAStruct: when the line most like old_string is in a type and a line in a function
+// scores as high, the note shows the function. Here 4.1's window alone picks the struct's first comment line, and the
+// struct's second ties with the function's line ahead of it. early's `if !f.resident` ties on score too, but shares
+// shorter words, so it loses to describe's line.
+func TestCurrentSymbolPrefersCodeOverAStruct(t *testing.T) {
+	const old = "if f.resident && f.residentReuseOff {"
+	if l := bestLine(structAndCode, old); l != 4 {
+		t.Fatalf("bestLine %d; the case needs it in the struct", l)
+	}
+	ws, e, _ := symbolEdits(t, structAndCode)
+	runEdit(t, ws, e, old, "x")
+	r := runEdit(t, ws, e, old, "x")
+	if !strings.HasPrefix(r.Note, CurrentSymbolOpen+"describe in internal/serveapp/banner.go, lines 17-23,") ||
+		!strings.Contains(r.Note, "\tcase f.resident && f.residentReuseOff:\n") {
+		t.Fatalf("note %q", r.Note)
+	}
+}
+
+// TestCurrentSymbolKeepsATypeThatMatchesBetter: a type stays the note's symbol when its line scores higher than every
+// line in a function.
+func TestCurrentSymbolKeepsATypeThatMatchesBetter(t *testing.T) {
+	const src = "package serveapp\n\ntype model struct {\n\t// kvDecline says why an explicit -kv f16 was held at f32.\n" +
+		"\tkvDecline string\n}\n\nfunc (m *model) decline() string {\n\treturn m.kvDecline\n}\n"
+	const old = "kvDecline  string // why;"
+	ws, e, _ := symbolEdits(t, src)
+	runEdit(t, ws, e, old, "x")
+	r := runEdit(t, ws, e, old, "x")
+	if !strings.HasPrefix(r.Note, CurrentSymbolOpen+"model in internal/serveapp/banner.go, lines 3-6,") {
+		t.Fatalf("note %q", r.Note)
+	}
+}
+
+// TestCurrentSymbolTakesTheBestFunctionLine: of the function lines that score at least as high as the type's, the
+// highest-scoring one wins, not the first in the file.
+func TestCurrentSymbolTakesTheBestFunctionLine(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("package serveapp\n\nfunc first() {\n\tuse(alpha)\n}\n\ntype big struct {\n")
+	for i := 1; i <= 12; i++ {
+		fmt.Fprintf(&b, "\tf%d int // alpha\n", i)
+	}
+	b.WriteString("}\n\nvar _ = 0\n\nvar _ = 1\n\nfunc second() int {\n\treturn alpha + beta\n}\n")
+	ws, e, _ := symbolEdits(t, b.String())
+	const old = "alpha + beta;"
+	runEdit(t, ws, e, old, "x")
+	r := runEdit(t, ws, e, old, "x")
+	if !strings.HasPrefix(r.Note, CurrentSymbolOpen+"second in ") {
+		t.Fatalf("note %q", r.Note)
+	}
+}
