@@ -1791,3 +1791,46 @@ check to be registered before any code. The line naming the commit it was built 
   - Task 5 run 7's notes were dropped by the room guard in a nearly full window; run 4's failures were at file scope.
   - As registered, `current_symbol` stays off for good in C6, and no screen runs. Record:
     `e1-calibration-c6-t1-current-symbol-2-2026-10-27.md`.
+
+### 12.21 The bundle against A1, at screen size (owner, 2026-10-27), registered before its run
+
+Francis chose this at 17:54 PDT, with §12.3's rule as drafted. It is §12.9's question, asked at screen size; the
+336-run night stays unregistered.
+- **Arms:**
+  - **A, the do-nothing arm:** A1 as C5 ran it, with no `[run]` settings (`fit_window` off). Qwen3-8B `Q4_K_M` at
+    16,384, thinking off, forced-call mode, sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure budget 8, the
+    10-minute cap, `--instructions whole`.
+  - **B, the bundle:** A plus `fit_window`, `stop_repeats` (as amended), `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits` and `verify_done`.
+  - Not in either arm: `build_after_edit`, `restate_task`, `edit_lines`, `current_symbol`, `edit_messages`.
+- **Build:**
+  - tack `5d54f3c` (`-compare-setting` is repeatable, so B adds all six to A's none), clean, on both machines;
+  - goinfer `b2b5e816`.
+- **Run:**
+  - the 12 tasks, A B B A A B, 72 runs, each after the cell check (§12.2);
+  - holding both machines' timing locks, about 1.5–2 hours;
+  - tack's sandbox cache warmed untimed first, as §12.17's was.
+- **When: by day, after the power outage of 2026-10-28** (owner). The launcher starts it at the first moment, from
+  09:00 to 19:30 on 2026-10-28 or later, that the Mac is on mains, both queues are idle and both timing locks free.
+  - It is submitted by hand once the power is back (a `launchctl submit` job does not survive the restart).
+  - Files and the command: `~/tack-runs/e1/c6-bundle-2026-10-28/notes.txt` on the Mac.
+- **Decision rule (§12.3's, owner, 2026-10-27).** d = B's passes − A's, out of 36 each:
+
+| d | verdict |
+|---|---|
+| **+3 or more** | **the bundle beats A1** at screen size |
+| +2 | parked: 3 more runs per task in each arm, then the same rule on all 6 per task |
+| +1 or less | not shown; the do-nothing arm wins ties |
+
+  - The sd under no effect is §12.3's, 1.15, from C5's rates. False adoption: about 1%.
+  - **Pass credit is the bundle's** (§12.9). No change's share is read from it.
+- **Predictions:**
+  - task 1: B at least 2 of 3, A at most 1 of 3. Over the bundle runs since the head was fixed it passed 11 of 12;
+    over the earlier Qwen3-8B runs, 1 of 27.
+  - task 11 alike in both arms, about 2 of 3;
+  - d between +2 and +5;
+  - window-full stops: A at least twice B's.
+- **Reported, not decided on:** each task's passes in both arms, stops by reason, window-full stops, requests per
+  run, `done` refusals, and the cell states.
+- **Riding check:** `tools/replayrepeats -mirrors` over B's runs stops exactly B's runs that ended live with
+  `repeat_loop`.

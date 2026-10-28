@@ -112,8 +112,8 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
 ## Open decisions for Francis
 
 1. 4.3's path: a VM, `go test` outside Seatbelt, a port-scoped firewall rule, or keep loopback denied.
-2. The bundle comparison: its size (owner, 2026-10-27: probably about 72 runs by day, not the 336-run night), its
-   decision rule and the baseline arm's settings. It comes after §12.20.
+2. Settled 2026-10-27: the bundle comparison is registered as §12.21. It is 72 runs by day after the 2026-10-28
+   power outage, A1 with no settings against the bundle, under §12.3's rule.
 
 Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
 symbol tools are in tack; tack is on Go 1.27.3.
