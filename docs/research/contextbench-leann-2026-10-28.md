@@ -841,7 +841,7 @@ All nine approved as recommended on 2026-10-28:
 | 1 | CB3 scorer, tier-0 tests (red first), and replay CLI | tack | `internal/eval/pilot/context.go`, `internal/eval/pilot/context_test.go`, `tools/replaycontext/main.go` | **done (2026-10-28)** |
 | 1 | CB3 measurement record over captured E1 runs | tack | `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` | **done (2026-10-28): 687 runs scored** |
 | 2 | Brief for ken: aikit bump, K16, K17, K18 | tack → ken | `docs/briefs/ken-k16-k18-contextbench-memory.md`, `docs/design/DESIGN.md` §12 | **done (2026-10-28)** |
-| 3 | CB0 external envs (ContextBench Python 3.11 venv, LEANN uv env), smoke & parity check, disk sizing | outside repos (nobara / Mac) | recorded in CB1 pre-registration / measurement | next (with K16–K18) |
+| 3 | CB0 external envs (ContextBench Python 3.10 venv, LEANN checkout), smoke & parity check, disk sizing | outside repos (`~/tack-runs/cb0/`) | `docs/measurements/cb0-setup-and-smoke-2026-10-28.md` | **done (2026-10-28)** |
 | 4 | K16, K17, K18 executed in ken | ken (by ken's Claude Code) | `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` | ready for ken's Claude Code (`docs/briefs/ken-k16-k18-contextbench-memory.md`) |
 | 4 | CB1 pre-registration, 5-task pilot, S53, Lite, L100 | ken + nobara | `docs/BENCH.md` in ken, record in tack | after K18 + CB0 |
 | 4 | CB2 (optional, gated on CB1) | ken + Claude Code Max | `docs/BENCH.md` in ken | gated on CB1 |

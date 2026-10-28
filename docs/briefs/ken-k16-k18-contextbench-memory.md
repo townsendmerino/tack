@@ -129,6 +129,12 @@ For each task in a ContextBench parquet/JSONL task list (`instance_id`, `repo`, 
    - `S53`: the 53 SWE-bench Pro instance IDs from LEANN's `benchmarks/contextbench/` scripts;
    - `Lite`: the 500 tasks in `contextbench_verified.parquet`;
    - `L100`: a seeded, language-stratified 100-task subsample of `Lite` (seed fixed by flag/registration).
+   - **CB0 ready-made external environment (`~/tack-runs/cb0/`, see `~/tmcode/tack/docs/measurements/cb0-setup-and-smoke-2026-10-28.md`):**
+     - ContextBench checkout (`cd5f62e4`): `~/tack-runs/cb0/ContextBench/Context-Bench` (`data/full.parquet`, `data/contextbench_verified.parquet`, `contextbench/evaluate.py`).
+     - LEANN checkout (`11ca8a53`): `~/tack-runs/cb0/LEANN` (`benchmarks/contextbench/scripts/contextbench_official_eval_claude_baseline.jsonl` has the 53 `S53` instance IDs).
+     - Pinned Python 3.10.19 evaluator venv: `~/tack-runs/cb0/venv-cb/bin/python` (`tree-sitter==0.20.4`, `tree-sitter-languages==1.10.2`, `pandas==2.3.3`, `pyarrow==25.0.1`, `unidiff==1.0.1`).
+     - Cached repo dir: `~/tack-runs/cb0/repo_cache` (`github.com__flipt-io__flipt` is already cloned there for the 5-task Go pilot: `SWE-Bench-Pro__go__maintenance__bugfix__40a717e5`, `b91d5788`, `1177cd53`, `997c7afd`, `52d866b3`).
+     - **Evaluator edge case (`no_context_extracted`):** When `pred_files` is empty (`[]`), `evaluate.py`'s `evaluate_instance` returns `{'instance_id': ..., 'error': 'no_context_extracted'}` and `aggregate_results` skips it from the denominator. In `K18`'s summary/bootstrap reporter, treat `no_context_extracted` (0 hits returned by an arm such as `Grep`) as `coverage = 0.0, precision = 1.0, auc = 0.0` so every arm is averaged over the full task set `N`.
 7. **Summary & bootstrap reporter:**
    - Compute paired per-task differences between any two arms (e.g., `K − L1`, `K − L2`, `K − B`, `KT − K`, `K − G`), macro-averaged overall and broken down by `language`, `source`, and `repo`, with paired bootstrap 95% confidence intervals (10,000 resamples, deterministic seed) over tasks.
 

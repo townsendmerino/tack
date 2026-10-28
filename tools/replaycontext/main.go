@@ -427,4 +427,3 @@ func formatSpans(spans []pilot.LineSpan) string {
 	}
 	return strings.Join(parts, ", ")
 }
-
