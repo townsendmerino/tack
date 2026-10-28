@@ -1784,3 +1784,10 @@ check to be registered before any code. The line naming the commit it was built 
   - **Prediction:** from the base runs, 5–8 notes. Following the four text nudges before it, the next edit applies
     after fewer than half of them.
   - **If it fails or reads "not shown" again,** the setting stays off for good in C6, and no screen runs.
+- **Outcome of the second check (2026-10-27, 16:49–17:42 PDT, tack `3e80dd5`): fails.**
+  - 24 runs, 0 passes, 5 notes (all task 2 run 3). After 0 of the 5 did the next edit apply.
+  - The note held the exact line the model was after (`case f.kvPrec != "":`), and the model sent its
+    `if f.kvPrec != ""` edit 12 times.
+  - Task 5 run 7's notes were dropped by the room guard in a nearly full window; run 4's failures were at file scope.
+  - As registered, `current_symbol` stays off for good in C6, and no screen runs. Record:
+    `e1-calibration-c6-t1-current-symbol-2-2026-10-27.md`.
