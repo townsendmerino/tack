@@ -137,15 +137,22 @@ func TestOnlyTasks(t *testing.T) {
 	}
 }
 
-// TestA1Arms: -compare-setting makes arms A and B; -setting or -reps alone makes one arm A1 with the settings, run
+// TestA1Arms: -compare-setting makes arms A and B, B with every -compare-setting added to A's -setting list, so the bundle
+// runs against A1 as registered; -setting or -reps alone makes one arm A1 with the settings, run
 // -reps times; both check every cell. With neither, A1 runs as registered, unchecked. -reps with -compare-setting, a
-// negative -reps and an unknown setting are refused.
+// negative -reps, an unknown setting and a setting on in both arms are refused.
 func TestA1Arms(t *testing.T) {
 	adopted := settingList{"fit_window", "stop_repeats"}
-	arms, reps, cells, err := remote{settings: adopted, compare: "verify_done"}.arms()
+	arms, reps, cells, err := remote{settings: adopted, compare: settingList{"verify_done"}}.arms()
 	if err != nil || len(arms) != 2 || reps != 0 || !cells || fmt.Sprint(arms[0].Settings) != "[fit_window stop_repeats]" ||
 		fmt.Sprint(arms[1].Settings) != "[fit_window stop_repeats verify_done]" {
 		t.Errorf("compare: %+v %d %v %v", arms, reps, cells, err)
+	}
+	// The bundle against A1 as registered: several -compare-setting and no -setting.
+	arms, _, cells, err = remote{compare: settingList{"fit_window", "stop_repeats", "verify_done"}}.arms()
+	if err != nil || len(arms) != 2 || !cells || len(arms[0].Settings) != 0 ||
+		fmt.Sprint(arms[1].Settings) != "[fit_window stop_repeats verify_done]" {
+		t.Errorf("bundle: %+v %v %v", arms, cells, err)
 	}
 	arms, reps, cells, err = remote{settings: append(adopted, "verify_done"), reps: 2}.arms()
 	if err != nil || len(arms) != 1 || arms[0].Name != "A1" || reps != 2 || !cells ||
@@ -159,9 +166,10 @@ func TestA1Arms(t *testing.T) {
 		t.Errorf("as registered: %+v %d %v %v", arms, reps, cells, err)
 	}
 	for name, r := range map[string]remote{
-		"reps with compare": {compare: "verify_done", reps: 2},
+		"reps with compare": {compare: settingList{"verify_done"}, reps: 2},
 		"negative reps":     {reps: -1},
-		"unknown compare":   {compare: "verify_dne"},
+		"unknown compare":   {compare: settingList{"verify_dne"}},
+		"in both arms":      {settings: adopted, compare: settingList{"verify_done", "stop_repeats"}},
 	} {
 		if _, _, _, err := r.arms(); err == nil {
 			t.Errorf("%s: accepted", name)

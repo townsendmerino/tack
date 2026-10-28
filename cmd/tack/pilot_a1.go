@@ -130,7 +130,7 @@ type remote struct {
 	ctxN                                   int
 	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
 	settings                               settingList     // [run] settings on in every arm
-	compare                                string          // a [run] setting on in arm B only; "" runs one arm
+	compare                                settingList     // [run] settings on in arm B only; none runs one arm
 	reps                                   int             // runs per task of the one arm, with no -compare-setting; 0 means once
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 }
@@ -295,18 +295,24 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	return exitOK
 }
 
-// arms is the job r asks for: with -compare-setting, arms A and B, A B B A A B per task; else, with -setting or -reps,
+// arms is the job r asks for: with -compare-setting, arms A and B, B with those settings added to A's, A B B A A B per task; else, with -setting or -reps,
 // one arm A1 with the settings, reps times per task (a mechanism check, calibration §12.9); else nil, A1 as registered,
 // once per task. cells reports whether each run waits for a clean cell check, as every C6 run does.
 func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 	switch {
-	case r.compare != "" && !pilot.RunSettings[r.compare]:
-		return nil, 0, false, fmt.Errorf("-compare-setting %q is not one an arm may switch on; allowed: %s", r.compare, settingNames())
-	case r.reps < 0 || r.reps > 0 && r.compare != "":
+	case r.reps < 0 || r.reps > 0 && len(r.compare) > 0:
 		return nil, 0, false, errors.New("-reps is for one arm, without -compare-setting")
-	case r.compare != "":
+	case len(r.compare) > 0:
+		for _, c := range r.compare {
+			switch {
+			case !pilot.RunSettings[c]:
+				return nil, 0, false, fmt.Errorf("-compare-setting %q is not one an arm may switch on; allowed: %s", c, settingNames())
+			case slices.Contains(r.settings, c):
+				return nil, 0, false, fmt.Errorf("%q is both a -setting and a -compare-setting: the arms would not differ by it", c)
+			}
+		}
 		base := []string(r.settings)
-		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare)}}, 0, true, nil
+		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare...)}}, 0, true, nil
 	case len(r.settings) > 0 || r.reps > 0:
 		return []pilot.Arm{{Name: "A1", Settings: []string(r.settings)}}, r.reps, true, nil
 	}
