@@ -2,11 +2,11 @@
 
 <!-- citations-at: tack ccd130f, ken 5ab3888 (v1.11.0), aikit edd9c5b (v1.74.0), goinfer 093db74b, LEANN c443fc4, ContextBench cd5f62e -->
 
-**Status: proposal, 2026-10-28. Nothing here has been run.** Written in the Claude app on Francis's word ("yes to the
+**Status: approved 2026-10-28 (decisions 1–9 as recommended, §9).** Written in the Claude app on Francis's word ("yes to the
 write-up, make it very detailed"), after he asked whether the LEANN paper (MLSys 2026) intersects ken, aikit and
 goinfer, and how it could influence progress. One consolidated doc, by his standing preference: a new instrument for
 tack (§4), a brief for ken (§5, §6), aikit's part (§7) and goinfer's (none, §3.4). Decisions for Francis are collected
-in §9, each with a recommendation first. Every item names its test tier and, where it is timed, its expected wall time.
+in §9, each with a recommendation first, and the execution order is in §9.1. Every item names its test tier and, where it is timed, its expected wall time.
 
 **How the facts were gathered.**
 
@@ -815,21 +815,36 @@ are the approximate tier, already built and gated.
 
 ## 9. Decisions for Francis
 
+All nine approved as recommended on 2026-10-28:
+
 1. **CB1, retrieval-only ContextBench with ken, LEANN, BM25 and grep.** Recommended: yes. ken's harness (K18), a 5-task
-   pilot by day on nobara, then S53 and Lite.
+   pilot by day on nobara, then S53 and Lite. **Decided: yes (2026-10-28).**
 2. **CB2, Claude Code runs on the Max plan, 424 sessions (240 on a seeded 30).** Recommended: only after CB1, and only
-   if ken is not clearly behind (§8.1); the 30-task version first.
+   if ken is not clearly behind (§8.1); the 30-task version first. **Decided: gated on CB1, 30-task version first (2026-10-28).**
 3. **CB3, trajectory context metrics in tack's eval, rescoring existing captures.** Recommended: yes, with fix-site gold.
-   Annotating the 12 calibration tasks yourself is optional.
-4. **K16, ken's index composition.** Recommended: yes; it is K8's memory half.
-5. **K17, recompute replaces the watched index's f32 vectors.** Recommended: decide after K16's table.
-6. **LM and AK1.** Recommended: park, with §6.3's triggers.
-7. **aikit bump in ken (≥ v1.71.0).** Recommended: yes, through ken's own release process, measured in K16.
+   Annotating the 12 calibration tasks yourself is optional. **Decided: yes, with fix-site gold (2026-10-28).**
+4. **K16, ken's index composition.** Recommended: yes; it is K8's memory half. **Decided: yes (2026-10-28).**
+5. **K17, recompute replaces the watched index's f32 vectors.** Recommended: decide after K16's table. **Decided: gated on K16's table (2026-10-28).**
+6. **LM and AK1.** Recommended: park, with §6.3's triggers. **Decided: parked (2026-10-28).**
+7. **aikit bump in ken (≥ v1.71.0).** Recommended: yes, through ken's own release process, measured in K16. **Decided: yes (2026-10-28).**
 8. **Where the ken items go.** Recommended: copy §5.3 and §6.2 into `docs/briefs/ken-k16-k18-contextbench-memory.md`
-   when you say go, as tack did for K10–K15.
+   when you say go, as tack did for K10–K15. **Decided: yes (2026-10-28).**
 9. **Telling LEANN's maintainers about the README and code mismatch (§1.4).** Recommended: not before our own numbers
    exist; then, if they bear on it, one short and friendly issue with the reproduction. It is their project and their
-   call; our part is a careful measurement.
+   call; our part is a careful measurement. **Decided: wait for our numbers (2026-10-28).**
+
+### 9.1 Execution plan and status
+
+| track | item | where | artifact / code | status |
+|---|---|---|---|---|
+| 1 | CB3 pre-registration (§4.4, §8.3) | tack | `docs/measurements/e1-cb3-context-metrics-preregistration-2026-10-28.md` | **done (2026-10-28)** |
+| 1 | CB3 scorer, tier-0 tests (red first), and replay CLI | tack | `internal/eval/pilot/context.go`, `internal/eval/pilot/context_test.go`, `tools/replaycontext/main.go` | **done (2026-10-28)** |
+| 1 | CB3 measurement record over captured E1 runs | tack | `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` | **done (2026-10-28): 687 runs scored** |
+| 2 | Brief for ken: aikit bump, K16, K17, K18 | tack → ken | `docs/briefs/ken-k16-k18-contextbench-memory.md`, `docs/design/DESIGN.md` §12 | **done (2026-10-28)** |
+| 3 | CB0 external envs (ContextBench Python 3.11 venv, LEANN uv env), smoke & parity check, disk sizing | outside repos (nobara / Mac) | recorded in CB1 pre-registration / measurement | next (with K16–K18) |
+| 4 | K16, K17, K18 executed in ken | ken (by ken's Claude Code) | `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` | ready for ken's Claude Code (`docs/briefs/ken-k16-k18-contextbench-memory.md`) |
+| 4 | CB1 pre-registration, 5-task pilot, S53, Lite, L100 | ken + nobara | `docs/BENCH.md` in ken, record in tack | after K18 + CB0 |
+| 4 | CB2 (optional, gated on CB1) | ken + Claude Code Max | `docs/BENCH.md` in ken | gated on CB1 |
 
 ---
 

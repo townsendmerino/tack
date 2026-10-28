@@ -1,0 +1,1189 @@
+package pilot
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/townsendmerino/aikit/chunk"
+	"github.com/townsendmerino/aikit/chunk/treesitter"
+	"github.com/townsendmerino/ken/engine"
+	"github.com/townsendmerino/tack/internal/kensearch"
+	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
+	"mvdan.cc/sh/v3/syntax"
+)
+
+// LineSpan is a 1-based inclusive line interval [Start, End] in File, a slash path relative to the repo root.
+type LineSpan struct {
+	File  string `json:"file"`
+	Start int    `json:"start_line"`
+	End   int    `json:"end_line"`
+}
+
+// TaskGold holds a task's gold spans at its base commit: RawSpans from the non-test diff hunks, and Spans after
+// widening each hunk's boundary lines to their innermost enclosing symbol in ken's tree-sitter index.
+type TaskGold struct {
+	Task     int        `json:"task"`
+	Repo     string     `json:"repo"`
+	Base     string     `json:"base"`
+	Commit   string     `json:"commit,omitempty"`
+	RawSpans []LineSpan `json:"raw_spans,omitempty"`
+	Spans    []LineSpan `json:"spans"`
+}
+
+// ContextMetrics is one run's trajectory context score against its task's gold spans
+// (docs/measurements/e1-cb3-context-metrics-preregistration-2026-10-28.md §4).
+type ContextMetrics struct {
+	Requests         int     `json:"requests"`
+	GoldLines        int     `json:"gold_lines"`
+	GoldFiles        int     `json:"gold_files"`
+	SeenLines        int     `json:"seen_lines"`
+	UsedLines        int     `json:"used_lines"`
+	ToolOutputTokens int     `json:"tool_output_tokens"`
+	FinalCov         float64 `json:"final_cov"`
+	FileCov          float64 `json:"file_cov"`
+	CovReq1          float64 `json:"cov_req1"`
+	Cov4k            float64 `json:"cov_4k"`
+	Precision        float64 `json:"precision"`
+	FirstGoldReq     int     `json:"first_gold_req"`
+	AUCCov           float64 `json:"auc_cov"`
+	Utilization      float64 `json:"utilization"`
+	EditLoc          float64 `json:"edit_loc"`
+}
+
+const (
+	contextReadCapLines = 200  // tools.readMaxLines
+	opencodeReadCap     = 2000 // opencode's default read limit
+	cov4kBudgetTokens   = 4096
+)
+
+var registerChunkerOnce sync.Once
+
+func ensureTreesitter() {
+	registerChunkerOnce.Do(func() {
+		if _, err := chunk.Get(kensearch.Chunker); err != nil {
+			chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(1_000_000)))
+		}
+	})
+}
+
+// MergeSpans sorts spans by file and start line and merges overlapping or adjacent intervals.
+func MergeSpans(spans []LineSpan) []LineSpan {
+	var valid []LineSpan
+	for _, s := range spans {
+		f := cleanPath(s.File)
+		if f == "" || f == "." || s.Start < 1 || s.End < s.Start {
+			continue
+		}
+		valid = append(valid, LineSpan{File: f, Start: s.Start, End: s.End})
+	}
+	sort.Slice(valid, func(i, j int) bool {
+		if valid[i].File != valid[j].File {
+			return valid[i].File < valid[j].File
+		}
+		if valid[i].Start != valid[j].Start {
+			return valid[i].Start < valid[j].Start
+		}
+		return valid[i].End < valid[j].End
+	})
+	var out []LineSpan
+	for _, s := range valid {
+		if n := len(out); n > 0 && out[n-1].File == s.File && s.Start <= out[n-1].End+1 {
+			if s.End > out[n-1].End {
+				out[n-1].End = s.End
+			}
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+var diffHunkRe = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? `)
+
+// FixGold computes a task's raw non-test diff hunks at base and widens each hunk's boundary lines to their innermost
+// enclosing symbol in ken's tree-sitter index at base.
+func FixGold(ctx context.Context, mirrors, repo, base, commit string, testFiles []string) (raw, widened []LineSpan, err error) {
+	ensureTreesitter()
+	baseMap, err := BaseTree(mirrors, repo, base)
+	if err != nil {
+		return nil, nil, err
+	}
+	gitDir := filepath.Join(mirrors, repo+".git")
+	out, err := exec.CommandContext(ctx, "git", "--git-dir", gitDir, "diff", "-U0", "--no-renames", base, commit).Output()
+	if err != nil {
+		return nil, nil, fmt.Errorf("git diff %s %s..%s: %w", repo, base, commit, err)
+	}
+	testSet := map[string]bool{}
+	for _, tf := range testFiles {
+		testSet[cleanPath(tf)] = true
+	}
+	changedFiles := map[string]string{}
+	file := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "--- a/"):
+			file = cleanPath(strings.TrimPrefix(line, "--- a/"))
+		case strings.HasPrefix(line, "+++ b/"):
+			bFile := strings.TrimPrefix(line, "+++ b/")
+			if bFile != "/dev/null" {
+				file = cleanPath(bFile)
+			}
+		case strings.HasPrefix(line, "@@"):
+			if file == "" || !strings.HasSuffix(file, ".go") || strings.HasSuffix(file, "_test.go") || strings.Contains("/"+file, "/testdata/") || testSet[file] {
+				continue
+			}
+			content, ok := baseMap[file]
+			if !ok {
+				continue
+			}
+			total := countTextLines(content)
+			if total == 0 {
+				continue
+			}
+			m := diffHunkRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			s, n := 0, 1
+			_, _ = fmt.Sscan(m[1], &s)
+			if m[2] != "" {
+				_, _ = fmt.Sscan(m[2], &n)
+			}
+			var rStart, rEnd int
+			if n > 0 {
+				rStart = clampLine(s, 1, total)
+				rEnd = clampLine(s+n-1, rStart, total)
+			} else {
+				rStart = clampLine(max(s, 1), 1, total)
+				rEnd = clampLine(min(s+1, total), rStart, total)
+			}
+			raw = append(raw, LineSpan{File: file, Start: rStart, End: rEnd})
+			changedFiles[file] = content
+		}
+	}
+	if len(raw) == 0 {
+		return nil, nil, nil
+	}
+	tmp, err := os.MkdirTemp("", "tack-fixgold-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer os.RemoveAll(tmp)
+	for rel, content := range changedFiles {
+		abs := filepath.Join(tmp, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+			return nil, nil, err
+		}
+	}
+	idx, err := kensearch.Open(ctx, tmp, kensearch.Options{Mode: "bm25"})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer idx.Close()
+	for _, h := range raw {
+		wStart, wEnd := h.Start, h.End
+		for _, probe := range []int{h.Start, h.End} {
+			defs, err := idx.SymbolAt(ctx, h.File, probe)
+			if err == nil && len(defs) > 0 {
+				wStart = min(wStart, defs[0].StartLine)
+				wEnd = max(wEnd, defs[0].EndLine)
+			}
+		}
+		widened = append(widened, LineSpan{File: h.File, Start: wStart, End: wEnd})
+	}
+	return MergeSpans(raw), MergeSpans(widened), nil
+}
+
+type fileLineKey struct {
+	file string
+	line int
+}
+
+// trackedFile holds a file's current text and, for each 1-based current line, the inclusive [lo, hi] range of 1-based
+// lines in the base commit that it came from ([0, 0] for pure insertions or files created during the run).
+type trackedFile struct {
+	content   string
+	baseLines [][2]int
+	baseTotal int
+}
+
+func newTrackedTree(base map[string]string) map[string]*trackedFile {
+	out := make(map[string]*trackedFile, len(base))
+	for f, content := range base {
+		n := countTextLines(content)
+		bl := make([][2]int, n)
+		for i := range n {
+			bl[i] = [2]int{i + 1, i + 1}
+		}
+		out[cleanPath(f)] = &trackedFile{content: content, baseLines: bl, baseTotal: n}
+	}
+	return out
+}
+
+// mapRange returns the base-commit LineSpans corresponding to current 1-based inclusive lines [start, end].
+func (tf *trackedFile) mapRange(file string, start, end int) []LineSpan {
+	if tf == nil || tf.baseTotal == 0 || len(tf.baseLines) == 0 {
+		return nil
+	}
+	start = max(start, 1)
+	end = min(end, len(tf.baseLines))
+	if end < start {
+		return nil
+	}
+	var out []LineSpan
+	for i := start - 1; i < end; i++ {
+		r := tf.baseLines[i]
+		if r[0] >= 1 && r[1] >= r[0] {
+			out = append(out, LineSpan{File: file, Start: r[0], End: min(r[1], tf.baseTotal)})
+		}
+	}
+	return MergeSpans(out)
+}
+
+// replaceLines replaces current 1-based inclusive lines [start, end] with newContent and updates baseLines, returning
+// the base-commit spans covered by the replaced region.
+func (tf *trackedFile) replaceLines(file string, start, end int, newText string, newContent string) []LineSpan {
+	if tf == nil {
+		return nil
+	}
+	replaced := tf.mapRange(file, start, end)
+	var bLo, bHi int
+	for _, s := range replaced {
+		if bLo == 0 || s.Start < bLo {
+			bLo = s.Start
+		}
+		if s.End > bHi {
+			bHi = s.End
+		}
+	}
+	m := countTextLines(newText)
+	repl := make([][2]int, m)
+	if bLo > 0 && m > 0 {
+		bSpan := bHi - bLo + 1
+		for j := range m {
+			switch {
+			case j == m-1 && m < bSpan:
+				repl[j] = [2]int{bLo + j, bHi}
+			case j < bSpan:
+				repl[j] = [2]int{bLo + j, bLo + j}
+			default:
+				repl[j] = [2]int{0, 0}
+			}
+		}
+	}
+	sIdx := clampLine(start-1, 0, len(tf.baseLines))
+	eIdx := clampLine(end, sIdx, len(tf.baseLines))
+	next := make([][2]int, 0, len(tf.baseLines)-(eIdx-sIdx)+m)
+	next = append(next, tf.baseLines[:sIdx]...)
+	next = append(next, repl...)
+	next = append(next, tf.baseLines[eIdx:]...)
+	tf.content = newContent
+	tf.baseLines = next
+	return replaced
+}
+
+// ScoreContext computes a captured run's ContextMetrics from its events.jsonl (or its sibling requests/ directory for
+// opencode runs when events.jsonl has no tack events) against base and gold.
+func ScoreContext(eventsPath string, base map[string]string, gold []LineSpan, includeNotes bool) (ContextMetrics, error) {
+	isTack, err := isTackEvents(eventsPath)
+	if err != nil {
+		return ContextMetrics{}, err
+	}
+	if !isTack {
+		return scoreOpencodeRun(eventsPath, base, gold)
+	}
+	return scoreTackRun(eventsPath, base, gold, includeNotes)
+}
+
+func isTackEvents(eventsPath string) (bool, error) {
+	f, err := os.Open(eventsPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	if sc.Scan() {
+		var ev proto.Event
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Type != "" && !ev.Time.IsZero() && len(ev.Payload) > 0 {
+			return true, nil
+		}
+	}
+	return false, sc.Err()
+}
+
+type stepSpans struct {
+	seen []LineSpan
+	used []LineSpan
+}
+
+func scoreTackRun(eventsPath string, base map[string]string, gold []LineSpan, includeNotes bool) (ContextMetrics, error) {
+	f, err := os.Open(eventsPath)
+	if err != nil {
+		return ContextMetrics{}, err
+	}
+	defer f.Close()
+
+	tree := newTrackedTree(base)
+	calls := map[string]proto.ToolCall{}
+	var steps []stepSpans
+	var spans4k []LineSpan
+	cumTokens := 0
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	for sc.Scan() {
+		var ev proto.Event
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		switch p := v.(type) {
+		case proto.RequestSent:
+			steps = append(steps, stepSpans{})
+		case proto.ToolCall:
+			calls[p.ID] = p
+		case proto.ToolFinished:
+			c, ok := calls[p.ID]
+			if !ok {
+				continue
+			}
+			if len(steps) == 0 {
+				steps = append(steps, stepSpans{})
+			}
+			cleanRes := loop.StripNotes(p.Result)
+			toks := engine.ApproxTokens(cleanRes)
+			cumTokens += toks
+			seen, used := extractTackToolSpans(c.Name, c.Input, p.Outcome, p.Result, cleanRes, tree, includeNotes, false)
+			cur := &steps[len(steps)-1]
+			cur.seen = append(cur.seen, seen...)
+			cur.used = append(cur.used, used...)
+			if cumTokens <= cov4kBudgetTokens {
+				spans4k = append(spans4k, seen...)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return ContextMetrics{}, err
+	}
+	return computeMetrics(gold, steps, spans4k, cumTokens), nil
+}
+
+var (
+	searchHeaderRe  = regexp.MustCompile(`^([^\s:]+):(\d+)-(\d+)$`)
+	symbolDefRe     = regexp.MustCompile(`^([^\s:]+):(\d+)-(\d+)\s+\S+\s+\S+$`)
+	numberedLineRe  = regexp.MustCompile(`^\s*(\d+)\t`)
+	indentedSiteRe  = regexp.MustCompile(`^  ([^\s:]+):(\d+)\b`)
+	grepMatchRe     = regexp.MustCompile(`^([^\s:]+):(\d+):`)
+	opencodeLineRe  = regexp.MustCompile(`^\s*Line (\d+):`)
+	editReplacedRe  = regexp.MustCompile(`lines (\d+)-(\d+)`)
+	editAtLineRe    = regexp.MustCompile(`at line (\d+)`)
+	currentSymNote  = regexp.MustCompile(`\[tack: the current text of [^\s]+ in ([^\s,]+), lines (\d+)-(\d+)`)
+	sedRangePrintRe = regexp.MustCompile(`^(\d+)(?:,(\d+|\$))?p$`)
+)
+
+func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string, fullResult, cleanResult string, tree map[string]*trackedFile, includeNotes, opencode bool) (seen, used []LineSpan) {
+	if outcome != proto.OutcomeOK {
+		if includeNotes && name == "edit" {
+			if m := currentSymNote.FindStringSubmatch(fullResult); m != nil {
+				pth := cleanPath(m[1])
+				s, _ := strconv.Atoi(m[2])
+				e, _ := strconv.Atoi(m[3])
+				if tf := tree[pth]; tf != nil {
+					seen = append(seen, tf.mapRange(pth, s, e)...)
+				}
+			}
+		}
+		return seen, nil
+	}
+
+	switch name {
+	case "read":
+		var in struct {
+			Path     string `json:"path"`
+			FilePath string `json:"filePath"`
+			Offset   int    `json:"offset"`
+			Limit    int    `json:"limit"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
+		tf := tree[pth]
+		if tf == nil || len(tf.baseLines) == 0 {
+			return nil, nil
+		}
+		total := len(tf.baseLines)
+		start, n := 1, total
+		explicit := in.Offset > 0 || in.Limit > 0
+		if in.Offset > 0 {
+			start = in.Offset
+		}
+		capLines := contextReadCapLines
+		if opencode {
+			capLines = opencodeReadCap
+		}
+		if in.Limit > 0 {
+			n = in.Limit
+		} else if (!explicit || opencode) && total > capLines {
+			n = capLines
+		}
+		if start > total {
+			return nil, nil
+		}
+		end := min(start-1+n, total)
+		return tf.mapRange(pth, start, end), nil
+
+	case "search", "ken_search":
+		for _, line := range strings.Split(cleanResult, "\n") {
+			if m := searchHeaderRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+				pth := cleanPath(m[1])
+				if tf := tree[pth]; tf != nil {
+					s, _ := strconv.Atoi(m[2])
+					e, _ := strconv.Atoi(m[3])
+					seen = append(seen, tf.mapRange(pth, s, e)...)
+				}
+			}
+		}
+		seen = append(seen, extractJSONSpans(cleanResult, tree)...)
+		return seen, nil
+
+	case "symbol", "ken_definition", "ken_callers", "ken_references":
+		var in struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		lines := strings.Split(cleanResult, "\n")
+		if len(lines) > 0 {
+			if m := symbolDefRe.FindStringSubmatch(lines[0]); m != nil && (in.Name != "" || opencode) {
+				defFile := cleanPath(m[1])
+				minL, maxL := 0, 0
+				for _, l := range lines[1:] {
+					nm := numberedLineRe.FindStringSubmatch(l)
+					if nm == nil {
+						break
+					}
+					ln, _ := strconv.Atoi(nm[1])
+					if minL == 0 || ln < minL {
+						minL = ln
+					}
+					if ln > maxL {
+						maxL = ln
+					}
+				}
+				if tf := tree[defFile]; tf != nil && minL > 0 && maxL >= minL {
+					seen = append(seen, tf.mapRange(defFile, minL, maxL)...)
+				}
+			}
+		}
+		for _, l := range lines {
+			if m := indentedSiteRe.FindStringSubmatch(l); m != nil {
+				pth := cleanPath(m[1])
+				ln, _ := strconv.Atoi(m[2])
+				if tf := tree[pth]; tf != nil && ln > 0 {
+					seen = append(seen, tf.mapRange(pth, ln, ln)...)
+				}
+			}
+		}
+		seen = append(seen, extractJSONSpans(cleanResult, tree)...)
+		return seen, nil
+
+	case "grep":
+		curFile := ""
+		for _, l := range strings.Split(cleanResult, "\n") {
+			if m := grepMatchRe.FindStringSubmatch(l); m != nil {
+				pth := cleanPath(m[1])
+				ln, _ := strconv.Atoi(m[2])
+				if tf := tree[pth]; tf != nil && ln > 0 {
+					seen = append(seen, tf.mapRange(pth, ln, ln)...)
+					continue
+				}
+			}
+			trimmed := strings.TrimSpace(strings.TrimSuffix(l, ":"))
+			if pth := cleanPath(trimmed); tree[pth] != nil {
+				curFile = pth
+				continue
+			}
+			if curFile != "" {
+				if m := opencodeLineRe.FindStringSubmatch(l); m != nil {
+					ln, _ := strconv.Atoi(m[1])
+					if tf := tree[curFile]; tf != nil && ln > 0 {
+						seen = append(seen, tf.mapRange(curFile, ln, ln)...)
+					}
+				}
+			}
+		}
+		return seen, nil
+
+	case "edit", "patch":
+		var in struct {
+			Path       string `json:"path"`
+			FilePath   string `json:"filePath"`
+			OldString  string `json:"old_string"`
+			OldString2 string `json:"oldString"`
+			NewString  string `json:"new_string"`
+			NewString2 string `json:"newString"`
+			ReplaceAll bool   `json:"replace_all"`
+			Replace2   bool   `json:"replaceAll"`
+			Symbol     string `json:"symbol"`
+			StartLine  int    `json:"start_line"`
+			EndLine    int    `json:"end_line"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
+		oldStr := firstNonEmpty(in.OldString, in.OldString2)
+		newStr := firstNonEmpty(in.NewString, in.NewString2)
+		repAll := in.ReplaceAll || in.Replace2
+		tf := tree[pth]
+		if tf == nil {
+			return nil, nil
+		}
+		spans := applyTrackedEdit(tf, pth, oldStr, newStr, repAll, in.Symbol, in.StartLine, in.EndLine, cleanResult)
+		return spans, spans
+
+	case "write":
+		var in struct {
+			Path     string `json:"path"`
+			FilePath string `json:"filePath"`
+			Content  string `json:"content"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
+		tf := tree[pth]
+		if tf == nil {
+			n := countTextLines(in.Content)
+			tree[pth] = &trackedFile{content: in.Content, baseLines: make([][2]int, n), baseTotal: 0}
+			return nil, nil
+		}
+		spans := tf.replaceLines(pth, 1, max(len(tf.baseLines), 1), in.Content, in.Content)
+		return spans, spans
+
+	case "bash":
+		var in struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		return extractBashSpans(in.Command, tree), nil
+	}
+	return nil, nil
+}
+
+func applyTrackedEdit(tf *trackedFile, pth, oldStr, newStr string, repAll bool, symbol string, startLine, endLine int, cleanResult string) []LineSpan {
+	cur := tf.content
+	if startLine > 0 && endLine >= startLine {
+		a, b, ok := editByteRange(cur, startLine, endLine)
+		if !ok {
+			return tf.mapRange(pth, startLine, endLine)
+		}
+		repl := newStr
+		if repl != "" && strings.HasSuffix(cur[a:b], "\n") && !strings.HasSuffix(repl, "\n") {
+			repl += "\n"
+		}
+		return tf.replaceLines(pth, startLine, endLine, repl, cur[:a]+repl+cur[b:])
+	}
+	if symbol != "" {
+		if m := editReplacedRe.FindStringSubmatch(cleanResult); m != nil {
+			s, _ := strconv.Atoi(m[1])
+			e, _ := strconv.Atoi(m[2])
+			a, b, ok := editByteRange(cur, s, e)
+			if !ok {
+				return tf.mapRange(pth, s, e)
+			}
+			repl := newStr
+			if strings.HasSuffix(cur[a:b], "\n") && !strings.HasSuffix(repl, "\n") {
+				repl += "\n"
+			}
+			return tf.replaceLines(pth, s, e, repl, cur[:a]+repl+cur[b:])
+		}
+	}
+	if oldStr != "" {
+		if strings.Contains(cur, oldStr) {
+			if repAll {
+				var matches [][2]int
+				off := 0
+				for {
+					i := strings.Index(cur[off:], oldStr)
+					if i < 0 {
+						break
+					}
+					matches = append(matches, [2]int{off + i, off + i + len(oldStr)})
+					off += i + len(oldStr)
+				}
+				var all []LineSpan
+				for i := len(matches) - 1; i >= 0; i-- {
+					m := matches[i]
+					sLine, eLine := byteSpanToLines(tf.content, m[0], m[1])
+					out := tf.content[:m[0]] + newStr + tf.content[m[1]:]
+					all = append(all, tf.replaceLines(pth, sLine, eLine, newStr, out)...)
+				}
+				return MergeSpans(all)
+			}
+			idx := strings.Index(cur, oldStr)
+			sLine, eLine := byteSpanToLines(cur, idx, idx+len(oldStr))
+			out := cur[:idx] + newStr + cur[idx+len(oldStr):]
+			return tf.replaceLines(pth, sLine, eLine, newStr, out)
+		}
+		if strings.HasSuffix(pth, ".go") && !repAll {
+			if m := tools.MatchTolerances(cur, oldStr, tools.TolerancePunct); m.Name != "" {
+				sLine, eLine := byteSpanToLines(cur, m.Start, m.End)
+				out := cur[:m.Start] + newStr + cur[m.End:]
+				return tf.replaceLines(pth, sLine, eLine, newStr, out)
+			}
+		}
+		if m := editAtLineRe.FindStringSubmatch(cleanResult); m != nil {
+			s, _ := strconv.Atoi(m[1])
+			e := s + max(countTextLines(oldStr)-1, 0)
+			return tf.mapRange(pth, s, e)
+		}
+	}
+	return nil
+}
+
+// extractBashSpans parses cmd with mvdan.cc/sh/v3/syntax and extracts file spans read by cat, nl, head, tail, or sed -n.
+func extractBashSpans(cmd string, tree map[string]*trackedFile) []LineSpan {
+	if strings.TrimSpace(cmd) == "" {
+		return nil
+	}
+	prog, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil {
+		return nil
+	}
+	var out []LineSpan
+	syntax.Walk(prog, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		words := make([]string, 0, len(call.Args))
+		for _, w := range call.Args {
+			words = append(words, wordLiteral(w))
+		}
+		out = append(out, bashCallSpans(words, tree)...)
+		return true
+	})
+	return MergeSpans(out)
+}
+
+func wordLiteral(w *syntax.Word) string {
+	var b strings.Builder
+	for _, p := range w.Parts {
+		switch pt := p.(type) {
+		case *syntax.Lit:
+			b.WriteString(pt.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(pt.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range pt.Parts {
+				if lit, ok := dp.(*syntax.Lit); ok {
+					b.WriteString(lit.Value)
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
+func bashCallSpans(words []string, tree map[string]*trackedFile) []LineSpan {
+	if len(words) < 2 {
+		return nil
+	}
+	bin := filepath.Base(words[0])
+	args := words[1:]
+	var spans []LineSpan
+	switch bin {
+	case "cat", "nl":
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			pth := cleanPath(a)
+			if tf := tree[pth]; tf != nil && len(tf.baseLines) > 0 {
+				spans = append(spans, tf.mapRange(pth, 1, len(tf.baseLines))...)
+			}
+		}
+	case "head":
+		n := 10
+		var files []string
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			switch {
+			case a == "-n" && i+1 < len(args):
+				i++
+				if v, err := strconv.Atoi(args[i]); err == nil && v > 0 {
+					n = v
+				}
+			case strings.HasPrefix(a, "-n"):
+				if v, err := strconv.Atoi(strings.TrimPrefix(a, "-n")); err == nil && v > 0 {
+					n = v
+				}
+			case strings.HasPrefix(a, "--lines="):
+				if v, err := strconv.Atoi(strings.TrimPrefix(a, "--lines=")); err == nil && v > 0 {
+					n = v
+				}
+			case len(a) > 1 && a[0] == '-' && a[1] >= '0' && a[1] <= '9':
+				if v, err := strconv.Atoi(a[1:]); err == nil && v > 0 {
+					n = v
+				}
+			case !strings.HasPrefix(a, "-"):
+				files = append(files, a)
+			}
+		}
+		for _, f := range files {
+			pth := cleanPath(f)
+			if tf := tree[pth]; tf != nil && len(tf.baseLines) > 0 {
+				spans = append(spans, tf.mapRange(pth, 1, min(n, len(tf.baseLines)))...)
+			}
+		}
+	case "tail":
+		n := 10
+		fromStart := false
+		var files []string
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			parseTailN := func(s string) {
+				if strings.HasPrefix(s, "+") {
+					if v, err := strconv.Atoi(s[1:]); err == nil && v > 0 {
+						n, fromStart = v, true
+					}
+				} else if v, err := strconv.Atoi(s); err == nil && v > 0 {
+					n, fromStart = v, false
+				}
+			}
+			switch {
+			case a == "-n" && i+1 < len(args):
+				i++
+				parseTailN(args[i])
+			case strings.HasPrefix(a, "-n"):
+				parseTailN(strings.TrimPrefix(a, "-n"))
+			case len(a) > 1 && a[0] == '-' && a[1] >= '0' && a[1] <= '9':
+				parseTailN(a[1:])
+			case !strings.HasPrefix(a, "-"):
+				files = append(files, a)
+			}
+		}
+		for _, f := range files {
+			pth := cleanPath(f)
+			if tf := tree[pth]; tf != nil && len(tf.baseLines) > 0 {
+				total := len(tf.baseLines)
+				if fromStart {
+					spans = append(spans, tf.mapRange(pth, n, total)...)
+				} else {
+					spans = append(spans, tf.mapRange(pth, max(1, total-n+1), total)...)
+				}
+			}
+		}
+	case "sed":
+		quiet := false
+		var exprs, files []string
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			switch {
+			case a == "-n" || a == "--quiet" || a == "--silent":
+				quiet = true
+			case a == "-e" && i+1 < len(args):
+				i++
+				exprs = append(exprs, args[i])
+			case strings.HasPrefix(a, "-"):
+			case len(exprs) == 0:
+				exprs = append(exprs, a)
+			default:
+				files = append(files, a)
+			}
+		}
+		if !quiet {
+			return nil
+		}
+		for _, ex := range exprs {
+			for _, part := range strings.Split(ex, ";") {
+				m := sedRangePrintRe.FindStringSubmatch(strings.TrimSpace(part))
+				if m == nil {
+					continue
+				}
+				s, _ := strconv.Atoi(m[1])
+				for _, f := range files {
+					pth := cleanPath(f)
+					tf := tree[pth]
+					if tf == nil || len(tf.baseLines) == 0 {
+						continue
+					}
+					e := s
+					if m[2] == "$" {
+						e = len(tf.baseLines)
+					} else if m[2] != "" {
+						e, _ = strconv.Atoi(m[2])
+					}
+					spans = append(spans, tf.mapRange(pth, s, e)...)
+				}
+			}
+		}
+	}
+	return spans
+}
+
+func extractJSONSpans(text string, tree map[string]*trackedFile) []LineSpan {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return nil
+	}
+	var v any
+	if json.Unmarshal([]byte(trimmed), &v) != nil {
+		return nil
+	}
+	var out []LineSpan
+	var walk func(any)
+	walk = func(x any) {
+		switch t := x.(type) {
+		case map[string]any:
+			file, _ := t["file"].(string)
+			if file == "" {
+				file, _ = t["path"].(string)
+			}
+			if file != "" {
+				pth := cleanPath(file)
+				if tf := tree[pth]; tf != nil {
+					s := jsonInt(t["start_line"])
+					e := jsonInt(t["end_line"])
+					if s == 0 {
+						s = jsonInt(t["line"])
+					}
+					if e == 0 {
+						e = s
+					}
+					if s > 0 && e >= s {
+						out = append(out, tf.mapRange(pth, s, e)...)
+					}
+				}
+			}
+			for _, child := range t {
+				walk(child)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
+func jsonInt(v any) int {
+	switch x := v.(type) {
+	case float64:
+		return int(x)
+	case int:
+		return x
+	case string:
+		n, _ := strconv.Atoi(x)
+		return n
+	}
+	return 0
+}
+
+func scoreOpencodeRun(eventsPath string, base map[string]string, gold []LineSpan) (ContextMetrics, error) {
+	reqDir := filepath.Join(filepath.Dir(eventsPath), "requests")
+	if reqFiles, _ := filepath.Glob(filepath.Join(reqDir, "*.req.json")); len(reqFiles) > 0 {
+		sort.Strings(reqFiles)
+		return scoreOpencodeRequests(reqFiles[len(reqFiles)-1], len(reqFiles), base, gold)
+	}
+	f, err := os.Open(eventsPath)
+	if err != nil {
+		return ContextMetrics{}, err
+	}
+	defer f.Close()
+	tree := newTrackedTree(base)
+	var steps []stepSpans
+	var spans4k []LineSpan
+	cumTokens := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	for sc.Scan() {
+		var obj map[string]any
+		if json.Unmarshal(sc.Bytes(), &obj) != nil {
+			continue
+		}
+		part, _ := obj["part"].(map[string]any)
+		if part == nil {
+			part = obj
+		}
+		toolName, _ := part["tool"].(string)
+		if toolName == "" {
+			continue
+		}
+		state, _ := part["state"].(map[string]any)
+		if state == nil {
+			continue
+		}
+		status, _ := state["status"].(string)
+		if status != "" && status != "completed" {
+			continue
+		}
+		inRaw, _ := json.Marshal(state["input"])
+		output, _ := state["output"].(string)
+		toks := engine.ApproxTokens(output)
+		cumTokens += toks
+		seen, used := extractTackToolSpans(strings.TrimPrefix(toolName, "ken_"), inRaw, proto.OutcomeOK, output, output, tree, false, true)
+		steps = append(steps, stepSpans{seen: seen, used: used})
+		if cumTokens <= cov4kBudgetTokens {
+			spans4k = append(spans4k, seen...)
+		}
+	}
+	return computeMetrics(gold, steps, spans4k, cumTokens), sc.Err()
+}
+
+func scoreOpencodeRequests(lastReqPath string, totalReqs int, base map[string]string, gold []LineSpan) (ContextMetrics, error) {
+	b, err := os.ReadFile(lastReqPath)
+	if err != nil {
+		return ContextMetrics{}, err
+	}
+	var req struct {
+		Messages []struct {
+			Role       string `json:"role"`
+			Content    any    `json:"content"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &req); err != nil {
+		return ContextMetrics{}, err
+	}
+	tree := newTrackedTree(base)
+	type callInfo struct {
+		name string
+		args json.RawMessage
+		step int
+	}
+	calls := map[string]callInfo{}
+	var steps []stepSpans
+	var spans4k []LineSpan
+	cumTokens := 0
+	for _, msg := range req.Messages {
+		switch msg.Role {
+		case "assistant":
+			steps = append(steps, stepSpans{})
+			stepIdx := len(steps) - 1
+			for _, tc := range msg.ToolCalls {
+				calls[tc.ID] = callInfo{name: tc.Function.Name, args: json.RawMessage(tc.Function.Arguments), step: stepIdx}
+			}
+		case "tool":
+			ci, ok := calls[msg.ToolCallID]
+			if !ok {
+				continue
+			}
+			outStr, _ := msg.Content.(string)
+			toks := engine.ApproxTokens(outStr)
+			cumTokens += toks
+			seen, used := extractTackToolSpans(strings.TrimPrefix(ci.name, "ken_"), ci.args, proto.OutcomeOK, outStr, outStr, tree, false, true)
+			steps[ci.step].seen = append(steps[ci.step].seen, seen...)
+			steps[ci.step].used = append(steps[ci.step].used, used...)
+			if cumTokens <= cov4kBudgetTokens {
+				spans4k = append(spans4k, seen...)
+			}
+		}
+	}
+	for len(steps) < totalReqs {
+		steps = append(steps, stepSpans{})
+	}
+	return computeMetrics(gold, steps, spans4k, cumTokens), nil
+}
+
+func computeMetrics(gold []LineSpan, steps []stepSpans, spans4k []LineSpan, cumTokens int) ContextMetrics {
+	goldSet := spansToLineSet(gold)
+	goldFiles := map[string]bool{}
+	for k := range goldSet {
+		goldFiles[k.file] = true
+	}
+
+	seenCum := map[fileLineKey]bool{}
+	usedCum := map[fileLineKey]bool{}
+	seenFiles := map[string]bool{}
+
+	firstGoldReq := 0
+	covReq1 := 0.0
+	aucSum := 0.0
+
+	for rIdx, st := range steps {
+		addSpansToSet(seenCum, st.seen)
+		addSpansToSet(usedCum, st.used)
+		cov := setCoverage(goldSet, seenCum)
+		if rIdx == 0 {
+			covReq1 = cov
+		}
+		if firstGoldReq == 0 && setIntersectionCount(goldSet, seenCum) > 0 {
+			firstGoldReq = rIdx + 1
+		}
+		aucSum += cov
+	}
+	for k := range seenCum {
+		if goldFiles[k.file] {
+			seenFiles[k.file] = true
+		}
+	}
+
+	finalCov := setCoverage(goldSet, seenCum)
+	fileCov := 1.0
+	if len(goldFiles) > 0 {
+		fileCov = float64(len(seenFiles)) / float64(len(goldFiles))
+	}
+	cov4k := setCoverage(goldSet, spansToLineSet(spans4k))
+
+	precision := 1.0
+	if len(seenCum) > 0 {
+		precision = float64(setIntersectionCount(goldSet, seenCum)) / float64(len(seenCum))
+	}
+
+	aucCov := 0.0
+	if len(steps) > 0 {
+		aucCov = aucSum / float64(len(steps))
+	}
+
+	goldSeen := setIntersectionCount(goldSet, seenCum)
+	goldUsed := setIntersectionCount(goldSet, usedCum)
+	utilization := 0.0
+	if goldSeen > 0 {
+		utilization = float64(goldUsed) / float64(goldSeen)
+	}
+	editLoc := 0.0
+	if len(usedCum) > 0 {
+		editLoc = float64(goldUsed) / float64(len(usedCum))
+	}
+
+	return ContextMetrics{
+		Requests:         len(steps),
+		GoldLines:        len(goldSet),
+		GoldFiles:        len(goldFiles),
+		SeenLines:        len(seenCum),
+		UsedLines:        len(usedCum),
+		ToolOutputTokens: cumTokens,
+		FinalCov:         finalCov,
+		FileCov:          fileCov,
+		CovReq1:          covReq1,
+		Cov4k:            cov4k,
+		Precision:        precision,
+		FirstGoldReq:     firstGoldReq,
+		AUCCov:           aucCov,
+		Utilization:      utilization,
+		EditLoc:          editLoc,
+	}
+}
+
+func spansToLineSet(spans []LineSpan) map[fileLineKey]bool {
+	s := map[fileLineKey]bool{}
+	addSpansToSet(s, spans)
+	return s
+}
+
+func addSpansToSet(dst map[fileLineKey]bool, spans []LineSpan) {
+	for _, sp := range spans {
+		f := cleanPath(sp.File)
+		if f == "" || sp.Start < 1 || sp.End < sp.Start {
+			continue
+		}
+		for line := sp.Start; line <= sp.End; line++ {
+			dst[fileLineKey{file: f, line: line}] = true
+		}
+	}
+}
+
+func setIntersectionCount(a, b map[fileLineKey]bool) int {
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	n := 0
+	for k := range a {
+		if b[k] {
+			n++
+		}
+	}
+	return n
+}
+
+func setCoverage(gold, seen map[fileLineKey]bool) float64 {
+	if len(gold) == 0 {
+		return 1.0
+	}
+	return float64(setIntersectionCount(gold, seen)) / float64(len(gold))
+}
+
+func countTextLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
+}
+
+func clampLine(v, lo, hi int) int {
+	return min(max(v, lo), hi)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func byteSpanToLines(content string, startByte, endByte int) (startLine, endLine int) {
+	startByte = clampLine(startByte, 0, len(content))
+	endByte = clampLine(endByte, startByte, len(content))
+	startLine = strings.Count(content[:startByte], "\n") + 1
+	endTrim := endByte
+	if endTrim > startByte && content[endTrim-1] == '\n' {
+		endTrim--
+	}
+	endLine = strings.Count(content[:endTrim], "\n") + 1
+	return startLine, max(endLine, startLine)
+}
+
+func editByteRange(content string, start, end int) (int, int, bool) {
+	if start < 1 || end < start {
+		return 0, 0, false
+	}
+	a, line := 0, 1
+	for line < start {
+		i := strings.IndexByte(content[a:], '\n')
+		if i < 0 {
+			return 0, 0, false
+		}
+		a += i + 1
+		line++
+	}
+	b := a
+	for ; line <= end; line++ {
+		if b >= len(content) {
+			return 0, 0, false
+		}
+		i := strings.IndexByte(content[b:], '\n')
+		if i < 0 {
+			if line < end {
+				return 0, 0, false
+			}
+			b = len(content)
+			break
+		}
+		b += i + 1
+	}
+	return a, b, true
+}

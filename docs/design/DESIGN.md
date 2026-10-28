@@ -1127,6 +1127,9 @@ serving every other agent.
 | K13 | a structural index that follows edits: `Refresh(changed, deleted)`, and the watcher updating it | spans stay right after the session's own edits | P1 |
 | K14 | qualified names: Go `pkg.Func` and `pkg.Type.Method`; a file holding only a type's methods is not its definition | names in a task resolve (§7.4) | P1 |
 | K15 | the tests that call a symbol, with the directory to run them in; the calls a symbol makes | focused verification; `symbol`'s `tests` and `callees` (§7.3) | P1 |
+| K16 | index memory composition table (`-tags=bench`): exact byte formulas and single-component heap deltas across tack, ken, aikit, goinfer, all four in one process (K7), and the 584k kernel checkout, before and after bumping aikit ≥ v1.71.0 | the memory half of K8; decides K17 (`docs/research/contextbench-leann-2026-10-28.md` §5) | P1 |
+| K17 | `WatchedIndex` keeps no retained `f32` vectors, recomputing from chunk text when needed | makes `FlatI8` save memory on the watched path tack uses (after K16) | P2 |
+| K18 | `bench/contextbench` (`-tags=bench`): retrieval-only (CB1) and optional agent-in-the-loop (CB2) ContextBench harness | outside retrieval benchmark against BM25, grep and LEANN | P1 |
 
 - **ken-mcp moves onto `ken/engine` in the same release**, so the MCP face and the library face cannot drift. ken's
   `TestPublicSurfaceDocumented` pattern extends to the new package. A ken ADR records it ("public engine package;
