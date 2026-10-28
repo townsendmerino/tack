@@ -1834,3 +1834,47 @@ Francis chose this at 17:54 PDT, with §12.3's rule as drafted. It is §12.9's q
   run, `done` refusals, and the cell states.
 - **Riding check:** `tools/replayrepeats -mirrors` over B's runs stops exactly B's runs that ended live with
   `repeat_loop`.
+
+### 12.22 Safe edit tolerances: judged by replay (owner, 2026-10-27), registered before their code
+
+Francis chose this at 18:31 PDT, from `e1-calibration-c6-next-direction-proposed-2026-10-27.md`. Fuzzy matching is
+dropped. DESIGN §7.5 is unchanged: edit still requires the file to have been read.
+- **The change, as it is to be built** (`[run] edit_tolerances`, off by default; the fixed prompt is unchanged):
+  - **When:** an `edit` with `old_string` finds no exact match in a `.go` file.
+  - **What:** the tolerances are tried in a fixed order.
+    1. Whitespace removed entirely.
+    2. Then each kept punctuation kind, one at a time: that character dropped where it ends a line of `old_string`.
+  - **Each must find exactly one place**, or nothing applies.
+  - The edit applies `new_string` as given, and **only if the file still parses as Go afterwards**. Otherwise it fails
+    as it does today.
+  - The result names the tolerance that matched.
+- **The kinds replayed, each on its own:** `;` `,` `)` `]` `}` `.` `:`. Francis widened the rule from `;` alone to
+  trailing punctuation, with care, since a trailing `,` or `)` can carry meaning.
+- **The replay:** every captured failed edit in set A (the 4.1 replay's 216 runs) and set B (the bundle-era Qwen3-8B
+  screens and checks, 335 runs). Each file is rebuilt as it was at the failed edit (`tools/replayedits`'
+  reconstruction), and the built tolerance code is used to match.
+- **Adoption rule, per tolerance and per kind:**
+  - Kept only if **every** edit it would apply across both sets is unique, leaves a file that parses, and makes the
+    change the model meant: its `new_string`'s difference from its `old_string`, at the place the fix-blind match
+    found.
+  - Each applied edit is listed in the record and read case by case.
+  - **One wrong edit and that kind is left out,** with the case named.
+  - A kind that applies nothing is left out as unshown.
+- **Kept tolerances enter the bundle after §12.21's run.** §12.21's arms stay as registered.
+- **Reported:** per kind, the calls and distinct failures it rescues in each set, and how many of those are on the
+  task fix's lines.
+
+### 12.23 Qwen3.5-9B: the E0 append probe, then a calibration row (owner, 2026-10-27), registered before its runs
+
+Francis chose direction 2 at 18:31 PDT, in this order: after §12.21's run, by day.
+1. **E0 again for Qwen3.5-9B `Q4_K_M` at 32,768,** with amendment 11's append probe.
+   - goinfer at or after B35's merge (#112, 2026-10-21), pinned at the commit named in a line added here before the
+     run.
+   - Thinking off, nobara, holding its timing lock, about 45 minutes. E0's decision rule is unchanged.
+   - **The gate for step 2, besides eligibility:** with the prefix reused by appending, the first-token time at 8k and
+     at the top cell is at most a fifth of the cold time. Qwen3-8B reads 1.9 s against 26.7 s at 15k.
+   - A probe that fails the gate is reported to goinfer, and no row follows.
+2. **If it passes:** a C5-style calibration row, registered here with its own predictions and timing before it runs.
+   - Qwen3.5-9B with the bundle as adopted then, the 12 tasks, 3 runs each.
+   - Its per-run time is estimated from step 1's figures. It runs by day if that comes to 2 hours or less, else as a
+     night job.
