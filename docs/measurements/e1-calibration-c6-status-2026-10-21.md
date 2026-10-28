@@ -18,6 +18,14 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
 - **Background condition, in every arm:** `fit_window` (4.6; §12.5, §12.6).
 - Records are `docs/measurements/e1-calibration-<name>.md`.
 
+## Adopted, joining the bundle after §12.21's run
+
+- **Edit tolerances** (`edit_tolerances`; §12.22, adopted by replay 2026-10-27, `-c6-tolerances-2026-10-27`): all whitespace
+  ignored, and a trailing `;` ignored, in `.go` files, only at one place and only if the file still parses. `,` `)` `]`
+  `}` `.` `:` were replayed and left out.
+- **Next after §12.21** (§12.23): Qwen3.5-9B's E0 append probe on a goinfer build with B35, then a calibration row if it
+  passes.
+
 ## Not in the bundle
 
 - **Build after every edit:** not shown (§12.17, 2026-10-25): runs ending with code not compiling, A 6 and B 6; d = −1;
