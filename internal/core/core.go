@@ -82,6 +82,9 @@ type Options struct {
 	// of the symbol aimed at (tools.Options.CurrentSymbol). Its spans come from the session's symbol index when it has
 	// one, else from OpenSpans, opened at the first note; with neither, there is no note.
 	CurrentSymbol bool
+	// EditTolerances lets an auto-mode session's edits of .go files apply where one tolerance places old_string uniquely
+	// (tools.Options.EditTolerances).
+	EditTolerances bool
 	// OpenSpans opens a symbol index over a workspace root for CurrentSymbol alone: it adds no tool. The Core opens one per
 	// root on first use, shares it between that root's sessions, and closes it in Close when it is an io.Closer.
 	OpenSpans func(ctx context.Context, root string) (tools.Symbols, error)
@@ -366,7 +369,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
-			CurrentSymbol: c.currentSymbol(ws.Root(), symbols)})
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close

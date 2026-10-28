@@ -1863,6 +1863,12 @@ dropped. DESIGN §7.5 is unchanged: edit still requires the file to have been re
 - **Kept tolerances enter the bundle after §12.21's run.** §12.21's arms stay as registered.
 - **Reported:** per kind, the calls and distinct failures it rescues in each set, and how many of those are on the
   task fix's lines.
+- **Outcome (2026-10-27, replayed 18:35 PDT; record `e1-calibration-c6-tolerances-2026-10-27.md`):**
+  - **Kept:** all whitespace ignored, and a trailing `;` ignored. Every edit either would apply across 551 runs is
+    unique, parses and is the one the model meant (61 and 19 calls).
+  - **Left out:** `)` (1 distinct, does not parse) and `:` (3 distinct, none parses), whose would-be edits are wrong;
+    `,` `]` `}` `.` apply nothing.
+  - `[run] edit_tolerances` stays off by default and joins the bundle after §12.21's run.
 
 ### 12.23 Qwen3.5-9B: the E0 append probe, then a calibration row (owner, 2026-10-27), registered before its runs
 

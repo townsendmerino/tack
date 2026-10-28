@@ -156,6 +156,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		RestateTask:          cfg.Run.RestateTask,
 		EditLines:            cfg.Run.EditLines,
 		CurrentSymbol:        cfg.Run.CurrentSymbol,
+		EditTolerances:       cfg.Run.EditTolerances,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},

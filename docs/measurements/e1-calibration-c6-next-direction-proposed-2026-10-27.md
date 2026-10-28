@@ -17,7 +17,7 @@ matched place was checked against the lines the task's own fix changes, and the 
 
 | matcher | set A: calls (distinct, runs) | set B | is the applied edit right? |
 |---|---|---|---|
-| whitespace removed entirely | 61 (1) | 0 | **yes**: task 11, a space before a comma; the edit lowercases the error string, as the fix does |
+| whitespace removed entirely | 61 (2) | 0 | **yes**: task 11, a space before a comma; the edit lowercases the error string, as the fix does |
 | a `;` at a line's end dropped (Go) | 11 (1) | 8 (1) | legal Go, and the model's intended change, but off the fix's lines |
 | token fuzzy match ≥ 0.80, unique | 194 (4 runs) | 33 (8) | **no**: 7 of 8 in set B leave a file that does not parse, and set A's task 11 cases leave a `return` with one value where the function returns two |
 | none matches (or two places tie) | 12 | 32 | — |

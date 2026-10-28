@@ -115,6 +115,9 @@ type Run struct {
 	// at (core.Options.CurrentSymbol; calibration §12.20, a candidate). Without [ken], tack opens ken's index in bm25 mode
 	// for the spans alone, at the first note, and adds no tool. Default off.
 	CurrentSymbol bool `toml:"current_symbol"`
+	// EditTolerances lets an edit of a .go file whose old_string has no exact match apply where one tolerance places it
+	// uniquely, when the file still parses (tools.Options.EditTolerances; calibration §12.22). Default off.
+	EditTolerances bool `toml:"edit_tolerances"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

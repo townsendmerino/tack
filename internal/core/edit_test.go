@@ -377,3 +377,31 @@ func TestVerifyDoneEchoIsNotABuild(t *testing.T) {
 		t.Fatalf("ran %q; done %q", ran, res["d1"])
 	}
 }
+
+// TestEditTolerancesThroughTheCore: Options.EditTolerances reaches an auto-mode session's edit tool: on, an edit whose
+// old_string differs from the file only in whitespace applies; off, it fails and the file is unchanged.
+func TestEditTolerancesThroughTheCore(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		f := newFixture(t,
+			goinfertest.Calls("", "r1", "read", `{"path":"a.go"}`),
+			goinfertest.Calls("", "e1", "edit", `{"path":"a.go","old_string":"var x = f(1 , 2)","new_string":"var x = f(3)"}`),
+			goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+		f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+			return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+		}
+		f.core.opt.EditTask, f.core.opt.EditTolerances = true, on
+		ws := gitWorkspace(t, "")
+		os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nvar x = f(1, 2)\n"), 0o644)
+		sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("x")}}, nil)
+		f.waitTurnEnd(t)
+		b, _ := os.ReadFile(filepath.Join(ws, "a.go"))
+		if want := map[bool]string{true: "package a\n\nvar x = f(3)\n", false: "package a\n\nvar x = f(1, 2)\n"}[on]; string(b) != want {
+			t.Errorf("EditTolerances %v: a.go is %q", on, b)
+		}
+	}
+}

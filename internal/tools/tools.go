@@ -84,6 +84,9 @@ type Options struct {
 	// CurrentSymbol, when set, gives a repeated edit whose text is not in the file a note with the current text of the
 	// symbol it aimed at (current_symbol.go). Only its spans are read: unlike Symbols it adds no tool and no schema field.
 	CurrentSymbol Symbols
+	// EditTolerances lets an edit of a .go file whose old_string has no exact match apply where one tolerance places it
+	// uniquely, when the file still parses (tolerance.go).
+	EditTolerances bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -101,7 +104,7 @@ func New(o Options) *Set {
 	ts = append(ts, readTool{symbols: o.Symbols != nil}, globTool{}, grepTool{})
 	if o.Write {
 		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits,
-			cur: o.CurrentSymbol},
+			cur: o.CurrentSymbol, tolerant: o.EditTolerances},
 			writeTool{sym: o.Symbols})
 	}
 	if o.Shell != nil {

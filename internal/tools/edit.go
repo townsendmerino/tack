@@ -27,6 +27,7 @@ type editTool struct {
 	sym       Symbols // Options.Symbols
 	lines     bool    // Options.LineEdits
 	cur       Symbols // Options.CurrentSymbol
+	tolerant  bool    // Options.EditTolerances
 }
 
 func (editTool) ReadOnly() bool { return false }
@@ -128,6 +129,11 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	n := strings.Count(cur, in.OldString)
 	switch {
 	case n == 0:
+		if t.tolerant && !in.ReplaceAll && strings.HasSuffix(p, ".go") && !strings.Contains(seen, in.OldString) {
+			if r, ok := t.tolerate(ctx, ws, in.Path, p, seen, cur, in.OldString, in.NewString); ok {
+				return r, nil
+			}
+		}
 		r := t.notIn(ctx, ws, in.Path, p, seen, cur, in.OldString)
 		if t.cur != nil && repeated {
 			r.Note = currentSymbolNote(ctx, ws, t.cur, in.Path, p, cur, in.OldString)
@@ -157,6 +163,31 @@ func (t editTool) run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		return Result{Text: fmt.Sprintf("edited %s: replaced %d occurrences, the first at line %d%s", in.Path, n, line, where)}, nil
 	}
 	return Result{Text: fmt.Sprintf("edited %s at line %d%s", in.Path, line, where)}, nil
+}
+
+// tolerate applies new in place of old, which is not in cur (the content of rel, abs), where MatchTolerances places old: only
+// when that place is unchanged since the model saw the file, and only when the file still parses as Go afterwards. It
+// reports false, changing nothing, otherwise.
+func (t editTool) tolerate(ctx context.Context, ws *Workspace, rel, abs, seen, cur, old, new string) (Result, bool) {
+	m := MatchTolerances(cur, old, TolerancePunct)
+	if m.Name == "" {
+		return Result{}, false
+	}
+	region := cur[m.Start:m.End]
+	if cur != seen && !strings.Contains(seen, region) {
+		return Result{}, false
+	}
+	out := cur[:m.Start] + new + cur[m.End:]
+	if !ParsesAsGo(out) {
+		return Result{}, false
+	}
+	if err := writeFile(abs, out); err != nil {
+		return errorf("%q: %s", rel, ws.scrub(err.Error())), true
+	}
+	ws.saw(abs, out)
+	line := strings.Count(cur[:m.Start], "\n") + 1
+	ws.recordChange(abs, cur, out, "edit", line, region, new)
+	return Result{Text: fmt.Sprintf("edited %s at line %d%s (old_string matched with %s)", rel, line, t.where(ctx, ws, abs, line), m.Name)}, true
 }
 
 // notIn is edit's reply when old is not in cur, the content of rel (abs): changed since the model saw it, when what it
