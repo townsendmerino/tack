@@ -1909,3 +1909,46 @@ Francis chose direction 2 at 18:31 PDT, in this order: after §12.21's run, by d
    - Qwen3.5-9B with the bundle as adopted then, the 12 tasks, 3 runs each.
    - Its per-run time is estimated from step 1's figures. It runs by day if that comes to 2 hours or less, else as a
      night job.
+### 12.24 Qwen3.5-9B on the calibration set, with the bundle (§12.23 step 2), registered before its runs
+
+Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`e0-nobara-qwen35-2026-10-29.md`), as
+§12.23 step 2 calls for. It awaits Francis's yes on the choices marked below, which are his.
+- **The arm:** one arm, C5-style.
+  - **Model and context:** Qwen3.5-9B `Q4_K_M` (`~/models/Qwen3.5-9B-Q4_K_M.gguf`) at **32,768**, the context E0
+    admitted and the reason this model was chosen (double Qwen3-8B's 16,384). *Francis's choice.* The alternative is
+    16,384, which matches §12.21 and tack's design window.
+  - **The loop:** the bundle as adopted (Francis, 2026-10-29, §12.21's outcome): `fit_window`, `stop_repeats`,
+    `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done` and `edit_tolerances`. Each is passed
+    as `-setting`.
+  - **Sampling and limits as C5:** thinking off, forced-call mode, sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure
+    budget 8, the 10-minute cap. *The cap is Francis's choice:* step 1's slow appends make it likelier to bind than in
+    C5 (below).
+- **Build:**
+  - goinfer `95bc3c7b`, the build step 1 measured (`~/tack-runs/bin/goinfer-serve-cuda-95bc3c7b` on nobara);
+  - tack at the commit that adds this section, built clean on both machines.
+- **Run:**
+  - the 12 tasks, 3 runs each (`-reps 3`): 36 runs, each after the cell check (§12.2);
+  - tack's sandbox cache warmed untimed first, as §12.21's was;
+  - both machines' timing locks held by the pilot.
+- **Time, estimated from step 1's figures:**
+  - **The model:** each run costs its tool time plus its model time. Qwen3-8B's bundle runs in §12.21 (B) averaged
+    104 s each, 16.9 requests, 8,255 prefilled tokens and 609 generated. About 75 s of that was tools and harness.
+  - **Qwen3.5-9B's model time:** the prefill at step 1's 8k cold rate (205 tokens/s) is about 40 s, plus about 3 s
+    per request of append overhead (step 1's append cells cost 5–19 s for about 600 tokens), plus decode at 65 tok/s
+    (9 s). That comes to about 100 s, so **about 3 minutes per run**.
+  - **The range:** 36 runs at 3–6 minutes is **1.9–3.7 hours**, plus the warm-up and fit load. A larger window lets
+    runs go longer than Qwen3-8B's at 16k, so the upper end is plausible.
+  - **That is over 2 hours, so it runs as a night job** (§12.23), queued on the Mac's `night.py`. Its launcher waits
+    for both queues to be idle and both locks free, as §12.21's did.
+- **Predictions (tack's session, before any run):**
+  - passes: 2–8 of 36; task 1 at least 2 of 3; task 11 at least 1 of 3;
+  - window-full stops: 0–2;
+  - 10-minute cap hits: 2–10;
+  - median run time: 2.5–6 minutes.
+- **The reading:**
+  - **§2's bar:** usable if it passes at least 4 of 36 runs, on at least 2 tasks.
+  - **Reported beside §12.21's B arm, task by task.** That arm is the same bundle, on Qwen3-8B at 16,384.
+  - **It is not a model verdict.** The window, the model and the sampling defaults' fit all differ, and §12.21's B
+    is 36 runs on a different night. Whether C6 moves to Qwen3.5-9B is Francis's decision after this row.
+- **Also reported, not decided on:** each task's passes, stops by reason, window-full stops, cap hits, requests per
+  run, first-token times per request, `done` refusals and the cell states.
