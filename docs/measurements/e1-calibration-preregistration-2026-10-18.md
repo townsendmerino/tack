@@ -1898,6 +1898,13 @@ Francis chose direction 2 at 18:31 PDT, in this order: after §12.21's run, by d
        only if that comes up `cuda-resident`.
      - **Expected time: about 60–75 minutes, not 45.** C3's cold top cell took 421 s per repeat, and E0 times it three
        times. The rewrite cell at that size may be as slow.
+   - **Outcome (2026-10-29, 08:44–09:31 PDT; record `e0-nobara-qwen35-2026-10-29.md`): eligible, and the gate
+     passes.**
+     - Smoke 19/20 on both runs, 0 malformed, `check` ok, resident at 32,768.
+     - Append against cold, medians: 6.1 s against 39.9 s at 8k (0.15), and 18.9 s against 280.3 s at 31,744
+       (0.07).
+     - The build note above is narrowed in the record: GitHub's archive of `95bc3c7b`, with a `go.work` joining the
+       root and `cuda` modules.
 2. **If it passes:** a C5-style calibration row, registered here with its own predictions and timing before it runs.
    - Qwen3.5-9B with the bundle as adopted then, the 12 tasks, 3 runs each.
    - Its per-run time is estimated from step 1's figures. It runs by day if that comes to 2 hours or less, else as a
