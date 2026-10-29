@@ -187,6 +187,43 @@ prefix reuse hits (another harness's prompt layout decides that — goinfer's ce
 hash at token 22 stops conversations sharing their preamble); the ledger; the fixed-prompt budget; goinfer-specific
 controls (fit plans, the memory guard, load and unload); and the native app.
 
+### 2.5 Ideas from DevBox
+
+RudderStack open-sourced DevBox (MIT) in October 2026: a self-hosted harness that takes a Linear ticket to a draft pull
+request inside a cloud sandbox, on OpenAI or Anthropic models. Its authors report it opens about 35% of their internal
+pull requests, with about 80% of its pull requests merged. It is a different product from tack: a shared background
+service for a whole engineering org, written in TypeScript on LangChain's DeepAgents, with hosted models. tack takes no
+code from it. Four of its design choices look worth carrying over. Each is *proposed*, and each would be measured before
+it is fixed.
+
+- **Fixed stages, with a gate before code.** DevBox's first version let a coding agent (Codex CLI) drive the whole task,
+  and its author reports that this often went somewhere unexpected. It now runs orient, plan, plan review, implement and
+  self-review in that order, and writes no code until the plan passes review. tack's plan mode (§6.3) is the user's gate;
+  this would add a model's review of the plan before the user sees it, and a fixed order for an edit task. A 7B model is
+  more likely to wander than the frontier models DevBox runs, so the case may be stronger for tack than for DevBox. E1
+  could compare a staged arm with the free loop. Costs to watch: each stage boundary is a request whose prefix must
+  still be reused (§7.2), and a review stage spends window.
+- **A model per stage.** DevBox sets the model and reasoning effort per stage. tack already has roles (§6.4: `main`,
+  `small`, `summarizer`); `planner` and `reviewer` would use the same mechanism, for example thinking on, or a larger
+  model on nobara, for the plan and its review, and the `-fast` alias for edits. Two models resident at once may not fit
+  on the 16 GB Mac (§2.3), so this is mainly a nobara or larger-memory option.
+- **Self-review of the diff.** Before a write task ends, the model reads its own `git diff` against the task and either
+  fixes what it finds or says what it left undone. It is cheap, and E1 can count what it catches.
+- **Learnings land in the repo as reviewed text.** DevBox reads `AGENTS.md`, `CLAUDE.md` and `.agents/knowledge/`
+  before every task, and adds what it learned there as a commit on the pull request, reviewed like code. tack reads the
+  first two already (§6.7) and should read `.agents/knowledge/` too when it exists. Writing back would keep a repo's
+  memory versioned and visible instead of in tack's own state, and ken indexes it like any other file. Two cautions: a
+  growing file eats the instruction budget (§2.3), so learnings belong in their own sections or in `.agents/knowledge/`
+  files read on demand; and every addition goes through the normal edit approval, never written silently.
+
+**Already covered.** DevBox keeps real tokens out of its sandboxes: they hold placeholders, and an egress proxy swaps in
+the real ones on the way out. tack calls no hosted model, so it holds no model key, and §6.6 denies commands the network
+and the usual secret files. If `web_fetch` or an MCP server later needs credentials, that proxy pattern is the one to
+reach for.
+
+**Their caveat applies here with more force.** DevBox does best on small, well-defined tasks and struggles with vague
+tickets and large unspecified features. On a local model, the app should help the user scope a task tightly.
+
 ---
 
 ## 3. Goals, non-goals, principles
@@ -1540,3 +1577,4 @@ App Store.
 - [Claude Code vs Codex vs Copilot CLI: local sandboxes compared](https://www.developersdigest.tech/blog/coding-agent-local-sandbox-compared-2026) — Developers Digest, 9 Oct 2026
 - [Codex CLI sandbox internals: Seatbelt, Bubblewrap, Landlock](https://codex.danielvaughan.com/2026/05/03/codex-cli-sandbox-internals-seatbelt-bubblewrap-landlock-windows-dacl/) — May 2026
 - [Escaping Antigravity's allow-default Seatbelt](https://www.pillar.security/blog/escaping-antigravitys-allow-default-seatbelt) — Pillar Security, 20 Jul 2026
+- [DevBox](https://github.com/rudderlabs/devbox) — RudderStack, open-sourced Oct 2026; README and the author's launch post, read 2026-10-29 (§2.5)
