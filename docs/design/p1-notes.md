@@ -166,6 +166,8 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
   gets out with no sandbox, is stopped by the profile, and gets out again with only its own section removed, so each
   section is shown to be what stops its escape. Network denial is among them. A shell test runs the real child under
   the real profile: a program writing outside the workspace is refused by the kernel. Skipping the wrap let it write.
+  - The macOS job runs only on a manual dispatch or a tag. Its first run was dispatch `40962188012` on main
+    `4f31811` (2026-10-29), and it was green: 47 passed, 0 skipped, 0 failed.
 - **Detaching: closed in step 2d** (below). A program can call `setsid()` and leave the process group; it stays
   inside the sandbox, and halt finds it there.
 - **Not wired in yet.** The daemon (step 4) sets `Engine.Sandboxed` and `Session.Wrap` together on macOS. On a

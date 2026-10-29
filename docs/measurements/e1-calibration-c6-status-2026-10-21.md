@@ -130,9 +130,12 @@ whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
 ## Triggers to watch
 
 - **Done:** goinfer B35 landed. Qwen3.5-9B's E0 ran again with the append probe on `95bc3c7b` (§12.23 step 1, passed).
-- **CI minutes:** CI runs again on every push, and main is green at `c69b5a3`. **Still open:** no manual dispatch
-  has ever run, so the macOS job and its sandbox escape tests have not run in CI. That costs macOS minutes, and the
-  dispatch waits for Francis.
+- **CI minutes:** CI runs again on every push.
+- **Done 2026-10-29:** the first manual dispatch ran, on Francis's yes at 14:58 PDT. It was run `40962188012`, on
+  main `4f31811`, and finished green at 15:02.
+  - The macOS job passed: `touched -all`, `lint`, the sandbox escape tests and the Swift fixture check.
+  - The escape tests reported 47 `--- PASS` in `internal/sandbox` and `internal/shell`, with 0 skipped and 0 failed.
+  - The Linux job passed as well.
 - **Mellum2.1:** its E0 runs again only on a change that could alter its tool choice.
 
 ## Open decisions for Francis
@@ -145,7 +148,7 @@ whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
      comparison waits for the model question.
 3. **Next, after §12.24's row:** whether C6 moves to Qwen3.5-9B at 32,768. Then which model the powered comparison
    runs on.
-4. Whether to dispatch CI's macOS job, for the sandbox escape tests (Triggers, above).
+4. Settled 2026-10-29: CI's macOS job was dispatched once, and it is green (Triggers, above).
 
 Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
 symbol tools are in tack; tack is on Go 1.27.3.
