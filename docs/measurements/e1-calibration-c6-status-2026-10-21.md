@@ -168,5 +168,10 @@ whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
    runs on.
 4. Settled 2026-10-29: CI's macOS job was dispatched once, and it is green (Triggers, above).
 
-Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
-symbol tools are in tack; tack is on Go 1.27.3.
+Settled since 2026-10-21:
+- the restate_task refusal was registered and failed its check (§12.18);
+- ken v1.11.0's symbol tools are in tack;
+- tack is on Go 1.27.3;
+- (2026-10-29, Francis's yes, `2f901b9`) tack's gates no longer go red when the Mac is under memory pressure. The
+  `internal/eval` tests' injected pressure reading now reaches the model supervisor's load guard, through
+  `models.ChildConfig.Pressure`.
