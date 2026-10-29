@@ -4,7 +4,10 @@
 
 **Status: specification (not a pre-registration). Originally committed 2026-10-28 in `57c9548` (`14:45:58 -0700`) in the same commit as `internal/eval/pilot/context.go`, `tools/replaycontext/main.go`, and the results record `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` (after `/tmp/e1-cb3-context-metrics.jsonl` was written at `14:37`), so git history does not establish that it was frozen before the first replay run; while `docs/research/contextbench-leann-2026-10-28.md` §9 marked decisions 1–9 as approved in `57c9548`, Francis's approval of those decisions is not recorded in a separate commit or note in the repository.**
 **Revision note:** Revised 2026-10-29 (`8076b0c`) after the CB3 results and review to match the scorer and document review fixes (§3.1 failed-call token exclusion, `-include-notes` on failed edits carrying `current_symbol` notes, whole-call `Cov4k`, `edit`/`write` seen+used spans, positional `write` line mapping, and `bash` pipeline AST walking; §3.2 removal of the unused `opencode` branch; §4 aggregate `Precision` over `SeenLines > 0`; §4.1 `-scan` exclusions).
-**Second revision, 2026-10-29 (branch `cb3-scorer-followups-2026-10-29`; awaiting Francis's decision):**
+**Third revision, 2026-10-29 (Francis approved it at 13:37 PDT, option (a), relayed by the coordinator).** The second
+revision was `8076b0c`'s. This one follows the fix check's tack items 8 and 10 (`~/tack-runs/reviews/fix-check-2026-10-29.md`).
+Its reason is a bias found in the scorer: a whole-file `write` credited the run with seeing the file it replaced. The
+`Cov4k` whole-call rule is kept, with its sensitivity reported in the record's §7.2. The changes:
 - a whole-file `write` adds no seen lines, uses only the base lines it deletes or changes, and is aligned to the
   current text by content, not by position (§3, §3.1);
 - `Utilization` counts used gold lines among the seen ones (§4.8).

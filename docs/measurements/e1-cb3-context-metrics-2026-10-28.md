@@ -182,6 +182,10 @@ All mechanism interpretations below are **hypotheses** drawn from observational 
 
 ## 7. Scorer follow-ups (2026-10-29)
 
+**Francis's decision, 13:37 PDT (relayed by the coordinator): option (a).** The `write` fix, with
+`Utilization = |G ∩ U ∩ S| / |G ∩ S|`, is merged as below, and this record is updated with its numbers. `Cov4k` keeps the
+whole-call rule, with its sensitivity reported in §7.2. This is the specification's third revision, recorded at its top.
+
 The fix check (`~/tack-runs/reviews/fix-check-2026-10-29.md`, tack items 8 and 10) listed six behaviors the 2026-10-29
 revision documented but did not change. Each was checked against the 625 counted runs. The evidence comes from a table
 of their 16,164 tool calls, taken from the 634 per-run `events.jsonl` files. The 9 extra files are the superseded
