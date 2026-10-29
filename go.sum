@@ -22,8 +22,8 @@ github.com/townsendmerino/aikit v1.74.0 h1:MRNPVIfO9Au7jR43WygSwxcuUNVEpXhlu9DDE
 github.com/townsendmerino/aikit v1.74.0/go.mod h1:XXSOKAI6jX/miQdMpMYrcXOBWEdjds2mbUolO3RPerU=
 github.com/townsendmerino/aikit/chunk/treesitter v1.2.0 h1:pqwRl3cIfadQ1aixraw60Hupg3lIC76LG/cpnr+Ya74=
 github.com/townsendmerino/aikit/chunk/treesitter v1.2.0/go.mod h1:+bzbmxKoUhtazBqzxs7CFJiFmyj+qubUo41LHpQS2Ao=
-github.com/townsendmerino/ken v1.12.0 h1:eUk8MQZkFMdt8osIkYtH33nGDkR9UrvizrWit9WAvl8=
-github.com/townsendmerino/ken v1.12.0/go.mod h1:kjU/pcwZzXE5GQmn9c25Vsn53DfVzON8HdEMKa4Js+4=
+github.com/townsendmerino/ken v1.12.1 h1:a/w1BHKb743kDCipsl+zwrpw84/QZ8MfxYCmSzc8zX8=
+github.com/townsendmerino/ken v1.12.1/go.mod h1:kjU/pcwZzXE5GQmn9c25Vsn53DfVzON8HdEMKa4Js+4=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
