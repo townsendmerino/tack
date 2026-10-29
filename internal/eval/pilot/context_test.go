@@ -293,6 +293,34 @@ func TestFixGold_WidensToEnclosingSymbol(t *testing.T) {
 	}
 }
 
+// A whole-file write over a base file adds no seen lines, uses only the base lines it deletes or changes, and keeps
+// the base line of every line it leaves unchanged, so later reads are credited by content, not by position.
+func TestScoreContext_WriteAlignsByContent(t *testing.T) {
+	base := map[string]string{"pkg/w.go": "l1\nl2\nl3\nl4\nl5\n"}
+	gold := []LineSpan{{File: "pkg/w.go", Start: 1, End: 2}}
+	path := filepath.Join(t.TempDir(), "write.jsonl")
+	writeTackEvents(t, path, []any{
+		proto.RequestSent{Request: 1},
+		// Inserts new0 at the top and changes l5: base line 5 is the only one used.
+		proto.ToolCall{ID: "w", Name: "write", Input: json.RawMessage(`{"path":"pkg/w.go","content":"new0\nl1\nl2\nl3\nl4\nl5x\n"}`)},
+		proto.ToolFinished{ID: "w", Outcome: proto.OutcomeOK, Result: "wrote pkg/w.go"},
+		// Current line 1 is the inserted new0, which has no base line.
+		proto.ToolCall{ID: "r1", Name: "read", Input: json.RawMessage(`{"path":"pkg/w.go","offset":1,"limit":1}`)},
+		proto.ToolFinished{ID: "r1", Outcome: proto.OutcomeOK, Result: "     1\tnew0\n"},
+		proto.RequestSent{Request: 2},
+		// Current lines 2-3 are base lines 1-2, the gold.
+		proto.ToolCall{ID: "r2", Name: "read", Input: json.RawMessage(`{"path":"pkg/w.go","offset":2,"limit":2}`)},
+		proto.ToolFinished{ID: "r2", Outcome: proto.OutcomeOK, Result: "     2\tl1\n     3\tl2\n"},
+	})
+	m, err := ScoreContext(path, base, gold, false)
+	if err != nil {
+		t.Fatalf("ScoreContext: %v", err)
+	}
+	if m.CovReq1 != 0 || m.FinalCov != 1 || m.FirstGoldReq != 2 || m.SeenLines != 2 || m.UsedLines != 1 || m.EditLoc != 0 {
+		t.Fatalf("metrics = %+v, want CovReq1=0 FinalCov=1 FirstGoldReq=2 SeenLines=2 UsedLines=1 EditLoc=0", m)
+	}
+}
+
 func TestScoreContext_Cov4kFailedOutcomesWriteAndEdits(t *testing.T) {
 	base := map[string]string{
 		"pkg/a.go": "a1\na2\na3\na4\n",
@@ -362,10 +390,10 @@ func TestScoreContext_Cov4kFailedOutcomesWriteAndEdits(t *testing.T) {
 		// write to a brand-new file: adds 0 base spans.
 		proto.ToolCall{ID: "w1", Name: "write", Input: json.RawMessage(`{"path":"pkg/new.go","content":"package pkg\n"}`)},
 		proto.ToolFinished{ID: "w1", Outcome: proto.OutcomeOK, Result: "wrote pkg/new.go"},
-		// write to existing base file pkg/b.go (4 base lines -> 2 new lines): sees & uses pkg/b.go:1-4.
+		// write to existing base file pkg/b.go (4 base lines -> 2 new lines, none kept): uses pkg/b.go:1-4, sees nothing.
 		proto.ToolCall{ID: "w2", Name: "write", Input: json.RawMessage(`{"path":"pkg/b.go","content":"b1_new\nb2_new\n"}`)},
 		proto.ToolFinished{ID: "w2", Outcome: proto.OutcomeOK, Result: "wrote pkg/b.go"},
-		// subsequent read of pkg/b.go maps positionally to base lines 1..2.
+		// a later read of pkg/b.go shows only the new lines, which have no base lines.
 		proto.ToolCall{ID: "r1", Name: "read", Input: json.RawMessage(`{"path":"pkg/b.go","offset":1,"limit":2}`)},
 		proto.ToolFinished{ID: "r1", Outcome: proto.OutcomeOK, Result: "     1\tb1_new\n     2\tb2_new\n"},
 		// edit with replace_all:true on pkg/c.go replaces both "dup\n" occurrences at lines 2 and 6.
@@ -386,13 +414,15 @@ func TestScoreContext_Cov4kFailedOutcomesWriteAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScoreContext(edits): %v", err)
 	}
-	// Gold has 4 (pkg/a.go:1-4) + 2 (pkg/b.go:2-3) + 2 (pkg/c.go:2,6) = 8 gold lines; all 8 are seen.
+	// Gold has 4 (pkg/a.go:1-4) + 2 (pkg/b.go:2-3) + 2 (pkg/c.go:2,6) = 8 gold lines; 6 are seen (pkg/b.go's gold only
+	// through its write, which shows nothing).
 	// Used lines: pkg/b.go:1-4 (4 lines, 2 in gold) + pkg/c.go:2,3,4,5,6 (5 lines, 2 in gold) = 9 used lines, 4 in gold.
-	if em.GoldLines != 8 || !approxEq(em.FinalCov, 1.0) || em.UsedLines != 9 {
-		t.Fatalf("edits metrics = %+v, want GoldLines=8 FinalCov=1.0 UsedLines=9", em)
+	// Utilization counts the 2 used gold lines that were also seen (pkg/c.go:2,6) among the 6 seen.
+	if em.GoldLines != 8 || !approxEq(em.FinalCov, 6.0/8.0) || em.UsedLines != 9 {
+		t.Fatalf("edits metrics = %+v, want GoldLines=8 FinalCov=0.75 UsedLines=9", em)
 	}
-	if !approxEq(em.Utilization, 4.0/8.0) || !approxEq(em.EditLoc, 4.0/9.0) {
-		t.Fatalf("edits Utilization=%v EditLoc=%v, want 0.5 and %v", em.Utilization, em.EditLoc, 4.0/9.0)
+	if !approxEq(em.Utilization, 2.0/6.0) || !approxEq(em.EditLoc, 4.0/9.0) {
+		t.Fatalf("edits Utilization=%v EditLoc=%v, want %v and %v", em.Utilization, em.EditLoc, 2.0/6.0, 4.0/9.0)
 	}
 
 	// Empty gold returns vacuous coverage 1.0 and Precision 0 without dividing by zero.

@@ -300,6 +300,91 @@ func (tf *trackedFile) replaceLines(file string, start, end int, newText string,
 	return replaced
 }
 
+// maxAlignCells bounds the line-alignment table rewrite builds for the part of a file that differs between its
+// common prefix and suffix; past it the whole middle counts as replaced.
+const maxAlignCells = 4_000_000
+
+// rewrite replaces the file's whole text with newContent, as a write does. Lines are aligned by content (the longest
+// common subsequence of lines): an unchanged line keeps its base line, and a new line has none. It returns the
+// base-commit spans of the lines the write deleted or changed.
+func (tf *trackedFile) rewrite(file, newContent string) []LineSpan {
+	if tf == nil {
+		return nil
+	}
+	oldLines, newLines := textLines(tf.content), textLines(newContent)
+	if len(oldLines) != len(tf.baseLines) {
+		// The tracked text and its line table disagree, so nothing can be aligned: every line counts as replaced.
+		replaced := tf.mapRange(file, 1, len(tf.baseLines))
+		tf.content, tf.baseLines = newContent, make([][2]int, len(newLines))
+		return replaced
+	}
+	pre := 0
+	for pre < len(oldLines) && pre < len(newLines) && oldLines[pre] == newLines[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(oldLines)-pre && suf < len(newLines)-pre && oldLines[len(oldLines)-1-suf] == newLines[len(newLines)-1-suf] {
+		suf++
+	}
+	oldMid, newMid := oldLines[pre:len(oldLines)-suf], newLines[pre:len(newLines)-suf]
+	keptOld := make([]bool, len(oldMid)) // old middle lines that survive
+	newFrom := make([]int, len(newMid))  // for each new middle line, its old middle index, or -1
+	for j := range newFrom {
+		newFrom[j] = -1
+	}
+	if n, m := len(oldMid), len(newMid); n > 0 && m > 0 && (n+1)*(m+1) <= maxAlignCells {
+		lcs := make([]int32, (n+1)*(m+1))
+		at := func(i, j int) *int32 { return &lcs[i*(m+1)+j] }
+		for i := n - 1; i >= 0; i-- {
+			for j := m - 1; j >= 0; j-- {
+				if oldMid[i] == newMid[j] {
+					*at(i, j) = *at(i+1, j+1) + 1
+				} else {
+					*at(i, j) = max(*at(i+1, j), *at(i, j+1))
+				}
+			}
+		}
+		for i, j := 0, 0; i < n && j < m; {
+			switch {
+			case oldMid[i] == newMid[j]:
+				keptOld[i], newFrom[j] = true, i
+				i, j = i+1, j+1
+			case *at(i+1, j) >= *at(i, j+1):
+				i++
+			default:
+				j++
+			}
+		}
+	}
+	next := make([][2]int, 0, len(newLines))
+	next = append(next, tf.baseLines[:pre]...)
+	for _, i := range newFrom {
+		if i < 0 {
+			next = append(next, [2]int{0, 0})
+		} else {
+			next = append(next, tf.baseLines[pre+i])
+		}
+	}
+	next = append(next, tf.baseLines[len(oldLines)-suf:]...)
+	var replaced []LineSpan
+	for i, kept := range keptOld {
+		if !kept {
+			replaced = append(replaced, tf.mapRange(file, pre+i+1, pre+i+1)...)
+		}
+	}
+	tf.content = newContent
+	tf.baseLines = next
+	return MergeSpans(replaced)
+}
+
+// textLines splits s into lines as countTextLines counts them.
+func textLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
 type stepSpans struct {
 	seen []LineSpan
 	used []LineSpan
@@ -515,8 +600,8 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 			tree[pth] = &trackedFile{content: in.Content, baseLines: make([][2]int, n), baseTotal: 0}
 			return nil, nil
 		}
-		spans := tf.replaceLines(pth, 1, max(len(tf.baseLines), 1), in.Content, in.Content)
-		return spans, spans
+		// A write shows the model nothing of the file it replaces: it adds used lines, never seen ones.
+		return nil, tf.rewrite(pth, in.Content)
 
 	case "bash":
 		var in struct {
@@ -832,9 +917,17 @@ func computeMetrics(gold []LineSpan, steps []stepSpans, spans4k []LineSpan, cumT
 
 	goldSeen := setIntersectionCount(goldSet, seenCum)
 	goldUsed := setIntersectionCount(goldSet, usedCum)
+	// Utilization counts used gold lines among the seen ones, so it stays at most 1 when a write uses lines the run
+	// never saw.
+	goldSeenUsed := 0
+	for k := range goldSet {
+		if seenCum[k] && usedCum[k] {
+			goldSeenUsed++
+		}
+	}
 	utilization := 0.0
 	if goldSeen > 0 {
-		utilization = float64(goldUsed) / float64(goldSeen)
+		utilization = float64(goldSeenUsed) / float64(goldSeen)
 	}
 	editLoc := 0.0
 	if len(usedCum) > 0 {

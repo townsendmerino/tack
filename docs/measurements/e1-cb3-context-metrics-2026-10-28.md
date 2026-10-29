@@ -7,13 +7,15 @@ CB3's replay, scored under the CB3 specification `e1-cb3-context-metrics-preregi
 **Zero new model calls:** every figure below comes from replaying the **625 counted E1 runs** on disk (`10` pilot + `615` calibration) against `BaseTree` and `FixGold` (`internal/eval/pilot/context.go:FixGold`, `internal/eval/pilot/context.go:ScoreContext`, `tools/replaycontext`).
 
 **Headline decomposition of the 578 counted failing runs (out of 625 counted runs: 47 pass, 578 fail):**
-- Across all **578 failing runs**, mean `FinalCov = 0.185`, `RawCov = 0.243`, and `FileCov = 0.341` (`186/578 = 32.2%` reached the gold symbol; `64/578 = 11.1%` edited inside it).
+- Across all **578 failing runs**, mean `FinalCov = 0.177`, `RawCov = 0.236`, and `FileCov = 0.341` (`186/578 = 32.2%` reached the gold symbol; `64/578 = 11.1%` edited inside it).
 - **392 of 578 failing runs (67.8%) never saw a single line of the gold symbol** (`FirstGoldReq == 0`, which has `FinalCov = 0.000` and `RawCov = 0.000` by definition, and `FileCov = 0.061` from reading non-gold lines in the gold file).
 - **122 of 578 failing runs (21.1%) reached the gold symbol but never applied a successful edit inside it** (`FirstGoldReq > 0` and `EditLoc == 0`; mean `FinalCov = 0.464`, `RawCov = 0.702`, `FileCov = 0.980`, `FirstReq = 3.61`).
-- **64 of 578 failing runs (11.1%) reached and edited the gold symbol** (`EditLoc > 0`; mean `FinalCov = 0.784`, `RawCov = 0.860`, `FileCov = 0.836`, `EditLoc = 0.916`) and still failed the oracle tests.
+- **64 of 578 failing runs (11.1%) reached and edited the gold symbol** (`EditLoc > 0`; mean `FinalCov = 0.716`, `RawCov = 0.792`, `FileCov = 0.836`, `EditLoc = 0.917`) and still failed the oracle tests.
 - **All 47 passing runs (100%) reached the gold file and symbol** (`FileCov = 1.000`, `RawCov = 1.000`, `FinalCov = 0.964`, `EditLoc = 0.979`, mean `FirstGoldReq = 2.34`, `AUCCov = 0.794`).
 
-*(When the 62 void, preflight-smoke, and superseded failing runs on disk are also included via `-include-superseded`, total runs are `687` (`47` pass, `640` fail): `452/640` (`70.6%`) have `FirstGoldReq == 0` (`FinalCov = 0.000`), `123/640` (`19.2%`) have `FirstGoldReq > 0 && EditLoc == 0` (`FinalCov = 0.469`), and `65/640` (`10.2%`) have `EditLoc > 0` (`FinalCov = 0.788`), with overall failing mean `FinalCov = 0.170` and `FileCov = 0.316`; see §1.1.)*
+*(When the 62 void, preflight-smoke, and superseded failing runs on disk are also included via `-include-superseded`, total runs are `687` (`47` pass, `640` fail): `452/640` (`70.6%`) have `FirstGoldReq == 0` (`FinalCov = 0.000`), `123/640` (`19.2%`) have `FirstGoldReq > 0 && EditLoc == 0` (`FinalCov = 0.469`), and `65/640` (`10.2%`) have `EditLoc > 0` (`FinalCov = 0.720`), with overall failing mean `FinalCov = 0.163` and `FileCov = 0.316`; see §1.1.)*
+
+*(Revised 2026-10-29 for the scorer's whole-file `write` fix, §7: a `write` no longer counts the file it replaces as seen, and its lines are aligned by content. 8 failing runs move. No count in this record changes: not the 392 / 122 / 64 split, the 186 that reached gold, or the passing runs. Only means move, as listed in §7.1.)*
 
 ---
 
@@ -89,10 +91,10 @@ Aggregate `Precision` is computed over runs with `SeenLines > 0` (`seenRuns`), s
 | group | runs | reached gold | edited gold | `FinalCov` | `RawCov` | `FileCov` | `CovReq1` | `Cov4k` | `Precision` (`SeenLines>0`) | `FirstReq` | `AUCCov` | `Util` | `EditLoc` |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | **passing runs** | 47 | 47/47 (100%) | 46/47 (97.9%) | 0.964 | 1.000 | 1.000 | 0.388 | 0.612 | 0.164 | 2.34 | 0.794 | 0.076 | 0.979 |
-| **failing runs (all)** | 578 | 186/578 (32.2%) | 64/578 (11.1%) | 0.185 | 0.243 | 0.341 | 0.008 | 0.106 | 0.161 | 3.77 | 0.135 | 0.017 | 0.101 |
+| **failing runs (all)** | 578 | 186/578 (32.2%) | 64/578 (11.1%) | 0.177 | 0.236 | 0.341 | 0.008 | 0.099 | 0.158 | 3.77 | 0.131 | 0.014 | 0.102 |
 | — `FirstGoldReq == 0` (never saw gold) | 392 | 0/392 (0.0%) | 0/392 (0.0%) | 0.000 | 0.000 | 0.061 | 0.000 | 0.000 | 0.000 | — | 0.000 | 0.000 | 0.000 |
 | — `FirstGoldReq > 0 && EditLoc == 0` | 122 | 122/122 (100%) | 0/122 (0.0%) | 0.464 | 0.702 | 0.980 | 0.010 | 0.239 | 0.183 | 3.61 | 0.355 | 0.000 | 0.000 |
-| — `EditLoc > 0` (edited gold, failed test) | 64 | 64/64 (100%) | 64/64 (100%) | 0.784 | 0.860 | 0.836 | 0.054 | 0.504 | 0.452 | 4.08 | 0.543 | 0.150 | 0.916 |
+| — `EditLoc > 0` (edited gold, failed test) | 64 | 64/64 (100%) | 64/64 (100%) | 0.716 | 0.792 | 0.836 | 0.054 | 0.435 | 0.439 | 4.08 | 0.509 | 0.128 | 0.917 |
 
 ---
 
@@ -104,9 +106,9 @@ Grouping the 615 counted calibration runs by task separates the 12 calibration t
 |---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | 1 | `goinfer` | `loadflags.go:55-82, 316-317` | 48 | 15 | 18/48 (37.5%) | 17/48 (35.4%) | 0.375 | 0.375 | 0.396 | 0.092 | 4.33 | **Retrieval-gated, solved when found:** 15 of the 18 runs that found the gold symbol passed (83.3%), vs 0/30 when not found. |
 | 2 | `goinfer` | `banner.go:128-282` | 63 | 3 | 39/63 (61.9%) | 17/63 (27.0%) | 0.401 | 0.516 | 0.635 | 0.384 | 2.77 | **Mixed read-to-edit & edit logic:** 61.9% reach `banner.go:128-282`, 17/63 edit inside it, 3 pass. |
-| 3 | `goinfer` | `prequant.go:68-142, 150-233, 453-454` | 49 | 0 | 11/49 (22.4%) | 2/49 (4.1%) | 0.117 | 0.128 | 0.265 | 0.070 | 6.00 | **Retrieval + read-to-edit drop:** 77.6% never reach `prequant.go`'s target functions; 9 of 11 that do never apply a successful edit inside them. |
+| 3 | `goinfer` | `prequant.go:68-142, 150-233, 453-454` | 49 | 0 | 11/49 (22.4%) | 2/49 (4.1%) | 0.097 | 0.097 | 0.265 | 0.067 | 6.00 | **Retrieval + read-to-edit drop:** 77.6% never reach `prequant.go`'s target functions; 9 of 11 that do never apply a successful edit inside them. |
 | 4 | `goinfer` | `pull/pull.go:369-410` | 55 | 0 | 3/55 (5.5%) | 1/55 (1.8%) | 0.035 | 0.055 | 0.236 | 0.018 | 15.67 | **Retrieval-bound:** 23.6% open `pull.go` (usually the top 200 lines), only 5.5% ever reach lines 369–410. |
-| 5 | `goinfer` | `loadflags.go:297, banner.go:24-72, 74-103, 114-258` | 56 | 0 | 26/56 (46.4%) | 21/56 (37.5%) | 0.281 | 0.311 | 0.232 | 0.406 | 6.19 | **Edit-logic / multi-file bound:** 21 of 26 runs that reach the gold spans edit inside them (`EditLoc = 0.338`), and all 21 fail the oracle test (`FileCov = 0.232` across the 2 gold files). |
+| 5 | `goinfer` | `loadflags.go:297, banner.go:24-72, 74-103, 114-258` | 56 | 0 | 26/56 (46.4%) | 21/56 (37.5%) | 0.221 | 0.260 | 0.232 | 0.390 | 6.19 | **Edit-logic / multi-file bound:** 21 of 26 runs that reach the gold spans edit inside them (`EditLoc = 0.338`), and all 21 fail the oracle test (`FileCov = 0.232` across the 2 gold files). |
 | 6 | `goinfer` | `banner.go:73-97` | 66 | 0 | 32/66 (48.5%) | 1/66 (1.5%) | 0.119 | 0.485 | 0.485 | 0.056 | 3.22 | **Read-to-edit drop:** 32 of 66 runs read the raw hunk line (`RawCov = 0.485`), while only 1 of 66 applies a successful edit inside `banner.go:73-97`. |
 | 7 | `ken` | `mcp/log.go:20-21` | 45 | 0 | 1/45 (2.2%) | 0/45 (0.0%) | 0.011 | 0.011 | 0.133 | 0.000 | 22.00 | **Retrieval-bound:** 44 of 45 runs never reach `mcp/log.go:20-21`. |
 | 8 | `goinfer` | `chat/templates.go:116-151` | 49 | 0 | 0/49 (0.0%) | 0/49 (0.0%) | 0.000 | 0.000 | 0.020 | 0.000 | — | **Retrieval-bound:** 0 of 49 runs ever reach `chat/templates.go:116-151`. |
@@ -123,37 +125,37 @@ Every row below comes directly from `tools/replaycontext -mirrors ~/tack-runs/e1
 
 | job | arm | runs | pass | reached | edited gold | `FinalCov` | `RawCov` | `FileCov` | `CovReq1` | `Cov4k` | `Precision` | `FirstReq` | `AUCCov` | `Util` | `EditLoc` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `a1-2026-10-18-day2` (pilot tasks 1–7, 9–11) | `A1` | 10 | 0 | 5/10 | 1/10 | 0.276 | 0.303 | 0.600 | 0.000 | 0.276 | 0.132 | 3.00 | 0.194 | 0.010 | 0.100 |
+| `a1-2026-10-18-day2` (pilot tasks 1–7, 9–11) | `A1` | 10 | 0 | 5/10 | 1/10 | 0.276 | 0.303 | 0.600 | 0.000 | 0.276 | 0.137 | 3.00 | 0.194 | 0.010 | 0.100 |
 | `cal-baseline-2026-10-18` (Qwen2.5-7B, passes 1–3) | `A1` | 36 | 0 | 8/36 | 2/36 | 0.106 | 0.083 | 0.250 | 0.009 | 0.051 | 0.039 | 5.00 | 0.054 | 0.008 | 0.044 |
 | `c4` (Qwen3-4B, passes 1–3) | `A1` | 36 | 0 | 6/36 | 0/36 | 0.084 | 0.083 | 0.222 | 0.009 | 0.084 | 0.132 | 1.50 | 0.083 | 0.000 | 0.000 |
-| `c5` (Qwen3-8B, passes 1–3) | `A1` | 36 | 4 | 11/36 | 6/36 | 0.205 | 0.246 | 0.278 | 0.059 | 0.129 | 0.189 | 2.73 | 0.158 | 0.038 | 0.156 |
+| `c5` (Qwen3-8B, passes 1–3) | `A1` | 36 | 4 | 11/36 | 6/36 | 0.187 | 0.238 | 0.278 | 0.059 | 0.111 | 0.196 | 2.73 | 0.149 | 0.027 | 0.156 |
 | `c6-46-2026-10-19/runs` (`fit_window`: A=off, B=on) | `A` | 36 | 1 | 11/36 | 2/36 | 0.167 | 0.194 | 0.306 | 0.033 | 0.098 | 0.089 | 2.09 | 0.143 | 0.006 | 0.056 |
-| `c6-46-2026-10-19/runs` (`fit_window`: A=off, B=on) | `B` | 36 | 2 | 11/36 | 8/36 | 0.263 | 0.298 | 0.278 | 0.028 | 0.214 | 0.250 | 4.09 | 0.200 | 0.038 | 0.203 |
+| `c6-46-2026-10-19/runs` (`fit_window`: A=off, B=on) | `B` | 36 | 2 | 11/36 | 8/36 | 0.236 | 0.270 | 0.278 | 0.028 | 0.187 | 0.234 | 4.09 | 0.187 | 0.038 | 0.203 |
 | `c6-44-2026-10-19/runs` (`result_notes`: A=off, B=on) | `A` | 36 | 2 | 8/36 | 3/36 | 0.140 | 0.139 | 0.250 | 0.031 | 0.088 | 0.092 | 2.25 | 0.119 | 0.007 | 0.083 |
-| `c6-44-2026-10-19/runs` (`result_notes`: A=off, B=on) | `B` | 36 | 3 | 15/36 | 8/36 | 0.315 | 0.315 | 0.458 | 0.001 | 0.205 | 0.174 | 5.53 | 0.203 | 0.039 | 0.212 |
+| `c6-44-2026-10-19/runs` (`result_notes`: A=off, B=on) | `B` | 36 | 3 | 15/36 | 8/36 | 0.287 | 0.292 | 0.458 | 0.001 | 0.177 | 0.149 | 5.53 | 0.200 | 0.011 | 0.213 |
 | `c6-41-2026-10-20` (`edit_messages`: all 72 counted) | `A` | 36 | 2 | 9/36 | 4/36 | 0.159 | 0.167 | 0.278 | 0.031 | 0.134 | 0.112 | 4.33 | 0.121 | 0.011 | 0.111 |
 | `c6-41-2026-10-20` (`edit_messages`: all 72 counted) | `B` | 36 | 3 | 11/36 | 4/36 | 0.180 | 0.194 | 0.306 | 0.001 | 0.152 | 0.120 | 3.18 | 0.137 | 0.010 | 0.111 |
 | `c6-48-2026-10-20/runs` (`instructions`: A=none, B=full) | `A` | 36 | 2 | 9/36 | 6/36 | 0.217 | 0.222 | 0.250 | 0.007 | 0.162 | 0.232 | 1.89 | 0.178 | 0.011 | 0.167 |
-| `c6-48-2026-10-20/runs` (`instructions`: A=none, B=full) | `B` | 36 | 4 | 19/36 | 9/36 | 0.400 | 0.409 | 0.569 | 0.087 | 0.160 | 0.194 | 3.74 | 0.298 | 0.040 | 0.231 |
+| `c6-48-2026-10-20/runs` (`instructions`: A=none, B=full) | `B` | 36 | 4 | 19/36 | 9/36 | 0.399 | 0.395 | 0.569 | 0.087 | 0.160 | 0.200 | 3.74 | 0.298 | 0.040 | 0.231 |
 | `c6-head-t1-2026-10-20/qwen3-4b` (`instructions_head`, tasks 3, 4) | `A1` | 6 | 0 | 0/6 | 0/6 | 0.000 | 0.000 | 0.333 | 0.000 | 0.000 | 0.000 | — | 0.000 | 0.000 | 0.000 |
 | `c6-head-t1-2026-10-20/qwen3-8b` (`instructions_head`, tasks 3, 4) | `A1` | 6 | 0 | 4/6 | 0/6 | 0.387 | 0.667 | 0.833 | 0.002 | 0.286 | 0.204 | 2.00 | 0.327 | 0.000 | 0.000 |
 | `c6-42-2026-10-20/runs-restart` (`verify_done`: A=off, B=on) | `A` | 36 | 6 | 14/36 | 8/36 | 0.293 | 0.389 | 0.417 | 0.084 | 0.150 | 0.122 | 2.79 | 0.226 | 0.040 | 0.199 |
 | `c6-42-2026-10-20/runs-restart` (`verify_done`: A=off, B=on) | `B` | 36 | 5 | 16/36 | 11/36 | 0.310 | 0.425 | 0.431 | 0.084 | 0.121 | 0.173 | 3.25 | 0.239 | 0.016 | 0.303 |
 | `c6-4b-bundle-2026-10-21/runs` (Qwen3-4B + bundle, tasks 1, 2, 11, 12) | `A1` | 12 | 0 | 2/12 | 0/12 | 0.001 | 0.000 | 0.417 | 0.000 | 0.001 | 0.009 | 5.00 | 0.001 | 0.000 | 0.000 |
 | `c6-build-2026-10-25/runs` (`build_after_edit`: A=off, B=on) | `A` | 36 | 5 | 18/36 | 10/36 | 0.336 | 0.460 | 0.486 | 0.084 | 0.212 | 0.170 | 3.28 | 0.257 | 0.013 | 0.278 |
-| `c6-build-2026-10-25/runs` (`build_after_edit`: A=off, B=on) | `B` | 36 | 4 | 18/36 | 10/36 | 0.429 | 0.485 | 0.500 | 0.084 | 0.181 | 0.184 | 4.39 | 0.334 | 0.042 | 0.249 |
+| `c6-build-2026-10-25/runs` (`build_after_edit`: A=off, B=on) | `B` | 36 | 4 | 18/36 | 10/36 | 0.404 | 0.461 | 0.500 | 0.084 | 0.156 | 0.180 | 4.39 | 0.316 | 0.042 | 0.249 |
 | `c6-t1-2026-10-25/edit-lines-qwen3-8b` (tasks 2, 5) | `A1` | 6 | 1 | 5/6 | 2/6 | 0.453 | 0.833 | 1.000 | 0.002 | 0.055 | 0.145 | 4.60 | 0.286 | 0.007 | 0.333 |
 | `c6-t1-2026-10-25/restate-qwen3-4b` (tasks 3, 4, 8, 9) | `A1` | 12 | 0 | 1/12 | 0/12 | 0.001 | 0.000 | 0.250 | 0.000 | 0.001 | 0.006 | 2.00 | 0.000 | 0.000 | 0.000 |
 | `c6-cursym-2026-10-27/runs` (tasks 1, 2, 5) | `A1` | 9 | 3 | 9/9 | 4/9 | 0.555 | 0.889 | 0.833 | 0.000 | 0.111 | 0.294 | 4.89 | 0.368 | 0.014 | 0.444 |
-| `c6-cursym2-2026-10-27/runs` (tasks 2, 5, 6) | `A1` | 24 | 0 | 23/24 | 12/24 | 0.403 | 0.821 | 0.812 | 0.004 | 0.306 | 0.328 | 3.04 | 0.307 | 0.060 | 0.464 |
+| `c6-cursym2-2026-10-27/runs` (tasks 2, 5, 6) | `A1` | 24 | 0 | 23/24 | 12/24 | 0.367 | 0.786 | 0.812 | 0.004 | 0.269 | 0.323 | 3.04 | 0.282 | 0.060 | 0.464 |
 
-*(Note: On `c6-44-2026-10-19/runs` arm `B`, excluding failed tool calls from `cumTokens` per §3.1 of the specification changes `Cov4k` from `0.178` to `0.205`.)*
+*(Note: On `c6-44-2026-10-19/runs` arm `B`, excluding failed tool calls from `cumTokens` per §3.1 of the specification changed `Cov4k` from `0.178` to `0.205`, under the scorer before the `write` fix. With the fix, it is `0.177`.)*
 
 ### 5.1 Sensitivity to `-include-notes` on `c6-cursym` and `c6-cursym2`
 
 Running `tools/replaycontext -include-notes` on `c6-cursym-2026-10-27/runs` (9 runs) and `c6-cursym2-2026-10-27/runs` (24 runs) credits `[tack: the current text of <sym> in <file>, lines <start>-<end>, ...]` notes attached to failed `edit` calls as seen spans:
 - `c6-cursym-2026-10-27/runs` (`A1`, 9 runs): metrics are unchanged (`FinalCov = 0.555`, `RawCov = 0.889`, `FileCov = 0.833`, `Cov4k = 0.111`, `Precision = 0.294`) because those runs had already read the enclosing symbol before attempting the failed edits.
-- `c6-cursym2-2026-10-27/runs` (`A1`, 24 runs): `FinalCov` increases by `+0.001` (`0.403 -> 0.404`), with all other rounded columns unchanged (`RawCov = 0.821`, `FileCov = 0.812`, `Cov4k = 0.306`, `Precision = 0.328`).
+- `c6-cursym2-2026-10-27/runs` (`A1`, 24 runs): `Cov4k` increases by `+0.001` (`0.269 -> 0.270`), with all other rounded columns unchanged (`FinalCov = 0.367`, `RawCov = 0.786`, `FileCov = 0.812`, `Precision = 0.323`). Before the `write` fix, the change was `FinalCov` `0.403 -> 0.404`.
 
 ---
 
@@ -162,12 +164,12 @@ Running `tools/replaycontext -include-notes` on `c6-cursym-2026-10-27/runs` (9 r
 All mechanism interpretations below are **hypotheses** drawn from observational correlations across 36-run per-arm calibration jobs where binary pass differences are 1–2 runs:
 
 1. **Observed trajectory differences across C6 screens (and counter-evidence):**
-   - **4.4 (`result_notes`):** Between arm `A` (off) and arm `B` (on), `reached` rises from `8/36` to `15/36`, `FinalCov` rises from `0.140` to `0.315`, and `edited_gold` rises from `3/36` to `8/36`. *Hypothesis:* when an initial search or grep returns nothing, the note nudges the model to issue follow-up searches rather than quitting early. *Counter-evidence / trade-off:* `CovReq1` drops from `0.031` (`A`) to `0.001` (`B`), and mean `FirstReq` among runs reaching gold increases from `2.25` to `5.53` requests, showing that the additional coverage arrives late in the trajectory rather than on the first turn.
-   - **4.8 (`instructions`):** Between arm `A` (no instruction file) and arm `B` (full instruction file), `reached` rises from `9/36` to `19/36`, `FileCov` rises from `0.250` to `0.569`, and `CovReq1` rises from `0.007` to `0.087` (`Cov4k` is flat at `0.162` vs `0.160`, and `Precision` is `0.232` vs `0.194`). *Hypothesis:* the repository map in `CLAUDE.md`/`AGENTS.md` helps direct initial file lookups toward the target package, though `FirstReq` also rises from `1.89` to `3.74` across the larger set of runs that eventually reach gold.
-   - **4.6 (`fit_window`):** `FinalCov` rises from `0.167` to `0.263`, `Cov4k` rises from `0.098` to `0.214`, and `edited_gold` rises from `2/36` to `8/36` (`reached` is `11/36` on both arms, and `FileCov` is `0.306` vs `0.278`).
+   - **4.4 (`result_notes`):** Between arm `A` (off) and arm `B` (on), `reached` rises from `8/36` to `15/36`, `FinalCov` rises from `0.140` to `0.287`, and `edited_gold` rises from `3/36` to `8/36`. *Hypothesis:* when an initial search or grep returns nothing, the note nudges the model to issue follow-up searches rather than quitting early. *Counter-evidence / trade-off:* `CovReq1` drops from `0.031` (`A`) to `0.001` (`B`), and mean `FirstReq` among runs reaching gold increases from `2.25` to `5.53` requests, showing that the additional coverage arrives late in the trajectory rather than on the first turn.
+   - **4.8 (`instructions`):** Between arm `A` (no instruction file) and arm `B` (full instruction file), `reached` rises from `9/36` to `19/36`, `FileCov` rises from `0.250` to `0.569`, and `CovReq1` rises from `0.007` to `0.087` (`Cov4k` is flat at `0.162` vs `0.160` under the whole-call rule, but `0.164` vs `0.195` when the boundary call is sliced, §7.2; `Precision` is `0.232` vs `0.200`). *Hypothesis:* the repository map in `CLAUDE.md`/`AGENTS.md` helps direct initial file lookups toward the target package, though `FirstReq` also rises from `1.89` to `3.74` across the larger set of runs that eventually reach gold.
+   - **4.6 (`fit_window`):** `FinalCov` rises from `0.167` to `0.236`, `Cov4k` rises from `0.098` to `0.187`, and `edited_gold` rises from `2/36` to `8/36` (`reached` is `11/36` on both arms, and `FileCov` is `0.306` vs `0.278`).
    - **4.1 (`edit_messages`, all 72 counted runs):** Trajectory metrics are nearly flat between `A` and `B` (`reached` `9/36` vs `11/36`, `edited_gold` `4/36` vs `4/36`, `FinalCov` `0.159` vs `0.180`, `EditLoc` `0.111` vs `0.111`, while `CovReq1` drops from `0.031` to `0.001`).
-   - **4.2 (`verify_done`, `runs-restart`):** `edited_gold` is `8/36` (`EditLoc = 0.199`) on `A` vs `11/36` (`EditLoc = 0.303`) on `B`, while `FinalCov` (`0.293` vs `0.310`) and `FileCov` (`0.417` vs `0.431`) barely move, `Cov4k` drops from `0.150` to `0.121`, `Util` drops from `0.040` to `0.016`, and passes are `6/36` (`A`) vs `5/36` (`B`).
-   - Across the cumulative progression from unbundled Qwen3-8B (`c5`: `reached = 11/36`, `edited_gold = 6/36`, `FinalCov = 0.205`, `RawCov = 0.246`, `4/36` pass) to bundled Qwen3-8B (`c6-build` arm `A`: `reached = 18/36`, `edited_gold = 10/36`, `FinalCov = 0.336`, `RawCov = 0.460`, `5/36` pass), gold-symbol reach increases from `30.6%` to `50.0%` while binary passes move by `+1` run (`4/36 -> 5/36`).
+   - **4.2 (`verify_done`, `runs-restart`):** `edited_gold` is `8/36` (`EditLoc = 0.199`) on `A` vs `11/36` (`EditLoc = 0.303`) on `B`, while `FinalCov` (`0.293` vs `0.310`) and `FileCov` (`0.417` vs `0.431`) barely move, `Cov4k` drops from `0.150` to `0.121` (`0.157` to `0.148` when the boundary call is sliced, §7.2), `Util` drops from `0.040` to `0.016`, and passes are `6/36` (`A`) vs `5/36` (`B`).
+   - Across the cumulative progression from unbundled Qwen3-8B (`c5`: `reached = 11/36`, `edited_gold = 6/36`, `FinalCov = 0.187`, `RawCov = 0.238`, `4/36` pass) to bundled Qwen3-8B (`c6-build` arm `A`: `reached = 18/36`, `edited_gold = 10/36`, `FinalCov = 0.336`, `RawCov = 0.460`, `5/36` pass), gold-symbol reach increases from `30.6%` to `50.0%` while binary passes move by `+1` run (`4/36 -> 5/36`).
 2. **Where retrieval (`search`, `symbol`) has the largest potential headroom (hypothesis for C7):**
    - All calibration runs through C6 ran **without `[ken]`** (`grep`, `glob`, `read`, `edit`, `write`, `bash` only).
    - Across Tasks 1, 3, 4, 7, 8, and 9 (`295` counted calibration runs), `grep`/`glob`/`read` failed to reach the gold symbol in **`261 of 295` runs (`88.5%`)** — and on Task 1, `15 of the 18` counted runs that *did* reach `loadflags.go:55-82` passed (`83.3%`).
@@ -175,3 +177,85 @@ All mechanism interpretations below are **hypotheses** drawn from observational 
 3. **Where post-retrieval edit application and patch logic remain bottlenecks:**
    - On Task 6 (`banner.go:73-97`) and Task 10 (`build_index.go:31-164`), `48.5%` (`32/66`) and `64.4%` (`29/45`) of counted runs reached the gold symbol, while only `1.5%` (`1/66`) and `15.6%` (`7/45`) applied a successful edit inside it (`EditLoc > 0`). (Because `EditLoc` only counts `OutcomeOK` edits, it does not separate runs that never called `edit` on the symbol from runs whose `edit` calls failed.)
    - On Task 5 (`loadflags.go:297`, `banner.go:24-72, 74-103, 114-258`), `21 of 26` counted runs that reached the gold spans applied a successful edit inside them, yet `0 of 21` passed the oracle test (`FileCov = 0.232` across the two gold files), indicating an edit-completeness / patch-logic bottleneck rather than single-file line reach.
+
+---
+
+## 7. Scorer follow-ups (2026-10-29)
+
+The fix check (`~/tack-runs/reviews/fix-check-2026-10-29.md`, tack items 8 and 10) listed six behaviors the 2026-10-29
+revision documented but did not change. Each was checked against the 625 counted runs. The evidence comes from a table
+of their 16,164 tool calls, taken from the 634 per-run `events.jsonl` files. The 9 extra files are the superseded
+partial blocks of `c6-41`.
+
+| # | behavior | evidence over the counted runs | outcome |
+|---|---|---|---|
+| 1 | `Cov4k` drops the whole call that crosses 4,096 tokens | slicing the boundary call instead moves `Cov4k` in 37 runs (§7.2) | kept, as the specification's rule; the sensitivity is reported in §7.2 |
+| 2 | `edit` and `write` count as seen as well as used | all 307 successful edits used `old_string`, none `symbol` or line ranges, so an edit's "seen" lines are the text the model quoted in its own call; whole-file writes over a base file marked every base line seen | `edit` kept; `write` fixed (§7.1) |
+| 3 | a whole-file `write` remaps lines by position | 29 successful writes; the fix moves 8 counted runs, and 6 of them had overwritten a gold file (`banner.go` four times, `prequant.go` twice) | fixed (§7.1) |
+| 4 | `cat f \| head` credits the whole file | none of the 606 successful `bash` calls runs `cat`, `head`, `tail`, `nl` or `sed`: 454 start with `go`, 142 with `find`, 9 with `cd … && go mod …`, 1 with `grep` | kept, documented; no run is affected |
+| 5 | shell writes (`sed -i`, `gofmt -w`, redirection) are not tracked | no successful `bash` call writes a `.go` file; the only shell writes are `go mod tidy`'s `go.mod` and `go.sum`. Three `goimports -w` calls and one `echo … >` all failed | kept, documented; no run is affected |
+| 6 | the `-scan` exclusions are hard-coded in `tools/replaycontext/main.go` | each matches a record that marks those runs void, smoke or superseded (§1.1); hard-coding them biases no figure | kept, documented |
+
+Items 4 and 5 matter only for runs whose shell can print or rewrite files. A future run set with those commands
+should be checked for them before it is scored.
+
+### 7.1 The `write` fix
+
+- **The bias:** a whole-file `write` over a base file marked every base line of that file as seen and as used.
+  - So a run that overwrote `banner.go` with 34 new lines was credited with having seen all of its gold.
+  - Later reads of the new file were mapped to base lines by position.
+- **What the scorer does now** (`internal/eval/pilot/context.go:trackedFile.rewrite`):
+  - The new text is aligned to the current text by the longest common subsequence of lines. An unchanged line keeps
+    its base line; a new line has none.
+  - The write adds **no seen lines**.
+  - It adds as **used** only the base lines it deletes or changes.
+- **`Utilization`** now counts used gold lines among the seen ones, `|G ∩ U ∩ S| / |G ∩ S|`, so it stays at most 1 when
+  a write uses lines the run never saw.
+- **Test, failing first:** `TestScoreContext_WriteAlignsByContent`. Before the fix it read `SeenLines 5`,
+  `UsedLines 5`, `CovReq1 1`, against `2`, `1` and `0`.
+  - `TestScoreContext_Cov4kFailedOutcomesWriteAndEdits` now expects `FinalCov 0.75` and `Utilization 2/6` for its
+    write case.
+  - Reverting the `Utilization` numerator makes it fail at `0.667`.
+- **What moved:** 8 failing runs, and no pass. No run changes class, so `FirstGoldReq`, `reached` and
+  `edited gold` are unchanged everywhere.
+
+| run | `FinalCov` before → after | `Cov4k` before → after |
+|---|---|---|
+| `c6-44` B task 5 | 0.995 → 0.004 | 0.995 → 0.004 |
+| `c6-46` B task 3 | 1.000 → 0.024 | 1.000 → 0.024 |
+| `c6-build` B task 5 | 0.995 → 0.120 | 0.995 → 0.120 |
+| `c6-cursym2` A1 task 5 | 0.995 → 0.120 | 0.995 → 0.120 |
+| `c5` A1 task 5 | 0.995 → 0.342 | 0.995 → 0.342 |
+| `c6-48` B task 3 | 1.000 → 0.987 | 0.006 → 0.006 |
+| `a1-day2` A1 task 3, `c6-build` A task 3 | unchanged | unchanged (only `SeenLines` and `Precision` move) |
+
+The rows of §§0, 3, 4, 5 and 6 that these runs feed were updated in place. Failing runs' `FinalCov` went from 0.185
+to 0.177, and the edited-gold group's from 0.784 to 0.716.
+
+### 7.2 `Cov4k`'s whole-call rule, against slicing the boundary call
+
+The specification excludes, in full, the tool call whose output takes cumulative tool tokens past 4,096. Every later
+call is past the budget too, so the rule affects exactly one call per run.
+
+The alternative is to slice that call: keep the first part of its seen lines, in proportion to the budget left
+before it. That assumes a call's tokens spread evenly over its lines, and in output order.
+
+The comparison was run once, with the change made temporarily and not kept.
+
+| group | whole call (the rule) | sliced |
+|---|---|---|
+| passing runs (47) | 0.612 | 0.616 |
+| failing runs (578) | 0.099 | 0.107 |
+| reached gold, no gold edit (122) | 0.239 | 0.262 |
+| edited gold (64) | 0.435 | 0.470 |
+| `c6-48` A / B (4.8, instructions) | 0.162 / 0.160 | 0.164 / 0.195 |
+| `c6-42` restart A / B (4.2, `verify_done`) | 0.150 / 0.121 | 0.157 / 0.148 |
+| `c6-cursym` A1 | 0.111 | 0.163 |
+
+- **The whole-call rule is a lower bound.**
+- **Most group means move by under 0.03.**
+- **Two of §6's `Cov4k` comparisons depend on the rule:**
+  - 4.8's "flat" holds only under the whole-call rule;
+  - 4.2's drop shrinks from 0.029 to 0.009.
+
+  §6 now says so beside each.

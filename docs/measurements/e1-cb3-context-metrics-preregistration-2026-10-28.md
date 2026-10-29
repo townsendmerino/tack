@@ -4,6 +4,12 @@
 
 **Status: specification (not a pre-registration). Originally committed 2026-10-28 in `57c9548` (`14:45:58 -0700`) in the same commit as `internal/eval/pilot/context.go`, `tools/replaycontext/main.go`, and the results record `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` (after `/tmp/e1-cb3-context-metrics.jsonl` was written at `14:37`), so git history does not establish that it was frozen before the first replay run; while `docs/research/contextbench-leann-2026-10-28.md` §9 marked decisions 1–9 as approved in `57c9548`, Francis's approval of those decisions is not recorded in a separate commit or note in the repository.**
 **Revision note:** Revised 2026-10-29 (`8076b0c`) after the CB3 results and review to match the scorer and document review fixes (§3.1 failed-call token exclusion, `-include-notes` on failed edits carrying `current_symbol` notes, whole-call `Cov4k`, `edit`/`write` seen+used spans, positional `write` line mapping, and `bash` pipeline AST walking; §3.2 removal of the unused `opencode` branch; §4 aggregate `Precision` over `SeenLines > 0`; §4.1 `-scan` exclusions).
+**Second revision, 2026-10-29 (branch `cb3-scorer-followups-2026-10-29`; awaiting Francis's decision):**
+- a whole-file `write` adds no seen lines, uses only the base lines it deletes or changes, and is aligned to the
+  current text by content, not by position (§3, §3.1);
+- `Utilization` counts used gold lines among the seen ones (§4.8).
+
+The evidence for each of the fix check's six items is in the record's §7.
 
 ## 1. Purpose
 
@@ -50,7 +56,10 @@ Each run is scored in **base-commit line coordinates** over the files that exist
 
 To prevent a run's own mid-run edits from shifting line numbers when it later reads the same file, the scorer tracks a per-file line-offset table (`trackedFile`) from the run's successful `edit` and `write` calls:
 - On a successful `edit` replacing current lines `[start, end]` with `newCount` lines, lines newly inserted by the run are assigned base line `0` (unless `start == end` and `newCount == 1`, which preserves that single base line index) so subsequent reads of newly inserted text cannot inflate base coverage or precision, while lines after `end` shift by `newCount - (end - start + 1)`.
-- On a successful whole-file `write` to an existing base file with `newCount` lines, `trackedFile` replaces `curLines` with positional indices `1..newCount` (clamped to `len(baseLines[path])`, or `0` for lines beyond `len(baseLines[path])`), a positional approximation since `write` overwrites the entire file rather than diffing against `base`.
+- On a successful whole-file `write` to an existing file, `trackedFile.rewrite` aligns the new text to the current text by the longest common subsequence of lines, after trimming their common prefix and suffix.
+  - Each unchanged line keeps its base line, and each new line gets base line `0`.
+  - The base lines of the current lines it deletes or changes are the write's used spans.
+  - If the differing middle would need more than 4,000,000 table cells, the whole middle counts as replaced.
 
 ### 3.1 `tack` (`A`, `A1`, `B`) runs (`events.jsonl`)
 
@@ -62,8 +71,8 @@ Request index `r` starts at `0` and increments on each `proto.RequestSent` (`r =
 | `search` | each `<file>:<start>-<end>` block in `Result` | — | Parsed from the header lines `<file>:<start>-<end>` emitted by `internal/tools/search.go:searchTool.Run`. |
 | `symbol` | definition span `[shownStart, shownEnd]` in `<file>`, plus 1-line spans `[line, line]` for each listed caller (`  <file>:<line>`) and test (`  <file>:<line> <name>`) | — | When `input.name != ""` and a single definition is shown (`<file>:<start>-<end> <kind> <name>` followed by numbered `\t` lines), the seen definition span is the range of numbered lines actually printed (which starts at `DocLine` when present and is capped at `readMaxLines = 200`). Outline-only calls (`input.name == ""`) and multi-definition ambiguity listings print signatures/ranges without code bodies and add **no** seen code spans. |
 | `grep` | `[line, line]` for each `<file>:<line>:<text>` match line in `Result` | — | Parsed from `internal/tools/fs.go:grepTool.Run` output. |
-| `edit` | `[start, end]` of each replaced region | `[start, end]` of each replaced region | When `Outcome == OutcomeOK`: the base lines replaced by `old_string` (including `replace_all: true` and `MatchTolerances` matches), `symbol`, or `start_line..end_line`. Recording replaced base spans in both `S_r` and `U_r` guarantees `|G \cap U| \le |G \cap S_{\text{final}}|` (`Utilization <= 1.0`) even when an edit targets a symbol or line range without a prior `read`. |
-| `write` | `[1, len(baseLines[path])]` if `path` existed at `base` | `[1, len(baseLines[path])]` if `path` existed at `base` | Creating a brand-new file not in `base` adds no base spans. Overwriting an existing base file marks all base lines of `path` as seen and used. |
+| `edit` | `[start, end]` of each replaced region | `[start, end]` of each replaced region | When `Outcome == OutcomeOK`: the base lines replaced by `old_string` (including `replace_all: true` and `MatchTolerances` matches), `symbol`, or `start_line..end_line`. An `old_string` edit's replaced lines are text the model quoted in its own call, so they count as seen. |
+| `write` | — | the base lines of the current lines the write deletes or changes (`trackedFile.rewrite`) | Creating a brand-new file not in `base` adds no base spans. A write shows the model nothing of the file it replaces, so it adds no seen spans. |
 | `bash` | file lines printed by simple file-reading commands (`cat`, `sed -n '<M>,<N>p'`, `head`, `tail`, `nl`) on workspace files | — | Parsed by walking `syntax.CallExpr` nodes with `mvdan.cc/sh/v3/syntax`. Each simple file-reading command in a pipeline is credited independently (so `cat f | head -n 20` credits `cat f` with the whole file rather than modeling pipe truncation). In-place shell modifications (`sed -i`, `gofmt -w`, output redirection) are not tracked in `trackedFile` or `U_r`. Build, test, git, and other command output adds no code spans. |
 
 Failed tool calls (`Outcome != OutcomeOK`) without `-include-notes`, `glob` listings, and `done` calls add **no** seen code spans and **0** tokens to `cumTokens`. (If a `current_symbol` note `[tack: the current text of <sym> in <file>, lines <start>-<end>, ...]` is attached to a failed `edit` result, its `<file>:<start>-<end>` span and `stripTackNotes(Result)` tokens are recorded only when `-include-notes` is set, off by default so baseline and note arms compare on tool results unless asked.)
@@ -93,7 +102,8 @@ Following ContextBench (`contextbench/metrics/compute.py`, `evaluate.py` at `cd5
 7. **Trajectory efficiency (`AUCCov`):**
    $$\text{AUCCov} = \begin{cases} 0.0 & \text{if } R = 0 \\ \frac{1}{R} \sum_{r=1}^{R} \frac{|G \cap S_r|}{|G|} & \text{otherwise} \end{cases}$$
 8. **Edit utilization (`Utilization`):**
-   $$\text{Utilization} = \begin{cases} 0.0 & \text{if } |G \cap S_{\text{final}}| = 0 \\ \frac{|G \cap U|}{|G \cap S_{\text{final}}|} & \text{otherwise} \end{cases}$$
+   $$\text{Utilization} = \begin{cases} 0.0 & \text{if } |G \cap S_{\text{final}}| = 0 \\ \frac{|G \cap U \cap S_{\text{final}}|}{|G \cap S_{\text{final}}|} & \text{otherwise} \end{cases}$$
+   *(The numerator counts used gold lines that were also seen, so `Utilization` stays at most 1 when a `write` uses lines the run never saw.)*
    *(Note: $1 - \text{Utilization}$ is ContextBench's `UsageDrop` on the edit site.)*
 9. **Edit location precision (`EditLoc`):**
    $$\text{EditLoc} = \begin{cases} 0.0 & \text{if } |U| = 0 \\ \frac{|G \cap U|}{|U|} & \text{otherwise} \end{cases}$$
@@ -133,9 +143,14 @@ When scanning `~/tack-runs/e1/` (`-scan`), `tools/replaycontext` scores the **62
      ```
 2. **`TestScoreContext_AllToolsAndMetrics` and `TestScoreContext_Cov4kFailedOutcomesWriteAndEdits` (`internal/eval/pilot/context_test.go`):**
    - Multi-request synthetic captures exercising `search`, `symbol` (definition + callers + outline-ignored), `grep`, `read` (with 200-line cap), `bash` (`cat`/`head`/`tail`/`sed -n` vs `go test`), `edit` (`old_string` with line shift + subsequent `read`, `replace_all: true`, `start_line..end_line`, and `symbol`), `write` (new file + existing base file with subsequent `read`), failed tool outcomes (`OutcomeError` adding 0 spans and 0 tokens), `-include-notes` on a failed `edit` carrying `[tack: the current text of ...]`, `Cov4k` budget binding (`cumTokens > 4096` excluding the overflowing call from `Cov4k` while keeping it in `FinalCov`), and empty gold (`len(gold) == 0`).
-3. **`TestFixGold_WidensToEnclosingSymbol` (`internal/eval/pilot/context_test.go`):**
+3. **`TestScoreContext_WriteAlignsByContent` (`internal/eval/pilot/context_test.go`):**
+   - A whole-file `write` that inserts a line at the top and changes the last adds no seen lines and uses only the changed base line.
+   - A later read of the inserted line credits nothing, and a read of the shifted original lines credits their base lines.
+   - Under the positional rule it read `SeenLines 5`, `UsedLines 5`, `CovReq1 1`, and failed.
+   - Reverting `Utilization`'s numerator to `|G ∩ U|` fails `TestScoreContext_Cov4kFailedOutcomesWriteAndEdits` at `0.667` against `2/6`.
+4. **`TestFixGold_WidensToEnclosingSymbol` (`internal/eval/pilot/context_test.go`):**
    - On a fixture git repo with two commits, `FixGold` excludes `_test.go` and non-Go changes, widens a 1-line change inside a function to that function's `[StartLine, EndLine]` via `SymbolAt`, keeps a file-scope `var` change at its raw diff line, and returns an error when `SymbolAt` fails on a canceled context.
-4. **`TestReplayContext_EndToEndAndPrecisionOverSeenRuns` and `TestScanExclusionsAndJobLabels` (`tools/replaycontext/main_test.go`):**
+5. **`TestReplayContext_EndToEndAndPrecisionOverSeenRuns` and `TestScanExclusionsAndJobLabels` (`tools/replaycontext/main_test.go`):**
    - End-to-end CLI test on a bare mirror and `results.jsonl` verifying `Void` skipping, aggregate `Precision` over runs with `SeenLines > 0` (undiluted by `SeenLines == 0` runs), `-dump` JSONL output, `-scan` exclusions, and `VERDICT: PASS`.
-5. **Gates:** `go run ./tools/touched` and `go run ./tools/lint` both print `VERDICT: PASS`.
+6. **Gates:** `go run ./tools/touched` and `go run ./tools/lint` both print `VERDICT: PASS`.
 
