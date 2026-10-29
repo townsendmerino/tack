@@ -206,7 +206,7 @@ func TestFixGold_WidensToEnclosingSymbol(t *testing.T) {
 			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
 		)
-		out, err := cmd.CombinedOutput()
+		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
@@ -284,5 +284,123 @@ func TestFixGold_WidensToEnclosingSymbol(t *testing.T) {
 	}
 	if !reflect.DeepEqual(widened, wantWidened) {
 		t.Fatalf("widened = %+v, want %+v", widened, wantWidened)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := FixGold(canceledCtx, tmp, "demo", baseSHA, fixSHA, nil); err == nil {
+		t.Fatal("FixGold with canceled context succeeded, want error from SymbolAt")
+	}
+}
+
+func TestScoreContext_Cov4kFailedOutcomesWriteAndEdits(t *testing.T) {
+	base := map[string]string{
+		"pkg/a.go": "a1\na2\na3\na4\n",
+		"pkg/b.go": "b1\nb2\nb3\nb4\n",
+		"pkg/c.go": "c1\ndup\nc3\nc4\nc5\ndup\nc7\n",
+	}
+	gold := []LineSpan{
+		{File: "pkg/a.go", Start: 1, End: 4},
+		{File: "pkg/b.go", Start: 2, End: 3},
+		{File: "pkg/c.go", Start: 2, End: 2},
+		{File: "pkg/c.go", Start: 6, End: 6},
+	}
+
+	// 1. Cov4k budget binding + failed tool outcome + -include-notes on failed edit.
+	cov4kPath := filepath.Join(t.TempDir(), "cov4k.jsonl")
+	pad2000 := strings.Repeat("x", 8000)  // 2000 tokens
+	pad2500 := strings.Repeat("y", 10000) // 2500 tokens
+	writeTackEvents(t, cov4kPath, []any{
+		proto.RequestSent{Request: 1},
+		// Call 1 (OK): 2000 tokens <= 4096 -> included in Cov4k (sees pkg/a.go:1-2).
+		proto.ToolCall{ID: "c1", Name: "read", Input: json.RawMessage(`{"path":"pkg/a.go","offset":1,"limit":2}`)},
+		proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: pad2000},
+
+		proto.RequestSent{Request: 2},
+		// Call 2 (Error without note): must add 0 spans and 0 tokens (so cumTokens stays 2000).
+		proto.ToolCall{ID: "c2", Name: "read", Input: json.RawMessage(`{"path":"pkg/a.go","offset":3,"limit":2}`)},
+		proto.ToolFinished{ID: "c2", Outcome: proto.OutcomeError, Result: pad2500},
+		// Call 3 (Error with [tack: ...] note): ignored when includeNotes==false, counted when includeNotes==true.
+		proto.ToolCall{ID: "c3", Name: "edit", Input: json.RawMessage(`{"path":"pkg/a.go","old_string":"missing","new_string":"x"}`)},
+		proto.ToolFinished{
+			ID:      "c3",
+			Outcome: proto.OutcomeError,
+			Result:  "edit: old_string not found\n\n[tack: the current text of Foo in pkg/a.go, lines 3-3, is:]\n     3\ta3\n",
+		},
+		// Call 4 (OK): adds 2500 tokens -> cumTokens crosses 4096, so pkg/a.go:4-4 is in FinalCov but not Cov4k.
+		proto.ToolCall{ID: "c4", Name: "read", Input: json.RawMessage(`{"path":"pkg/a.go","offset":4,"limit":1}`)},
+		proto.ToolFinished{ID: "c4", Outcome: proto.OutcomeOK, Result: pad2500},
+	})
+
+	aGold := []LineSpan{{File: "pkg/a.go", Start: 1, End: 4}}
+	mNoNotes, err := ScoreContext(cov4kPath, base, aGold, false)
+	if err != nil {
+		t.Fatalf("ScoreContext(noNotes): %v", err)
+	}
+	if !approxEq(mNoNotes.Cov4k, 2.0/4.0) || !approxEq(mNoNotes.FinalCov, 3.0/4.0) {
+		t.Fatalf("noNotes Cov4k=%v FinalCov=%v, want Cov4k=0.5 FinalCov=0.75", mNoNotes.Cov4k, mNoNotes.FinalCov)
+	}
+	if mNoNotes.ToolOutputTokens != 4500 {
+		t.Fatalf("noNotes ToolOutputTokens=%d, want 4500 (failed calls excluded)", mNoNotes.ToolOutputTokens)
+	}
+
+	mNotes, err := ScoreContext(cov4kPath, base, aGold, true)
+	if err != nil {
+		t.Fatalf("ScoreContext(withNotes): %v", err)
+	}
+	if !approxEq(mNotes.Cov4k, 3.0/4.0) || !approxEq(mNotes.FinalCov, 1.0) {
+		t.Fatalf("withNotes Cov4k=%v FinalCov=%v, want Cov4k=0.75 FinalCov=1.0", mNotes.Cov4k, mNotes.FinalCov)
+	}
+	if mNotes.ToolOutputTokens <= mNoNotes.ToolOutputTokens {
+		t.Fatalf("withNotes ToolOutputTokens=%d, want > %d", mNotes.ToolOutputTokens, mNoNotes.ToolOutputTokens)
+	}
+
+	// 2. write (new file + existing base file), replace_all, edit by lines/symbol, bash cat/head/tail, and empty gold.
+	editPath := filepath.Join(t.TempDir(), "edits.jsonl")
+	writeTackEvents(t, editPath, []any{
+		proto.RequestSent{Request: 1},
+		// write to a brand-new file: adds 0 base spans.
+		proto.ToolCall{ID: "w1", Name: "write", Input: json.RawMessage(`{"path":"pkg/new.go","content":"package pkg\n"}`)},
+		proto.ToolFinished{ID: "w1", Outcome: proto.OutcomeOK, Result: "wrote pkg/new.go"},
+		// write to existing base file pkg/b.go (4 base lines -> 2 new lines): sees & uses pkg/b.go:1-4.
+		proto.ToolCall{ID: "w2", Name: "write", Input: json.RawMessage(`{"path":"pkg/b.go","content":"b1_new\nb2_new\n"}`)},
+		proto.ToolFinished{ID: "w2", Outcome: proto.OutcomeOK, Result: "wrote pkg/b.go"},
+		// subsequent read of pkg/b.go maps positionally to base lines 1..2.
+		proto.ToolCall{ID: "r1", Name: "read", Input: json.RawMessage(`{"path":"pkg/b.go","offset":1,"limit":2}`)},
+		proto.ToolFinished{ID: "r1", Outcome: proto.OutcomeOK, Result: "     1\tb1_new\n     2\tb2_new\n"},
+		// edit with replace_all:true on pkg/c.go replaces both "dup\n" occurrences at lines 2 and 6.
+		proto.ToolCall{ID: "e1", Name: "edit", Input: json.RawMessage(`{"path":"pkg/c.go","old_string":"dup\n","new_string":"fixed\n","replace_all":true}`)},
+		proto.ToolFinished{ID: "e1", Outcome: proto.OutcomeOK, Result: "edited pkg/c.go (2 replacements)"},
+		// edit by start_line..end_line on pkg/c.go at lines 3..3.
+		proto.ToolCall{ID: "e2", Name: "edit", Input: json.RawMessage(`{"path":"pkg/c.go","start_line":3,"end_line":3,"new_string":"c3_new\n"}`)},
+		proto.ToolFinished{ID: "e2", Outcome: proto.OutcomeOK, Result: "edited pkg/c.go at line 3"},
+		// edit by symbol on pkg/c.go reported via "edited ... at lines 4-5".
+		proto.ToolCall{ID: "e3", Name: "edit", Input: json.RawMessage(`{"path":"pkg/c.go","symbol":"Foo","new_string":"c4_new\nc5_new\n"}`)},
+		proto.ToolFinished{ID: "e3", Outcome: proto.OutcomeOK, Result: "edited pkg/c.go at lines 4-5"},
+		// bash cat/head/tail on pkg/a.go.
+		proto.ToolCall{ID: "b1", Name: "bash", Input: json.RawMessage(`{"command":"head -n 2 pkg/a.go && tail -n 1 pkg/a.go && cat pkg/a.go"}`)},
+		proto.ToolFinished{ID: "b1", Outcome: proto.OutcomeOK, Result: "a1\na2\na4\na1\na2\na3\na4\n"},
+	})
+
+	em, err := ScoreContext(editPath, base, gold, false)
+	if err != nil {
+		t.Fatalf("ScoreContext(edits): %v", err)
+	}
+	// Gold has 4 (pkg/a.go:1-4) + 2 (pkg/b.go:2-3) + 2 (pkg/c.go:2,6) = 8 gold lines; all 8 are seen.
+	// Used lines: pkg/b.go:1-4 (4 lines, 2 in gold) + pkg/c.go:2,3,4,5,6 (5 lines, 2 in gold) = 9 used lines, 4 in gold.
+	if em.GoldLines != 8 || !approxEq(em.FinalCov, 1.0) || em.UsedLines != 9 {
+		t.Fatalf("edits metrics = %+v, want GoldLines=8 FinalCov=1.0 UsedLines=9", em)
+	}
+	if !approxEq(em.Utilization, 4.0/8.0) || !approxEq(em.EditLoc, 4.0/9.0) {
+		t.Fatalf("edits Utilization=%v EditLoc=%v, want 0.5 and %v", em.Utilization, em.EditLoc, 4.0/9.0)
+	}
+
+	// Empty gold returns vacuous coverage 1.0 and Precision 0 without dividing by zero.
+	emptyM, err := ScoreContext(editPath, base, nil, false)
+	if err != nil {
+		t.Fatalf("ScoreContext(emptyGold): %v", err)
+	}
+	if emptyM.GoldLines != 0 || emptyM.FinalCov != 1 || emptyM.Precision != 0 || emptyM.SeenLines == 0 {
+		t.Fatalf("emptyGold metrics = %+v, want GoldLines=0 FinalCov=1 Precision=0 SeenLines>0", emptyM)
 	}
 }

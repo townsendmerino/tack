@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -63,8 +64,7 @@ type ContextMetrics struct {
 }
 
 const (
-	contextReadCapLines = 200  // tools.readMaxLines
-	opencodeReadCap     = 2000 // opencode's default read limit
+	contextReadCapLines = 200 // tools.readMaxLines
 	cov4kBudgetTokens   = 4096
 )
 
@@ -199,7 +199,10 @@ func FixGold(ctx context.Context, mirrors, repo, base, commit string, testFiles 
 		wStart, wEnd := h.Start, h.End
 		for _, probe := range []int{h.Start, h.End} {
 			defs, err := idx.SymbolAt(ctx, h.File, probe)
-			if err == nil && len(defs) > 0 {
+			if err != nil && !errors.Is(err, tools.ErrNotIndexed) {
+				return nil, nil, fmt.Errorf("SymbolAt %s:%d: %w", h.File, probe, err)
+			}
+			if len(defs) > 0 {
 				wStart = min(wStart, defs[0].StartLine)
 				wEnd = max(wEnd, defs[0].EndLine)
 			}
@@ -297,42 +300,13 @@ func (tf *trackedFile) replaceLines(file string, start, end int, newText string,
 	return replaced
 }
 
-// ScoreContext computes a captured run's ContextMetrics from its events.jsonl (or its sibling requests/ directory for
-// opencode runs when events.jsonl has no tack events) against base and gold.
-func ScoreContext(eventsPath string, base map[string]string, gold []LineSpan, includeNotes bool) (ContextMetrics, error) {
-	isTack, err := isTackEvents(eventsPath)
-	if err != nil {
-		return ContextMetrics{}, err
-	}
-	if !isTack {
-		return scoreOpencodeRun(eventsPath, base, gold)
-	}
-	return scoreTackRun(eventsPath, base, gold, includeNotes)
-}
-
-func isTackEvents(eventsPath string) (bool, error) {
-	f, err := os.Open(eventsPath)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<26)
-	if sc.Scan() {
-		var ev proto.Event
-		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Type != "" && !ev.Time.IsZero() && len(ev.Payload) > 0 {
-			return true, nil
-		}
-	}
-	return false, sc.Err()
-}
-
 type stepSpans struct {
 	seen []LineSpan
 	used []LineSpan
 }
 
-func scoreTackRun(eventsPath string, base map[string]string, gold []LineSpan, includeNotes bool) (ContextMetrics, error) {
+// ScoreContext computes a captured tack run's ContextMetrics from its events.jsonl against base and gold.
+func ScoreContext(eventsPath string, base map[string]string, gold []LineSpan, includeNotes bool) (ContextMetrics, error) {
 	f, err := os.Open(eventsPath)
 	if err != nil {
 		return ContextMetrics{}, err
@@ -370,9 +344,10 @@ func scoreTackRun(eventsPath string, base map[string]string, gold []LineSpan, in
 				steps = append(steps, stepSpans{})
 			}
 			cleanRes := loop.StripNotes(p.Result)
-			toks := engine.ApproxTokens(cleanRes)
-			cumTokens += toks
-			seen, used := extractTackToolSpans(c.Name, c.Input, p.Outcome, p.Result, cleanRes, tree, includeNotes, false)
+			seen, used := extractTackToolSpans(c.Name, c.Input, p.Outcome, p.Result, cleanRes, tree, includeNotes)
+			if p.Outcome == proto.OutcomeOK || len(seen) > 0 {
+				cumTokens += engine.ApproxTokens(cleanRes)
+			}
 			cur := &steps[len(steps)-1]
 			cur.seen = append(cur.seen, seen...)
 			cur.used = append(cur.used, used...)
@@ -393,14 +368,13 @@ var (
 	numberedLineRe  = regexp.MustCompile(`^\s*(\d+)\t`)
 	indentedSiteRe  = regexp.MustCompile(`^  ([^\s:]+):(\d+)\b`)
 	grepMatchRe     = regexp.MustCompile(`^([^\s:]+):(\d+):`)
-	opencodeLineRe  = regexp.MustCompile(`^\s*Line (\d+):`)
 	editReplacedRe  = regexp.MustCompile(`lines (\d+)-(\d+)`)
 	editAtLineRe    = regexp.MustCompile(`at line (\d+)`)
 	currentSymNote  = regexp.MustCompile(`\[tack: the current text of [^\s]+ in ([^\s,]+), lines (\d+)-(\d+)`)
 	sedRangePrintRe = regexp.MustCompile(`^(\d+)(?:,(\d+|\$))?p$`)
 )
 
-func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string, fullResult, cleanResult string, tree map[string]*trackedFile, includeNotes, opencode bool) (seen, used []LineSpan) {
+func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string, fullResult, cleanResult string, tree map[string]*trackedFile, includeNotes bool) (seen, used []LineSpan) {
 	if outcome != proto.OutcomeOK {
 		if includeNotes && name == "edit" {
 			if m := currentSymNote.FindStringSubmatch(fullResult); m != nil {
@@ -418,13 +392,12 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 	switch name {
 	case "read":
 		var in struct {
-			Path     string `json:"path"`
-			FilePath string `json:"filePath"`
-			Offset   int    `json:"offset"`
-			Limit    int    `json:"limit"`
+			Path   string `json:"path"`
+			Offset int    `json:"offset"`
+			Limit  int    `json:"limit"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
+		pth := cleanPath(in.Path)
 		tf := tree[pth]
 		if tf == nil || len(tf.baseLines) == 0 {
 			return nil, nil
@@ -435,14 +408,10 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 		if in.Offset > 0 {
 			start = in.Offset
 		}
-		capLines := contextReadCapLines
-		if opencode {
-			capLines = opencodeReadCap
-		}
 		if in.Limit > 0 {
 			n = in.Limit
-		} else if (!explicit || opencode) && total > capLines {
-			n = capLines
+		} else if !explicit && total > contextReadCapLines {
+			n = contextReadCapLines
 		}
 		if start > total {
 			return nil, nil
@@ -450,7 +419,7 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 		end := min(start-1+n, total)
 		return tf.mapRange(pth, start, end), nil
 
-	case "search", "ken_search":
+	case "search":
 		for _, line := range strings.Split(cleanResult, "\n") {
 			if m := searchHeaderRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
 				pth := cleanPath(m[1])
@@ -461,17 +430,16 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 				}
 			}
 		}
-		seen = append(seen, extractJSONSpans(cleanResult, tree)...)
 		return seen, nil
 
-	case "symbol", "ken_definition", "ken_callers", "ken_references":
+	case "symbol":
 		var in struct {
 			Name string `json:"name"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
 		lines := strings.Split(cleanResult, "\n")
 		if len(lines) > 0 {
-			if m := symbolDefRe.FindStringSubmatch(lines[0]); m != nil && (in.Name != "" || opencode) {
+			if m := symbolDefRe.FindStringSubmatch(lines[0]); m != nil && in.Name != "" {
 				defFile := cleanPath(m[1])
 				minL, maxL := 0, 0
 				for _, l := range lines[1:] {
@@ -501,70 +469,46 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 				}
 			}
 		}
-		seen = append(seen, extractJSONSpans(cleanResult, tree)...)
 		return seen, nil
 
 	case "grep":
-		curFile := ""
 		for _, l := range strings.Split(cleanResult, "\n") {
 			if m := grepMatchRe.FindStringSubmatch(l); m != nil {
 				pth := cleanPath(m[1])
 				ln, _ := strconv.Atoi(m[2])
 				if tf := tree[pth]; tf != nil && ln > 0 {
 					seen = append(seen, tf.mapRange(pth, ln, ln)...)
-					continue
-				}
-			}
-			trimmed := strings.TrimSpace(strings.TrimSuffix(l, ":"))
-			if pth := cleanPath(trimmed); tree[pth] != nil {
-				curFile = pth
-				continue
-			}
-			if curFile != "" {
-				if m := opencodeLineRe.FindStringSubmatch(l); m != nil {
-					ln, _ := strconv.Atoi(m[1])
-					if tf := tree[curFile]; tf != nil && ln > 0 {
-						seen = append(seen, tf.mapRange(curFile, ln, ln)...)
-					}
 				}
 			}
 		}
 		return seen, nil
 
-	case "edit", "patch":
+	case "edit":
 		var in struct {
 			Path       string `json:"path"`
-			FilePath   string `json:"filePath"`
 			OldString  string `json:"old_string"`
-			OldString2 string `json:"oldString"`
 			NewString  string `json:"new_string"`
-			NewString2 string `json:"newString"`
 			ReplaceAll bool   `json:"replace_all"`
-			Replace2   bool   `json:"replaceAll"`
 			Symbol     string `json:"symbol"`
 			StartLine  int    `json:"start_line"`
 			EndLine    int    `json:"end_line"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
-		oldStr := firstNonEmpty(in.OldString, in.OldString2)
-		newStr := firstNonEmpty(in.NewString, in.NewString2)
-		repAll := in.ReplaceAll || in.Replace2
+		pth := cleanPath(in.Path)
 		tf := tree[pth]
 		if tf == nil {
 			return nil, nil
 		}
-		spans := applyTrackedEdit(tf, pth, oldStr, newStr, repAll, in.Symbol, in.StartLine, in.EndLine, cleanResult)
+		spans := applyTrackedEdit(tf, pth, in.OldString, in.NewString, in.ReplaceAll, in.Symbol, in.StartLine, in.EndLine, cleanResult)
 		return spans, spans
 
 	case "write":
 		var in struct {
-			Path     string `json:"path"`
-			FilePath string `json:"filePath"`
-			Content  string `json:"content"`
+			Path    string `json:"path"`
+			Content string `json:"content"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		pth := cleanPath(firstNonEmpty(in.Path, in.FilePath))
+		pth := cleanPath(in.Path)
 		tf := tree[pth]
 		if tf == nil {
 			n := countTextLines(in.Content)
@@ -836,179 +780,6 @@ func bashCallSpans(words []string, tree map[string]*trackedFile) []LineSpan {
 	return spans
 }
 
-func extractJSONSpans(text string, tree map[string]*trackedFile) []LineSpan {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
-		return nil
-	}
-	var v any
-	if json.Unmarshal([]byte(trimmed), &v) != nil {
-		return nil
-	}
-	var out []LineSpan
-	var walk func(any)
-	walk = func(x any) {
-		switch t := x.(type) {
-		case map[string]any:
-			file, _ := t["file"].(string)
-			if file == "" {
-				file, _ = t["path"].(string)
-			}
-			if file != "" {
-				pth := cleanPath(file)
-				if tf := tree[pth]; tf != nil {
-					s := jsonInt(t["start_line"])
-					e := jsonInt(t["end_line"])
-					if s == 0 {
-						s = jsonInt(t["line"])
-					}
-					if e == 0 {
-						e = s
-					}
-					if s > 0 && e >= s {
-						out = append(out, tf.mapRange(pth, s, e)...)
-					}
-				}
-			}
-			for _, child := range t {
-				walk(child)
-			}
-		case []any:
-			for _, child := range t {
-				walk(child)
-			}
-		}
-	}
-	walk(v)
-	return out
-}
-
-func jsonInt(v any) int {
-	switch x := v.(type) {
-	case float64:
-		return int(x)
-	case int:
-		return x
-	case string:
-		n, _ := strconv.Atoi(x)
-		return n
-	}
-	return 0
-}
-
-func scoreOpencodeRun(eventsPath string, base map[string]string, gold []LineSpan) (ContextMetrics, error) {
-	reqDir := filepath.Join(filepath.Dir(eventsPath), "requests")
-	if reqFiles, _ := filepath.Glob(filepath.Join(reqDir, "*.req.json")); len(reqFiles) > 0 {
-		sort.Strings(reqFiles)
-		return scoreOpencodeRequests(reqFiles[len(reqFiles)-1], len(reqFiles), base, gold)
-	}
-	f, err := os.Open(eventsPath)
-	if err != nil {
-		return ContextMetrics{}, err
-	}
-	defer f.Close()
-	tree := newTrackedTree(base)
-	var steps []stepSpans
-	var spans4k []LineSpan
-	cumTokens := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<26)
-	for sc.Scan() {
-		var obj map[string]any
-		if json.Unmarshal(sc.Bytes(), &obj) != nil {
-			continue
-		}
-		part, _ := obj["part"].(map[string]any)
-		if part == nil {
-			part = obj
-		}
-		toolName, _ := part["tool"].(string)
-		if toolName == "" {
-			continue
-		}
-		state, _ := part["state"].(map[string]any)
-		if state == nil {
-			continue
-		}
-		status, _ := state["status"].(string)
-		if status != "" && status != "completed" {
-			continue
-		}
-		inRaw, _ := json.Marshal(state["input"])
-		output, _ := state["output"].(string)
-		toks := engine.ApproxTokens(output)
-		cumTokens += toks
-		seen, used := extractTackToolSpans(strings.TrimPrefix(toolName, "ken_"), inRaw, proto.OutcomeOK, output, output, tree, false, true)
-		steps = append(steps, stepSpans{seen: seen, used: used})
-		if cumTokens <= cov4kBudgetTokens {
-			spans4k = append(spans4k, seen...)
-		}
-	}
-	return computeMetrics(gold, steps, spans4k, cumTokens), sc.Err()
-}
-
-func scoreOpencodeRequests(lastReqPath string, totalReqs int, base map[string]string, gold []LineSpan) (ContextMetrics, error) {
-	b, err := os.ReadFile(lastReqPath)
-	if err != nil {
-		return ContextMetrics{}, err
-	}
-	var req struct {
-		Messages []struct {
-			Role       string `json:"role"`
-			Content    any    `json:"content"`
-			ToolCallID string `json:"tool_call_id"`
-			ToolCalls  []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(b, &req); err != nil {
-		return ContextMetrics{}, err
-	}
-	tree := newTrackedTree(base)
-	type callInfo struct {
-		name string
-		args json.RawMessage
-		step int
-	}
-	calls := map[string]callInfo{}
-	var steps []stepSpans
-	var spans4k []LineSpan
-	cumTokens := 0
-	for _, msg := range req.Messages {
-		switch msg.Role {
-		case "assistant":
-			steps = append(steps, stepSpans{})
-			stepIdx := len(steps) - 1
-			for _, tc := range msg.ToolCalls {
-				calls[tc.ID] = callInfo{name: tc.Function.Name, args: json.RawMessage(tc.Function.Arguments), step: stepIdx}
-			}
-		case "tool":
-			ci, ok := calls[msg.ToolCallID]
-			if !ok {
-				continue
-			}
-			outStr, _ := msg.Content.(string)
-			toks := engine.ApproxTokens(outStr)
-			cumTokens += toks
-			seen, used := extractTackToolSpans(strings.TrimPrefix(ci.name, "ken_"), ci.args, proto.OutcomeOK, outStr, outStr, tree, false, true)
-			steps[ci.step].seen = append(steps[ci.step].seen, seen...)
-			steps[ci.step].used = append(steps[ci.step].used, used...)
-			if cumTokens <= cov4kBudgetTokens {
-				spans4k = append(spans4k, seen...)
-			}
-		}
-	}
-	for len(steps) < totalReqs {
-		steps = append(steps, stepSpans{})
-	}
-	return computeMetrics(gold, steps, spans4k, cumTokens), nil
-}
-
 func computeMetrics(gold []LineSpan, steps []stepSpans, spans4k []LineSpan, cumTokens int) ContextMetrics {
 	goldSet := spansToLineSet(gold)
 	goldFiles := map[string]bool{}
@@ -1136,13 +907,6 @@ func countTextLines(s string) int {
 
 func clampLine(v, lo, hi int) int {
 	return min(max(v, lo), hi)
-}
-
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 func byteSpanToLines(content string, startByte, endByte int) (startLine, endLine int) {
