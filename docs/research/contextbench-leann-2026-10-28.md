@@ -842,8 +842,8 @@ All nine approved as recommended on 2026-10-28:
 | 1 | CB3 measurement record over captured E1 runs | tack | `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` | **done (2026-10-28): 687 runs scored** |
 | 2 | Brief for ken: aikit bump, K16, K17, K18 | tack → ken | `docs/briefs/ken-k16-k18-contextbench-memory.md`, `docs/design/DESIGN.md` §12 | **done (2026-10-28)** |
 | 3 | CB0 external envs (ContextBench Python 3.10 venv, LEANN checkout), smoke & parity check, disk sizing | outside repos (`~/tack-runs/cb0/`) | `docs/measurements/cb0-setup-and-smoke-2026-10-28.md` | **done (2026-10-28)** |
-| 4 | K16, K17, K18 executed in ken (`6ff2098..27d58b1`, ADR-049) | ken + tack record | `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md`, `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md` | **done (2026-10-28)** |
-| 4 | CB1 5-task Go pilot (`flipt-io/flipt`); S53, Lite, L100 sweeps | ken + `~/tack-runs/cb0/` | `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md`, `docs/BENCH.md` in ken | **pilot5 done (2026-10-28)**; S53 / Lite / L100 ready to run |
+| 4 | K16, K17, K18 executed in ken (`v1.12.0` at `574b7d9`, ADR-049) | ken + tack (`go.mod` pinned to `v1.12.0`) | `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md`, `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md` | **done (2026-10-28)** |
+| 4 | CB1 5-task Go pilot (`flipt-io/flipt`) and full `S53` (`53` tasks) sweep | ken (`4deeb42`) + `~/tack-runs/cb0/` | `~/tack-runs/NOTE-from-ken-2026-10-28-cb1-s53.md`, `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md`, `docs/BENCH.md` in ken | **pilot5 & S53 done (2026-10-28)**; Lite / L100 optional follow-on |
 | 4 | CB2 (optional, gated on CB1) | ken + Claude Code Max | `docs/BENCH.md` in ken | gated on CB1 |
 
 ---

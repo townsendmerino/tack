@@ -1214,9 +1214,10 @@ would have saved.
     current. Its cost on goinfer, the largest repository, belongs with K8's records.
   - `Close` already runs when the core closes (`core.Core.Close`).
 
-**Delivered on ken `main` (2026-10-28, ken ADR-049; `6ff2098..27d58b1`, proposed `v1.12.0`).** The brief is
-`docs/briefs/ken-k16-k18-contextbench-memory.md`, ken's note is `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md`, and
-tack's measurement record is `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md`:
+**Delivered in ken v1.12.0** (2026-10-28, ken ADR-049; tagged at `574b7d9`, `CB1 S53` recorded at `4deeb42`; pinned in
+tack 2026-10-28). The brief is `docs/briefs/ken-k16-k18-contextbench-memory.md`, ken's notes are
+`~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` and `~/tack-runs/NOTE-from-ken-2026-10-28-cb1-s53.md`, and tack's
+measurement record is `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md`:
 
 - **aikit bump (`v1.74.0`):** BM25 postings arena cuts BM25 memory by 17.0%–23.5% across `tack`, `ken`, `aikit`, and
   `goinfer` (`-34.95 MB` on `goinfer`, `-39.56 MB` across all four in one process).
@@ -1228,9 +1229,12 @@ tack's measurement record is `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-
   `flatI8Store`, `flatBinaryI8Store`) and deterministic on-demand recompute from `Chunk.Text` (bit-identical to index
   time; single-file watch republish 50.3 ms; dense resident memory under `KEN_ANN=flat-i8` drops from 1,308 B/chunk to
   260 B/chunk, saving 207.4 MB on `goinfer`).
-- **K18:** `bench/contextbench` (`-tags=bench`) implements the `CB1` retrieval harness (`G`, `B`, `K`, `KT`, `L1`, `L2`)
-  with `cl100k_base` budget packing (`2048`, `8192`, `16384`), paired bootstrap 95% CIs, and 5-task `flipt-io/flipt`
-  pilot verification (`K - B = +0.2488` line coverage at 8,192 tokens, 95% CI `[+0.1019, +0.3958]`).
+- **K18 (`bench/contextbench`) & CB1 `S53` (`53` tasks):** At the primary 8,192-token budget across all 53 tasks, ken
+  hybrid (`K`) reaches `0.1686` line coverage, `0.2124` symbol coverage, and `0.5209` file coverage (`960.8` tokens to
+  first gold line) vs `0.1406` line coverage, `0.1565` symbol coverage, and `0.2853` file coverage (`1,603.2` tokens to
+  first gold line) for BM25 (`B`), and `0.0071` line coverage for Grep (`G`). Tree-sitter chunking (`KT`) lifts symbol
+  coverage to `0.2539` (`+4.15` pp over `K`). On Go tasks (`N=6`), `K` reaches `0.3036` line coverage and `0.5578` file
+  coverage vs `0.0879` and `0.1109` for BM25.
 
 **Still open:** K3 (change events), K5 (symbol bundle), and the latency half of K8 (structural + search latency at repo
 scale). K8's structural half has a harness, ken's `tools/k8-structural`, and waits for a quiet night. It is a timed run,

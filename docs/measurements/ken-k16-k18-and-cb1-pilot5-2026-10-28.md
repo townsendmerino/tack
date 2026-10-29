@@ -1,7 +1,7 @@
-# ken K16–K18 Delivery & CB1 5-Task Pilot Record (2026-10-28)
+# ken v1.12.0 (K16–K18) Delivery & CB1 S53 Retrieval Record (2026-10-28)
 
 **Status:** Complete (`VERDICT: PASS`)
-**Source note:** `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` (`ken` commits `6ff2098..27d58b1` on `origin/main`, proposed tag `v1.12.0`, ADR-049)
+**Source notes:** `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` and `~/tack-runs/NOTE-from-ken-2026-10-28-cb1-s53.md` (`ken` `v1.12.0` tagged at `574b7d9`, `CB1 S53` recorded at `4deeb42`, ADR-049)
 **Parent brief & research:** [`docs/briefs/ken-k16-k18-contextbench-memory.md`](../briefs/ken-k16-k18-contextbench-memory.md), [`docs/research/contextbench-leann-2026-10-28.md`](../research/contextbench-leann-2026-10-28.md) (§4–§6, §8)
 
 ---
@@ -101,3 +101,43 @@ Run via `bench/contextbench/cmd/cb` against `~/tack-runs/cb0/` under the shared 
 | `K - B` | `line_coverage` | `8,192` | **`+0.2488`** | **`[+0.1019, +0.3958]`** | 5 |
 | `KT - K` | `line_coverage` | `8,192` | `+0.0103` | `[-0.0361, +0.0661]` | 5 |
 | `K - G` | `line_coverage` | `8,192` | **`+0.2875`** | **`[+0.1255, +0.4363]`** | 5 |
+
+---
+
+## 5. CB1 Full `S53` Retrieval Sweep (`N = 53` tasks, `ken v1.12.0` at `574b7d9`)
+
+Evaluated across all 53 tasks in `S53` (`~/tack-runs/cb1_s53_results.jsonl`, `636` scored records; documented in `ken` `docs/BENCH.md` at `4deeb42`) under the shared timing lock:
+
+### 5.1 Overall Results (`N = 53` tasks)
+
+| Arm | Budget (tokens) | `LineCov` | `SymCov` | `FileCov` | `LinePrec` | `TokensToGold` | `Build (ms)` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `G` (Grep) | 2,048 | `0.0067` | `0.0000` | `0.0244` | `0.0007` | `0.0` | `0.0` |
+| `G` (Grep) | 8,192 | `0.0071` | `0.0000` | `0.0251` | `0.0010` | `898.6` | `0.0` |
+| `G` (Grep) | 16,384 | `0.0200` | `0.0087` | `0.0400` | `0.0053` | `5140.5` | `0.0` |
+| `B` (BM25) | 2,048 | `0.0780` | `0.0967` | `0.2152` | `0.1244` | `537.6` | `1231.3` |
+| `B` (BM25) | 8,192 | `0.1406` | `0.1565` | `0.2853` | `0.0649` | `1603.2` | `1231.3` |
+| `B` (BM25) | 16,384 | `0.1863` | `0.1996` | `0.3400` | `0.0443` | `2541.8` | `1231.3` |
+| `K` (ken hybrid, regex) | 2,048 | `0.0892` | `0.1262` | `0.2890` | `0.1337` | `487.6` | `1497.8` |
+| `K` (ken hybrid, regex) | **8,192** | **`0.1686`** | **`0.2124`** | **`0.5209`** | **`0.0700`** | **`960.8`** | **`1497.8`** |
+| `K` (ken hybrid, regex) | 16,384 | **`0.2305`** | `0.2833` | **`0.6186`** | `0.0467` | `1797.5` | `1497.8` |
+| `KT` (ken hybrid, tree-sitter) | 2,048 | `0.0881` | `0.1545` | `0.2823` | `0.1319` | `408.0` | `2977.9` |
+| `KT` (ken hybrid, tree-sitter) | **8,192** | **`0.1653`** | **`0.2539`** | **`0.5153`** | **`0.0691`** | **`924.6`** | **`2977.9`** |
+| `KT` (ken hybrid, tree-sitter) | 16,384 | `0.2054` | **`0.2958`** | `0.5925` | `0.0437` | **`1144.3`** | `2977.9` |
+
+### 5.2 Paired Bootstrap Differences on `S53` (`B = 8,192` tokens, `10,000` resamples, seed `42`)
+
+| Comparison | Metric | Budget | Mean Delta (`A - B`) | 95% Bootstrap CI | `N` Tasks |
+|---|---|---:|---:|---|---:|
+| `K - B` | `line_coverage` | `8,192` | **`+0.0280`** | `[-0.0225, +0.0782]` | 53 |
+| `KT - K` | `line_coverage` | `8,192` | `-0.0033` | `[-0.0198, +0.0113]` | 53 |
+| `K - G` | `line_coverage` | `8,192` | **`+0.1615`** | **`[+0.1182, +0.2074]`** | 53 |
+
+### 5.3 Per-Language Breakdown at `8,192` Tokens (`LineCov / FileCov / SymCov`)
+
+| Language | Tasks | `G` (Grep) | `B` (BM25) | `K` (ken hybrid, regex) | `KT` (ken hybrid, tree-sitter) |
+|---|---:|---|---|---|---|
+| **Go** | 6 | `0.0060 / 0.0198 / 0.0000` | `0.0879 / 0.1109 / 0.0784` | **`0.3036` / `0.5578` / `0.4472`** | **`0.3125` / `0.5568` / `0.5096`** |
+| **JavaScript / TS** | 4 | `0.0012 / 0.0139 / 0.0000` | `0.0030 / 0.0723 / 0.0000` | **`0.0990` / `0.3088` / `0.0639`** | **`0.1061` / `0.2861` / `0.1164`** |
+| **Python** | 43 | `0.0078 / 0.0269 / 0.0000` | `0.1607 / 0.3295 / 0.1819` | `0.1562 /` **`0.5354`** `/ 0.1935` | `0.1503 / 0.5309 /` **`0.2310`** |
+
