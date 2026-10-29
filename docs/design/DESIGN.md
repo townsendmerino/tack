@@ -501,7 +501,7 @@ tool-use smoke set compares this merged set against the split one before it is f
 | `write` | create or overwrite | write | ask |
 | `bash` | tack's own sandboxed shell (§6.6); the working directory and exported variables persist per session; background jobs | exec | ask, or a matching allow rule |
 | `read_output` | pages a truncated output out of the blob store | read | allow |
-| `web_fetch` (P5) | tack's own fetch; off by default, and absent from the tool list unless turned on when the session starts (the list is fixed for a session, §7.2) | network | ask |
+| `web_fetch` (P5) | tack's own fetch, in pure Go: a plain HTTP GET, with the HTML converted to markdown; no JavaScript is run. Off by default, and absent from the tool list unless turned on when the session starts (the list is fixed for a session, §7.2) | network | ask |
 | `todo`, `ask_user`, `task` | the loop | none | allow |
 | MCP tools (P5) | user configuration, after the repo trust step | per server | ask |
 

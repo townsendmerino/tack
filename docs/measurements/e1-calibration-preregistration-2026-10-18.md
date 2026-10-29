@@ -1834,6 +1834,14 @@ Francis chose this at 17:54 PDT, with §12.3's rule as drafted. It is §12.9's q
   run, `done` refusals, and the cell states.
 - **Riding check:** `tools/replayrepeats -mirrors` over B's runs stops exactly B's runs that ended live with
   `repeat_loop`.
+- **Outcome (2026-10-28, 19:01–21:19 PDT, tack `5d54f3c`, goinfer `b2b5e816`; record
+  `e1-calibration-c6-bundle-2026-10-28.md`): not shown, d = +1.**
+  - B passed 4 of 36 and A 3 of 36. Task 1 went from 0/3 in A to 3/3 in B, and task 11 from 2/3 to 1/3.
+  - 0 cells were void. The parked row is not triggered, so no runs follow.
+  - Window-full stops: A 27, B 0.
+  - The riding check holds: the replay stops exactly B's 16 live `repeat_loop` runs.
+  - **Francis, 2026-10-29 07:35 PDT:** the bundle, with `edit_tolerances` added (§12.22), stays C6's loop and is the
+    loop for §12.23's row. The powered comparison is deferred until §12.23 step 2's model question is settled.
 
 ### 12.22 Safe edit tolerances: judged by replay (owner, 2026-10-27), registered before their code
 
@@ -1880,6 +1888,16 @@ Francis chose direction 2 at 18:31 PDT, in this order: after §12.21's run, by d
    - **The gate for step 2, besides eligibility:** with the prefix reused by appending, the first-token time at 8k and
      at the top cell is at most a fifth of the cold time. Qwen3-8B reads 1.9 s against 26.7 s at 15k.
    - A probe that fails the gate is reported to goinfer, and no row follows.
+   - **Pinned (2026-10-29, before the run):**
+     - goinfer main `95bc3c7b`, green in goinfer's CI, 1,760 commits after B35's merge `5cb1925d`. It is built from
+       `git archive` with `GOOS=linux`, `-tags cuda`, `./cuda/cmd/serve`, to `~/tack-runs/bin/goinfer-serve-cuda-95bc3c7b`
+       on nobara.
+     - tack at the commit that adds this line, built clean.
+     - The gate compares medians of the three repeats, as E0's decision rule compares first-token times.
+     - It runs as one job through nobara's `night.py`, whose queue is running: a fit-only load at 32,768 first, then E0
+       only if that comes up `cuda-resident`.
+     - **Expected time: about 60–75 minutes, not 45.** C3's cold top cell took 421 s per repeat, and E0 times it three
+       times. The rewrite cell at that size may be as slow.
 2. **If it passes:** a C5-style calibration row, registered here with its own predictions and timing before it runs.
    - Qwen3.5-9B with the bundle as adopted then, the 12 tasks, 3 runs each.
    - Its per-run time is estimated from step 1's figures. It runs by day if that comes to 2 hours or less, else as a

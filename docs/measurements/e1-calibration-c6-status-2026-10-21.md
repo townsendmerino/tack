@@ -122,6 +122,9 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
 1. 4.3's path: a VM, `go test` outside Seatbelt, a port-scoped firewall rule, or keep loopback denied.
 2. Settled 2026-10-27: the bundle comparison is registered as §12.21. It is 72 runs by day after the 2026-10-28
    power outage, A1 with no settings against the bundle, under §12.3's rule.
+   - **Ran 2026-10-28: not shown, d = +1** (B 4/36, A 3/36; `-c6-bundle-2026-10-28`).
+   - Francis, 2026-10-29: the bundle with `edit_tolerances` stays C6's loop and runs §12.23's row; the powered
+     comparison waits for the model question.
 
 Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
 symbol tools are in tack; tack is on Go 1.27.3.
