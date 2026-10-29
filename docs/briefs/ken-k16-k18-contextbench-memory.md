@@ -2,7 +2,7 @@
 
 <!-- citations-at: ken 5ab3888 (v1.11.0), aikit edd9c5b (v1.74.0), tack f75780d, LEANN c443fc4, ContextBench cd5f62e -->
 
-**From:** tack (`docs/design/DESIGN.md` §12, asks K16–K18; `docs/research/contextbench-leann-2026-10-28.md` §4–§6, §8–§9). Approved by the owner 2026-10-28.
+**From:** tack (`docs/design/DESIGN.md` §12, asks K16–K18; `docs/research/contextbench-leann-2026-10-28.md` §4–§6, §8–§9). Marked approved in commit `57c9548` on 2026-10-28 (Francis's approval of §9 decisions 1–9 is not recorded in a separate commit or note in the repository).
 
 **For:** ken's Claude Code, the sole editor of ken (`CLAUDE.md`). The work lands on a branch and becomes a tagged release only on the owner's yes.
 

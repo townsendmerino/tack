@@ -24,12 +24,13 @@ import (
 )
 
 type goldCacheEntry struct {
-	task int
-	repo string
-	base string
-	comm string
-	raw  []pilot.LineSpan
-	sym  []pilot.LineSpan
+	suite string
+	task  int
+	repo  string
+	base  string
+	comm  string
+	raw   []pilot.LineSpan
+	sym   []pilot.LineSpan
 }
 
 type armAgg struct {
@@ -38,6 +39,7 @@ type armAgg struct {
 	runs        int
 	passes      int
 	reached     int
+	seenRuns    int
 	edited      int
 	editedGold  int
 	firstReqSum int
@@ -67,6 +69,10 @@ func (a *armAgg) add(pass bool, sym, raw pilot.ContextMetrics, ann *pilot.Contex
 		a.reached++
 		a.firstReqSum += sym.FirstGoldReq
 	}
+	if sym.SeenLines > 0 {
+		a.seenRuns++
+		a.precision += sym.Precision
+	}
 	if sym.UsedLines > 0 {
 		a.edited++
 		if sym.EditLoc > 0 {
@@ -78,7 +84,6 @@ func (a *armAgg) add(pass bool, sym, raw pilot.ContextMetrics, ann *pilot.Contex
 	a.fileCov += sym.FileCov
 	a.covReq1 += sym.CovReq1
 	a.cov4k += sym.Cov4k
-	a.precision += sym.Precision
 	a.aucCov += sym.AUCCov
 	a.utilization += sym.Utilization
 	a.editLoc += sym.EditLoc
@@ -105,37 +110,47 @@ type dumpRecord struct {
 }
 
 func main() {
-	mirrors := flag.String("mirrors", "", "directory of bare mirrors, <repo>.git")
-	scanDir := flag.String("scan", "", "scan directory for results.jsonl files")
-	jobsFile := flag.String("jobs", "", "newline-separated file of results.jsonl paths")
-	tasksFile := flag.String("tasks", "", "optional task JSONL file for test_files lookup")
-	goldFile := flag.String("gold", "", "optional annotated gold JSONL file")
-	dump := flag.String("dump", "", "write per-run ContextMetrics JSONL here")
-	includeNotes := flag.Bool("include-notes", false, "count current_symbol notes on failed edits as seen spans")
-	flag.Parse()
+	os.Exit(run(os.Args[1:], os.Stdout))
+}
 
-	resFiles, err := collectResultFiles(*scanDir, *jobsFile, flag.Args())
+func run(args []string, stdout io.Writer) int {
+	fs := flag.NewFlagSet("replaycontext", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	mirrors := fs.String("mirrors", "", "directory of bare mirrors, <repo>.git")
+	scanDir := fs.String("scan", "", "scan directory for results.jsonl files")
+	jobsFile := fs.String("jobs", "", "newline-separated file of results.jsonl paths")
+	tasksFile := fs.String("tasks", "", "optional task JSONL file for test_files lookup")
+	goldFile := fs.String("gold", "", "optional annotated gold JSONL file")
+	dump := fs.String("dump", "", "write per-run ContextMetrics JSONL here")
+	includeNotes := fs.Bool("include-notes", false, "count current_symbol notes on failed edits as seen spans")
+	includeSuperseded := fs.Bool("include-superseded", false, "include void/smoke/superseded runs when scanning")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
+		return 2
+	}
+
+	resFiles, err := collectResultFiles(*scanDir, *jobsFile, fs.Args(), *includeSuperseded)
 	if err != nil || *mirrors == "" || len(resFiles) == 0 {
-		fmt.Println(gate.Verdict(gate.Inconclusive, "replaycontext: usage: -mirrors DIR [-scan DIR | -jobs FILE | JOB/results.jsonl...]"))
-		os.Exit(2)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: usage: -mirrors DIR [-scan DIR | -jobs FILE | JOB/results.jsonl...]"))
+		return 2
 	}
 
 	var dumpW io.Writer = io.Discard
 	if *dump != "" {
 		f, err := os.Create(*dump)
 		if err != nil {
-			fmt.Println(gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
-			os.Exit(2)
+			fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
+			return 2
 		}
 		defer f.Close()
 		dumpW = f
 	}
 
-	testFilesByCommit := loadTestFiles(*tasksFile)
+	testFilesByCommit, suiteByCommit := loadTaskMetadata(*tasksFile)
 	annotatedByTask, err := loadAnnotatedGold(*goldFile)
 	if err != nil {
-		fmt.Println(gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
-		os.Exit(2)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
+		return 2
 	}
 
 	ctx := context.Background()
@@ -155,47 +170,73 @@ func main() {
 		return a
 	}
 
+	var taskAggs []*armAgg
+	taskAggByKey := map[string]*armAgg{}
+	getTaskAgg := func(ge goldCacheEntry) *armAgg {
+		comm := ge.comm
+		if len(comm) > 8 {
+			comm = comm[:8]
+		}
+		label := fmt.Sprintf("%s:t%02d:%s@%s", ge.suite, ge.task, ge.repo, comm)
+		if a, ok := taskAggByKey[label]; ok {
+			return a
+		}
+		a := &armAgg{job: label, arm: "all"}
+		taskAggByKey[label] = a
+		taskAggs = append(taskAggs, a)
+		return a
+	}
+
 	passAgg := &armAgg{job: "ALL", arm: "pass"}
 	failAgg := &armAgg{job: "ALL", arm: "fail"}
+	failNoGoldAgg := &armAgg{job: "FAIL_MODE", arm: "first_gold_req==0"}
+	failReadNoEditAgg := &armAgg{job: "FAIL_MODE", arm: "reached_no_gold_edit"}
+	failEditedGoldAgg := &armAgg{job: "FAIL_MODE", arm: "edited_gold"}
 
 	var totalRuns, missing int
 
 	for _, res := range resFiles {
 		f, err := os.Open(res)
 		if err != nil {
-			fmt.Println(gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
-			os.Exit(2)
+			fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
+			return 2
 		}
-		job := jobLabel(res)
-		isPass3 := strings.HasSuffix(filepath.ToSlash(res), "cal-baseline-2026-10-18/pass-3/results.jsonl")
+		job := jobLabel(res, *includeSuperseded)
+		slash := filepath.ToSlash(res)
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 1<<20), 1<<26)
 		for sc.Scan() {
 			var rec pilot.Record
-			if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.Run.Void != "" {
+			if json.Unmarshal(sc.Bytes(), &rec) != nil || shouldSkipRecord(slash, rec, *includeSuperseded) {
 				continue
-			}
-			if isPass3 && rec.Task >= 5 {
-				continue // tasks 5-12 of pass-3 were void and replaced by pass-3-rerun
 			}
 			totalRuns++
 			base, err := pilot.BaseTree(*mirrors, rec.Repo, rec.Base)
 			if err != nil {
 				missing++
-				fmt.Printf("MISSING base tree for %s@%s: %v\n", rec.Repo, rec.Base, err)
+				fmt.Fprintf(stdout, "MISSING base tree for %s@%s: %v\n", rec.Repo, rec.Base, err)
 				continue
 			}
 			gk := rec.Repo + "@" + rec.Base + ".." + rec.Commit
 			ge, ok := goldCache[gk]
 			if !ok {
-				tfs := testFilesByCommit[rec.Repo+"@"+rec.Commit]
+				commitKey := rec.Repo + "@" + rec.Commit
+				tfs := testFilesByCommit[commitKey]
+				suite := suiteByCommit[commitKey]
+				if suite == "" {
+					if strings.Contains(slash, "/a1-") {
+						suite = "pilot"
+					} else {
+						suite = "calibration"
+					}
+				}
 				raw, sym, err := pilot.FixGold(ctx, *mirrors, rec.Repo, rec.Base, rec.Commit, tfs)
 				if err != nil {
 					missing++
-					fmt.Printf("MISSING fix gold for %s: %v\n", gk, err)
+					fmt.Fprintf(stdout, "MISSING fix gold for %s: %v\n", gk, err)
 					continue
 				}
-				ge = goldCacheEntry{task: rec.Task, repo: rec.Repo, base: rec.Base, comm: rec.Commit, raw: raw, sym: sym}
+				ge = goldCacheEntry{suite: suite, task: rec.Task, repo: rec.Repo, base: rec.Base, comm: rec.Commit, raw: raw, sym: sym}
 				goldCache[gk] = ge
 				goldOrder = append(goldOrder, gk)
 			}
@@ -208,13 +249,13 @@ func main() {
 			symM, err := pilot.ScoreContext(events, base, ge.sym, *includeNotes)
 			if err != nil {
 				missing++
-				fmt.Printf("MISSING %s: %v\n", events, err)
+				fmt.Fprintf(stdout, "MISSING %s: %v\n", events, err)
 				continue
 			}
 			rawM, err := pilot.ScoreContext(events, base, ge.raw, *includeNotes)
 			if err != nil {
 				missing++
-				fmt.Printf("MISSING %s: %v\n", events, err)
+				fmt.Fprintf(stdout, "MISSING %s: %v\n", events, err)
 				continue
 			}
 			var annM *pilot.ContextMetrics
@@ -231,10 +272,18 @@ func main() {
 			}
 
 			getAgg(job, rec.Run.Arm).add(rec.Pass, symM, rawM, annM)
+			getTaskAgg(ge).add(rec.Pass, symM, rawM, annM)
 			if rec.Pass {
 				passAgg.add(true, symM, rawM, annM)
 			} else {
 				failAgg.add(false, symM, rawM, annM)
+				if symM.FirstGoldReq == 0 {
+					failNoGoldAgg.add(false, symM, rawM, annM)
+				} else if symM.EditLoc == 0 {
+					failReadNoEditAgg.add(false, symM, rawM, annM)
+				} else {
+					failEditedGoldAgg.add(false, symM, rawM, annM)
+				}
 			}
 
 			if *dump != "" {
@@ -257,48 +306,71 @@ func main() {
 
 	sort.Slice(goldOrder, func(i, j int) bool {
 		a, b := goldCache[goldOrder[i]], goldCache[goldOrder[j]]
+		if a.suite != b.suite {
+			return a.suite < b.suite
+		}
 		if a.task != b.task {
 			return a.task < b.task
 		}
 		return a.repo < b.repo
 	})
 
-	fmt.Println("task | repo | commit | raw_lines | gold_lines | fix_gold_spans")
+	fmt.Fprintln(stdout, "suite | task | repo | commit | raw_lines | gold_lines | fix_gold_spans")
 	for _, gk := range goldOrder {
 		ge := goldCache[gk]
 		comm := ge.comm
 		if len(comm) > 8 {
 			comm = comm[:8]
 		}
-		fmt.Printf("%2d | %s | %s | %d | %d | %s\n",
-			ge.task, ge.repo, comm, spanLineCount(ge.raw), spanLineCount(ge.sym), formatSpans(ge.sym))
+		fmt.Fprintf(stdout, "%s | %2d | %s | %s | %d | %d | %s\n",
+			ge.suite, ge.task, ge.repo, comm, spanLineCount(ge.raw), spanLineCount(ge.sym), formatSpans(ge.sym))
 	}
-	fmt.Println()
+	fmt.Fprintln(stdout)
 
-	fmt.Println("job | arm | runs | pass | reached | edited_gold | FinalCov | RawCov | FileCov | CovReq1 | Cov4k | Precision | FirstReq | AUCCov | Util | EditLoc")
+	fmt.Fprintln(stdout, "job | arm | runs | pass | reached | edited_gold | FinalCov | RawCov | FileCov | CovReq1 | Cov4k | Precision | FirstReq | AUCCov | Util | EditLoc")
 	for _, a := range aggs {
-		printAggRow(a)
+		printAggRow(stdout, a)
 	}
-	fmt.Println()
-	fmt.Println("outcome_split | group | runs | pass | reached | edited_gold | FinalCov | RawCov | FileCov | CovReq1 | Cov4k | Precision | FirstReq | AUCCov | Util | EditLoc")
+	fmt.Fprintln(stdout)
+
+	sort.Slice(taskAggs, func(i, j int) bool {
+		return taskAggs[i].job < taskAggs[j].job
+	})
+	fmt.Fprintln(stdout, "task_group | arm | runs | pass | reached | edited_gold | FinalCov | RawCov | FileCov | CovReq1 | Cov4k | Precision | FirstReq | AUCCov | Util | EditLoc")
+	for _, a := range taskAggs {
+		printAggRow(stdout, a)
+	}
+	fmt.Fprintln(stdout)
+
+	fmt.Fprintln(stdout, "outcome_split | group | runs | pass | reached | edited_gold | FinalCov | RawCov | FileCov | CovReq1 | Cov4k | Precision | FirstReq | AUCCov | Util | EditLoc")
 	if passAgg.runs > 0 {
-		printAggRow(passAgg)
+		printAggRow(stdout, passAgg)
 	}
 	if failAgg.runs > 0 {
-		printAggRow(failAgg)
+		printAggRow(stdout, failAgg)
+	}
+	if failNoGoldAgg.runs > 0 {
+		printAggRow(stdout, failNoGoldAgg)
+	}
+	if failReadNoEditAgg.runs > 0 {
+		printAggRow(stdout, failReadNoEditAgg)
+	}
+	if failEditedGoldAgg.runs > 0 {
+		printAggRow(stdout, failEditedGoldAgg)
 	}
 
 	scored := passAgg.runs + failAgg.runs
 	sum := fmt.Sprintf("replaycontext: scored %d of %d runs across %d tasks (%d pass, %d fail; fail reached gold %d/%d, edited gold %d/%d)",
 		scored, totalRuns, len(goldOrder), passAgg.runs, failAgg.runs, failAgg.reached, failAgg.runs, failAgg.editedGold, failAgg.runs)
 	if missing > 0 {
-		fmt.Println(gate.Verdict(gate.Inconclusive, fmt.Sprintf("%s; %d missing", sum, missing)))
-		os.Exit(2)
+		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, fmt.Sprintf("%s; %d missing", sum, missing)))
+		return 2
 	}
-	fmt.Println(gate.Verdict(gate.OK, sum))
+	fmt.Fprintln(stdout, gate.Verdict(gate.OK, sum))
+	return 0
 }
 
-func printAggRow(a *armAgg) {
+func printAggRow(w io.Writer, a *armAgg) {
 	if a.runs == 0 {
 		return
 	}
@@ -307,13 +379,64 @@ func printAggRow(a *armAgg) {
 	if a.reached > 0 {
 		firstReq = float64(a.firstReqSum) / float64(a.reached)
 	}
-	fmt.Printf("%s | %s | %d | %d | %d/%d | %d/%d | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.3f | %.3f | %.3f\n",
+	prec := 0.0
+	if a.seenRuns > 0 {
+		prec = a.precision / float64(a.seenRuns)
+	}
+	fmt.Fprintf(w, "%s | %s | %d | %d | %d/%d | %d/%d | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.3f | %.3f | %.3f\n",
 		a.job, a.arm, a.runs, a.passes, a.reached, a.runs, a.editedGold, a.runs,
 		a.finalCov/n, a.rawCov/n, a.fileCov/n, a.covReq1/n, a.cov4k/n,
-		a.precision/n, firstReq, a.aucCov/n, a.utilization/n, a.editLoc/n)
+		prec, firstReq, a.aucCov/n, a.utilization/n, a.editLoc/n)
 }
 
-func collectResultFiles(scanDir, jobsFile string, args []string) ([]string, error) {
+func isExcludedResultFile(slash string, includeSuperseded bool) bool {
+	// Always exclude void pilot captures (sandbox denied workspace writes / module cache;
+	// replaced by a1-2026-10-18-day2 per e1-pilot-a1-2026-10-18.md), aborted launches,
+	// and post-CB3 runs (c6-bundle-2026-10-28).
+	if strings.Contains(slash, "aborted") ||
+		strings.Contains(slash, "/a1-2026-10-18/") ||
+		strings.Contains(slash, "/c6-bundle-2026-10-28/") {
+		return true
+	}
+	if includeSuperseded {
+		return false
+	}
+	// Exclude void/smoke/superseded runs documented as not counted in the E1 records:
+	// - a1-2026-10-18-day: void pilot run (sandbox denied Go module cache; e1-pilot-a1-2026-10-18.md)
+	// - a1-smoke-* and */smoke-t1/*: 1-task preflight smoke runs ("not graded")
+	// - c6-42-2026-10-20/runs: stopped screen superseded by c6-42-2026-10-20/runs-restart
+	//   ("recorded, not counted"; e1-calibration-c6-42-2026-10-20.md, e1-calibration-c6-42-stopped-2026-10-20.md)
+	return strings.Contains(slash, "/a1-2026-10-18-day/") ||
+		strings.Contains(slash, "/a1-smoke-") ||
+		strings.Contains(slash, "/smoke-t1/") ||
+		strings.HasSuffix(slash, "/c6-42-2026-10-20/runs/results.jsonl")
+}
+
+func shouldSkipRecord(slash string, rec pilot.Record, includeSuperseded bool) bool {
+	if rec.Run.Void != "" {
+		return true
+	}
+	// Tasks 5-12 of cal-baseline-2026-10-18/pass-3 were void and replaced by pass-3-rerun
+	// (e1-calibration-baseline-2026-10-18.md).
+	if strings.HasSuffix(slash, "cal-baseline-2026-10-18/pass-3/results.jsonl") && rec.Task >= 5 {
+		return true
+	}
+	if includeSuperseded {
+		return false
+	}
+	// Per e1-calibration-c6-41-2026-10-20.md (§12.10 completeness rule), c6-41-2026-10-20
+	// counts tasks 1-3 from runs/, tasks 4-5 from runs-resume/, and tasks 6-12 from runs-resume2/;
+	// incomplete interrupted task blocks (runs/ task 4 and runs-resume/ task 6) are not counted.
+	if strings.HasSuffix(slash, "c6-41-2026-10-20/runs/results.jsonl") && rec.Task >= 4 {
+		return true
+	}
+	if strings.HasSuffix(slash, "c6-41-2026-10-20/runs-resume/results.jsonl") && rec.Task >= 6 {
+		return true
+	}
+	return false
+}
+
+func collectResultFiles(scanDir, jobsFile string, args []string, includeSuperseded bool) ([]string, error) {
 	var out []string
 	if scanDir != "" {
 		err := filepath.WalkDir(scanDir, func(p string, d os.DirEntry, err error) error {
@@ -321,7 +444,7 @@ func collectResultFiles(scanDir, jobsFile string, args []string) ([]string, erro
 				return nil
 			}
 			slash := filepath.ToSlash(p)
-			if strings.Contains(slash, "aborted") || strings.Contains(slash, "/a1-2026-10-18/") {
+			if isExcludedResultFile(slash, includeSuperseded) {
 				return nil
 			}
 			out = append(out, p)
@@ -347,24 +470,46 @@ func collectResultFiles(scanDir, jobsFile string, args []string) ([]string, erro
 	return out, nil
 }
 
-func jobLabel(resPath string) string {
+func jobLabel(resPath string, includeSuperseded bool) string {
 	dir := filepath.Dir(resPath)
 	parent := filepath.Base(filepath.Dir(dir))
 	base := filepath.Base(dir)
+	if !includeSuperseded {
+		if strings.HasPrefix(base, "pass-") && parent != "." && parent != "/" && parent != "e1" {
+			return parent
+		}
+		if parent == "c6-41-2026-10-20" && strings.HasPrefix(base, "runs") {
+			return parent
+		}
+	}
 	if parent != "." && parent != "/" && parent != "e1" {
 		return filepath.Join(parent, base)
 	}
 	return base
 }
 
-func loadTestFiles(extraPath string) map[string][]string {
-	out := map[string][]string{}
-	paths := []string{"eval/e1/calibration.jsonl", "eval/e1/pilot.jsonl"}
-	if extraPath != "" {
-		paths = append(paths, extraPath)
+func loadTaskMetadata(extraPath string) (map[string][]string, map[string]string) {
+	testFiles := map[string][]string{}
+	suites := map[string]string{}
+	type source struct {
+		path  string
+		suite string
 	}
-	for _, p := range paths {
-		f, err := os.Open(p)
+	sources := []source{
+		{path: "eval/e1/calibration.jsonl", suite: "calibration"},
+		{path: "eval/e1/pilot.jsonl", suite: "pilot"},
+	}
+	if extraPath != "" {
+		suitesName := "custom"
+		if strings.Contains(extraPath, "pilot") {
+			suitesName = "pilot"
+		} else if strings.Contains(extraPath, "calibration") {
+			suitesName = "calibration"
+		}
+		sources = append(sources, source{path: extraPath, suite: suitesName})
+	}
+	for _, src := range sources {
+		f, err := os.Open(src.path)
 		if err != nil {
 			continue
 		}
@@ -372,13 +517,19 @@ func loadTestFiles(extraPath string) map[string][]string {
 		sc.Buffer(make([]byte, 1<<20), 1<<24)
 		for sc.Scan() {
 			var c mine.Candidate
-			if json.Unmarshal(sc.Bytes(), &c) == nil && c.Repo != "" && c.Commit != "" && len(c.TestFiles) > 0 {
-				out[c.Repo+"@"+c.Commit] = c.TestFiles
+			if json.Unmarshal(sc.Bytes(), &c) == nil && c.Repo != "" && c.Commit != "" {
+				key := c.Repo + "@" + c.Commit
+				if len(c.TestFiles) > 0 {
+					testFiles[key] = c.TestFiles
+				}
+				if suites[key] == "" {
+					suites[key] = src.suite
+				}
 			}
 		}
 		f.Close()
 	}
-	return out
+	return testFiles, suites
 }
 
 func loadAnnotatedGold(path string) (map[string][]pilot.LineSpan, error) {
