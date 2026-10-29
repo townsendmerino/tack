@@ -801,9 +801,8 @@ are the approximate tier, already built and gated.
 
 ### 8.3 CB3
 
-- No decision rides on it at first. The registration fixes the gold derivation, the span extraction rules (§4.4) and the
-  metrics, so the numbers cannot be tuned after reading them; it then reports per arm and task for every existing
-  calibration row.
+- No decision rides on it at first. The CB3 specification (`docs/measurements/e1-cb3-context-metrics-preregistration-2026-10-28.md`, a specification rather than a pre-registration because it was committed with the scorer and initial results in `57c9548` and revised post-results in `8076b0c` on 2026-10-29 to align §3.1 failed-edit notes/token rules, §3.2 `opencode` removal, §4 aggregate `Precision`, and §4.1 `-scan` exclusions) defines the gold derivation, the span extraction rules (§4.4) and the
+  metrics, and reports per arm and task for every existing calibration row.
 
 ### 8.4 K16, K17, LM0
 
@@ -837,7 +836,7 @@ Marked as approved on 2026-10-28 in commit `57c9548` (note: Francis's approval o
 
 | track | item | where | artifact / code | status |
 |---|---|---|---|---|
-| 1 | CB3 specification (§4.4, §8.3; committed in `57c9548` alongside scorer and record) | tack | `docs/measurements/e1-cb3-context-metrics-preregistration-2026-10-28.md` | **done (2026-10-28)** |
+| 1 | CB3 specification (§4.4, §8.3; specification, not pre-registration: committed in `57c9548` alongside scorer and record, and revised 2026-10-29 in `8076b0c` after results/review for §3.1 and §4.1) | tack | `docs/measurements/e1-cb3-context-metrics-preregistration-2026-10-28.md` | **done (2026-10-28, revised 2026-10-29)** |
 | 1 | CB3 scorer, tier-0 tests (red first), and replay CLI | tack | `internal/eval/pilot/context.go`, `internal/eval/pilot/context_test.go`, `tools/replaycontext/main.go`, `tools/replaycontext/main_test.go` | **done (2026-10-28)** |
 | 1 | CB3 measurement record over captured E1 runs | tack | `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` | **done (2026-10-28): 625 counted runs scored (687 with `-include-superseded`)** |
 | 2 | Brief for ken: aikit bump, K16, K17, K18 | tack → ken | `docs/briefs/ken-k16-k18-contextbench-memory.md`, `docs/design/DESIGN.md` §12 | **done (2026-10-28)** |
