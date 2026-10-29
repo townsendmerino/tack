@@ -132,3 +132,11 @@ run 2026-10-29 at tack `3f60cec`, over all 72 runs:
 - The rest of this record is reported, not decided on: each task's passes, the stops, the window-full counts, the
   requests, the refusals and the predictions.
 - What follows from this verdict for C6 is Francis's decision. The options are put to him in the session's report.
+
+## Francis's decision (2026-10-29, 07:35 PDT)
+
+Option (a), relayed by the coordinator:
+- **The bundle stays C6's loop,** with `edit_tolerances` added per §12.22. That loop is also the one §12.23's
+  Qwen3.5-9B row runs with.
+- **The powered comparison** (§12.9's 336 runs) **is deferred** until the model question (§12.23 step 2) is settled.
+- This does not change the verdict. The bundle is still not shown to beat A1 at screen size.

@@ -1840,6 +1840,8 @@ Francis chose this at 17:54 PDT, with §12.3's rule as drafted. It is §12.9's q
   - 0 cells were void. The parked row is not triggered, so no runs follow.
   - Window-full stops: A 27, B 0.
   - The riding check holds: the replay stops exactly B's 16 live `repeat_loop` runs.
+  - **Francis, 2026-10-29 07:35 PDT:** the bundle, with `edit_tolerances` added (§12.22), stays C6's loop and is the
+    loop for §12.23's row. The powered comparison is deferred until §12.23 step 2's model question is settled.
 
 ### 12.22 Safe edit tolerances: judged by replay (owner, 2026-10-27), registered before their code
 
