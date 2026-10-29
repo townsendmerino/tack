@@ -1909,10 +1909,14 @@ Francis chose direction 2 at 18:31 PDT, in this order: after §12.21's run, by d
    - Qwen3.5-9B with the bundle as adopted then, the 12 tasks, 3 runs each.
    - Its per-run time is estimated from step 1's figures. It runs by day if that comes to 2 hours or less, else as a
      night job.
-### 12.24 Qwen3.5-9B on the calibration set, with the bundle (§12.23 step 2), registered before its runs
+### 12.24 Qwen3.5-9B on the calibration set, with the bundle (§12.23 step 2) (owner, 2026-10-29), registered before its runs
 
 Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`e0-nobara-qwen35-2026-10-29.md`), as
-§12.23 step 2 calls for. It awaits Francis's yes on the choices marked below, which are his.
+§12.23 step 2 calls for.
+- **Francis approved it as drafted at 11:35 PDT** (relayed by the coordinator): 32,768 context and C5's 10-minute cap.
+- It is queued tonight on the Mac's `night.py`. It starts no earlier than 22:00, and is retried until 03:00 if nobara
+  is busy.
+- tack is `3382aa8`, the commit that added this section.
 - **The arm:** one arm, C5-style.
   - **Model and context:** Qwen3.5-9B `Q4_K_M` (`~/models/Qwen3.5-9B-Q4_K_M.gguf`) at **32,768**, the context E0
     admitted and the reason this model was chosen (double Qwen3-8B's 16,384). *Francis's choice.* The alternative is
