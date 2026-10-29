@@ -1834,6 +1834,12 @@ Francis chose this at 17:54 PDT, with §12.3's rule as drafted. It is §12.9's q
   run, `done` refusals, and the cell states.
 - **Riding check:** `tools/replayrepeats -mirrors` over B's runs stops exactly B's runs that ended live with
   `repeat_loop`.
+- **Outcome (2026-10-28, 19:01–21:19 PDT, tack `5d54f3c`, goinfer `b2b5e816`; record
+  `e1-calibration-c6-bundle-2026-10-28.md`): not shown, d = +1.**
+  - B passed 4 of 36 and A 3 of 36. Task 1 went from 0/3 in A to 3/3 in B, and task 11 from 2/3 to 1/3.
+  - 0 cells were void. The parked row is not triggered, so no runs follow.
+  - Window-full stops: A 27, B 0.
+  - The riding check holds: the replay stops exactly B's 16 live `repeat_loop` runs.
 
 ### 12.22 Safe edit tolerances: judged by replay (owner, 2026-10-27), registered before their code
 
