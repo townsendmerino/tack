@@ -2,8 +2,23 @@
 
 <!-- citations-at: ac4cded -->
 
-A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-registration §12). tack is paused here
-while the owner works on goinfer. Nothing is running or queued, and both timing locks are free.
+A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-registration §12). First written
+2026-10-21; brought up to date 2026-10-29.
+
+## Where it stands, 2026-10-29
+
+- **The bundle against A1 at screen size (§12.21): not shown, d = +1.** B passed 4/36 and A 3/36
+  (`-c6-bundle-2026-10-28`).
+  - Francis kept the bundle, with `edit_tolerances` added, as C6's loop.
+  - The powered comparison (§12.9's 336 runs) waits for the model question.
+- **Qwen3.5-9B (§12.23):** step 1 passed. E0 found it eligible, and the append probe's gate held at 0.15 and 0.07
+  of the cold time (`e0-nobara-qwen35-2026-10-29.md`, goinfer `95bc3c7b`).
+- **Step 2 is §12.24:** Qwen3.5-9B at 32,768 with the bundle, 36 runs.
+  - Approved 2026-10-29 and queued tonight on the Mac's `night.py` as `tack-c6-1224-qwen35-row`, at tack `3382aa8`.
+  - Its read uses `tools/calreport`, beside §12.21's job and C5.
+  - **The model question is decided after it.** Francis chooses whether C6 moves to Qwen3.5-9B.
+- **CB3's scorer** no longer counts a whole-file write as seen (Francis, 2026-10-29). The record's counts are
+  unchanged (`e1-cb3-context-metrics-2026-10-28.md` §7).
 
 ## In the bundle
 
@@ -18,13 +33,13 @@ while the owner works on goinfer. Nothing is running or queued, and both timing 
 - **Background condition, in every arm:** `fit_window` (4.6; §12.5, §12.6).
 - Records are `docs/measurements/e1-calibration-<name>.md`.
 
-## Adopted, joining the bundle after §12.21's run
+## Joined the bundle after §12.21's run (2026-10-29)
 
 - **Edit tolerances** (`edit_tolerances`; §12.22, adopted by replay 2026-10-27, `-c6-tolerances-2026-10-27`): all whitespace
   ignored, and a trailing `;` ignored, in `.go` files, only at one place and only if the file still parses. `,` `)` `]`
   `}` `.` `:` were replayed and left out.
-- **Next after §12.21** (§12.23): Qwen3.5-9B's E0 append probe on a goinfer build with B35, then a calibration row if it
-  passes.
+  - It is on in §12.24's row, the first run with it.
+  - §12.21's arms did not include it.
 
 ## Not in the bundle
 
@@ -99,6 +114,9 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
 
 ## The bundle night (§12.9)
 
+**Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 is settled. It would then run on
+whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
+
 - **The plan:** one bundle arm, with every setting above, against the baseline arm on Qwen3-8B. 14 runs per task per
   arm, 336 runs, interleaved per task, each after the cell check. A night job on nobara through goinfer's
   `night.py`, about 8–9 hours. Power is about 80% to see 7% → 17%.
@@ -111,10 +129,10 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
 
 ## Triggers to watch
 
-- **goinfer B35 lands** (Qwen3.5's DeltaNet prefix reuse). Then run Qwen3.5-9B's C3 row again with E0 amendment 11's
-  append probe, on a goinfer build at or after `1ea85681`.
-- **The CI minutes reset.** Then one real CI run of current main. A manual dispatch also runs the macOS job and its
-  sandbox escape tests.
+- **Done:** goinfer B35 landed. Qwen3.5-9B's E0 ran again with the append probe on `95bc3c7b` (§12.23 step 1, passed).
+- **CI minutes:** CI runs again on every push, and main is green at `c69b5a3`. **Still open:** no manual dispatch
+  has ever run, so the macOS job and its sandbox escape tests have not run in CI. That costs macOS minutes, and the
+  dispatch waits for Francis.
 - **Mellum2.1:** its E0 runs again only on a change that could alter its tool choice.
 
 ## Open decisions for Francis
@@ -125,6 +143,9 @@ Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engi
    - **Ran 2026-10-28: not shown, d = +1** (B 4/36, A 3/36; `-c6-bundle-2026-10-28`).
    - Francis, 2026-10-29: the bundle with `edit_tolerances` stays C6's loop and runs §12.23's row; the powered
      comparison waits for the model question.
+3. **Next, after §12.24's row:** whether C6 moves to Qwen3.5-9B at 32,768. Then which model the powered comparison
+   runs on.
+4. Whether to dispatch CI's macOS job, for the sandbox escape tests (Triggers, above).
 
 Settled since 2026-10-21: the restate_task refusal was registered and failed its check (§12.18); ken v1.11.0's
 symbol tools are in tack; tack is on Go 1.27.3.

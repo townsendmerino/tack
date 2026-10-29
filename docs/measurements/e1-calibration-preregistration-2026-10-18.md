@@ -901,7 +901,7 @@ changes are now measured on this arm, with the effect size that would count regi
 **This section fixes how every change is measured.** Each change still gets its own line here, before its runs, with
 its commit, its setting and its predictions.
 
-**Where C6 stands (2026-10-21; updated 2026-10-27):** `e1-calibration-c6-status-2026-10-21.md` lists what is in the
+**Where C6 stands (2026-10-21; updated 2026-10-29):** `e1-calibration-c6-status-2026-10-21.md` lists what is in the
 bundle, what is not, the candidates, the bundle night's plan, the triggers and the open decisions.
 
 ### 12.1 The arms
