@@ -1,8 +1,9 @@
-# E1 CB3: trajectory context metrics on captured runs — pre-registration
+# E1 CB3: trajectory context metrics on captured runs — specification
 
 <!-- citations-at: tack f75780d, ken 5ab3888 (v1.11.0), ContextBench cd5f62e -->
 
-**Status: committed 2026-10-28 in `57c9548` (`14:45:58 -0700`) in the same commit as `internal/eval/pilot/context.go`, `tools/replaycontext/main.go`, and the results record `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` (after `/tmp/e1-cb3-context-metrics.jsonl` was written at `14:37`).** Because the specification, scorer, and results landed in a single commit, git history does not establish that this specification was frozen before the first replay run. In addition, while `docs/research/contextbench-leann-2026-10-28.md` §9 marked decisions 1–9 as approved in `57c9548`, Francis's approval of those decisions is not recorded in a separate commit or note in the repository.
+**Status: specification (not a pre-registration). Originally committed 2026-10-28 in `57c9548` (`14:45:58 -0700`) in the same commit as `internal/eval/pilot/context.go`, `tools/replaycontext/main.go`, and the results record `docs/measurements/e1-cb3-context-metrics-2026-10-28.md` (after `/tmp/e1-cb3-context-metrics.jsonl` was written at `14:37`), so git history does not establish that it was frozen before the first replay run; while `docs/research/contextbench-leann-2026-10-28.md` §9 marked decisions 1–9 as approved in `57c9548`, Francis's approval of those decisions is not recorded in a separate commit or note in the repository.**
+**Revision note:** Revised 2026-10-29 (`8076b0c`) after the CB3 results and review to match the scorer and document review fixes (§3.1 failed-call token exclusion, `-include-notes` on failed edits carrying `current_symbol` notes, whole-call `Cov4k`, `edit`/`write` seen+used spans, positional `write` line mapping, and `bash` pipeline AST walking; §3.2 removal of the unused `opencode` branch; §4 aggregate `Precision` over `SeenLines > 0`; §4.1 `-scan` exclusions).
 
 ## 1. Purpose
 
