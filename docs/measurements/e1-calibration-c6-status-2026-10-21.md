@@ -112,6 +112,24 @@ Neither measured its changes one by one, except LangChain's reasoning split, so 
 Sources: <https://www.langchain.com/blog/improving-deep-agents-with-harness-engineering>,
 <https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course>.
 
+Added 2026-10-29, from RudderStack's DevBox (DESIGN §2.5). DevBox reports pull-request outcomes on frontier models, not
+changes measured one by one, so these too are ideas to screen.
+- **Self-review of the diff before `done`.** On a write task's first `done`, tack hands the model its own `git diff`
+  beside the task statement; the model fixes what it finds or says what it left undone.
+  - The nearest evidence is against nudges on Qwen3-8B: the restating refusal moved 0 of 8 runs (§12.18), and no
+    build-after-edit note was followed by a change that built (§12.17). `verify_done` already makes `done` wait for a
+    build or test.
+  - As a prompt change, it needs a tier-1 live check before any screen (§12.12). The mechanism metric: reviews followed
+    by an edit, and whether that edit's run passes.
+- **Plan, then edit.** A fixed order for an edit task: a plan, a review of the plan, then the edits, with mutating
+  tools refused until the plan exists (as plan mode refuses them, DESIGN §6.3).
+  - It pairs with "thinking on only for planning and checking" above: one arm could carry both.
+  - Costs: each stage boundary must keep the cached prefix (DESIGN §7.2), and the review spends window.
+  - A different model for the plan, as DevBox sets per stage, is a nobara option only: two models do not fit the Mac
+    together (DESIGN §2.3).
+- **Learnings written back to the repo** belong to P1's instruction-file step, not a screen (`docs/design/p1-notes.md`,
+  step 5).
+
 ## The bundle night (§12.9)
 
 **Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 is settled. It would then run on

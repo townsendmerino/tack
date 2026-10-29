@@ -31,6 +31,8 @@ The order the owner approved, each step with its exit check:
 5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
    - By day: an exactness check of `SearchFiles` on goinfer.
    - At night: `SearchFiles`'s latency on goinfer.
+   - *Proposed* (DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
+     rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.

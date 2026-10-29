@@ -208,7 +208,8 @@ it is fixed.
   model on nobara, for the plan and its review, and the `-fast` alias for edits. Two models resident at once may not fit
   on the 16 GB Mac (§2.3), so this is mainly a nobara or larger-memory option.
 - **Self-review of the diff.** Before a write task ends, the model reads its own `git diff` against the task and either
-  fixes what it finds or says what it left undone. It is cheap, and E1 can count what it catches.
+  fixes what it finds or says what it left undone. It is cheap, and E1 can count what it catches. But C6's nudges have
+  mostly gone unheeded by Qwen3-8B (pre-registration §12.17, §12.18), so it needs a tier-1 check first.
 - **Learnings land in the repo as reviewed text.** DevBox reads `AGENTS.md`, `CLAUDE.md` and `.agents/knowledge/`
   before every task, and adds what it learned there as a commit on the pull request, reviewed like code. tack reads the
   first two already (§6.7) and should read `.agents/knowledge/` too when it exists. Writing back would keep a repo's
@@ -223,6 +224,10 @@ reach for.
 
 **Their caveat applies here with more force.** DevBox does best on small, well-defined tasks and struggles with vague
 tickets and large unspecified features. On a local model, the app should help the user scope a task tightly.
+
+**Where they are tracked.** The self-review and the staged plan are C6 screen candidates
+(`docs/measurements/e1-calibration-c6-status-2026-10-21.md`, "Candidates, not registered"); reading
+`.agents/knowledge/` is proposed for P1's instruction-file step (`docs/design/p1-notes.md`, step 5).
 
 ---
 
@@ -629,8 +634,9 @@ tool-use smoke set compares this merged set against the split one before it is f
 ### 6.7 Instructions and extensions
 
 - **Instruction files.** `AGENTS.md` and `CLAUDE.md` at the workspace root, and in a subdirectory once the session works
-  under it; a user-level `~/.config/tack/AGENTS.md`. Long files are loaded by section (§2.3). The owner's repos depend on
-  these: their `CLAUDE.md` files carry hard rules (the staticcheck canary, explicit-path staging, the night queue).
+  under it; a user-level `~/.config/tack/AGENTS.md`; *proposed* (§2.5), `.agents/knowledge/` files, read on demand.
+  Long files are loaded by section (§2.3). The owner's repos depend on these: their `CLAUDE.md` files carry hard rules
+  (the staticcheck canary, explicit-path staging, the night queue).
 - **Skills.** `SKILL.md` folders in Claude Code's format, from `.claude/skills/` and `~/.claude/skills/`, listed by
   one-line description and read only when used, so they cost little of the window.
 - **MCP client (P5).** The official Go SDK (`modelcontextprotocol/go-sdk`, which ken already uses); stdio and Streamable
