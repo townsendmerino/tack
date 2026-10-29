@@ -1956,3 +1956,13 @@ Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`
     is 36 runs on a different night. Whether C6 moves to Qwen3.5-9B is Francis's decision after this row.
 - **Also reported, not decided on:** each task's passes, stops by reason, window-full stops, cap hits, requests per
   run, first-token times per request, `done` refusals and the cell states.
+- **The read uses `tools/calreport`** (Francis, 2026-10-29 14:27 PDT), with §12.21's job and C5's three passes beside
+  it. It decides nothing:
+
+  ```
+  E=~/tack-runs/e1
+  go run ./tools/calreport \
+    -compare $E/c6-bundle-2026-10-28/runs/results.jsonl \
+    -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
+    $E/c6-qwen35-row-2026-10-29/runs/results.jsonl
+  ```
