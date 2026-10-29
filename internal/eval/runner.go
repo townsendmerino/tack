@@ -272,7 +272,8 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 			}
 			dirs = append(dirs, dir)
 			s, err := models.NewSupervisor(models.ChildConfig{Binary: r.o.Manifest.GoinferServe, ModelPath: arm.ModelPath,
-				Model: arm.Name, Ctx: n, Args: arm.Args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour})
+				Model: arm.Name, Ctx: n, Args: arm.Args, Dir: dir, IdleUnload: 24 * time.Hour, IdleExit: 24 * time.Hour,
+				Pressure: r.o.Pressure})
 			if err != nil {
 				r.record(arm, "fit", map[string]any{"ctx": n, "error": err.Error()})
 				flag("-ctx %d: %v", n, err)

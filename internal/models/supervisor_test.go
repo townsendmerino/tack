@@ -235,6 +235,32 @@ func TestMemoryPressureBlocksALoad(t *testing.T) {
 	}
 }
 
+// ChildConfig.Pressure is the reading the load guard uses, in place of the host's: a caller that injects "normal" is
+// not refused because the machine running the test is under pressure, and one that injects "warning" is refused on an
+// idle machine.
+func TestChildConfigPressureIsTheGuardsReading(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	for _, want := range []Pressure{PressureNormal, PressureWarning} {
+		dir, err := os.MkdirTemp("/tmp", "tksup")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		s, err := NewSupervisor(ChildConfig{Binary: os.Args[0], ModelPath: "/m/model.gguf", Model: "m", Ctx: 8192,
+			Args: []string{"-backend", "cpu"}, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute,
+			Pressure: func() (Pressure, error) { return want, nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.Stop() })
+		_, err = s.Ensure(context.Background())
+		refused := err != nil && strings.Contains(err.Error(), "memory pressure is warning")
+		if refused != (want == PressureWarning) {
+			t.Fatalf("injected %v: Ensure = %v", want, err)
+		}
+	}
+}
+
 func TestIdleUnloadThenExitThenRestart(t *testing.T) {
 	s, c, _ := newSup(t, "/m/model.gguf")
 	ctx := context.Background()

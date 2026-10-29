@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -389,6 +390,38 @@ func TestPressureSettlesBeforeAnArm(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
 	if !strings.Contains(string(data), `"admitted":true`) || strings.Contains(string(data), `"skipped"`) {
 		t.Fatalf("results: %s", data)
+	}
+}
+
+// TestPressureReachesTheSupervisor: the runner's Pressure is the reading the model supervisor's load guard uses, not
+// the host's. The injected reading says warning only when the supervisor's Ensure asks, so the load is refused on any
+// machine exactly when the runner passed its reading on, and is admitted when it did not.
+func TestPressureReachesTheSupervisor(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	t.Setenv(tokenEnv, "")
+	pressure := func() (models.Pressure, error) {
+		pc := make([]uintptr, 32)
+		frames := runtime.CallersFrames(pc[:runtime.Callers(2, pc)])
+		for {
+			f, more := frames.Next()
+			if strings.HasSuffix(f.Function, "models.(*Supervisor).Ensure") {
+				return models.PressureWarning, nil
+			}
+			if !more {
+				return models.PressureNormal, nil
+			}
+		}
+	}
+	out := t.TempDir()
+	m := &Manifest{Box: "test", GoinferServe: os.Args[0], GoinferRev: "fake", Workspace: t.TempDir(),
+		Arms: []Arm{{Name: "a", ModelPath: "/m/a.gguf", Args: cpu, Ctx: []int{8192}}}}
+	if _, err := Run(context.Background(), Options{Manifest: m, Out: out, FitOnly: true, LockPath: filepath.Join(t.TempDir(), "lock"),
+		SettleWait: time.Second, Pressure: pressure}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(out, "results.jsonl"))
+	if !strings.Contains(string(data), "not loading a: memory pressure is warning") || strings.Contains(string(data), `"admitted":true`) {
+		t.Fatalf("the supervisor did not use the runner's pressure reading; results: %s", data)
 	}
 }
 

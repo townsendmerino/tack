@@ -53,6 +53,9 @@ type ChildConfig struct {
 	IdleExit   time.Duration
 	// HTTPClient, when set, carries the API requests (a cassette recorder in a test or a recording run).
 	HTTPClient *http.Client
+	// Pressure is the memory-pressure reading Ensure's load guard uses; nil means MemoryPressure. A caller that reads
+	// pressure itself passes the same function, so its tests do not depend on the machine running them.
+	Pressure func() (Pressure, error)
 }
 
 // Plan is what goinfer reported about a load: its banner's fit line, and what /v1/models says it serves.
@@ -95,7 +98,11 @@ func NewSupervisor(cfg ChildConfig) (*Supervisor, error) {
 	if n := len(filepath.Join(cfg.Dir, "admin.sock")); n > 103 {
 		return nil, fmt.Errorf("models: admin socket path is %d bytes; Unix sockets allow 103", n)
 	}
-	return &Supervisor{cfg: cfg, pressure: MemoryPressure, now: time.Now}, nil
+	pressure := cfg.Pressure
+	if pressure == nil {
+		pressure = MemoryPressure
+	}
+	return &Supervisor{cfg: cfg, pressure: pressure, now: time.Now}, nil
 }
 
 func (s *Supervisor) adminSock() string { return filepath.Join(s.cfg.Dir, "admin.sock") }
