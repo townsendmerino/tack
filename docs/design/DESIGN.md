@@ -1214,9 +1214,27 @@ would have saved.
     current. Its cost on goinfer, the largest repository, belongs with K8's records.
   - `Close` already runs when the core closes (`core.Core.Close`).
 
-**Still open:** K3 (change events), K5 (symbol bundle), K7, and K8 (measurements). K8's structural half has a harness,
-ken's `tools/k8-structural`, and waits for a quiet night. It is a timed run, so it holds goinfer's timing lock exclusive,
-not shared as the brief said.
+**Delivered on ken `main` (2026-10-28, ken ADR-049; `6ff2098..27d58b1`, proposed `v1.12.0`).** The brief is
+`docs/briefs/ken-k16-k18-contextbench-memory.md`, ken's note is `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md`, and
+tack's measurement record is `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.md`:
+
+- **aikit bump (`v1.74.0`):** BM25 postings arena cuts BM25 memory by 17.0%–23.5% across `tack`, `ken`, `aikit`, and
+  `goinfer` (`-34.95 MB` on `goinfer`, `-39.56 MB` across all four in one process).
+- **K16 (and K7 + the memory half of K8):** `internal/search/index_memory.go` (`-tags=bench`) verifies exact component
+  byte formulas within `< 5%` of single-component heap deltas and records full component tables across `tack` (2,003
+  chunks), `ken` (4,276), `aikit` (8,582), `goinfer` (197,926), and all four opened in one process (`K7`: 0 duplicate
+  heap copies of `model.safetensors` under `MmapModel: true`, vs 15.57 MB under `MmapModel: false`).
+- **K17 (ADR-049):** `WatchedIndex` replaces retained `[][]float32` vectors with `denseStore` (`flatStore`,
+  `flatI8Store`, `flatBinaryI8Store`) and deterministic on-demand recompute from `Chunk.Text` (bit-identical to index
+  time; single-file watch republish 50.3 ms; dense resident memory under `KEN_ANN=flat-i8` drops from 1,308 B/chunk to
+  260 B/chunk, saving 207.4 MB on `goinfer`).
+- **K18:** `bench/contextbench` (`-tags=bench`) implements the `CB1` retrieval harness (`G`, `B`, `K`, `KT`, `L1`, `L2`)
+  with `cl100k_base` budget packing (`2048`, `8192`, `16384`), paired bootstrap 95% CIs, and 5-task `flipt-io/flipt`
+  pilot verification (`K - B = +0.2488` line coverage at 8,192 tokens, 95% CI `[+0.1019, +0.3958]`).
+
+**Still open:** K3 (change events), K5 (symbol bundle), and the latency half of K8 (structural + search latency at repo
+scale). K8's structural half has a harness, ken's `tools/k8-structural`, and waits for a quiet night. It is a timed run,
+so it holds goinfer's timing lock exclusive, not shared as the brief said.
 
 **How tack uses it.** tack calls only `Open`, the `Workspace` methods and the value types. The escape hatches
 (`WatchedIndex()`, `StructuralIfBuilt()`, `Structural()`, `SetReranker`, `SetExtraChunks`) and the aliases into ken's
