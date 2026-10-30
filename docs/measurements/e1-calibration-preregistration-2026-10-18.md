@@ -1975,3 +1975,5 @@ Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`
   - Of the predictions, the pass count and task 11 held. Task 1, the window-full stops, the cap hits and the median
     run time missed.
   - Whether C6 moves to Qwen3.5-9B is Francis's decision.
+  - **Francis, 2026-10-30 08:01 PDT:** C6 stays on Qwen3-8B at 16,384, and the powered comparison runs there.
+    Qwen3.5-9B stays a candidate for when goinfer's long-prefill time drops.

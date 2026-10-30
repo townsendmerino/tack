@@ -145,3 +145,10 @@ other passing diff touches a test file.
 - Everything after the verdict is reported, not decided on: each task's passes, the stops, the window-full counts,
   the cap hits, the requests, the first-token times, the refusals and the predictions.
 - Whether C6 moves to Qwen3.5-9B is Francis's decision. The options are in the session's report.
+
+## Francis's decision (2026-10-30, 08:01 PDT)
+
+Option (b), relayed by the coordinator:
+- **C6 stays on Qwen3-8B at 16,384,** and the powered comparison runs there.
+- **Qwen3.5-9B stays a candidate** for when goinfer's long-prefill time drops.
+- This does not change the verdict: the row is usable, at the bar.

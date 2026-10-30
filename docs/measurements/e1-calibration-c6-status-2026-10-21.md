@@ -18,7 +18,8 @@ A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-regis
   - **Usable, at the bar:** 4 of 36 passed, on 2 tasks (task 10 1/3, task 11 3/3; task 1 0/3), with 0 void
     (`-c6-qwen35-row-2026-10-29`).
   - It had 5 window-full stops and 11 cap hits, and a median run of 7.7 minutes.
-  - **The model question is now open.** Francis chooses whether C6 moves to Qwen3.5-9B.
+  - **Francis, 2026-10-30 08:01:** C6 stays on Qwen3-8B at 16,384, and the powered comparison runs there.
+    Qwen3.5-9B stays a candidate for when goinfer's long-prefill time drops.
 - **CB3's scorer** no longer counts a whole-file write as seen (Francis, 2026-10-29). The record's counts are
   unchanged (`e1-cb3-context-metrics-2026-10-28.md` §7).
 
@@ -134,8 +135,8 @@ changes measured one by one, so these too are ideas to screen.
 
 ## The bundle night (§12.9)
 
-**Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 is settled. It would then run on
-whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
+**Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 was settled. It was settled on
+2026-10-30: it runs on Qwen3-8B at 16,384. The 2026-10-21 plan follows, unchanged.
 
 - **The plan:** one bundle arm, with every setting above, against the baseline arm on Qwen3-8B. 14 runs per task per
   arm, 336 runs, interleaved per task, each after the cell check. A night job on nobara through goinfer's
@@ -166,8 +167,8 @@ whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
    - **Ran 2026-10-28: not shown, d = +1** (B 4/36, A 3/36; `-c6-bundle-2026-10-28`).
    - Francis, 2026-10-29: the bundle with `edit_tolerances` stays C6's loop and runs §12.23's row; the powered
      comparison waits for the model question.
-3. **Next, now that §12.24's row is read (usable, at the bar):** whether C6 moves to Qwen3.5-9B at 32,768.
-   Then which model the powered comparison runs on.
+3. Settled 2026-10-30: §12.24's row is usable, at the bar, and C6 stays on Qwen3-8B at 16,384 (Francis, 08:01).
+   The powered comparison runs there.
 4. Settled 2026-10-29: CI's macOS job was dispatched once, and it is green (Triggers, above).
 
 Settled since 2026-10-21:
