@@ -40,3 +40,13 @@ func TestPack(t *testing.T) {
 		t.Fatalf("packed %+v, want lines 1-2 and 31-33", got)
 	}
 }
+
+// Gate 0b drops a single-word all-lower-case identifier (no dot, no upper case) and keeps the rest.
+func TestOneLowerWord(t *testing.T) {
+	for id, want := range map[string]bool{"serve": true, "kv": true, "top_p": true, "selfCheck": false, "pull.Select": false,
+		"chat.go": false, "LoadFlatI8": false} {
+		if got := oneLowerWord(id); got != want {
+			t.Errorf("oneLowerWord(%q) = %v, want %v", id, got, want)
+		}
+	}
+}

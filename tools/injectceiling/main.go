@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -50,10 +51,12 @@ func run(args []string, w, logw io.Writer) int {
 	mirrors := fs.String("mirrors", "", "the E1 mirrors directory (<repo>.git)")
 	modelDir := fs.String("model-dir", filepath.Join(os.Getenv("HOME"), ".ken", "model"), "ken's Model2Vec directory, for hybrid")
 	budget := fs.Int("budget", 1600, "the injection's budget, tokens")
-	if err := fs.Parse(args); err != nil || *mirrors == "" {
-		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "injectceiling: usage: -mirrors DIR [-model-dir DIR] [-budget N]"))
+	selection := fs.String("selection", "first", "first: §13.1's selection (gate 0); posthoc: gate 0b's, with test and non-Go search hits and single-word lower-case identifiers dropped")
+	if err := fs.Parse(args); err != nil || *mirrors == "" || *selection != "first" && *selection != "posthoc" {
+		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "injectceiling: usage: -mirrors DIR [-model-dir DIR] [-budget N] [-selection first|posthoc]"))
 		return 2
 	}
+	posthoc = *selection == "posthoc"
 	chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(1_000_000)))
 	ctx := context.Background()
 	type suite struct {
@@ -122,6 +125,9 @@ func measure(ctx context.Context, mirrors, modelDir string, budget int, suite st
 		return r, err
 	}
 	r.idents = identifiers(t.Statement)
+	if posthoc {
+		r.idents = slices.DeleteFunc(r.idents, oneLowerWord)
+	}
 	for _, mode := range []string{"hybrid", "bm25"} {
 		o := kensearch.Options{Mode: mode}
 		if mode != "bm25" {
@@ -234,6 +240,9 @@ func candidates(ctx context.Context, s *kensearch.Searcher, idents []string, sta
 		return nil, 0, err
 	}
 	for _, h := range hits {
+		if posthoc && (strings.HasSuffix(h.File, "_test.go") || !strings.HasSuffix(h.File, ".go")) {
+			continue
+		}
 		items = append(items, pilot.LineSpan{File: h.File, Start: h.StartLine, End: h.EndLine})
 	}
 	return items, found, nil
@@ -351,7 +360,11 @@ func report(w io.Writer, rows []row, budget int) {
 		}
 		return rows[i].task < rows[j].task
 	})
-	fmt.Fprintf(w, "# injectceiling: C7 gate 0 (§13.1), budget %d tokens at %.0f bytes/token\n\n", budget, bytesPerTok)
+	gateName := "gate 0"
+	if posthoc {
+		gateName = "gate 0b, the post-hoc selection"
+	}
+	fmt.Fprintf(w, "# injectceiling: C7 %s (§13.1), budget %d tokens at %.0f bytes/token\n\n", gateName, budget, bytesPerTok)
 	fmt.Fprintln(w, "lands: every raw span of the fix overlaps the injection (raw spans landed / raw spans); cov: share of FixGold lines injected; tok: the injection's size.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "| suite | task | repo | identifiers (with a definition) | hybrid lands | cov | tok | bm25 lands | cov | tok | no budget lands | cov | tok |")
@@ -403,7 +416,17 @@ func report(w io.Writer, rows []row, budget int) {
 	case t.lands >= 4:
 		verdict = "parked: reported to Francis with the no-budget figure"
 	}
-	fmt.Fprintf(w, "\n**§13.1's rule (calibration, hybrid, %d tokens): %d of 12 land, %d of them among tasks 1, 3–9: %s.**\n\n", budget, t.lands, t.low, verdict)
+	if posthoc {
+		p := sum("pilot", func(r row) cell { return r.hybrid })
+		verdict = "does not pass"
+		if t.lands >= 6 && p.lands >= 5 {
+			verdict = "pass: the arm goes to a screen"
+		}
+		fmt.Fprintf(w, "\n**Gate 0b's rule (hybrid, %d tokens): %d of 12 calibration tasks land (at least 6 needed) and %d of %d pilot tasks (at least 5 needed): %s.** Among tasks 1, 3–9: %d, reported only.\n\n",
+			budget, t.lands, p.lands, p.n, verdict, t.low)
+	} else {
+		fmt.Fprintf(w, "\n**§13.1's rule (calibration, hybrid, %d tokens): %d of 12 land, %d of them among tasks 1, 3–9: %s.**\n\n", budget, t.lands, t.low, verdict)
+	}
 	fmt.Fprintln(w, "## What each hybrid injection packed")
 	for _, r := range rows {
 		fmt.Fprintf(w, "- %s %d: gold %s; identifiers %v; packed %s\n", r.suite, r.task, spans(r.goldSpans), r.idents, strings.Join(r.firstFiles, ", "))
@@ -416,4 +439,12 @@ func spans(s []pilot.LineSpan) string {
 		out = append(out, fmt.Sprintf("%s:%d-%d", x.File, x.Start, x.End))
 	}
 	return strings.Join(out, ", ")
+}
+
+// posthoc is gate 0b's selection (§13.1): test and non-Go search hits and single-word lower-case identifiers dropped.
+var posthoc bool
+
+// oneLowerWord reports whether id is a single word in lower case: no dot and no upper-case letter (gate 0b drops it).
+func oneLowerWord(id string) bool {
+	return !strings.Contains(id, ".") && strings.ToLower(id) == id
 }
