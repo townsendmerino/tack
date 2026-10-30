@@ -319,17 +319,17 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 }
 
 // TestA1CompareRepsRunsEachArmNTimes: two arms with A1Reps run each task that many times per arm, in A B B A order
-// repeated, through RunPilot, each run after its own cell check.
+// repeated, through RunPilot, each run after its own cell check. abOrder's own test covers longer orders.
 func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 8; i++ { // done with nothing changed is refused once, then accepted
+	for i := 0; i < 4; i++ { // done with nothing changed is refused once, then accepted
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
 	checks := 0
 	_, out := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
-		o.A1Arms, o.A1Reps = []pilot.Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_window"}}}, 4
+		o.A1Arms, o.A1Reps = []pilot.Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_window"}}}, 2
 		o.Cell = func(context.Context) (string, string) { checks++; return "light state", "" }
 	})
 	f, _ := os.Open(filepath.Join(out, "results.jsonl"))
@@ -347,8 +347,8 @@ func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 		}
 		got = append(got, fmt.Sprintf("%s%d", r.Run.Arm, r.Rep))
 	}
-	if strings.Join(got, " ") != "A1 B1 B2 A2 A3 B3 B4 A4" || checks != 8 {
-		t.Fatalf("records %v after %d cell checks, want A B B A A B B A, 4 per arm, after 8", got, checks)
+	if strings.Join(got, " ") != "A1 B1 B2 A2" || checks != 4 {
+		t.Fatalf("records %v after %d cell checks, want A B B A, 2 per arm (not the default 3), after 4", got, checks)
 	}
 }
 
