@@ -2160,6 +2160,57 @@ report and before its run. It is shaped by what that report showed, so it does n
   - Reaching any gold line rose from 7 to 9 of 12.
   - What follows is Francis's decision.
 
+**The screen, run on Francis's override (2026-10-30 10:00, relayed by the coordinator), registered before its runs.**
+- **This overrides both registered gates.** Gate 0 read parked and gate 0b did not pass. Francis chose to screen the
+  arm anyway, read by reach rather than by the ceiling. The two gates' results stand as recorded. This screen does not
+  turn either into a pass.
+- **The arms**, one tack binary, interleaved A B B A A B per task, each run after the cell check (§12.2):
+  - **A: the bundle as adopted.** That is `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done` and `edit_tolerances`, as in §12.24 and §12.25's B.
+  - **B: A plus `inject_context`** (`internal/window/inject.go`), gate 0b's selection.
+    - ken runs in `bm25`, which is what tack opens without `[ken]`. That keeps the model's tools unchanged, and gate
+      0b's `bm25` column (5 of 12 landing, 9 of 12 reaching gold) is at least `hybrid`'s.
+    - The injection sits in the first message after the head, before the task, at most 1,600 tokens.
+  - **The model and the server:** Qwen3-8B `Q4_K_M` at 16,384 on goinfer `b2b5e816`. Thinking off, forced-call mode,
+    sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure budget 8, the 10-minute cap, the 12 tasks: 72 runs.
+- **Build:** tack at the commit that adds this block, built clean on both machines.
+- **The metric, which decides: reach.** A run reaches gold when it sees a line of its task's `FixGold`
+  (`tools/replaycontext`, `FirstGoldReq > 0`, without `-include-notes`). Let d = B's reaching runs − A's, out of 36
+  each.
+  - The sd under no effect comes from §12.21's B per-task reach, the bundle on this model and window: tasks 1, 2, 6
+    and 11 at 3/3; 3, 5 and 12 at 2/3; 4 at 1/3; 7–10 at 0/3. So Σ p(1−p) = 8/9, the variance of d is
+    2 · 3 · 8/9 = 16/3, and **sd = 2.31**.
+
+| d (B − A reaching runs, out of 36 each) | verdict |
+|---|---|
+| **+5 or more** (d ≥ 2 sd = 4.62) | **the injection raises reach** |
+| +3 or +4 | parked: reported; more runs only if Francis says so |
+| +2 or less | not shown; the do-nothing arm wins ties |
+
+  - The tasks at 0/3 or 3/3 add no variance to that sd. A task with a true rate between them adds noise, so the rule
+    errs more often than the sd says.
+- **Reported, not decided on:**
+  - passes in each arm, task by task;
+  - `FinalCov`, `CovReq1` and the first request that reaches gold;
+  - window-full stops, with the injection's extra tokens;
+  - each B run's injection size, from its first message;
+  - the guard table (§13.4);
+  - the cell states.
+- **Stopping and void:**
+  - A void cell is re-run in its place (§12.2).
+  - The launcher runs one task's six runs per invocation, and starts no task block after 19:15. A block can take up
+    to 60 minutes, so the runs end by about 20:15, before §12.25's night 1 at 22:00.
+  - If any task is left, it runs whole on the next day slot that does not touch §12.25's nights, and the screen is
+    read only when all 72 runs exist.
+  - A block cut short by a crash or a lock is re-run whole (the §12.10 completeness rule).
+- **Predictions (tack's session, before any run):**
+  - A reaches gold in 15–22 of 36 runs, near §12.21's B at 19;
+  - d is between +2 and +8;
+  - passes in each arm 3–7 of 36, with B within 2 of A;
+  - B has at least as many window-full stops as A.
+- **Time:** §12.21's 72 runs took 2 h 18 min. With ken's index opened in each B run and the warm-up, expect about
+  2.5 hours.
+
 ### 13.2 The read outline at 200 lines
 
 **What.** When `read` stops a whole-file read at 200 lines, its result ends with the file's outline from ken: each

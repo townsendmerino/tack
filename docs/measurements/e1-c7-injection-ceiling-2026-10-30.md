@@ -200,3 +200,15 @@ head on **0**. §13.3's rule asks for at least 6 more than the head.
   `repomap-gate-first.md`.
 - **The screen is registered here before its runs,** with its rule from CB3's per-task reach rates (§13.3, gate 1).
   It needs the map built into tack behind a `[run]` setting, which is product code for Francis's yes.
+
+## Gate 0b re-run through the product's code, 2026-10-30 10:10–10:17 PDT
+
+The injection now lives in `internal/window/inject.go`, and `tools/injectceiling -selection posthoc` calls it. That
+makes the screen run exactly what gate 0b measured.
+- **The re-run** (`report-0b-window.md`) matches `report-0b.md` in every budgeted column, so the verdict is the same.
+- **One cell differs:** calibration task 2's no-budget column, and its count of identifiers ken defined (3 against 2).
+  Its identifiers and packed spans are the same.
+- **So ken's definitions can vary between runs over the same tree.** The likely cause is the tree-sitter chunker's
+  1-second parse timeout (`treesitter.WithParseTimeoutMicros(1_000_000)`, as `cmd/tack` registers it). Under load, a
+  large file's parse can time out and leave its definitions out of the index. This is reported, not chased here; it
+  bears on the screen as much as on the gate.
