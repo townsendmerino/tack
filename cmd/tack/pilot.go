@@ -65,9 +65,9 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	var settings settingList
 	fs.Var(&settings, "setting", "a1: a [run] setting switched on in every arm; with no -compare-setting, one arm runs with these settings; repeatable; only: "+settingNames())
 	var compare settingList
-	fs.Var(&compare, "compare-setting", "a1: compare two arms of tack, A without these [run] settings and B with them, A B B A A B per task, each run after a cell check (calibration C6); repeatable: with no -setting, A is A1 as registered and B the bundle")
+	fs.Var(&compare, "compare-setting", "a1: compare two arms of tack, A without these [run] settings and B with them, A B B A A B per task (with -reps, that many per arm, A B B A repeated), each run after a cell check (calibration C6); repeatable: with no -setting, A is A1 as registered and B the bundle")
 	cellCheck := fs.Bool("cell-check", false, "a1: start the server as a job would, run the cell check once with the model loaded and idle, print it, and stop")
-	reps := fs.Int("reps", 0, "a1, with no -compare-setting: runs per task of the one arm, named A1-1, A1-2 …, each after a cell check")
+	reps := fs.Int("reps", 0, "a1: runs per task of each arm, named A1-1, A1-2 … (one arm) or A-1, B-1 … (-compare-setting, default 3), each after a cell check")
 	only := fs.String("only", "", "a1: run only these tasks of -from..-to, by number: 2,3,4")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage

@@ -131,7 +131,7 @@ type remote struct {
 	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
 	settings                               settingList     // [run] settings on in every arm
 	compare                                settingList     // [run] settings on in arm B only; none runs one arm
-	reps                                   int             // runs per task of the one arm, with no -compare-setting; 0 means once
+	reps                                   int             // runs per arm per task; 0 means once for one arm, 3 for two
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 }
 
@@ -295,13 +295,14 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	return exitOK
 }
 
-// arms is the job r asks for: with -compare-setting, arms A and B, B with those settings added to A's, A B B A A B per task; else, with -setting or -reps,
-// one arm A1 with the settings, reps times per task (a mechanism check, calibration §12.9); else nil, A1 as registered,
-// once per task. cells reports whether each run waits for a clean cell check, as every C6 run does.
+// arms is the job r asks for: with -compare-setting, arms A and B, B with those settings added to A's, reps each per task
+// in A B B A order (3 for 0: A B B A A B); else, with -setting or -reps, one arm A1 with the settings, reps times per
+// task (a mechanism check, calibration §12.9); else nil, A1 as registered, once per task. cells reports whether each run
+// waits for a clean cell check, as every C6 run does.
 func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 	switch {
-	case r.reps < 0 || r.reps > 0 && len(r.compare) > 0:
-		return nil, 0, false, errors.New("-reps is for one arm, without -compare-setting")
+	case r.reps < 0:
+		return nil, 0, false, errors.New("-reps is runs per arm per task, 0 or more")
 	case len(r.compare) > 0:
 		for _, c := range r.compare {
 			switch {
@@ -312,7 +313,7 @@ func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 			}
 		}
 		base := []string(r.settings)
-		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare...)}}, 0, true, nil
+		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare...)}}, r.reps, true, nil
 	case len(r.settings) > 0 || r.reps > 0:
 		return []pilot.Arm{{Name: "A1", Settings: []string(r.settings)}}, r.reps, true, nil
 	}

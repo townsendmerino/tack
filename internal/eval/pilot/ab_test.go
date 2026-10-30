@@ -2,6 +2,7 @@ package pilot
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,13 +12,19 @@ import (
 )
 
 func TestABOrderInterleaves(t *testing.T) {
-	arms, reps := abOrder(Arm{Name: "A"}, Arm{Name: "B"})
-	var got []string
-	for i, a := range arms {
-		got = append(got, a.Name+string(rune('0'+reps[i])))
-	}
-	if strings.Join(got, " ") != "A1 B1 B2 A2 A3 B3" {
-		t.Fatalf("order %v, want A B B A A B with each arm numbered 1-3", got)
+	for n, want := range map[int]string{
+		3: "A1 B1 B2 A2 A3 B3",
+		4: "A1 B1 B2 A2 A3 B3 B4 A4",
+		7: "A1 B1 B2 A2 A3 B3 B4 A4 A5 B5 B6 A6 A7 B7",
+	} {
+		arms, reps := abOrder(Arm{Name: "A"}, Arm{Name: "B"}, n)
+		var got []string
+		for i, a := range arms {
+			got = append(got, fmt.Sprintf("%s%d", a.Name, reps[i]))
+		}
+		if strings.Join(got, " ") != want {
+			t.Errorf("%d per arm: order %v, want %s", n, got, want)
+		}
 	}
 }
 
@@ -48,7 +55,6 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 func TestRunPilotRefusesABadComparison(t *testing.T) {
 	for name, o := range map[string]Options{
 		"three arms":      {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}, {Name: "C"}}, Out: t.TempDir()},
-		"reps, two arms":  {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}}, A1Reps: 2, Out: t.TempDir()},
 		"reps, no arm":    {A1: "tack", A1Reps: 2, Out: t.TempDir()},
 		"unknown setting": {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_windw"}}}, Out: t.TempDir()},
 	} {

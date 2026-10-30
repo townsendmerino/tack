@@ -318,6 +318,40 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 	}
 }
 
+// TestA1CompareRepsRunsEachArmNTimes: two arms with A1Reps run each task that many times per arm, in A B B A order
+// repeated, through RunPilot, each run after its own cell check.
+func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	var replies []goinfertest.Reply
+	for i := 0; i < 8; i++ { // done with nothing changed is refused once, then accepted
+		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+	}
+	script := goinfertest.NewScripted("qwen", 32768, replies...)
+	checks := 0
+	_, out := a1Run(t, task, mirrors, script, func(o *pilot.Options) {
+		o.A1Arms, o.A1Reps = []pilot.Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_window"}}}, 4
+		o.Cell = func(context.Context) (string, string) { checks++; return "light state", "" }
+	})
+	f, _ := os.Open(filepath.Join(out, "results.jsonl"))
+	defer f.Close()
+	var got []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<24)
+	for sc.Scan() {
+		var r pilot.Record
+		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Run.Void != "" || (r.Run.Arm == "B") != (strings.Join(r.Settings, ",") == "fit_window") {
+			t.Errorf("run %s-%d: void %q, settings %v", r.Run.Arm, r.Rep, r.Run.Void, r.Settings)
+		}
+		got = append(got, fmt.Sprintf("%s%d", r.Run.Arm, r.Rep))
+	}
+	if strings.Join(got, " ") != "A1 B1 B2 A2 A3 B3 B4 A4" || checks != 8 {
+		t.Fatalf("records %v after %d cell checks, want A B B A A B B A, 4 per arm, after 8", got, checks)
+	}
+}
+
 // TestA1LoneArmRepeatsWithSettings: one arm with settings and A1Reps runs each task that many times, as <arm>-1,
 // <arm>-2, each after its own cell check, each record carrying the settings and its tack config switching them on.
 func TestA1LoneArmRepeatsWithSettings(t *testing.T) {
