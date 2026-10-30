@@ -355,3 +355,49 @@ func TestRunInjectContext(t *testing.T) {
 		t.Fatalf("inject_context off still injects, or moves the task:\n%s", msg)
 	}
 }
+
+// TestRunRepoMap: [run] repo_map puts the workspace's map into the first message after the instruction head; with
+// inject_context too, the order is head, map, injected code, task; with it off, there is no map.
+func TestRunRepoMap(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\nStage explicit paths.\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module m\n"), 0o644)
+	os.MkdirAll(filepath.Join(ws, "pkg"), 0o755)
+	os.WriteFile(filepath.Join(ws, "pkg", "a.go"), []byte("package pkg\n\n// Target is the code to fix.\nfunc Target() int { return 1 }\n"), 0o644)
+	statement := "Fix `pkg.Target` so it returns 2."
+	firstMessage := func(settings string) string {
+		ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("ok")))
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprintf(f, "[run]\ninstructions_head = true\n%s", settings)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, statement}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var ev struct {
+			Payload struct {
+				Content []struct{ Text string }
+			}
+		}
+		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
+			t.Fatalf("first event: %v %s", err, first)
+		}
+		return ev.Payload.Content[0].Text
+	}
+	msg := firstMessage("repo_map = true\n")
+	head, m, task := strings.Index(msg, "Stage explicit paths."), strings.Index(msg, "Repository map ("), strings.Index(msg, "\n\nTask: ")
+	if head < 0 || m < head || task < m || !strings.Contains(msg, "\npkg/a.go: Target\n\nTask: ") || !strings.HasSuffix(msg, "Task: "+statement) {
+		t.Fatalf("want the head, then the map, then the task:\n%s", msg)
+	}
+	msg = firstMessage("repo_map = true\ninject_context = true\n")
+	m, code := strings.Index(msg, "Repository map ("), strings.Index(msg, "Code that may be relevant")
+	if m < 0 || code < m || strings.Index(msg, "\n\nTask: ") < code {
+		t.Fatalf("want the map before the injected code, and both before the task:\n%s", msg)
+	}
+	if msg := firstMessage(""); strings.Contains(msg, "Repository map (") {
+		t.Fatalf("repo_map off still maps:\n%s", msg)
+	}
+}

@@ -122,3 +122,16 @@ func (c *Core) injection(root, statement string) (string, error) {
 	}
 	return window.InjectText(window.InjectPack(root, items, window.InjectBudget)), nil
 }
+
+// repoMap is the first prompt's repository map over root (Options.RepoMap).
+func (c *Core) repoMap(root string) (string, error) {
+	ix, err := c.opt.OpenRepoMap(c.ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if cl, ok := ix.(io.Closer); ok {
+		defer cl.Close()
+	}
+	m, err := window.RepoMap(c.ctx, ix, root)
+	return strings.TrimSuffix(m, "\n"), err
+}

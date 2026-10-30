@@ -212,3 +212,5 @@ makes the screen run exactly what gate 0b measured.
   1-second parse timeout (`treesitter.WithParseTimeoutMicros(1_000_000)`, as `cmd/tack` registers it). Under load, a
   large file's parse can time out and leave its definitions out of the index. This is reported, not chased here; it
   bears on the screen as much as on the gate.
+- **Re-run through the product's code** (2026-10-30, 10:25–10:30): with the map in `internal/window/repomap.go` and
+  `tools/repomapgate` calling it, `repomap-gate-window.md` is identical to `repomap-gate.md` apart from its verdict line.

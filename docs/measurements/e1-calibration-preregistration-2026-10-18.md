@@ -2276,6 +2276,46 @@ nothing written later leaks in.
   goes to a screen.** The map names a gold file on 7 of 22 tasks, and the head on 0. The screen needs the map built
   into tack behind a `[run]` setting, for Francis's yes, and is registered here before its runs.
 
+**Gate 1, the screen (Francis, 2026-10-30 10:14, relayed by the coordinator), registered before its runs.** It runs only
+after §12.25's night 2.
+- **The arms**, one tack binary, interleaved A B B A A B per task, each run after the cell check (§12.2):
+  - **A: the loop as adopted when the screen runs.** Today that is the bundle (`fit_window`, `stop_repeats`,
+    `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`). If Francis adopts
+    `inject_context` after §13.1's screen, A carries it too. The arms are fixed in a line here before the first run.
+  - **B: A plus `repo_map`** (`internal/window/repomap.go`), §13.3's construction as gate 0 measured it. ken runs in
+    `bm25`, and no tool is added. The map sits in the first message after the head, at most 3,000 bytes.
+  - **The model and the server:** Qwen3-8B `Q4_K_M` at 16,384 on goinfer `b2b5e816`, with C5's sampling and limits
+    and the 10-minute cap, on the 12 tasks: 72 runs.
+- **Build:** tack at the commit that fixes the arms line, built clean on both machines.
+- **The metric, which decides: reach,** as §13.1's screen reads it. d = B's runs that see a `FixGold` line − A's, out
+  of 36 each.
+  - **The sd is §13.1's, 2.31,** from §12.21's B per-task reach. If A carries `inject_context`, the sd is recomputed
+    in the arms line from §13.1's B arm before the first run.
+
+| d (B − A reaching runs, out of 36 each) | verdict |
+|---|---|
+| **+5 or more** (d ≥ 2 sd) | **the map raises reach** |
+| +3 or +4 | parked: reported; more runs only if Francis says so |
+| +2 or less | not shown; the do-nothing arm wins ties |
+
+- **Reported, not decided on:**
+  - passes in each arm, task by task;
+  - `FinalCov`, `CovReq1`, `FileCov` and the first request that reaches gold;
+  - window-full stops;
+  - the map's size in each B run;
+  - the guard table (§13.4);
+  - the cell states.
+- **Stopping and void:** as §13.1's screen.
+  - It runs by day, one task's six runs per invocation, and starts no task block after 19:15.
+  - A void cell is re-run in its place.
+  - A block cut short is re-run whole.
+  - It is read only when all 72 runs exist.
+- **Predictions (tack's session, before any run):**
+  - d is between +1 and +6. The map named a gold file on 7 of 22 tasks, mostly in ken and aikit, and those tasks
+    (calibration 7, 11 and 12) reach gold on 0/3, 3/3 and 2/3 in §12.21's B.
+  - Passes in each arm are within 2 of each other.
+- **Time:** about 2.5 hours by day.
+
 ### 13.4 Guard firings in every record
 
 Owned by `tools/calreport`'s per-setting table. Measuring it decides nothing. A setting whose table shows it never

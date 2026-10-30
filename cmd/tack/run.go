@@ -159,6 +159,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		CurrentSymbol:        cfg.Run.CurrentSymbol,
 		EditTolerances:       cfg.Run.EditTolerances,
 		InjectContext:        cfg.Run.InjectContext,
+		RepoMap:              cfg.Run.RepoMap,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
@@ -197,6 +198,18 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 				return nil, err
 			}
 			fmt.Fprintf(stderr, "tack: inject_context: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
+			return s, nil
+		}
+	}
+	if cfg.Run.RepoMap {
+		// The map's own index, as inject_context's: bm25, no tool, no snapshot.
+		opts.OpenRepoMap = func(ctx context.Context, root string) (window.MapIndex, error) {
+			start := time.Now()
+			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(stderr, "tack: repo_map: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
 			return s, nil
 		}
 	}
