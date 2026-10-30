@@ -2039,3 +2039,52 @@ planned, so **nobara is idle by 21:45**.
 - **First attempt (2026-10-30, 12:14–12:16 PDT): void, disk.** All 9 runs were refused by the disk floor (5.1 GB free,
   under 20) and reached no model. The launcher counted them as non-passes, which is a defect, now fixed: a void run
   stops it. They are recorded as void (`e1-calibration-c8-qwen36-2026-10-30.md`), and the first set re-runs from 12:25.
+
+### 14.3 The 32k arm (Francis, 2026-10-30 12:47), registered before its runs
+
+Francis chose a 32,768 window for the expanded set ("32 sounds good", relayed by the coordinator). That replaces
+§14.2's expansion at 16,384.
+- **The first set's 16,384 runs stand as their own read** (tasks 11, 1 and 10, 3 runs each, from 12:28). They are not
+  pooled with the 32k runs.
+- **The trigger is met.** The first set had passing runs: task 11 at 3/3 and task 1 at 1/3.
+- **Why task 1 runs again at 32k:**
+  - its passing run ended on the server refusing a 16,532-token request, after its edit was applied;
+  - its two failures ended on `repeat_loop` with no edit, at 14.7k and 15.0k tokens.
+
+  So the window bound task 1's one pass, but not its failures, which the record classifies by stop.
+- **The arm:** §14.1–14.2's, except the window.
+  - Qwen3.6-35B-A3B `q4_k_m` on goinfer `00584c35`, with `-moe-cache-experts` and `-thinking off`, at **`-ctx 32768`**.
+  - The bundle, sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure budget 8, tack `5704cba`.
+- **The window's admission:** E0 admitted the model at 16,384, the window it was given.
+  - Before the first 32k run, the pilot's cell check loads the model at 32,768. It must come up `cuda-resident (int4)`
+    with a fit line and a clean cell, or the arm does not run. That is the same fit-only load E0 makes, at the new
+    window.
+  - E0's smoke and `check` do not depend on the window, so E0 is not re-run.
+  - nobara-big01's serve check held 32,768 with no swap (38.8 GB peak).
+- **Tasks, 3 runs each, one task at a time, in this order: 1, then 2, 12, 6, 5, 3, 4, 7, 9, 8** (§14.2's expansion
+  order), **then 11 and 10.**
+  - Ending with 11 and 10 means that, if time allows, all 12 tasks have 3 runs at 32k, and §2's bar can be read at
+    that window.
+- **The cap stays 30 minutes.** At 16,384, the first set's runs took 1–4 minutes.
+  - At 32k a run can grow longer, and a cold prefill near the top costs about 6 minutes (nobara-big01's figure at 31.7k).
+    With the prefix reused, appends cost seconds (7 s at 12k).
+  - A 45-minute cap would move the last block's start to 19:30. The cap is kept, and cap hits are reported.
+- **Stopping and void:** as §14.2.
+  - No task block starts after 20:15, so nobara is idle by 21:45.
+  - Each block needs 21 GiB free; the guard is not lowered.
+  - A block with any void run stops the arm and is reported, and nothing in it is counted.
+  - Tasks left continue on a later day, by day, on the same build and in the same order.
+- **The reading:**
+  - **Reported, not decided on:** each task's passes at 32k, beside this row's 16k first set, §12.21's B and §12.24,
+    with stops (window-full and prompt-too-long counted), cap hits, requests, first-token times and the guard table.
+  - **If all 12 tasks have 3 runs at 32k,** §2's bar is read on those 36 runs: usable at 4 or more passes on 2 or more
+    tasks.
+  - It is not a model verdict. What follows is Francis's.
+- **Predictions (tack's session, before any run):**
+  - task 1 at least 2 of 3 at 32k;
+  - over the expansion's 9 tasks, passes on 1–4 tasks;
+  - the median run 3–12 minutes;
+  - cap hits 0–4;
+  - window-full and prompt-too-long stops 0–3 in all.
+- **The run in progress:** §14.2's launcher was suspended (SIGSTOP) at about 12:50, while task 10's block ran. It
+  started no 16k expansion block, and is removed once that block ends.
