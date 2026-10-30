@@ -92,3 +92,14 @@ func servedWindow(ctx context.Context, src models.Source) int {
 	}
 	return loop.DesignWindow
 }
+
+// InstructionHead is the head instructions_head gives a session in root for a window of window tokens: the first
+// instruction file a session would read there, cut by instructionHead. It is "" when root has none. Measurement tools
+// call it to see what a run was shown (e1-calibration-preregistration-2026-10-18.md §13.3).
+func InstructionHead(root string, window int) string {
+	name, content := readInstructionFile(root)
+	if name == "" {
+		return ""
+	}
+	return instructionHead(name, content, window)
+}
