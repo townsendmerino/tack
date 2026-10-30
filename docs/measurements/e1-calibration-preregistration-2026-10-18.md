@@ -1984,6 +1984,11 @@ planned, so **nobara is idle by 21:45**.
     and 30 covers most of that.
   - **Order on the card:** after nobara-big01's gpt-oss-20b check (about 11:42). §12.25's fit-only load first (a few
     minutes, from the Mac), then this E0, as a job on nobara's `night.py` holding its timing lock.
+- **Outcome (2026-10-30, 11:38–12:09 PDT; record `e0-nobara-qwen36-35b-2026-10-30.md`): eligible.**
+  - Smoke 20/20 on both runs, 0 malformed, `check` ok, admitted at 16,384 on `cuda-resident (int4)`.
+  - Decode 51.5 tok/s; host RSS peak 40.5 GB.
+  - In the event, the §12.25 fit-only load ran after this E0 (12:09–12:10, passed), not before it.
+  - §14.2 follows.
 
 ### 14.2 Step 2: a small calibration run, expanded if it passes
 
@@ -2031,3 +2036,6 @@ planned, so **nobara is idle by 21:45**.
   - the median run 8–20 minutes;
   - cap hits 0–3 of the first 9;
   - window-full stops 0–2.
+- **First attempt (2026-10-30, 12:14–12:16 PDT): void, disk.** All 9 runs were refused by the disk floor (5.1 GB free,
+  under 20) and reached no model. The launcher counted them as non-passes, which is a defect, now fixed: a void run
+  stops it. They are recorded as void (`e1-calibration-c8-qwen36-2026-10-30.md`), and the first set re-runs from 12:25.
