@@ -27,6 +27,31 @@ Step 1, E0, was eligible (`e0-nobara-qwen36-35b-2026-10-30.md`).
     `~/goinfer-work/gocache-when-idle.log`).
 - **The first set was relaunched at 12:25,** as registered, ending by 21:45.
 
-## The runs
+## The runs (from 12:28 PDT; in progress)
 
-To follow.
+The first set re-ran from 12:25: warm-up, then the cell check (clean), then the runs. Each failure is classified by its
+stop cause, from the run's own records.
+
+| task | run | result | stop | requests | wall | largest prompt sent | edits applied |
+|---|---|---|---|---|---|---|---|
+| 11 | 1 | **pass** | `done` | 8 | 54 s | 4,101 | yes |
+| 11 | 2 | **pass** | `done` | 7 | 66 s | 5,326 | yes |
+| 11 | 3 | **pass** | `done` | 9 | 93 s | 7,469 | yes |
+| 1 | 1 | **pass** | the server's prompt-too-long refusal | 21 | 214 s | 16,532 refused (16,259 the largest accepted) | 2 |
+| 1 | 2 | fail | `repeat_loop`: 8 unchanged `read`s of `loadflags_test.go` at offset 220 | 15 | 167 s | 15,032 | none |
+| 1 | 3 | fail | `repeat_loop`: 8 unchanged `grep`s for `ResidentWindowedKV` | 14 | 164 s | 14,689 | none |
+
+**How task 1's runs ended:**
+- **Neither failure is a full window, a wrong edit or the cap.** Both stopped on the repeat rule (`stop_repeats`)
+  before making any edit, at 14.7k and 15.0k tokens, under the window.
+- **Run 1's 400 is tack sending past the window.** Its last request was 16,532 tokens to a server served at 16,384:
+  "prompt is too long: 16532 tokens > 16384 maximum".
+  - It is the creep §12.24's record traced: past `fit_window`'s reserve, each request still adds a call and a
+    short result, and nothing in the loop checks a request against the window before sending it.
+  - The run had already applied its edit, and the oracle passes it.
+- **For comparison, task 1 on Qwen3-8B:** the bundle passed 3/3 (§12.21's B), and A1 with no settings passed 0/3
+  (C5, §12.21's A). Qwen3.5-9B with the bundle passed 0/3 (§12.24).
+
+**No 32k arm in this row.** §14.2 registered the expansion at 16,384, and adding an arm now would change the design
+  in the middle of the run and might not end by 21:45. A 32,768 row is for its own registration after this one is
+  read. nobara-big01's serve check ran the model at 32,768 with no swap.
