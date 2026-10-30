@@ -117,6 +117,17 @@ what each will hold.
 - **Fit-check every load before queueing a night job**, using the server's own plan, not arithmetic.
 - **The owner can override.** "Run it now" means run it now.
 
+## Rigor matched to stakes
+
+Francis, 2026-10-30: match the process to what the result decides.
+- **Full measurement discipline** (pre-registration, registered gates, stopping rules, a measurement record) only when a
+  number will be published, or will settle a direction: adopt or kill a feature, choose a model, a default or a guard threshold.
+- **Ordinary engineering** (refactors, test moves, tooling, bug fixes, docs): a red-first test where behavior changes,
+  `go run ./tools/touched` and `go run ./tools/lint` passing, and a PR. No registration section and no measurement record.
+- **A registration is short:** about one screen at most (question, metric, threshold, stopping rule, what each outcome
+  means). History goes in the record, not the registration.
+- **When unsure which applies, take the lighter one and say so in the PR.**
+
 ## Testing
 
 - **The smallest test that answers** (owner rule). Tier 0, seconds: deterministic counters, bit-identity, cassettes and
@@ -146,7 +157,8 @@ what each will hold.
 
 tack's claims are measurements (DESIGN §15), so these are load-bearing:
 
-- **Pre-register the decision rule**, with a parked band, before the run — even a run that is twelve hours away.
+- **Pre-register the decision rule** for a number that will be published or a result that settles a direction ("Rigor
+  matched to stakes"), with a parked band, before the run — even a run that is twelve hours away.
 - **Size the margin from the variance.** A margin equal to an interval's half-width passes a truly equal arm only about
   half the time (goinfer's L1 prefill gate learned this).
 - **Difference matched observations; do not pool them.** Pair arms on the same task.
