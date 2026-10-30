@@ -41,10 +41,12 @@ what each will hold.
 
 ## Who edits what
 
-- **Cowork and vscode-claude both edit tack, and both push straight to `main`** (owner, 2026-10-17). There are no
-  PRs and no track branches.
-- **Product code waits for the owner's yes before it is pushed.** The no-PR rule removes the PR step, not the review.
-  Docs and measurement records go with the task that produced them.
+- **Every change lands through a pull request; nobody pushes to `main`** (owner, 2026-10-30, replacing the 2026-10-17
+  push-to-main rule). Work on a branch, run the gates below, open the PR, and merge it with
+  `gh pr merge <n> --merge --delete-branch` once they pass. tack has no GitHub CI and auto-merge is off for this repo,
+  so the local gates are the check.
+- **Product code waits for the owner's yes before it merges.** Docs and measurement records go with the task that
+  produced them.
 - Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
   request.
 - **ken changes** go to ken's own Claude Code as a brief: ken's `CLAUDE.md` makes it ken's sole editor. Each lands as a
@@ -56,7 +58,7 @@ what each will hold.
 ## Working in the tree
 
 - **Never `git add -A` or `git add .`.** Stage explicit paths.
-- **`main` moves under you.** More than one session pushes to it, so `git fetch` and rebase onto `origin/main` before
+- **`main` moves under you.** More than one session merges to it, so `git fetch` and rebase onto `origin/main` before
   every push. If a file you are editing has changes you did not make, they are someone else's in-flight work: commit
   your hunks and leave theirs.
 - **Before every push, run what CI runs for what you touched, and push only when it passes by exit code:**
@@ -74,13 +76,10 @@ what each will hold.
 - **darwin-only code compiles only on darwin.** The sandbox, launchd and Keychain code is behind build constraints, so
   vet both targets: `GOOS=darwin go vet ./...` and `GOOS=linux go vet ./...`. A change that compiles for one can be
   broken for the other.
-- **staticcheck can silently check nothing.** Toolchain export data moved to version 5 with Go 1.27.2, and older
-  staticcheck releases analyse nothing while exiting cleanly. Use the version goinfer's CI pins (built from source, as
-  goinfer's `CLAUDE.md` describes), and prove the gate can go red: a throwaway package with an unused struct field that
-  **imports a standard-library package** must print `field deadField is unused (U1000)`. A canary that imports nothing
-  passes on a broken staticcheck.
-- **Do not combine `go run …staticcheck` with `GOOS=linux`** on the Mac: it builds a Linux binary, fails to exec it, and
-  the shell still reports exit 0. Use an installed native binary and set `GOOS` only for the analysis target.
+- **Run staticcheck only through `go run ./tools/lint`.** It checks that the installed staticcheck is the pinned version
+  (older releases analyse nothing while exiting cleanly), proves the gate can go red on its canary, and sets `GOOS`
+  itself for darwin and linux. Never run staticcheck with `GOOS` set by hand: a `GOOS=linux` build of staticcheck on the
+  Mac fails to exec and the shell still reports exit 0 (goinfer's claude-guard refuses it, rule SC1).
 - **Every gate command ends with one `VERDICT:` line** — `PASS`, `FAIL` or `INCONCLUSIVE` — in aikit's shape
   (`tools/gate.Verdict`). `INCONCLUSIVE` is never a pass.
 - **No Python, and as little shell as possible.** Tools and gates are Go commands.
