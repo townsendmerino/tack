@@ -27,6 +27,7 @@ import (
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // Options configures a Core.
@@ -88,6 +89,12 @@ type Options struct {
 	// OpenSpans opens a symbol index over a workspace root for CurrentSymbol alone: it adds no tool. The Core opens one per
 	// root on first use, shares it between that root's sessions, and closes it in Close when it is an io.Closer.
 	OpenSpans func(ctx context.Context, root string) (tools.Symbols, error)
+	// InjectContext puts the code ken finds for a session's first prompt into its first message, after the instruction
+	// head and before the task (internal/window/inject.go; calibration §13.1). It needs OpenInject.
+	InjectContext bool
+	// OpenInject opens the index the injection asks, over a workspace root, at the first prompt. The Core closes it
+	// after use when it is an io.Closer.
+	OpenInject func(ctx context.Context, root string) (window.InjectIndex, error)
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -134,6 +141,8 @@ type session struct {
 	instructions string
 	notesFirst   bool
 	prompted     bool
+	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
+	injectRoot string
 }
 
 // subscriber is one connection's subscription to one session. last is the highest persisted seq it has been sent, so
@@ -353,6 +362,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			return "", err
 		}
 	}
+	if c.opt.InjectContext && c.opt.OpenInject != nil {
+		s.injectRoot = ws.Root()
+	}
 	symbols, _ := searcher.(tools.Symbols)
 	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
@@ -459,6 +471,20 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 		text.WriteString(b.Text)
 	}
+	// The injection is built before any lock is taken: opening ken's index takes seconds.
+	s.mu.Lock()
+	injectRoot := ""
+	if !s.prompted {
+		injectRoot = s.injectRoot
+	}
+	s.mu.Unlock()
+	inject := ""
+	if injectRoot != "" {
+		var err error
+		if inject, err = c.injection(injectRoot, text.String()); err != nil {
+			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "inject_context: " + err.Error()}
+		}
+	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
 	c.mu.Lock()
 	if h := c.halted; h != nil {
@@ -473,14 +499,25 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	}
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	s.running, s.cancel = true, cancel
-	// The instructions join the first message itself, so the log holds exactly what the model was sent.
+	// The instructions and the injection join the first message itself, so the log holds exactly what the model was
+	// sent. The injection sits after the head and before the task, so the message still ends with the task.
+	statement := text.String()
 	switch {
-	case s.instructions == "" || s.prompted:
-	case s.notesFirst:
-		statement := text.String()
+	case s.prompted:
+	case s.notesFirst && s.instructions != "":
 		text.Reset()
-		text.WriteString(s.instructions + "\n\n" + headTaskLabel + statement)
-	default:
+		text.WriteString(s.instructions + "\n\n")
+		if inject != "" {
+			text.WriteString(inject + "\n\n")
+		}
+		text.WriteString(headTaskLabel + statement)
+	case inject != "":
+		text.Reset()
+		text.WriteString(inject + "\n\n" + headTaskLabel + statement)
+		if s.instructions != "" {
+			text.WriteString("\n\n" + s.instructions)
+		}
+	case s.instructions != "":
 		text.WriteString("\n\n" + s.instructions)
 	}
 	s.prompted = true

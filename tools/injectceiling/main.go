@@ -19,7 +19,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -28,6 +27,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/kensearch"
+	"github.com/townsendmerino/tack/internal/window"
 	"github.com/townsendmerino/tack/tools/gate"
 )
 
@@ -126,7 +126,7 @@ func measure(ctx context.Context, mirrors, modelDir string, budget int, suite st
 	}
 	r.idents = identifiers(t.Statement)
 	if posthoc {
-		r.idents = slices.DeleteFunc(r.idents, oneLowerWord)
+		r.idents = window.InjectIdentifiers(t.Statement)
 	}
 	for _, mode := range []string{"hybrid", "bm25"} {
 		o := kensearch.Options{Mode: mode}
@@ -138,16 +138,24 @@ func measure(ctx context.Context, mirrors, modelDir string, budget int, suite st
 			return r, fmt.Errorf("ken %s: %w", mode, err)
 		}
 		items, found, err := candidates(ctx, s, r.idents, t.Statement)
+		if err == nil && posthoc {
+			// Gate 0b's selection is the product's (internal/window), so the screen runs exactly what this measured.
+			items, err = injectSpans(ctx, s, t.Statement)
+		}
 		s.Close()
 		if err != nil {
 			return r, err
 		}
-		packed := pack(tmp, items, budget)
+		packFn := pack
+		if posthoc {
+			packFn = injectPack
+		}
+		packed := packFn(tmp, items, budget)
 		c := score(packed, raw, gold, tmp)
 		if mode == "hybrid" {
 			r.found = found
 			r.hybrid = c
-			r.hybridAll = score(pack(tmp, items, 1<<30), raw, gold, tmp)
+			r.hybridAll = score(packFn(tmp, items, 1<<30), raw, gold, tmp)
 			for _, it := range packed {
 				r.firstFiles = append(r.firstFiles, fmt.Sprintf("%s:%d-%d", it.File, it.Start, it.End))
 			}
@@ -444,7 +452,25 @@ func spans(s []pilot.LineSpan) string {
 // posthoc is gate 0b's selection (§13.1): test and non-Go search hits and single-word lower-case identifiers dropped.
 var posthoc bool
 
-// oneLowerWord reports whether id is a single word in lower case: no dot and no upper-case letter (gate 0b drops it).
-func oneLowerWord(id string) bool {
-	return !strings.Contains(id, ".") && strings.ToLower(id) == id
+// injectSpans is window.InjectCandidates as spans.
+func injectSpans(ctx context.Context, s *kensearch.Searcher, statement string) ([]pilot.LineSpan, error) {
+	items, err := window.InjectCandidates(ctx, s, statement)
+	var out []pilot.LineSpan
+	for _, it := range items {
+		out = append(out, pilot.LineSpan{File: it.File, Start: it.Start, End: it.End})
+	}
+	return out, err
+}
+
+// injectPack is window.InjectPack over spans.
+func injectPack(root string, items []pilot.LineSpan, budget int) []pilot.LineSpan {
+	var in []window.InjectItem
+	for _, it := range items {
+		in = append(in, window.InjectItem{File: it.File, Start: it.Start, End: it.End})
+	}
+	var out []pilot.LineSpan
+	for _, it := range window.InjectPack(root, in, budget) {
+		out = append(out, pilot.LineSpan{File: it.File, Start: it.Start, End: it.End})
+	}
+	return out
 }

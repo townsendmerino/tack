@@ -69,6 +69,7 @@ var RunSettings = map[string]bool{
 	"edit_lines":             true, // §4.9, a candidate, not yet registered
 	"current_symbol":         true, // §12.20, a candidate
 	"edit_tolerances":        true, // §12.22, judged by replay
+	"inject_context":         true, // §13.1, C7's turn-1 injection
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

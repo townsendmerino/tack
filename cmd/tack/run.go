@@ -32,6 +32,7 @@ import (
 	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
@@ -157,6 +158,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		EditLines:            cfg.Run.EditLines,
 		CurrentSymbol:        cfg.Run.CurrentSymbol,
 		EditTolerances:       cfg.Run.EditTolerances,
+		InjectContext:        cfg.Run.InjectContext,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
@@ -183,6 +185,18 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 				return nil, err
 			}
 			fmt.Fprintf(stderr, "tack: current_symbol: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
+			return s, nil
+		}
+	}
+	if cfg.Run.InjectContext {
+		// The injection's own index: bm25 needs no model, adds no tool, and no snapshot leaves the workspace as it was.
+		opts.OpenInject = func(ctx context.Context, root string) (window.InjectIndex, error) {
+			start := time.Now()
+			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(stderr, "tack: inject_context: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
 			return s, nil
 		}
 	}

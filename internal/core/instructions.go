@@ -3,10 +3,12 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // The budgeted head of an instruction file (Options.InstructionsHead; e1-calibration-preregistration-2026-10-18.md
@@ -102,4 +104,21 @@ func InstructionHead(root string, window int) string {
 		return ""
 	}
 	return instructionHead(name, content, window)
+}
+
+// injection is the first prompt's injected code for statement over root (Options.InjectContext): ken's candidates
+// packed to window.InjectBudget, as the message carries them; "" when nothing fits.
+func (c *Core) injection(root, statement string) (string, error) {
+	ix, err := c.opt.OpenInject(c.ctx, root)
+	if err != nil {
+		return "", err
+	}
+	if cl, ok := ix.(io.Closer); ok {
+		defer cl.Close()
+	}
+	items, err := window.InjectCandidates(c.ctx, ix, statement)
+	if err != nil {
+		return "", err
+	}
+	return window.InjectText(window.InjectPack(root, items, window.InjectBudget)), nil
 }
