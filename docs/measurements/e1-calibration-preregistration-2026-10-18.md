@@ -2137,6 +2137,24 @@ tasks, at each task's base commit.
   - With no budget, 6 of 12 land, 3 of them among those 8. The injections then run 2,811–13,994 tokens.
   - What follows is Francis's decision.
 
+**Gate 0b: a second selection, POST HOC** (Francis, 2026-10-30 09:38, option (a)). This was written after gate 0's
+report and before its run. It is shaped by what that report showed, so it does not stand as a clean test of the
+12 calibration tasks. The pilot tasks carry the check: no one looked at them for this change.
+- **The selection is §13.1's, with two changes** (`tools/injectceiling -selection posthoc`):
+  1. **Search hits are dropped** if their file is a `_test.go` file or is not a `.go` file. ken still returns k = 8
+     hits, and the dropped ones are not replaced.
+  2. **Single-word, all-lower-case identifiers are dropped:** one with no dot and no upper-case letter, such as
+     `serve`, `kv`, `ctx` or `mcp`.
+  - Everything else stays: the 1,600-token budget, bytes / 3, `hybrid` as the one read with `bm25` beside it, and
+    the packing.
+- **The rule, read at 1,600 tokens with `hybrid`:**
+  - **It passes, and the arm goes to a screen, only if it lands on at least 6 of the 12 calibration tasks and on at
+    least 5 of the 10 pilot tasks.**
+  - Otherwise it does not pass, and what next is Francis's.
+  - Reported, not decided on: the count among tasks 1 and 3–9, the no-budget figures, `bm25`, and each task's
+    packed spans.
+- **The first selection's result stands as recorded.** Gate 0b does not replace it.
+
 ### 13.2 The read outline at 200 lines
 
 **What.** When `read` stops a whole-file read at 200 lines, its result ends with the file's outline from ken: each
