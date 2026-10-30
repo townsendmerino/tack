@@ -1,6 +1,7 @@
 // Command calreport prints a calibration job's "reported, not decided on" figures from its results.jsonl, per arm:
 // passes per task, stops by reason, window-full stops, cap hits, requests and wall time per run, the server's
-// first-token times, done and verification refusals, the cell states, and §2's bar
+// first-token times, done and verification refusals, each setting's firings and what followed them (§13.4), the cell
+// states, and §2's bar
 // (e1-calibration-preregistration-2026-10-18.md §2, §12.2, §12.3). With -compare, each of another job's arms is set
 // beside them task by task. It decides nothing: a record's verdict is read under its own registered rule.
 //
@@ -81,6 +82,7 @@ func run(args []string, w io.Writer) int {
 type jobData struct {
 	path      string
 	arms      map[string][]pilot.Record
+	dirs      map[string][]string // each record's run directory, aligned with arms
 	armOrder  []string
 	voids     []pilot.Record
 	noSummary int
@@ -115,7 +117,7 @@ func load(path string) (*jobData, error) {
 		return nil, err
 	}
 	defer f.Close()
-	j := &jobData{path: path, arms: map[string][]pilot.Record{}}
+	j := &jobData{path: path, arms: map[string][]pilot.Record{}, dirs: map[string][]string{}}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<26)
 	line := 0
@@ -139,6 +141,7 @@ func load(path string) (*jobData, error) {
 			j.armOrder = append(j.armOrder, r.Run.Arm)
 		}
 		j.arms[r.Run.Arm] = append(j.arms[r.Run.Arm], r)
+		j.dirs[r.Run.Arm] = append(j.dirs[r.Run.Arm], runDirOf(path, r))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -152,7 +155,7 @@ func load(path string) (*jobData, error) {
 
 // loadMerged loads each path and merges them into one job, labeled by its paths.
 func loadMerged(paths []string) (*jobData, error) {
-	out := &jobData{path: strings.Join(paths, ","), arms: map[string][]pilot.Record{}}
+	out := &jobData{path: strings.Join(paths, ","), arms: map[string][]pilot.Record{}, dirs: map[string][]string{}}
 	for _, p := range paths {
 		j, err := load(p)
 		if err != nil {
@@ -163,6 +166,7 @@ func loadMerged(paths []string) (*jobData, error) {
 				out.armOrder = append(out.armOrder, a)
 			}
 			out.arms[a] = append(out.arms[a], j.arms[a]...)
+			out.dirs[a] = append(out.dirs[a], j.dirs[a]...)
 		}
 		out.voids = append(out.voids, j.voids...)
 		out.noSummary += j.noSummary
@@ -210,6 +214,7 @@ func report(w io.Writer, j *jobData, others []*jobData) {
 	stops(w, j)
 	perRun(w, j)
 	refusals(w, j)
+	guards(w, j)
 	bar(w, j)
 }
 

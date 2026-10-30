@@ -119,3 +119,56 @@ func TestReport_Compare(t *testing.T) {
 		}
 	}
 }
+
+// guardEvents is an events.jsonl in which result_notes fires at request 1 (an empty grep) and is followed by an edit
+// applied at request 3, fires again at request 4 with nothing applied by request 7, and the turn ends on repeat_loop.
+const guardEvents = `{"type":"request.sent"}
+{"type":"tool.call","payload":{"id":"c1","name":"grep","input":{"pattern":"x"}}}
+{"type":"tool.finished","payload":{"id":"c1","outcome":"ok","result":"\n\n[tack: nothing matched. Search for a shorter part of the name, drop regex escapes, or widen the path.]"}}
+{"type":"request.sent"}
+{"type":"request.sent"}
+{"type":"tool.call","payload":{"id":"c2","name":"edit","input":{"path":"a.go"}}}
+{"type":"tool.finished","payload":{"id":"c2","outcome":"ok","result":"edited a.go at line 3"}}
+{"type":"request.sent"}
+{"type":"tool.call","payload":{"id":"c3","name":"glob","input":{"pattern":"*.go"}}}
+{"type":"tool.finished","payload":{"id":"c3","outcome":"ok","result":"a.go\n\n[tack: unchanged: this call repeats an earlier one exactly and got the same result (repeat 1). Change the call, or finish.]"}}
+{"type":"request.sent"}
+{"type":"request.sent"}
+{"type":"request.sent"}
+{"type":"request.sent"}
+{"type":"tool.call","payload":{"id":"c4","name":"edit","input":{"path":"a.go"}}}
+{"type":"tool.finished","payload":{"id":"c4","outcome":"ok","result":"edited a.go at line 9"}}
+{"type":"turn.end","payload":{"stop_reason":"repeat_loop"}}
+`
+
+// The guard table (§13.4) counts each setting's firings from the run's events, credits a firing with an edit applied
+// within guardWindow requests after it and not later, counts stop_repeats from the turn's end, and marks a prompt-only
+// setting as having no firing to count.
+func TestReport_GuardFirings(t *testing.T) {
+	r := rec(1, "B", false, "repeat_loop")
+	r.Rep, r.Settings = 1, []string{"instructions_head", "result_notes", "stop_repeats"}
+	p := writeResults(t, []pilot.Record{r})
+	dir := filepath.Join(filepath.Dir(p), "task-01", "B-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte(guardEvents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if code := run([]string{p}, &out); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	for _, want := range []string{
+		"| B | result_notes | 1 | 1 | 2 | 2.00 | 1 (50%) | 0 (0%) | 1 (50%) |",
+		"| B | stop_repeats | 1 | 1 | 1 | 1.00 | ends the turn | | |",
+		"| B | instructions_head | 1 | — | — | — | prompt only: no firing to count | | |",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "could not be read") {
+		t.Errorf("the run's events were not found:\n%s", out.String())
+	}
+}
