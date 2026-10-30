@@ -74,3 +74,19 @@ func TestInjectPack(t *testing.T) {
 		t.Fatalf("text:\n%s", txt)
 	}
 }
+
+type fakeOutline map[string][]tools.Def
+
+func (f fakeOutline) Outline(_ context.Context, path string) ([]tools.Def, error) {
+	return f[path], nil
+}
+
+// A tree with no exported definition has no map at all, not a bare title.
+func TestRepoMapEmpty(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n\nfunc hidden() {}\n"), 0o644)
+	m, err := RepoMap(context.Background(), fakeOutline{"a.go": {{File: "a.go", Name: "hidden", StartLine: 3, EndLine: 3}}}, root)
+	if err != nil || m != "" {
+		t.Fatalf("map %q, %v; want none", m, err)
+	}
+}

@@ -122,6 +122,10 @@ type Run struct {
 	// (core.Options.InjectContext; calibration §13.1). Without [ken], tack opens ken's index in bm25 mode for it, at the
 	// first prompt, and adds no tool. Default off.
 	InjectContext bool `toml:"inject_context"`
+	// RepoMap puts a generated map of the repository, its most-referenced Go files and their exported symbols in at most
+	// 3,000 bytes, into a session's first message after the instruction head (core.Options.RepoMap; calibration §13.3).
+	// Without [ken], tack opens ken's index in bm25 mode for it, at the first prompt, and adds no tool. Default off.
+	RepoMap bool `toml:"repo_map"`
 }
 
 // Duration is a time.Duration written as a string ("10m").

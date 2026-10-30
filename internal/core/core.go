@@ -95,6 +95,12 @@ type Options struct {
 	// OpenInject opens the index the injection asks, over a workspace root, at the first prompt. The Core closes it
 	// after use when it is an io.Closer.
 	OpenInject func(ctx context.Context, root string) (window.InjectIndex, error)
+	// RepoMap puts the workspace's generated map (internal/window/repomap.go; calibration §13.3) into a session's first
+	// message, after the instruction head. It needs OpenRepoMap.
+	RepoMap bool
+	// OpenRepoMap opens the index the map reads, over a workspace root, at the first prompt. The Core closes it after
+	// use when it is an io.Closer.
+	OpenRepoMap func(ctx context.Context, root string) (window.MapIndex, error)
 	// WholeInstructions puts the workspace's instruction file, the first of instructionFiles at its root, whole at the
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
@@ -143,6 +149,8 @@ type session struct {
 	prompted     bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
+	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
+	mapRoot string
 }
 
 // subscriber is one connection's subscription to one session. last is the highest persisted seq it has been sent, so
@@ -365,6 +373,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if c.opt.InjectContext && c.opt.OpenInject != nil {
 		s.injectRoot = ws.Root()
 	}
+	if c.opt.RepoMap && c.opt.OpenRepoMap != nil {
+		s.mapRoot = ws.Root()
+	}
 	symbols, _ := searcher.(tools.Symbols)
 	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
@@ -473,9 +484,9 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	}
 	// The injection is built before any lock is taken: opening ken's index takes seconds.
 	s.mu.Lock()
-	injectRoot := ""
+	injectRoot, mapRoot := "", ""
 	if !s.prompted {
-		injectRoot = s.injectRoot
+		injectRoot, mapRoot = s.injectRoot, s.mapRoot
 	}
 	s.mu.Unlock()
 	inject := ""
@@ -483,6 +494,13 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		var err error
 		if inject, err = c.injection(injectRoot, text.String()); err != nil {
 			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "inject_context: " + err.Error()}
+		}
+	}
+	repoMap := ""
+	if mapRoot != "" {
+		var err error
+		if repoMap, err = c.repoMap(mapRoot); err != nil {
+			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "repo_map: " + err.Error()}
 		}
 	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
@@ -499,21 +517,28 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	}
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	s.running, s.cancel = true, cancel
-	// The instructions and the injection join the first message itself, so the log holds exactly what the model was
-	// sent. The injection sits after the head and before the task, so the message still ends with the task.
+	// The instructions, the map and the injection join the first message itself, so the log holds exactly what the model
+	// was sent. Map and injection sit after the head and before the task, so the message still ends with the task.
 	statement := text.String()
 	switch {
 	case s.prompted:
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
 		text.WriteString(s.instructions + "\n\n")
-		if inject != "" {
-			text.WriteString(inject + "\n\n")
+		for _, part := range []string{repoMap, inject} {
+			if part != "" {
+				text.WriteString(part + "\n\n")
+			}
 		}
 		text.WriteString(headTaskLabel + statement)
-	case inject != "":
+	case repoMap != "" || inject != "":
 		text.Reset()
-		text.WriteString(inject + "\n\n" + headTaskLabel + statement)
+		for _, part := range []string{repoMap, inject} {
+			if part != "" {
+				text.WriteString(part + "\n\n")
+			}
+		}
+		text.WriteString(headTaskLabel + statement)
 		if s.instructions != "" {
 			text.WriteString("\n\n" + s.instructions)
 		}

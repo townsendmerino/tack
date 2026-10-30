@@ -11,6 +11,7 @@ import (
 	"github.com/townsendmerino/aikit/chunk/treesitter"
 
 	"github.com/townsendmerino/tack/internal/kensearch"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // §13.3's map: exported symbols only, each file's symbols by how many other .go files name them (test files count as
@@ -35,11 +36,11 @@ func TestBuildMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	m, _, err := buildMap(context.Background(), s, root)
+	m, err := window.RepoMap(context.Background(), s, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := mapTitle + "\na/a.go: Popular, Lonely\nb/b.go: B\nc/c.go: C\n"
+	want := window.RepoMapTitle + "\na/a.go: Popular, Lonely\nb/b.go: B\nc/c.go: C\n"
 	if m != want {
 		t.Fatalf("map:\n%s\nwant:\n%s", m, want)
 	}
@@ -50,7 +51,7 @@ func TestBuildMap(t *testing.T) {
 
 // The gold symbol counts only on the gold file's own row: a name listed on another file's row does not.
 func TestRowLists(t *testing.T) {
-	m := mapTitle + "\na/a.go: Options, Run\nb/b.go: Flags.Options\n"
+	m := window.RepoMapTitle + "\na/a.go: Options, Run\nb/b.go: Flags.Options\n"
 	if !rowLists(m, "a/a.go", "Run") || rowLists(m, "b/b.go", "Options") || rowLists(m, "c/c.go", "Run") {
 		t.Fatal("rowLists counted a symbol off its file's row")
 	}

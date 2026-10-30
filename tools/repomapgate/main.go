@@ -14,15 +14,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/townsendmerino/aikit/chunk"
 	"github.com/townsendmerino/aikit/chunk/treesitter"
@@ -30,17 +27,12 @@ import (
 	"github.com/townsendmerino/tack/internal/core"
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 	"github.com/townsendmerino/tack/internal/kensearch"
-	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/window"
 	"github.com/townsendmerino/tack/tools/gate"
 )
 
 // §13.3's constants.
-const (
-	mapBytes      = 3000 // 1,000 tokens at bytes / 3
-	symbolsPerRow = 8
-	headWindow    = 16384
-	mapTitle      = "Repository map (the most-referenced Go files and their exported symbols):"
-)
+const headWindow = 16384
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -104,7 +96,7 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 		return r, err
 	}
 	defer s.Close()
-	m, defs, err := buildMap(ctx, s, tmp)
+	m, err := window.RepoMap(ctx, s, tmp)
 	if err != nil {
 		return r, err
 	}
@@ -117,12 +109,14 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 		}
 		r.mapFile = r.mapFile || strings.Contains(m, g.File)
 		r.headFile = r.headFile || strings.Contains(head, g.File)
-		for _, d := range defs[g.File] {
+		defs, _ := s.Outline(ctx, g.File)
+		for _, d := range defs {
 			if d.StartLine > g.End || d.EndLine < g.Start {
 				continue
 			}
 			r.mapSym = r.mapSym || rowLists(m, g.File, d.Name)
-			r.headSym = r.headSym || wholeWord(head, leaf(d.Name))
+			name := d.Name[strings.LastIndex(d.Name, ".")+1:]
+			r.headSym = r.headSym || wholeWord(head, name)
 		}
 	}
 	if dump != "" {
@@ -134,115 +128,12 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 	return r, nil
 }
 
-var word = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
-
 // rowLists reports whether map m's row for file lists the symbol name.
 func rowLists(m, file, name string) bool {
 	for _, line := range strings.Split(m, "\n") {
 		if rest, ok := strings.CutPrefix(line, file+": "); ok {
 			return slices.Contains(strings.Split(rest, ", "), name)
 		}
-	}
-	return false
-}
-
-// buildMap is §13.3's map over root, and each mapped file's exported definitions, by path.
-func buildMap(ctx context.Context, s *kensearch.Searcher, root string) (string, map[string][]tools.Def, error) {
-	var goFiles, mapFiles []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
-		goFiles = append(goFiles, rel)
-		if !strings.HasSuffix(rel, "_test.go") && !strings.Contains("/"+rel, "/testdata/") && !strings.Contains("/"+rel, "/vendor/") {
-			mapFiles = append(mapFiles, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	// files[w]: how many .go files contain the word w.
-	files := map[string]int{}
-	for _, f := range goFiles {
-		b, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
-		set := map[string]bool{}
-		for _, w := range word.FindAllString(string(b), -1) {
-			set[w] = true
-		}
-		for w := range set {
-			files[w]++
-		}
-	}
-	type sym struct {
-		name string
-		refs int
-	}
-	type file struct {
-		path  string
-		score int
-		syms  []sym
-	}
-	var ranked []file
-	defs := map[string][]tools.Def{}
-	for _, f := range mapFiles {
-		out, err := s.Outline(ctx, f)
-		if err != nil {
-			continue // not indexed: no structure to map
-		}
-		fi := file{path: f}
-		for _, d := range out {
-			if !exported(leaf(d.Name)) {
-				continue
-			}
-			defs[f] = append(defs[f], d)
-			n := max(0, files[leaf(d.Name)]-1) // other files: its own file holds the name
-			fi.syms = append(fi.syms, sym{d.Name, n})
-			fi.score += n
-		}
-		if len(fi.syms) == 0 {
-			continue
-		}
-		sort.SliceStable(fi.syms, func(i, j int) bool { return fi.syms[i].refs > fi.syms[j].refs })
-		ranked = append(ranked, fi)
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score > ranked[j].score
-		}
-		return ranked[i].path < ranked[j].path
-	})
-	var b strings.Builder
-	b.WriteString(mapTitle + "\n")
-	for _, f := range ranked {
-		var names []string
-		for i, s := range f.syms {
-			if i == symbolsPerRow {
-				break
-			}
-			names = append(names, s.name)
-		}
-		line := f.path + ": " + strings.Join(names, ", ") + "\n"
-		if b.Len()+len(line) > mapBytes {
-			break
-		}
-		b.WriteString(line)
-	}
-	return b.String(), defs, nil
-}
-
-func leaf(name string) string {
-	if i := strings.LastIndex(name, "."); i >= 0 {
-		return name[i+1:]
-	}
-	return name
-}
-
-func exported(name string) bool {
-	for _, r := range name {
-		return unicode.IsUpper(r)
 	}
 	return false
 }
