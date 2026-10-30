@@ -152,3 +152,25 @@ Option (b), relayed by the coordinator:
 - **C6 stays on Qwen3-8B at 16,384,** and the powered comparison runs there.
 - **Qwen3.5-9B stays a candidate** for when goinfer's long-prefill time drops.
 - This does not change the verdict: the row is usable, at the bar.
+
+## The prompt-too-long refusals: `fit_window`'s margin held (2026-10-30, Francis's side item)
+
+Francis asked whether the four refusals (13–78 tokens over 32,768 with `fit_window` on) show a margin bug. The run
+records say they do not. This changes nothing above.
+- **The reserve line held.** `loop.Session.fitRoom` keeps the next reply's `max_tokens` (2,048) plus 512 tokens free,
+  so the reserve line at 32,768 is 30,208.
+  - 18 of the 36 runs crossed it.
+  - Each crossing that followed a cut result landed 11–225 tokens past the line, well inside the 2,560-token reserve.
+  - No fitted result took a prompt over the window.
+- **What filled the window was the zone after it.** From there on, every long result became the "window nearly full"
+  note (116–267 bytes), and the model kept calling. Each request added a call and a note, 80–125 tokens.
+  - The four refused runs spent 21–28 requests past the line before the server refused (task 2 rep 2, task 8 rep 3,
+    task 10 rep 2, task 12 rep 1).
+  - Task 7 rep 3 crept the same way to 32,767 and ended `window_full`.
+  - In task 12 rep 1, the creep was one 128-byte `read` result repeated, under `fitMinBytes`, so it passed whole.
+- **No test was written.** The arithmetic the test would cover did not fail, so there was nothing to see go red.
+- **A stop at the reserve line would cost passes on C6's arm.** In §12.21's B (Qwen3-8B at 16,384, line at 13,824),
+  task 1 B-2 and B-3 were past the line when they passed, and B-1 passed after a nearly-full note.
+  B had 0 window-full stops.
+  - So any stop in that zone would be a loop change under §12, registered and measured like the others, not a margin
+    fix.
