@@ -165,3 +165,38 @@ unmeasured.
   - Checked: those runs read `pull.go` 70 times, every time with an offset and a limit (20–30 lines from line 360 on).
 - **Outline size:** §13.2 registered it to be reported for each gold file. It was not measured, because the arm does
   not go to a screen. It is measured with the feature when that is built.
+
+## §13.3 gate 0: the generated repository map, 2026-10-30 09:53–10:00 PDT
+
+Registered in §13.3 and approved at 09:38. The map's construction and the counts were fixed in `41faaa6` before the
+run (`tools/repomapgate`). There is no model, and the maps are built on E1's base trees, so nothing written later is
+in them.
+
+**Verdict, as registered: goes to a screen.** The map names a gold file on **7 of the 22 tasks**, and the instruction
+head on **0**. §13.3's rule asks for at least 6 more than the head.
+- **Command:** `go run ./tools/repomapgate -mirrors ~/tack-runs/e1/mirrors -dump …`. Its tests were broken first.
+  - It ended `VERDICT: PASS — repomapgate: 22 tasks measured`, in about 3 minutes.
+  - Output: `~/tack-runs/e1/c7-ceiling-2026-10-30/repomap-gate.md`, with each task's map and head in `repomap/`.
+- **The map's size:** 2,162–2,990 bytes (at most 1,000 tokens at bytes / 3), with 19–36 files. The heads were
+  0–2,085 bytes; aikit's base trees, and goinfer's at pilot tasks 5, 10 and 11, have no instruction file.
+
+| | names a gold file | tasks |
+|---|---|---|
+| map | 7 of 22 | calibration 7, 11, 12; pilot 1, 2, 6, 10 |
+| head | 0 of 22 | |
+
+**Reported, not decided on:**
+- **The map names gold files mostly in the smaller repositories:**
+  - ken: calibration 7 and 11, pilot 2 and 6;
+  - aikit: calibration 12, pilot 1;
+  - goinfer: 1 of its 12 tasks (pilot 10, `decoder/serialize.go`).
+
+  goinfer's map holds about 20 of its files.
+- **The gold symbol is on the gold file's row in 0 tasks.** A row lists a file's 8 most-referenced exported symbols,
+  and gold symbols such as `resolveRepo` or `modelBannerFrom` are unexported.
+- **A defect in a reported-only column was fixed after the first run.** That run counted a gold symbol named anywhere
+  in the map (2 tasks). The column now checks the gold file's own row (`rowLists`, with its test broken first), and
+  the re-run gives 0. Both runs give the same file and head counts and the same verdict. The first run's output is
+  `repomap-gate-first.md`.
+- **The screen is registered here before its runs,** with its rule from CB3's per-task reach rates (§13.3, gate 1).
+  It needs the map built into tack behind a `[run]` setting, which is product code for Francis's yes.

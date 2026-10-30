@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -120,7 +121,7 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 			if d.StartLine > g.End || d.EndLine < g.Start {
 				continue
 			}
-			r.mapSym = r.mapSym || strings.Contains(m, d.Name)
+			r.mapSym = r.mapSym || rowLists(m, g.File, d.Name)
 			r.headSym = r.headSym || wholeWord(head, leaf(d.Name))
 		}
 	}
@@ -134,6 +135,16 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 }
 
 var word = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+// rowLists reports whether map m's row for file lists the symbol name.
+func rowLists(m, file, name string) bool {
+	for _, line := range strings.Split(m, "\n") {
+		if rest, ok := strings.CutPrefix(line, file+": "); ok {
+			return slices.Contains(strings.Split(rest, ", "), name)
+		}
+	}
+	return false
+}
 
 // buildMap is §13.3's map over root, and each mapped file's exported definitions, by path.
 func buildMap(ctx context.Context, s *kensearch.Searcher, root string) (string, map[string][]tools.Def, error) {

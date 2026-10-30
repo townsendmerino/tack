@@ -2221,6 +2221,9 @@ nothing written later leaks in.
     `FixGold` span.
   - **"Names the gold symbol"**, reported only, means it lists a symbol whose definition overlaps a `FixGold` span. For
     the head, it means the head contains that symbol's name as a whole word.
+- **Outcome of gate 0 (2026-10-30, 09:53–10:00 PDT; record `e1-c7-injection-ceiling-2026-10-30.md`, "§13.3 gate 0"):
+  goes to a screen.** The map names a gold file on 7 of 22 tasks, and the head on 0. The screen needs the map built
+  into tack behind a `[run]` setting, for Francis's yes, and is registered here before its runs.
 
 ### 13.4 Guard firings in every record
 

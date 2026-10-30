@@ -47,3 +47,11 @@ func TestBuildMap(t *testing.T) {
 		t.Fatalf("an unexported symbol or a test file is mapped:\n%s", m)
 	}
 }
+
+// The gold symbol counts only on the gold file's own row: a name listed on another file's row does not.
+func TestRowLists(t *testing.T) {
+	m := mapTitle + "\na/a.go: Options, Run\nb/b.go: Flags.Options\n"
+	if !rowLists(m, "a/a.go", "Run") || rowLists(m, "b/b.go", "Options") || rowLists(m, "c/c.go", "Run") {
+		t.Fatal("rowLists counted a symbol off its file's row")
+	}
+}
