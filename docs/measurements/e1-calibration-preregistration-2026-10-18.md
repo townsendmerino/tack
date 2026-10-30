@@ -1982,6 +1982,8 @@ Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`
 This is §12.9's bundle comparison at its registered size. It follows §12.24 and Francis's decision at 08:01 to keep C6
 on Qwen3-8B at 16,384. Francis chose the four marked choices at 08:20 PDT (relayed by the coordinator), each as tack's
 session recommended them. The rest was drafted by tack's session and goes to him with the harness change it needs.
+- **Francis approved the drafted rest and the harness change at 08:46 PDT** (relayed by the coordinator). The harness
+  change is `16c7c3e`, and this section is `f5f7ecc`, the build the runs use.
 - **The arms:**
   - **A, the do-nothing arm:** A1 as §12.21's A ran it, with no `[run]` settings. *Francis's choice:* not A1 with
     `fit_window` on (§12.6), so that A matches §12.21's A and §12.9's pooled baseline.

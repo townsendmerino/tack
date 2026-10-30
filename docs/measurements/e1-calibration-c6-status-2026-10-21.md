@@ -144,8 +144,9 @@ changes measured one by one, so these too are ideas to screen.
 - goinfer `b2b5e816`;
 - shown at d ≥ +7, parked at +4 to +6.
 
-It waits on Francis's yes to the harness change it needs (`-reps` with `-compare-setting`) and on the fit-only load on
-nobara after its update. Night 1 then goes on the Mac's `night.py`.
+Francis approved the harness change (`-reps` with `-compare-setting`) and the drafted details at 08:46, and both are
+on main (`f5f7ecc`). Night 1 waits only on the fit-only load on nobara after its update, then goes on the Mac's
+`night.py`.
 
 The 2026-10-21 plan follows, unchanged.
 
