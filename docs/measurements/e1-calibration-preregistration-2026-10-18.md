@@ -2132,6 +2132,10 @@ tasks, at each task's base commit.
   - The pilot tasks are reported beside the calibration tasks, not decided on.
 - **Gate 1, the screen:** the loop as adopted against it plus the injection, 72 runs, A B B A A B. It is registered
   here, with its rule from CB3's per-task reach rates, after gate 0 passes.
+- **Outcome of gate 0 (2026-10-30, 09:13–09:20 PDT; record `e1-c7-injection-ceiling-2026-10-30.md`): parked.**
+  - 4 of 12 calibration tasks land (4, 6, 8 and 11), 3 of them among tasks 1 and 3–9.
+  - With no budget, 6 of 12 land, 3 of them among those 8. The injections then run 2,811–13,994 tokens.
+  - What follows is Francis's decision.
 
 ### 13.2 The read outline at 200 lines
 
@@ -2177,3 +2181,5 @@ nothing written later leaks in.
 Owned by `tools/calreport`'s per-setting table. Measuring it decides nothing. A setting whose table shows it never
 fires, or fires with no progress after, is a candidate for removal, and that removal is Francis's call. What records
 carry today, and what tack must start logging, is recorded with the table's commit.
+- **First reading (2026-10-30):** over §12.21's B and §12.24, with what records carry today and what tack must start
+  logging, in `e1-c7-injection-ceiling-2026-10-30.md` ("Guard firings").
