@@ -124,6 +124,7 @@ func run(args []string, stdout io.Writer) int {
 	dump := fs.String("dump", "", "write per-run ContextMetrics JSONL here")
 	includeNotes := fs.Bool("include-notes", false, "count current_symbol notes on failed edits as seen spans")
 	includeSuperseded := fs.Bool("include-superseded", false, "include void/smoke/superseded runs when scanning")
+	outlineGate := fs.Bool("outline-gate", false, "also count C7 §13.2's gate 0: runs whose whole-file read stopped at 200 lines on a gold file with a gold span past the cut")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "replaycontext: "+err.Error()))
 		return 2
@@ -155,6 +156,7 @@ func run(args []string, stdout io.Writer) int {
 
 	ctx := context.Background()
 	goldCache := map[string]goldCacheEntry{}
+	outline := &outlineTally{runs: map[string]int{}, seen: map[string]int{}}
 	var goldOrder []string
 
 	var aggs []*armAgg
@@ -273,6 +275,14 @@ func run(args []string, stdout io.Writer) int {
 
 			getAgg(job, rec.Run.Arm).add(rec.Pass, symM, rawM, annM)
 			getTaskAgg(ge).add(rec.Pass, symM, rawM, annM)
+			if *outlineGate {
+				hit, err := outlineHit(events, base, ge.sym)
+				if err != nil {
+					missing++
+					fmt.Fprintf(stdout, "MISSING outline gate for %s: %v\n", events, err)
+				}
+				outline.add(ge.suite, ge.task, hit)
+			}
 			if rec.Pass {
 				passAgg.add(true, symM, rawM, annM)
 			} else {
@@ -359,6 +369,9 @@ func run(args []string, stdout io.Writer) int {
 		printAggRow(stdout, failEditedGoldAgg)
 	}
 
+	if *outlineGate {
+		outline.report(stdout)
+	}
 	scored := passAgg.runs + failAgg.runs
 	sum := fmt.Sprintf("replaycontext: scored %d of %d runs across %d tasks (%d pass, %d fail; fail reached gold %d/%d, edited gold %d/%d)",
 		scored, totalRuns, len(goldOrder), passAgg.runs, failAgg.runs, failAgg.reached, failAgg.runs, failAgg.editedGold, failAgg.runs)
@@ -392,10 +405,12 @@ func printAggRow(w io.Writer, a *armAgg) {
 func isExcludedResultFile(slash string, includeSuperseded bool) bool {
 	// Always exclude void pilot captures (sandbox denied workspace writes / module cache;
 	// replaced by a1-2026-10-18-day2 per e1-pilot-a1-2026-10-18.md), aborted launches,
-	// and post-CB3 runs (c6-bundle-2026-10-28).
+	// and post-CB3 runs (c6-bundle-2026-10-28, c6-qwen35-row-2026-10-29, c6-powered-2026-10-30), so -scan stays
+	// CB3's set.
 	if strings.Contains(slash, "aborted") ||
 		strings.Contains(slash, "/a1-2026-10-18/") ||
-		strings.Contains(slash, "/c6-bundle-2026-10-28/") {
+		strings.Contains(slash, "/c6-bundle-2026-10-28/") || strings.Contains(slash, "/c6-qwen35-row-2026-10-29/") ||
+		strings.Contains(slash, "/c6-powered-2026-10-30/") {
 		return true
 	}
 	if includeSuperseded {

@@ -140,3 +140,28 @@ needed) and 2 of the 10 pilot tasks (5 needed).
 - **Task 7's injection shrank to 500 tokens,** with no identifier resolved and only one Go search hit left. The ken
   tasks (7 and 10, and pilot tasks 2, 6 and 7) still resolve few definitions.
 - **The no-budget injections shrank** to 500–7,537 tokens, from 2,811–13,994.
+
+## §13.2 gate 0: the read outline, by replay, 2026-10-30 09:48–09:50 PDT
+
+Registered in §13.2 and approved by Francis at 09:38. It is the next arm in C7's order, run while the injection's next
+step waits on Francis. There is no model.
+
+**Verdict, as registered: not screened.** Over CB3's 625 counted runs, 11 runs, all on calibration task 1, made a
+whole-file read that `read` cut at 200 lines, of a gold file whose gold span starts past line 200. §13.2's rule asks
+for at least 15 runs over at least 3 tasks. So the outline is built only as the product feature DESIGN §7.3 specifies,
+unmeasured.
+- **Command:** `go run ./tools/replaycontext -mirrors ~/tack-runs/e1/mirrors -scan ~/tack-runs/e1 -outline-gate`,
+  with `tools/replaycontext/outline.go:outlineHit`. Its test was broken first.
+  - It ended `VERDICT: PASS — replaycontext: scored 625 of 625 runs across 22 tasks (47 pass, 578 fail; fail reached
+    gold 186/578, edited gold 64/578)`, which is CB3's set exactly.
+  - Output: `~/tack-runs/e1/c7-ceiling-2026-10-30/outline-gate.md`.
+- **`-scan` had grown past CB3's set.** Its first run scored 661 runs, because §12.24's 36 post-CB3 runs were not
+  excluded. `isExcludedResultFile` now leaves out `c6-qwen35-row-2026-10-29` and `c6-powered-2026-10-30` beside
+  `c6-bundle-2026-10-28`, so `-scan` reproduces CB3's 625.
+  - Reported only: those 36 runs added 5 such reads, on tasks 3 and 4 (2 each) and task 1 (1).
+- **Reported, not decided on:** task 4's gold (`pull/pull.go:369-410`) is past the cut, but none of CB3's runs read
+  `pull.go` whole. Its runs opened it with an explicit range, which `read` does not cut, so an outline at the cut would
+  not have reached them.
+  - Checked: those runs read `pull.go` 70 times, every time with an offset and a limit (20–30 lines from line 360 on).
+- **Outline size:** §13.2 registered it to be reported for each gold file. It was not measured, because the arm does
+  not go to a screen. It is measured with the feature when that is built.

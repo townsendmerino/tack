@@ -2175,6 +2175,9 @@ range in each of them.
 - **The rule:** it goes to a screen if that is **at least 15 runs over at least 3 tasks.** Otherwise it is built only
   as the product feature DESIGN §7.3 already specifies, unmeasured.
 - **The outline's size is reported for each gold file.** It must fit the read's own result cap.
+- **Outcome of gate 0 (2026-10-30, 09:48–09:50 PDT; record `e1-c7-injection-ceiling-2026-10-30.md`, "§13.2 gate 0"):
+  not screened.** 11 runs over 1 task (task 1), against 15 over 3. The outline is built only as DESIGN §7.3's feature,
+  unmeasured.
 
 ### 13.3 The generated repository map
 
