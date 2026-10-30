@@ -2060,3 +2060,120 @@ session recommended them. The rest was drafted by tack's session and goes to him
     -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
     $P/both.jsonl
   ```
+
+## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
+
+**Why.** CB3 (`e1-cb3-context-metrics-2026-10-28.md`) found that every passing run reached the gold symbol, and that
+392 of 578 failing runs never saw a line of it. C6's loop changes act after the model has found the code. C7 measures
+three ways of putting the code in front of it. Francis set them as one plan (2026-10-30 09:04, relayed by the
+coordinator), from his suggestions of that morning, with this section as the one place it lives.
+
+**The three arms, in order.** Each runs on top of the loop as adopted when it runs, as C6's changes stack (§12.1):
+1. **The turn-1 injection,** C7's main arm (§13.1).
+2. **The read outline at 200 lines** (DESIGN §7.3; §13.2).
+3. **The generated repository map** (§13.3).
+
+Each has a no-model gate first. A screen with the model follows only if that gate passes. Every screen is registered
+here with its own rule and predictions before its runs.
+- **Screens are read by CB3's reach numbers, not passes** (Francis): runs that reach the gold symbol, and
+  `FinalCov`, from `tools/replaycontext`. Passes are reported beside them.
+- **The server and model are C6's:** Qwen3-8B `Q4_K_M` at 16,384 on goinfer `b2b5e816`, unless Francis moves them.
+
+**Every record logs every guard's firings** (Francis, 2026-10-30). `tools/calreport` gains a per-setting table: for
+each setting, how often it fires per run and whether progress followed within a few requests (new lines of gold code
+seen, an edit applied, a build passing). What today's records carry, and what tack must start logging, is in §13.4.
+
+### 13.1 The turn-1 injection (C7's main arm)
+
+**What.** Before the first request on an edit task, tack runs ken over the task statement. The top items go into the
+request's tail, under a budget of **1,600 tokens** (DESIGN §7.4's proposed 10% of a 16k window).
+- They go in the tail, not the stable prefix: they are per-task bytes ("Append-only context", CLAUDE.md).
+- The fixed prompt does not change.
+
+**Why not a tool.** A tool the model must choose often goes unused: `edit_lines` was called 0 times in 6 runs (§12.19).
+
+**Selection, fixed for the ceiling check and the arm alike:**
+1. **Named code first.** Each backquoted span in the statement yields the qualified identifiers in it: `a.b.c` and
+   `(*T).m`, which is read as `T.m`. Go keywords and predeclared names are dropped.
+   - For each identifier, in the statement's order, ken's `Definition` is looked up. If it finds nothing, the last
+     component is dropped and the shorter name is tried.
+   - At most 3 definitions are kept per identifier.
+2. **Then the statement's text:** ken's search over the whole statement, k = 8, in rank order.
+3. **Packing:**
+   - Each item is the base tree's lines of its span.
+   - An item whose lines are all already packed is skipped.
+   - An item is packed whole if it fits the remaining budget, and otherwise skipped, and packing goes on with the
+     next item.
+   - Tokens are counted as bytes / 3, `loop`'s default rate before a response reports one (`fitDefaultRate`). At
+     that rate 1,600 tokens is 4,800 bytes.
+4. **ken's mode is `hybrid`,** tack's default (`internal/config`), with ken's Model2Vec model. `bm25` is reported beside
+   it.
+
+**Gate 0, the ceiling, with no model.** It runs over the 22 E1 tasks, the 12 calibration tasks and CB3's 10 pilot
+tasks, at each task's base commit.
+- **A task lands** if every raw span of its fix overlaps the injected lines. A raw span is the non-test diff hunk at
+  base (`internal/eval/pilot/context.go:FixGold`'s first result).
+- **Also reported, not decided on:**
+  - the share of each task's `FixGold` lines injected;
+  - whether any gold line is injected ("reached", CB3's sense);
+  - the same at no budget, which separates the budget from the retrieval;
+  - `bm25` beside `hybrid`;
+  - the injection's size.
+- **The rule, read on the 12 calibration tasks at 1,600 tokens, `hybrid`:**
+
+| calibration tasks that land | verdict |
+|---|---|
+| **6 or more of 12, including at least 3 of the 8 whose runs reached gold under half the time (tasks 1, 3–9)** | **pass: the arm goes to a screen** |
+| 4 or 5 of 12, or 6 or more but fewer than 3 of those 8 | parked: reported to Francis with the no-budget figure |
+| 3 or fewer | the arm as specified is not screened; what next is Francis's |
+
+  - **The 8 tasks are where an injection could add reach.** CB3's runs reached gold on them in 0–48.5% of runs.
+    Tasks 2, 10, 11 and 12 already reached it in 53–98%.
+  - The pilot tasks are reported beside the calibration tasks, not decided on.
+- **Gate 1, the screen:** the loop as adopted against it plus the injection, 72 runs, A B B A A B. It is registered
+  here, with its rule from CB3's per-task reach rates, after gate 0 passes.
+
+### 13.2 The read outline at 200 lines
+
+**What.** When `read` stops a whole-file read at 200 lines, its result ends with the file's outline from ken: each
+symbol with its line range, as `current_symbol` already opens ken (bm25, no model). Today it says only "Read more with
+offset and limit." DESIGN §7.3 specified the outline.
+
+**Evidence.** On calibration task 4, 23.6% of CB3's runs opened `pull/pull.go`, usually its first 200 lines. Only 3 of
+55 reached lines 369–410.
+
+**Gate 0, by replay, with no model.** Over CB3's 625 counted runs, count the runs with a whole-file read that stopped
+at 200 lines on a gold file whose gold span starts past line 200. The outline would have named the gold symbol's line
+range in each of them.
+- **The rule:** it goes to a screen if that is **at least 15 runs over at least 3 tasks.** Otherwise it is built only
+  as the product feature DESIGN §7.3 already specifies, unmeasured.
+- **The outline's size is reported for each gold file.** It must fit the read's own result cap.
+
+### 13.3 The generated repository map
+
+**What.** tack builds a map of the repository from ken's structural index, about 1,000 tokens: packages, files and their
+main symbols, ranked. It works in any repository. Aider's repository map is the prior art.
+- It goes beside the fixed prompt, in the slot the instruction file's head now uses. It is per-repository, not
+  per-session, so it may sit in the stable prefix.
+- Today's fixed prompt is 1,024 tokens without ken; with ken and the map it must still fit the 3,276-token budget
+  (DESIGN §1).
+
+**Evidence.**
+- In CB3, the whole instruction file roughly doubled how often runs reached the right code (9/36 → 19/36), and CB3
+  guessed the map the file carries was why.
+- The bundle now loads only the file's first section and headings (`instructions_head`). goinfer's first section is
+  the model-archive rule, so most of any map in the file does not reach the model.
+
+**Gate 0, with no model, on E1's historical trees.** For each of the 22 tasks, the map is built at the base commit, so
+nothing written later leaks in.
+- **Counted:** whether it names the gold file, and whether it names the gold symbol. The same is counted for the
+  instruction head each task's run carried today.
+- **The rule:** it goes to a screen if the map names the gold file on **at least 6 more of the 22 tasks than the
+  head does.**
+- **The map's size is reported:** at most 1,000 tokens at bytes / 3.
+
+### 13.4 Guard firings in every record
+
+Owned by `tools/calreport`'s per-setting table. Measuring it decides nothing. A setting whose table shows it never
+fires, or fires with no progress after, is a candidate for removal, and that removal is Francis's call. What records
+carry today, and what tack must start logging, is recorded with the table's commit.
