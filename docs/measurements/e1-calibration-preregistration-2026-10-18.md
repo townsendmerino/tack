@@ -2154,6 +2154,11 @@ report and before its run. It is shaped by what that report showed, so it does n
   - Reported, not decided on: the count among tasks 1 and 3–9, the no-budget figures, `bm25`, and each task's
     packed spans.
 - **The first selection's result stands as recorded.** Gate 0b does not replace it.
+- **Outcome of gate 0b (2026-10-30, 09:40–09:46 PDT; record `e1-c7-injection-ceiling-2026-10-30.md`, "Gate 0b"): does not
+  pass.**
+  - 4 of 12 calibration tasks land (the same 4), and 2 of 10 pilot tasks.
+  - Reaching any gold line rose from 7 to 9 of 12.
+  - What follows is Francis's decision.
 
 ### 13.2 The read outline at 200 lines
 

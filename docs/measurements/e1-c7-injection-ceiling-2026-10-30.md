@@ -110,3 +110,33 @@ the first time. This is reported only: what to remove is Francis's decision.
   2. the run's first event records what `instructions_head` kept and cut.
 
   The first is a protocol change, made with its Swift types and fixtures (CLAUDE.md, "Protocol types").
+
+## Gate 0b: the post-hoc selection, 2026-10-30 09:40–09:46 PDT
+
+Registered in §13.1 (`41e797f`) after gate 0's report and before this run, on Francis's option (a) at 09:38. Search
+hits from `_test.go` and non-Go files are dropped, and so are single-word, all-lower-case identifiers. It is marked
+post hoc. Gate 0's result above stands.
+
+**Verdict, as registered: does not pass.** At 1,600 tokens with `hybrid`, 4 of the 12 calibration tasks land (6
+needed) and 2 of the 10 pilot tasks (5 needed).
+- The command was `go run ./tools/injectceiling -mirrors ~/tack-runs/e1/mirrors -selection posthoc`, at `baf6ef6`.
+  It ended `VERDICT: PASS — injectceiling: 22 tasks measured`.
+- Output: `~/tack-runs/e1/c7-ceiling-2026-10-30/report-0b.md`.
+
+| | lands | of them in tasks 1, 3–9 | reaches gold |
+|---|---|---|---|
+| calibration, hybrid | 4 of 12 (same 4: tasks 4, 6, 8, 11) | 3 | **9 of 12** (gate 0: 7) |
+| calibration, bm25 | 5 of 12 (adds task 2) | 3 | 9 of 12 |
+| calibration, hybrid, no budget | 5 of 12 | 3 | 11 of 12 |
+| pilot, hybrid | 2 of 10 (same 2: tasks 1, 10) | — | 6 of 10 |
+| pilot, bm25 | 3 of 10 | — | 7 of 10 |
+
+**Reported, not decided on:**
+- **Gold coverage moved.** It went 0.00 → 0.93 on task 1 and 0.22 → 0.35 on task 5, and task 10 reached gold for the
+  first time (0.08). The tasks that land did not change.
+- **Most misses are fixes with more than one raw span,** where one span lands and another does not:
+  - task 1 (1 of 2), task 3 (1 of 3), task 5 (2 of 4), task 9 (1 of 2);
+  - pilot tasks 2 (2 of 4), 5 (3 of 4) and 9 (3 of 6).
+- **Task 7's injection shrank to 500 tokens,** with no identifier resolved and only one Go search hit left. The ken
+  tasks (7 and 10, and pilot tasks 2, 6 and 7) still resolve few definitions.
+- **The no-budget injections shrank** to 500–7,537 tokens, from 2,811–13,994.
