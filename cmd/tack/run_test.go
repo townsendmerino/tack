@@ -313,3 +313,45 @@ func TestRunInstructionsHead(t *testing.T) {
 		t.Fatalf("the notes come first and the task last, labelled:\n%s", msg)
 	}
 }
+
+// TestRunInjectContext: [run] inject_context puts the code ken finds for the statement into the first message, after the
+// instruction head and before the task, which still ends the message; with it off, the message carries none.
+func TestRunInjectContext(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\nStage explicit paths.\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module m\n"), 0o644)
+	os.MkdirAll(filepath.Join(ws, "pkg"), 0o755)
+	os.WriteFile(filepath.Join(ws, "pkg", "a.go"), []byte("package pkg\n\n// Target is the code to fix.\nfunc Target() int { return 1 }\n"), 0o644)
+	statement := "Fix `pkg.Target` so it returns 2."
+	firstMessage := func(inject bool) string {
+		ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("ok")))
+		defer ts.Close()
+		cfg := writeConfig(t, ts.URL)
+		f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+		fmt.Fprintf(f, "[run]\ninstructions_head = true\ninject_context = %v\n", inject)
+		f.Close()
+		var stdout, stderr bytes.Buffer
+		if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, statement}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		var ev struct {
+			Payload struct {
+				Content []struct{ Text string }
+			}
+		}
+		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
+			t.Fatalf("first event: %v %s", err, first)
+		}
+		return ev.Payload.Content[0].Text
+	}
+	msg := firstMessage(true)
+	head, code, task := strings.Index(msg, "Stage explicit paths."), strings.Index(msg, "Code that may be relevant"), strings.Index(msg, "\n\nTask: ")
+	if head < 0 || code < head || task < code || !strings.HasSuffix(msg, "\n\nTask: "+statement) ||
+		!strings.Contains(msg, "pkg/a.go, lines 3-4:\n```go\n// Target is the code to fix.\nfunc Target() int { return 1 }\n```") {
+		t.Fatalf("want the head, then the code, then the task:\n%s", msg)
+	}
+	if msg := firstMessage(false); strings.Contains(msg, "Code that may be relevant") || !strings.HasSuffix(msg, "\n\nTask: "+statement) {
+		t.Fatalf("inject_context off still injects, or moves the task:\n%s", msg)
+	}
+}

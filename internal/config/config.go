@@ -118,6 +118,10 @@ type Run struct {
 	// EditTolerances lets an edit of a .go file whose old_string has no exact match apply where one tolerance places it
 	// uniquely, when the file still parses (tools.Options.EditTolerances; calibration §12.22). Default off.
 	EditTolerances bool `toml:"edit_tolerances"`
+	// InjectContext puts the code ken finds for a session's first prompt, up to 1,600 tokens, into its first message
+	// (core.Options.InjectContext; calibration §13.1). Without [ken], tack opens ken's index in bm25 mode for it, at the
+	// first prompt, and adds no tool. Default off.
+	InjectContext bool `toml:"inject_context"`
 }
 
 // Duration is a time.Duration written as a string ("10m").
