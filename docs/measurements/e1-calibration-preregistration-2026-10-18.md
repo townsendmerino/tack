@@ -2090,7 +2090,7 @@ request's tail, under a budget of **1,600 tokens** (DESIGN §7.4's proposed 10% 
 - They go in the tail, not the stable prefix: they are per-task bytes ("Append-only context", CLAUDE.md).
 - The fixed prompt does not change.
 
-**Why not a tool.** A tool the model must choose often goes unused: `edit_lines` was called 0 times in 6 runs (§12.19).
+**Why not a tool.** A tool the model must choose often goes unused: none of `edit_lines`' 6 runs made a line edit (§12.19).
 
 **Selection, fixed for the ceiling check and the arm alike:**
 1. **Named code first.** Each backquoted span in the statement yields the qualified identifiers in it: `a.b.c` and

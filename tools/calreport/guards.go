@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -101,20 +102,88 @@ func readSteps(path string) (steps []step, requests int, stop string, err error)
 
 // guardTally is one setting's firings over an arm's runs.
 type guardTally struct {
-	runsOn, runsFired, firings, edited, verified, either int
+	runsOn, runsFired, firings, edited, verified, gold, any int
+}
+
+// goldSource gives a run's base tree and FixGold (internal/eval/pilot/context.go:FixGold), from the mirrors and the
+// test files the task files name, once per task.
+type goldSource struct {
+	mirrors   string
+	testFiles map[string][]string // by commit
+	cache     map[string]goldEntry
+}
+
+type goldEntry struct {
+	base map[string]string
+	gold []pilot.LineSpan
+	err  error
+}
+
+// newGoldSource reads each task file's commits and test files.
+func newGoldSource(mirrors string, taskFiles []string) (*goldSource, error) {
+	g := &goldSource{mirrors: mirrors, testFiles: map[string][]string{}, cache: map[string]goldEntry{}}
+	for _, p := range taskFiles {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<24)
+		for sc.Scan() {
+			var t struct {
+				Commit    string   `json:"commit"`
+				TestFiles []string `json:"test_files"`
+			}
+			if json.Unmarshal(sc.Bytes(), &t) == nil && t.Commit != "" {
+				g.testFiles[t.Commit] = t.TestFiles
+			}
+		}
+		f.Close()
+	}
+	return g, nil
+}
+
+// seenByReq is a run's gold lines seen through each request (pilot.ContextMetrics.GoldSeenByReq).
+func (g *goldSource) seenByReq(r pilot.Record, events string) ([]int, error) {
+	key := r.Repo + "@" + r.Commit
+	e, ok := g.cache[key]
+	if !ok {
+		_, gold, err := pilot.FixGold(context.Background(), g.mirrors, r.Repo, r.Base, r.Commit, g.testFiles[r.Commit])
+		e = goldEntry{gold: gold, err: err}
+		if err == nil {
+			e.base, e.err = pilot.BaseTree(g.mirrors, r.Repo, r.Base)
+		}
+		g.cache[key] = e
+	}
+	if e.err != nil {
+		return nil, e.err
+	}
+	m, err := pilot.ScoreContext(events, e.base, e.gold, false)
+	if err != nil {
+		return nil, err
+	}
+	return m.GoldSeenByReq, nil
 }
 
 // guards is the per-setting table (§13.4): for each setting an arm has on, the runs it fired in, its firings, and how
-// many firings an applied edit or a passing build followed within guardWindow requests. stop_repeats fires once, at the
-// turn's end, so nothing can follow it. New gold lines seen is not counted here: it needs the task's FixGold
-// (tools/replaycontext).
-func guards(w io.Writer, j *jobData) {
+// many firings were followed within guardWindow requests by an applied edit, a passing build, or (with gs) new gold
+// lines seen. stop_repeats fires once, at the turn's end, so nothing can follow it.
+// goldSeer gives a run's gold lines seen through each request; goldSource is the real one.
+type goldSeer interface {
+	seenByReq(r pilot.Record, events string) ([]int, error)
+}
+
+func guards(w io.Writer, j *jobData, gs goldSeer) {
 	fmt.Fprintln(w, "## Guard firings (§13.4)")
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "A firing is followed when an edit is applied, or a `go build`, `go test` or `go vet` passes, within %d requests after it.\n\n", guardWindow)
-	fmt.Fprintln(w, "| arm | setting | runs on | runs it fired in | firings | per run | followed by an edit | by a passing build | by either |")
-	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|")
-	unread := 0
+	fmt.Fprintf(w, "A firing is followed when, within %d requests after it, an edit is applied, a `go build`, `go test` or `go vet` passes, or a line of the task's FixGold is seen for the first time.", guardWindow)
+	if gs == nil {
+		fmt.Fprint(w, " Gold lines are counted only with -mirrors.")
+	}
+	fmt.Fprint(w, "\n\n")
+	fmt.Fprintln(w, "| arm | setting | runs on | runs it fired in | firings | per run | followed by an edit | by a passing build | by new gold lines | by any |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|---|---|")
+	unread, ungold := 0, 0
 	for _, a := range j.armOrder {
 		names := map[string]bool{}
 		for _, r := range j.arms[a] {
@@ -132,10 +201,24 @@ func guards(w io.Writer, j *jobData) {
 			tallies[n] = &guardTally{}
 		}
 		for i, r := range j.arms[a] {
-			steps, _, stop, err := readSteps(filepath.Join(j.dirs[a][i], "events.jsonl"))
+			events := filepath.Join(j.dirs[a][i], "events.jsonl")
+			steps, _, stop, err := readSteps(events)
 			if err != nil {
 				unread++
 				continue
+			}
+			var byReq []int
+			if gs != nil {
+				if byReq, err = gs.seenByReq(r, events); err != nil {
+					ungold++
+					byReq = nil
+				}
+			}
+			goldAt := func(req int) int { // gold lines seen through request req; 0 before the first
+				if req < 1 || len(byReq) == 0 {
+					return 0
+				}
+				return byReq[min(req, len(byReq))-1]
 			}
 			for _, n := range order {
 				if !slices.Contains(r.Settings, n) {
@@ -163,14 +246,18 @@ func guards(w io.Writer, j *jobData) {
 								e, v = e || later.edited, v || later.verified
 							}
 						}
+						g := byReq != nil && goldAt(s.req+guardWindow) > goldAt(s.req)
 						if e {
 							t.edited++
 						}
 						if v {
 							t.verified++
 						}
-						if e || v {
-							t.either++
+						if g {
+							t.gold++
+						}
+						if e || v || g {
+							t.any++
 						}
 					}
 				}
@@ -183,7 +270,7 @@ func guards(w io.Writer, j *jobData) {
 		for _, n := range order {
 			t := tallies[n]
 			if _, counted := guardMarks[n]; !counted && n != "stop_repeats" {
-				fmt.Fprintf(w, "| %s | %s | %d | — | — | — | prompt only: no firing to count | | |\n", a, n, t.runsOn)
+				fmt.Fprintf(w, "| %s | %s | %d | — | — | — | prompt only: no firing to count | | | |\n", a, n, t.runsOn)
 				continue
 			}
 			per := 0.0
@@ -191,16 +278,26 @@ func guards(w io.Writer, j *jobData) {
 				per = float64(t.firings) / float64(t.runsOn)
 			}
 			if n == "stop_repeats" {
-				fmt.Fprintf(w, "| %s | %s | %d | %d | %d | %.2f | ends the turn | | |\n", a, n, t.runsOn, t.runsFired, t.firings, per)
+				fmt.Fprintf(w, "| %s | %s | %d | %d | %d | %.2f | ends the turn | | | |\n", a, n, t.runsOn, t.runsFired, t.firings, per)
 				continue
 			}
-			fmt.Fprintf(w, "| %s | %s | %d | %d | %d | %.2f | %s | %s | %s |\n", a, n, t.runsOn, t.runsFired, t.firings, per,
-				frac(t.edited, t.firings), frac(t.verified, t.firings), frac(t.either, t.firings))
+			gold := "—"
+			if gs != nil {
+				gold = frac(t.gold, t.firings)
+			}
+			fmt.Fprintf(w, "| %s | %s | %d | %d | %d | %.2f | %s | %s | %s | %s |\n", a, n, t.runsOn, t.runsFired, t.firings, per,
+				frac(t.edited, t.firings), frac(t.verified, t.firings), gold, frac(t.any, t.firings))
 		}
 	}
 	fmt.Fprintln(w)
 	if unread > 0 {
-		fmt.Fprintf(w, "- %d runs' events could not be read and are left out of the table\n\n", unread)
+		fmt.Fprintf(w, "- %d runs' events could not be read and are left out of the table\n", unread)
+	}
+	if ungold > 0 {
+		fmt.Fprintf(w, "- %d runs' gold could not be scored; their gold column counts nothing\n", ungold)
+	}
+	if unread > 0 || ungold > 0 {
+		fmt.Fprintln(w)
 	}
 }
 

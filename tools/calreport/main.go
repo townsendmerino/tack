@@ -46,8 +46,10 @@ func run(args []string, w io.Writer) int {
 	fs.SetOutput(io.Discard)
 	var compare compareList
 	fs.Var(&compare, "compare", "another job's results.jsonl, set beside this one task by task; repeatable; a comma-separated list is one job split over files (C5's passes)")
+	mirrors := fs.String("mirrors", "", "the E1 mirrors directory (<repo>.git): with it, the guard table also counts new gold lines seen after a firing (FixGold)")
+	taskFiles := fs.String("tasks", "eval/e1/calibration.jsonl,eval/e1/pilot.jsonl", "with -mirrors: the task files whose test_files FixGold leaves out, comma-separated")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: usage: [-compare OTHER/results.jsonl]... JOB/results.jsonl"))
+		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: usage: [-compare OTHER/results.jsonl]... [-mirrors DIR [-tasks FILES]] JOB/results.jsonl"))
 		return 2
 	}
 	job, err := load(fs.Arg(0))
@@ -64,7 +66,16 @@ func run(args []string, w io.Writer) int {
 		}
 		others = append(others, o)
 	}
-	report(w, job, others)
+	var gs goldSeer
+	if *mirrors != "" {
+		src, err := newGoldSource(*mirrors, strings.Split(*taskFiles, ","))
+		if err != nil {
+			fmt.Fprintln(w, gate.Verdict(gate.Fail, "calreport: "+err.Error()))
+			return 1
+		}
+		gs = src
+	}
+	report(w, job, others, gs)
 	switch {
 	case job.counted() == 0:
 		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: no counted run in "+job.path))
@@ -206,7 +217,7 @@ func stopKind(r pilot.Record) string {
 	return s
 }
 
-func report(w io.Writer, j *jobData, others []*jobData) {
+func report(w io.Writer, j *jobData, others []*jobData, gs goldSeer) {
 	fmt.Fprintf(w, "# calreport: %s\n\n", j.path)
 	builds(w, j)
 	cells(w, j)
@@ -214,7 +225,7 @@ func report(w io.Writer, j *jobData, others []*jobData) {
 	stops(w, j)
 	perRun(w, j)
 	refusals(w, j)
-	guards(w, j)
+	guards(w, j, gs)
 	bar(w, j)
 }
 

@@ -160,9 +160,9 @@ func TestReport_GuardFirings(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	for _, want := range []string{
-		"| B | result_notes | 1 | 1 | 2 | 2.00 | 1 (50%) | 0 (0%) | 1 (50%) |",
-		"| B | stop_repeats | 1 | 1 | 1 | 1.00 | ends the turn | | |",
-		"| B | instructions_head | 1 | — | — | — | prompt only: no firing to count | | |",
+		"| B | result_notes | 1 | 1 | 2 | 2.00 | 1 (50%) | 0 (0%) | — | 1 (50%) |",
+		"| B | stop_repeats | 1 | 1 | 1 | 1.00 | ends the turn | | | |",
+		"| B | instructions_head | 1 | — | — | — | prompt only: no firing to count | | | |",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
@@ -170,5 +170,29 @@ func TestReport_GuardFirings(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "could not be read") {
 		t.Errorf("the run's events were not found:\n%s", out.String())
+	}
+}
+
+type fakeSeer []int
+
+func (f fakeSeer) seenByReq(pilot.Record, string) ([]int, error) { return f, nil }
+
+// With a gold source, a firing is also followed when the gold lines seen rise within guardWindow requests after it:
+// guardEvents' first firing (request 1) is followed by gold first seen at request 4, its second (request 4) by none.
+func TestReport_GuardFiringsGold(t *testing.T) {
+	r := rec(1, "B", false, "repeat_loop")
+	r.Rep, r.Settings = 1, []string{"result_notes"}
+	p := writeResults(t, []pilot.Record{r})
+	dir := filepath.Join(filepath.Dir(p), "task-01", "B-1")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte(guardEvents), 0o644)
+	j, err := load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	guards(&out, j, fakeSeer{0, 0, 0, 5, 5, 5, 5, 5})
+	if want := "| B | result_notes | 1 | 1 | 2 | 2.00 | 1 (50%) | 0 (0%) | 1 (50%) | 1 (50%) |"; !strings.Contains(out.String(), want) {
+		t.Errorf("missing %q in:\n%s", want, out.String())
 	}
 }

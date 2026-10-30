@@ -61,6 +61,9 @@ type ContextMetrics struct {
 	AUCCov           float64 `json:"auc_cov"`
 	Utilization      float64 `json:"utilization"`
 	EditLoc          float64 `json:"edit_loc"`
+	// GoldSeenByReq is the gold lines seen through each request, cumulative: GoldSeenByReq[i] counts request i+1's
+	// results and every earlier one's. It is left out of CB3's JSON, whose figures it does not change.
+	GoldSeenByReq []int `json:"-"`
 }
 
 const (
@@ -879,10 +882,12 @@ func computeMetrics(gold []LineSpan, steps []stepSpans, spans4k []LineSpan, cumT
 	firstGoldReq := 0
 	covReq1 := 0.0
 	aucSum := 0.0
+	byReq := make([]int, 0, len(steps))
 
 	for rIdx, st := range steps {
 		addSpansToSet(seenCum, st.seen)
 		addSpansToSet(usedCum, st.used)
+		byReq = append(byReq, setIntersectionCount(goldSet, seenCum))
 		cov := setCoverage(goldSet, seenCum)
 		if rIdx == 0 {
 			covReq1 = cov
@@ -950,6 +955,7 @@ func computeMetrics(gold []LineSpan, steps []stepSpans, spans4k []LineSpan, cumT
 		AUCCov:           aucCov,
 		Utilization:      utilization,
 		EditLoc:          editLoc,
+		GoldSeenByReq:    byReq,
 	}
 }
 
