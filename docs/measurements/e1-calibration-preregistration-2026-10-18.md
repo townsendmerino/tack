@@ -1977,3 +1977,84 @@ Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`
   - Whether C6 moves to Qwen3.5-9B is Francis's decision.
   - **Francis, 2026-10-30 08:01 PDT:** C6 stays on Qwen3-8B at 16,384, and the powered comparison runs there.
     Qwen3.5-9B stays a candidate for when goinfer's long-prefill time drops.
+### 12.25 The powered comparison: the bundle against A1 on Qwen3-8B, 14 runs per task per arm (§12.9) (owner, 2026-10-30), registered before its runs
+
+This is §12.9's bundle comparison at its registered size. It follows §12.24 and Francis's decision at 08:01 to keep C6
+on Qwen3-8B at 16,384. Francis chose the four marked choices at 08:20 PDT (relayed by the coordinator), each as tack's
+session recommended them. The rest was drafted by tack's session and goes to him with the harness change it needs.
+- **The arms:**
+  - **A, the do-nothing arm:** A1 as §12.21's A ran it, with no `[run]` settings. *Francis's choice:* not A1 with
+    `fit_window` on (§12.6), so that A matches §12.21's A and §12.9's pooled baseline.
+  - **B, the bundle as adopted:** A plus `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done` and `edit_tolerances`. These are §12.24's seven, passed as
+    `-compare-setting`.
+  - **Both:**
+    - Qwen3-8B `Q4_K_M` (`~/models/qwen3-8b-gguf/Qwen3-8B-Q4_K_M.gguf`) at 16,384;
+    - thinking off, forced-call mode;
+    - sampling 0.7 / 0.8 / 20, `max_tokens` 2048, failure budget 8, the 10-minute cap;
+    - the 12 tasks.
+- **Build:**
+  - **goinfer `b2b5e816`** (`~/tack-runs/bin/goinfer-serve-cuda-b2b5e816` on nobara), the build §12.21 ran, as §12.1
+    fixes. *Francis's choice:* not `95bc3c7b`, on which Qwen3-8B has no bit-identity check.
+  - **tack at the commit that adds this section,** built clean on both machines. It includes the harness change
+    that lets `-reps` set the runs per arm in compare mode (`internal/eval/pilot/run.go:abOrder`), shown to Francis
+    with this section.
+- **Size and order: 336 runs, over two nights of 168.** *Francis's choice:* not one night of 336 (about 11 hours), nor
+  8 per task per arm.
+  - Each night runs the 12 tasks, 14 runs per task back to back: A B B A A B B A A B B A A B, 7 per arm (`-reps 7`).
+  - Each run follows the cell check (§12.2).
+  - The two nights are the same job, written to `~/tack-runs/e1/c6-powered-2026-10-30/night-1/` and `night-2/` on
+    the Mac.
+- **Before night 1, the fit check:** one fit-only load of Qwen3-8B at 16,384 on `b2b5e816`, judged by the server's
+  own plan, holding nobara's timing lock. It must come up `cuda-resident`, or the comparison waits.
+  - It is needed because nobara took a system update on 2026-10-30, which may change the card's free memory.
+  - It is the pilot's cell check (`tack eval pilot -a1 -cell-check`), run by day after nobara's other timed work.
+- **When:** each night is a job on the Mac's `night.py`, as §12.24's was.
+  - It starts no earlier than 22:00. It is retried until 00:30 while nobara's queue or lock is busy or the Mac is on
+    battery.
+  - Its launcher waits for both queues to be idle and both locks free. It clears Go's build cache once if the disk is
+    under 21 GiB (the owner's standing permission), warms tack's sandbox cache untimed, and starts only after a clean
+    cell check.
+  - Night 2 is queued after tack's session has checked night 1. That check covers only the night itself: that it
+    completed, its void cells, and harness errors. No passes are tabulated between the nights.
+- **Time:** §12.21's 72 runs took about 115 s each with their cell checks. So 168 runs take about 5.4 hours, and
+  about 5.5–6 hours per night with the warm-up and the server load. That is about 22:00–04:00.
+- **Void and stopping:**
+  - A void cell is re-run in its place and listed, never averaged (§12.2).
+  - A night that ends before its 168 runs, through a crash, the power or a lock, is not counted. It is listed and
+    re-run whole on a later night. The comparison is read only when two whole nights exist.
+- **The decision rule (§12.3's form; *Francis's choice*, as drafted).** d = B's passes − A's, out of 168 each.
+  - The sd is from §12.9's pooled baseline: task 11 at 4/6, task 2 at 1/6, the other ten at 0.
+  - Under no effect, d has variance 2 · 14 · Σ p(1−p) = 28 · (8/36 + 5/36) = 10.1, so **sd = 3.18**.
+
+| d (B − A, out of 168 each) | verdict |
+|---|---|
+| **+7 or more** (d ≥ 2 sd = 6.36) | **the bundle is shown to beat A1** |
+| +4 to +6 (1 sd ≤ d < 2 sd) | parked: reported, with no more runs unless Francis says so |
+| +3 or less | not shown; the do-nothing arm wins ties |
+
+  - **How often the rule errs when the bundle does nothing,** taking those rates as true and d as normal: shown by
+    chance about 2%, parked by chance about 12%. A task with a small true rate adds noise and raises both.
+  - **Power:** about 80% to see 7% → 17% (§12.9).
+  - **Pass credit is the bundle's** (§12.9). No change's share is read from it.
+- **Predictions (tack's session, before any run),** from §12.21 (A 3/36, B 4/36; task 1 A 0/3, B 3/3; task 11 A 2/3,
+  B 1/3):
+  - A passes 8–20 of 168, and B 12–32;
+  - d between +3 and +14;
+  - task 1: B at least 10 of 14, A at most 3 of 14;
+  - task 11: A at least 7 of 14; B within 4 of A;
+  - window-full stops: A at least 100 of 168, B at most 6.
+- **Reported, not decided on,** as §12.21: each task's passes in both arms, stops by reason, window-full stops, cap
+  hits, requests per run, first-token times, `done` refusals and the cell states. It is also reported beside §12.21's
+  arms and C5, task by task.
+- **The read uses `tools/calreport`** over both nights' results together, with §12.21's job and C5 beside them. It
+  decides nothing:
+
+  ```
+  E=~/tack-runs/e1; P=$E/c6-powered-2026-10-30
+  cat $P/night-1/runs/results.jsonl $P/night-2/runs/results.jsonl > $P/both.jsonl
+  go run ./tools/calreport \
+    -compare $E/c6-bundle-2026-10-28/runs/results.jsonl \
+    -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
+    $P/both.jsonl
+  ```

@@ -136,7 +136,18 @@ changes measured one by one, so these too are ideas to screen.
 ## The bundle night (§12.9)
 
 **Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 was settled. It was settled on
-2026-10-30: it runs on Qwen3-8B at 16,384. The 2026-10-21 plan follows, unchanged.
+2026-10-30: it runs on Qwen3-8B at 16,384.
+
+**Registered as §12.25 (Francis's choices, 2026-10-30 08:20):**
+- 336 runs over two nights of 168, 7 per task per arm each night, A B B A repeated;
+- A is A1 with no settings, B the bundle with `edit_tolerances`;
+- goinfer `b2b5e816`;
+- shown at d ≥ +7, parked at +4 to +6.
+
+It waits on Francis's yes to the harness change it needs (`-reps` with `-compare-setting`) and on the fit-only load on
+nobara after its update. Night 1 then goes on the Mac's `night.py`.
+
+The 2026-10-21 plan follows, unchanged.
 
 - **The plan:** one bundle arm, with every setting above, against the baseline arm on Qwen3-8B. 14 runs per task per
   arm, 336 runs, interleaved per task, each after the cell check. A night job on nobara through goinfer's
