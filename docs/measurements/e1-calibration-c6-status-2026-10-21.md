@@ -3,9 +3,9 @@
 <!-- citations-at: ac4cded -->
 
 A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-registration §12). First written
-2026-10-21; brought up to date 2026-10-29.
+2026-10-21; brought up to date 2026-10-30.
 
-## Where it stands, 2026-10-29
+## Where it stands, 2026-10-30
 
 - **The bundle against A1 at screen size (§12.21): not shown, d = +1.** B passed 4/36 and A 3/36
   (`-c6-bundle-2026-10-28`).
@@ -14,9 +14,11 @@ A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-regis
 - **Qwen3.5-9B (§12.23):** step 1 passed. E0 found it eligible, and the append probe's gate held at 0.15 and 0.07
   of the cold time (`e0-nobara-qwen35-2026-10-29.md`, goinfer `95bc3c7b`).
 - **Step 2 is §12.24:** Qwen3.5-9B at 32,768 with the bundle, 36 runs.
-  - Approved 2026-10-29 and queued tonight on the Mac's `night.py` as `tack-c6-1224-qwen35-row`, at tack `3382aa8`.
-  - Its read uses `tools/calreport`, beside §12.21's job and C5.
-  - **The model question is decided after it.** Francis chooses whether C6 moves to Qwen3.5-9B.
+  - It ran on the Mac's `night.py` from 22:53 on 2026-10-29 to 03:03 on 2026-10-30, at tack `3382aa8`.
+  - **Usable, at the bar:** 4 of 36 passed, on 2 tasks (task 10 1/3, task 11 3/3; task 1 0/3), with 0 void
+    (`-c6-qwen35-row-2026-10-29`).
+  - It had 5 window-full stops and 11 cap hits, and a median run of 7.7 minutes.
+  - **The model question is now open.** Francis chooses whether C6 moves to Qwen3.5-9B.
 - **CB3's scorer** no longer counts a whole-file write as seen (Francis, 2026-10-29). The record's counts are
   unchanged (`e1-cb3-context-metrics-2026-10-28.md` §7).
 
@@ -164,8 +166,8 @@ whichever model C6 keeps. The 2026-10-21 plan follows, unchanged.
    - **Ran 2026-10-28: not shown, d = +1** (B 4/36, A 3/36; `-c6-bundle-2026-10-28`).
    - Francis, 2026-10-29: the bundle with `edit_tolerances` stays C6's loop and runs §12.23's row; the powered
      comparison waits for the model question.
-3. **Next, after §12.24's row:** whether C6 moves to Qwen3.5-9B at 32,768. Then which model the powered comparison
-   runs on.
+3. **Next, now that §12.24's row is read (usable, at the bar):** whether C6 moves to Qwen3.5-9B at 32,768.
+   Then which model the powered comparison runs on.
 4. Settled 2026-10-29: CI's macOS job was dispatched once, and it is green (Triggers, above).
 
 Settled since 2026-10-21:

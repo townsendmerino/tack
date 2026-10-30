@@ -1966,3 +1966,12 @@ Drafted by tack's session on 2026-10-29, after §12.23 step 1 passed its gate (`
     -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
     $E/c6-qwen35-row-2026-10-29/runs/results.jsonl
   ```
+- **Outcome (2026-10-29 22:53 to 2026-10-30 03:03 PDT, tack `3382aa8`, goinfer `95bc3c7b`; record
+  `e1-calibration-c6-qwen35-row-2026-10-29.md`): usable, at the bar.**
+  - 4 of 36 passed, on 2 tasks: task 10 once and task 11 three times. Task 1 passed 0 of 3.
+  - 0 cells were void.
+  - Window-full stops: 5 (4 prompt-too-long, 1 `window_full`). Cap hits: 11. Median run time: 7.7 minutes. The run
+    took 4 h 10 min.
+  - Of the predictions, the pass count and task 11 held. Task 1, the window-full stops, the cap hits and the median
+    run time missed.
+  - Whether C6 moves to Qwen3.5-9B is Francis's decision.
