@@ -2036,3 +2036,6 @@ planned, so **nobara is idle by 21:45**.
   - the median run 8–20 minutes;
   - cap hits 0–3 of the first 9;
   - window-full stops 0–2.
+- **First attempt (2026-10-30, 12:14–12:16 PDT): void, disk.** All 9 runs were refused by the disk floor (5.1 GB free,
+  under 20) and reached no model. The launcher counted them as non-passes, which is a defect, now fixed: a void run
+  stops it. They are recorded as void (`e1-calibration-c8-qwen36-2026-10-30.md`), and the first set re-runs from 12:25.
