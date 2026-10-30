@@ -1964,6 +1964,26 @@ planned, so **nobara is idle by 21:45**.
 - **Holding nobara's timing lock, after nobara's other timed work.** Expected 60–120 minutes, since the timed phases
   prefill on a model whose experts stream from host memory.
 - **Step 2 follows only if E0 is eligible.** A fail or a void is recorded, and gpt-oss-20b's registration comes next.
+- **Pinned (2026-10-30, before the run; posted by nobara-big01, relayed by the coordinator):**
+  - **goinfer `00584c35`:** branch `big01-moe-serve-2026-10-30`, which is main plus goinfer PR #521's bit-identical
+    shared-expert prefill fix. It is used before #521 merges, under Francis's standing rule.
+    - Binary: `/home/francis/goinfer-bench/big01-2026-10-30/goinfer-serve-cuda-00584c35`, sha256 `b25f68126426b1d6…`.
+  - **The model:** `~/models/qwen3.6-35b-a3b-q4_k_m.gguf`, served from its v17 `.giw` sidecar.
+  - **Server flags:** `-backend cuda -moe-cache-experts -thinking off`, at `-ctx 16384` as registered (nobara-big01
+    served it at 32,768). The decode path is `cuda-resident (int4)`, as nobara-big01's banner shows. E0 and the pilot
+    check the banner's path (`internal/eval/runner.go:VoidPath`) in place of goinfer's `-require-backend`.
+  - **tack `5704cba`,** the commit that added this section, built clean on both machines.
+  - **What nobara-big01 measured** (goinfer `docs/measurements/big01-moe-serve-2026-10-30/README.md`):
+    - load in 21 s, peak RSS 38.8 GB, no swap;
+    - decode 43.5 tok/s, not the 11–16 assumed above;
+    - forced tool calls correct;
+    - cold first token 33.5 s at 3.6k and 150 s at 13.2k, about 90 tokens/s;
+    - with the prefix reused by appending, 6.9–7.1 s at about 12k.
+  - **So §14.2's 30-minute cap stays.** Decode is about half of Qwen3-8B's (79 tok/s), and cold prefill is several
+    times slower, so a run's model time is roughly 2–6 times Qwen3-8B's. A 10-minute run of C5 maps to 20–60 minutes,
+    and 30 covers most of that.
+  - **Order on the card:** after nobara-big01's gpt-oss-20b check (about 11:42). §12.25's fit-only load first (a few
+    minutes, from the Mac), then this E0, as a job on nobara's `night.py` holding its timing lock.
 
 ### 14.2 Step 2: a small calibration run, expanded if it passes
 
