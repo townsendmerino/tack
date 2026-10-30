@@ -2201,6 +2201,26 @@ nothing written later leaks in.
 - **The rule:** it goes to a screen if the map names the gold file on **at least 6 more of the 22 tasks than the
   head does.**
 - **The map's size is reported:** at most 1,000 tokens at bytes / 3.
+- **The map and the counts, fixed before gate 0 runs** (2026-10-30). tack's session drafted this, filling in "ranked"
+  with a construction that needs no ken change (`tools/repomapgate`):
+  - **Files:** every `.go` file at base, except `_test.go` files and anything under `testdata/` or `vendor/`.
+  - **Symbols:** each file's exported definitions from ken's structural index (`Outline`, `bm25`). A method is kept
+    when its own name is exported, and is written `Type.Method`.
+  - **Rank:**
+    - a symbol's references are the other `.go` files in which its name (a method's own name) occurs as a whole word;
+    - a file's score is the sum of its symbols' references;
+    - files go in descending score, with ties broken by path.
+  - **Text:**
+    - the line `Repository map (the most-referenced Go files and their exported symbols):`;
+    - then one line per file, `path: A, B, …`, with at most 8 symbols in descending references.
+    - Files are added in rank order while the map stays within 3,000 bytes (1,000 tokens at bytes / 3).
+  - **The head it is compared with** is the head `instructions_head` gives at 16,384 tokens
+    (`internal/core/instructions.go:instructionHead`). It is taken over the first of `AGENTS.md`, `CLAUDE.md` and
+    `CONTEXT.md` at the repository root at base. A repository with none has an empty head.
+  - **"Names the gold file"** means the text contains the repository-relative path of at least one file holding a
+    `FixGold` span.
+  - **"Names the gold symbol"**, reported only, means it lists a symbol whose definition overlaps a `FixGold` span. For
+    the head, it means the head contains that symbol's name as a whole word.
 
 ### 13.4 Guard firings in every record
 
