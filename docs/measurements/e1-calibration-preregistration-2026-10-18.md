@@ -2323,3 +2323,82 @@ fires, or fires with no progress after, is a candidate for removal, and that rem
 carry today, and what tack must start logging, is recorded with the table's commit.
 - **First reading (2026-10-30):** over §12.21's B and §12.24, with what records carry today and what tack must start
   logging, in `e1-c7-injection-ceiling-2026-10-30.md` ("Guard firings").
+
+## 14. Amendment C8: a bigger MoE model, Qwen3.6-35B-A3B — owner, 2026-10-30, registered before its runs
+
+**Why.** C4, C5, §12.21 and §12.24 put every arm at or under §2's bar, and the loop changes moved little. Francis
+(10:35 PDT, relayed by the coordinator) read the calibration as saying the model is the limit. He asked for a bigger
+MoE model today:
+- Qwen3.6-35B-A3B first, its experts streamed from nobara's 64 GB of RAM;
+- gpt-oss-20b second, registered on its own when its turn comes.
+
+It goes ahead of C7's injection screen on nobara's card. §12.25's fit-only load and its night 1 at 22:00 stay as
+planned, so **nobara is idle by 21:45**.
+- **The earlier run:** C3's E0 of 2026-10-18 found this model void. goinfer's swap guard tripped in `check`, and host
+  RSS peaked at 33.1 GB (`e0-nobara-c3-2026-10-18.md`).
+- **The fix:** nobara-big01 is fixing goinfer's load, and will post the exact `goinfer-serve` command once the model
+  serves cleanly.
+
+### 14.1 Step 1: E0, by day
+
+- **The model:** Qwen3.6-35B-A3B `q4_k_m` from `~/models` on nobara, at **16,384**, C6's window and tack's design
+  window. The server command and goinfer commit are the ones nobara-big01 posts. They are pinned in a line here before
+  the run, with the decode path goinfer's banner must name.
+- **The rule:** E0's, unchanged (`e0-preregistration-2026-10-16.md`, amendments 4 and 11):
+  - admitted at the window;
+  - `check` ok;
+  - smoke at least 17 of 20 on both runs, with 0 malformed.
+
+  A swap-guard halt, an unanswered request or a decode on another path than the pinned one is **void**, not a fail.
+- **The append probe** (amendment 11) is reported, not gated. A slow prefill only makes step 2 slower, and the cap
+  below allows for it.
+- **Holding nobara's timing lock, after nobara's other timed work.** Expected 60–120 minutes, since the timed phases
+  prefill on a model whose experts stream from host memory.
+- **Step 2 follows only if E0 is eligible.** A fail or a void is recorded, and gpt-oss-20b's registration comes next.
+
+### 14.2 Step 2: a small calibration run, expanded if it passes
+
+- **The loop:** the bundle as adopted (§12.24's seven settings), thinking off, forced-call mode, sampling 0.7 / 0.8 /
+  20, `max_tokens` 2048, failure budget 8, at 16,384.
+- **The cap: 30 minutes per run,** not C5's 10.
+  - E0 at C3 put Qwen3-8B's decode at 79 tok/s; this model's is about 11–16 (nobara-big01's estimate). That is about
+    a fifth.
+  - Prefill streams experts too. Three times C5's cap gives a run about the model time a 10-minute run had on
+    Qwen3-8B, if prefill slows no more than decode.
+  - Cap hits are reported as such.
+- **Build:** tack at the commit that adds this section, built clean on both machines. goinfer as pinned in §14.1.
+- **The first set, at most 3 tasks** (Francis's limit), **3 runs each,** 9 runs in task order:
+  1. **Task 11, the sanity check.** Every Qwen3-8B arm passed it (C5 3/3, §12.21 A 2/3 and B 1/3), and CB3's runs
+     reached its gold 97.8% of the time. If a 35B model cannot pass it, the harness or the server is suspect before the
+     model.
+  2. **Task 1.** The bundle passed it 3/3 on Qwen3-8B (§12.21 B), and A1 never did. It shows whether the loop's best
+     case carries to the larger model.
+  3. **Task 10, the capability probe.** Runs reach its gold 64% of the time (CB3), but Qwen3-8B never passed it, and
+     Qwen3.5-9B passed it once (§12.24). It is where a better model should turn reach into a pass.
+
+  Three runs give each task a rate of 0–3 of 3, comparable with the rows' per-task cells.
+- **The expansion rule** (Francis, 10:36):
+  - **If any run of the first set passes,** more tasks follow, 3 runs each, one task at a time, in this order: **2,
+    12, 6, 5, 3, 4, 7, 9, 8.**
+  - The order is CB3's per-task reach, highest first (61.9%, 53.3%, 48.5%, 46.4%, 22.4%, 5.5%, 2.2%, 2.0%, 0%), so
+    the tasks where a model could most often turn reach into a pass come first.
+  - **If no run of the first set passes,** the run stops after its 9 runs, and gpt-oss-20b comes next.
+- **The stopping point today:**
+  - **No task block starts after 20:15.** A block is 3 runs of at most 30 minutes, so the last one ends by 21:45.
+  - The launcher checks the clock before each block.
+  - Tasks left continue on a later day by day, on the same build and in the same order, until all 12 tasks have 3
+    runs.
+- **Void:** §12.2's cell rule. A run void on the server (a swap-guard halt, or a request with no answer) stops the run.
+  It is recorded and re-run in its place on the next slot.
+- **The reading:**
+  - **Reported, not decided on:** each task's passes beside §12.21's B and §12.24, task by task, plus stops, cap hits,
+    window-full stops, requests and first-token times per run, from `tools/calreport` with the guard table.
+  - **If all 12 tasks reach 3 runs** (36 runs), §2's bar is read as for §12.24: usable at 4 or more passes on 2 or
+    more tasks.
+  - **It is not a model verdict.** The tasks are a subset until all 12 run, and the window, the cap and the speed
+    differ from the Qwen3-8B rows. Whether C6 or C7 moves to this model is Francis's decision.
+- **Predictions (tack's session, before any run):**
+  - task 11 at least 2 of 3; task 1 at least 1 of 3; task 10 0–2 of 3;
+  - the median run 8–20 minutes;
+  - cap hits 0–3 of the first 9;
+  - window-full stops 0–2.
