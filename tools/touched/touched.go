@@ -246,7 +246,11 @@ func checkGo(root, goos, verb string, pkgs []string) []gate.Cell {
 		c.Outcome = gate.NA
 		return []gate.Cell{c}
 	}
-	out, err := run(root, []string{"GOOS=" + goos, "CGO_ENABLED=0"}, "go", append([]string{verb}, args...)...)
+	flags := []string{verb}
+	if verb == "build" {
+		flags = append(flags, "-o", os.DevNull) // a lone main package would otherwise be written into root
+	}
+	out, err := run(root, []string{"GOOS=" + goos, "CGO_ENABLED=0"}, "go", append(flags, args...)...)
 	if err != nil {
 		c.Outcome, c.Detail = gate.Fail, out
 	} else {

@@ -125,3 +125,26 @@ func TestRunCatchesEachDefect(t *testing.T) {
 		t.Errorf("run outcome %s, want FAIL", r.Outcome)
 	}
 }
+
+// TestCheckGoLeavesNoBinary: the build check over a lone main package writes no executable into the checked tree, as
+// `go build` of one main package otherwise does.
+func TestCheckGoLeavesNoBinary(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n\ngo 1.22\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "tools", "x"), 0o755)
+	os.WriteFile(filepath.Join(dir, "tools", "x", "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644)
+	for _, goos := range []string{"linux", "darwin"} {
+		cells := checkGo(dir, goos, "build", []string{"m/tools/x"})
+		if len(cells) != 1 || cells[0].Outcome != gate.OK {
+			t.Fatalf("build/%s: %+v", goos, cells)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 2 {
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Fatalf("build/%s left files in the tree: %v", goos, names)
+		}
+	}
+}
