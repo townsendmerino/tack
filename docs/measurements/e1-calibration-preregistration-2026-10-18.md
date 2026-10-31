@@ -2207,6 +2207,41 @@ This drafts three screens, one registration each, with rigor matched to a screen
 - **The decision metric: passes.**
 - **The mechanism metric:** window-full stops (`window_full` plus prompt-too-long), and tokens at stop.
 - **Predictions:** window-full stops halved or better; passes up by 1–4.
+- **Arms line (2026-10-31, tack's session, before any run of this screen):**
+  - **The arm:** Qwen3.6-35B-A3B `q4_k_m` on nobara at `-ctx 16384` with `-moe-cache-experts` and `thinking-off`, on
+    goinfer `00584c35` (`goinfer-serve-cuda-00584c35`), with sampling 0.7 / 0.8 / 20 and a 30-minute cap per run, as
+    in §14.4.
+  - **The build:** tack `dc5a7ae` (main with #29 and #30 merged), built for both machines from a clean clone at that
+    commit (`~/tack-runs/src/tack-dc5a7ae`). The launcher is `~/tack-runs/e1/c9-screens-2026-10-31/launch.sh`
+    (`152` or `153`), a job on the Mac's night.py.
+  - **A:** the bundle as in §14.4: `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`. **B:** A plus `mask_observations`.
+  - **The setting as built** (DESIGN §7.6; `internal/loop/mask.go`):
+    - **When:** before a request, once the last prompt has reached 75% of the served window. After a compaction,
+      the next waits until the prompt has grown by 10% of the window.
+    - **What it masks:** a read that a later whole, successful read of the same file version covers, and command
+      output older than the last 3 requests, over 300 bytes.
+    - **The record:** each compaction is a `compaction` event naming every stub.
+  - **The sd: 2.0,** from the 35B's 16k per-task pass rates (§14.4's row with C8's first set): tasks 1, 3 and 8 at
+    1/3, tasks 10, 11 and 12 at 3/3, the other six at 0/3. Under no effect, var(d) is the sum over tasks of
+    3 · 2 · p(1 − p), which is 4.0. So **d ≥ +4 is adopted, +2 ≤ d ≤ +3 is parked, and d ≤ +1 is not shown**, with A
+    winning ties.
+  - **Size and order:** the 12 tasks, A B B A A B per task, 72 runs, each after the cell check.
+  - **Mechanism metric, reported and never used for adoption:**
+    - window-full stops (`window_full` plus the server's prompt-too-long refusal) per arm, and tokens at stop;
+    - in B, the compactions per run, the bytes they masked, and the request each ran before.
+  - **Check on the first block:** every B run's tack config must have `mask_observations = true`, and no A run's
+    may. Otherwise the screen stops, since the setting did not reach the arm. The launcher logs each B run's
+    compactions, which are reported, not checked.
+  - **Stopping and void:** as §13.1's screen. One task's six runs per invocation. A void cell is re-run in its
+    place. A block cut short is re-run whole. It is read only when all 72 runs exist.
+  - **When:** after §12.25's night 2 ends, as §15 registers. A night.py job on the Mac, like night 2. It is over
+    two hours, so it may run overnight (run budget).
+  - **Predictions (restated for the 35B at 16k):**
+    - window-full stops in B are half of A's or fewer (§14.4 had 9 of 22 failures stop on a full window);
+    - passes up by 0 to +3. Most of the 35B's failures are repeat loops without an edit (13 of 22), and masking does
+      not touch those.
+  - **Time:** 72 runs at about 3.1 minutes each (§14.4's mean, 186 s), plus cell checks and grading: about 4–5 hours.
 
 ### 15.3 Best of N with the task's test as verifier (`best_of`), decided by any-of-k passes
 
@@ -2219,6 +2254,43 @@ This drafts three screens, one registration each, with rigor matched to a screen
 - **The mechanism metric:** the verifier's agreement with the grader (false accepts and false rejects).
 - **Predictions:** any-of-k passes on tasks at 1/3 per attempt rise toward 2/3; overall d of +4 to +10; wall time
   about 2–3 times A's.
+- **Arms line (2026-10-31, tack's session, before any run of this screen):**
+  - **The arm and build:** as §15.2's arms line, except the cap is **90 minutes per run in both arms** (Francis,
+    relayed by the coordinator).
+  - **A:** the bundle, plus `mask_observations` if §15.2 adopted it (d ≥ +4). The launcher applies §15.2's rule
+    from §15.2's 72 records before its first run and logs which A it chose. **B:** A plus `best_of_3`
+    (`best_of = 3`).
+  - **The setting as built** (`cmd/tack/bestof.go`; #29):
+    - **Attempts:** up to 3 sessions, one after another, each fresh, at the registered sampling (0.7 / 0.8 / 20).
+      tack refuses `best_of` at temperature 0 or top_k 1.
+    - **Kept:** the first attempt that ends with exit 0, keeps HEAD, deletes no test file, builds
+      (`go build ./...`), and passes `go test` of every package it changed. That is the user's own tests at the
+      base, which includes the task's named test when it is in a changed package. The grader is never consulted.
+    - **Between attempts:** the tree is reset to the base (`git reset --hard`, `git clean -fd`).
+    - **With none verified:** the last attempt that changed a Go file is restored and graded.
+  - **The per-attempt cap differs from §15.3's text.** tack's pilot config sets `max_wall = "24h"`, so an attempt is
+    bounded only by the run's 90-minute cap, not by its own 30 minutes. C8's 72 runs at 16k and 32k hit no
+    30-minute cap; the longest took 15 minutes (at 32k), and 4.3 minutes at 16k. A cap hit is reported per arm.
+  - **The sd, the rule, size and order:** as §15.2's arms line. sd 2.0; d ≥ +4 adopted; +2 ≤ d ≤ +3 parked; d ≤ +1
+    not shown, with A winning ties. 72 runs, A B B A A B.
+  - **Reported:**
+    - **Pass rates:** A's pass rate is the per-attempt rate; B's is any-of-k as the verifier picks it.
+    - **Attempts:** in B, the attempts per run and each attempt's verifier verdict, from `stderr.log`'s
+      `best_of attempt` lines.
+    - **Wall time** per arm.
+  - **The mechanism metric, the verifier against the grader:**
+    - **False accepts** are measured: a kept, verified attempt the grader fails.
+    - **False rejects** are measured only for the attempt graded when none verified (the grader passes it). Attempts
+      reset before the run ends are never graded.
+  - **Check on the first block:** every B run's tack config must have `best_of = 3`, and no A run's may. Each B
+    run's `stderr.log` must have a `best_of attempt 1 of 3` line. If one has none (best_of refused its workspace or
+    its sampling), the screen stops, since that run measured nothing.
+  - **Stopping and void:** as §15.2's arms line.
+  - **When:** after §15.2's 72 runs, overnight if needed.
+  - **Predictions (restated for the 35B at 16k):** d between +2 and +6. The tasks at 1/3 (1, 3 and 8) rise toward
+    2/3, the 0/3 tasks stay near 0, and B's wall time is 2–3 times A's.
+  - **Time:** A about 2–2.5 hours; B about 4–5 hours (two of three runs fail, so they make all 3 attempts). About
+    6–7 hours in all.
 
 **Order:** 15.1, then 15.2, then 15.3, each stacked on what the one before adopted (§12.1). The three are drafted for
 Francis's yes, and their arms lines are fixed before any run.
