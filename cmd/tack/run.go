@@ -232,7 +232,12 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)
 
-	code := drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
+	var code int
+	if k := cfg.Run.BestOf; k > 1 && *edit {
+		code = bestOf(ctx, k, ws, opts.Edit, func(int) int { return drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr) }, stderr)
+	} else {
+		code = drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
+	}
 
 	if rec != nil {
 		if err := rec.C.Save(*record); err != nil {

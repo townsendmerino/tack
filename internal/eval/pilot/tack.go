@@ -71,12 +71,20 @@ var RunSettings = map[string]bool{
 	"edit_tolerances":        true, // §12.22, judged by replay
 	"inject_context":         true, // §13.1, C7's turn-1 injection
 	"repo_map":               true, // §13.3, C7's generated repository map
+	"best_of_3":              true, // §15.3, C9's best of three, written as best_of = 3 (runValues)
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.
+// runValues are the arm settings that set a [run] key to a value other than true.
+var runValues = map[string]string{"best_of_3": "best_of = 3"}
+
 func runLines(settings []string) string {
 	var b strings.Builder
 	for _, s := range settings {
+		if v, ok := runValues[s]; ok {
+			b.WriteString(v + "\n")
+			continue
+		}
 		fmt.Fprintf(&b, "%s = true\n", s)
 	}
 	return b.String()
