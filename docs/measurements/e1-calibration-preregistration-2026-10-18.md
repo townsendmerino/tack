@@ -2088,3 +2088,11 @@ Francis chose a 32,768 window for the expanded set ("32 sounds good", relayed by
   - window-full and prompt-too-long stops 0–3 in all.
 - **The run in progress:** §14.2's launcher was suspended (SIGSTOP) at about 12:50, while task 10's block ran. It
   started no 16k expansion block, and is removed once that block ends.
+- **The owner's battery override (Francis, 2026-10-30 18:05, relayed by the coordinator):** "go ahead and start tack's
+  run, I will watch battery."
+  - The Mac went onto battery at about 17:05, during task 4's block. The launcher then waited, and the pilot voids a
+    cell that starts on battery (§12.2).
+  - **The remaining blocks run with `-allow-battery`** (`cmd/tack/pilot_a1.go:cellVoid`), on tack at the commit that
+    adds this line, built clean on both machines. Every other cell rule stays, and each run records its power.
+  - **Mac-side timings from these blocks are reported only.** Pass and fail, stops and nobara-side figures stand.
+  - **No new block starts with the battery under 30%.** The 21 GiB guard and the 20:15 cut stay.
