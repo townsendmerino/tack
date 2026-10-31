@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,19 +93,29 @@ func TestMaskStubsCommandOutput(t *testing.T) {
 	}
 }
 
-// One-shot: with the prompt staying past maskRearmShare, a compaction runs once, though a later read would supersede
-// another; the rule re-arms only when the prompt falls below maskRearmShare.
-func TestMaskObservationsIsOneShot(t *testing.T) {
-	h := maskHarness(t, true, 120,
-		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "read", bigRead),
-		goinfertest.Calls("", "t3", "read", bigRead), goinfertest.Says("ok"))
-	h.sess.Turn(context.Background(), "read it three times")
-	if n := len(h.payloads(proto.EvCompaction)); n != 1 {
-		t.Fatalf("%d compactions, want 1 while the prompt stays past the re-arm share", n)
+// readAt is a scripted reply that reads big.txt whole and reports a prompt of the given tokens.
+func readAt(id string, prompt int) goinfertest.Reply {
+	return goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", prompt, 0, 1,
+		proto.ModelBlock{Type: "tool_use", ID: id, Name: "read", Input: json.RawMessage(bigRead)})}
+}
+
+// After a compaction the next waits for the prompt to grow maskRegrowShare of the window past the first prompt after
+// it, though there is something to mask before then; it does not wait for the prompt to fall. Window 1000: request 3
+// compacts at 800; the floor is request 3's 700; at 790 (request 4) it has grown 90, too little; at 810 (request 5) it
+// has grown 110, so request 6 compacts. Every-request compaction would also compact before request 5; a rule that
+// waits for the prompt to fall below a share would never compact again.
+func TestMaskObservationsRegrows(t *testing.T) {
+	h := maskHarness(t, true, 1000, readAt("t1", 800), readAt("t2", 800), readAt("t3", 700), readAt("t4", 790),
+		readAt("t5", 810), goinfertest.Says("ok"))
+	if _, err := h.sess.Turn(context.Background(), "read it five times"); err != nil {
+		t.Fatal(err)
 	}
-	h.sess.noteUsage(10) // the prompt falls below maskRearmShare of 120
-	if h.sess.maskSpent {
-		t.Fatal("a prompt under the re-arm share did not re-arm the rule")
+	var at []int
+	for _, p := range h.payloads(proto.EvCompaction) {
+		at = append(at, p.(proto.Compaction).Request)
+	}
+	if fmt.Sprint(at) != "[3 6]" {
+		t.Fatalf("compactions before requests %v, want [3 6]", at)
 	}
 	h.checkRebuild(t)
 }
@@ -140,7 +151,42 @@ func TestMaskReadSuperseding(t *testing.T) {
 		"a range past line 200, then a whole read":  {read("a", `{"path":"f.go","offset":300,"limit":20}`, true), read("b", `{"path":"f.go"}`, true), false},
 		"an offset with no limit is never compared": {read("a", `{"path":"f.go","offset":5}`, true), read("b", `{"path":"f.go","offset":1,"limit":500}`, true), false},
 	} {
-		s := &Session{obs: []observation{c.earlier, c.later}}
+		s := &Session{}
+		s.track(c.earlier, false)
+		s.track(c.later, false)
+		got := s.maskStubs(2)
+		if (len(got) == 1 && got[0].ID == "a") != c.masked {
+			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
+		}
+	}
+}
+
+// A read is superseded only by a later read of the same version of the file, returned whole: an edit or write of that
+// file, or any call that may change files, between the two keeps the earlier read; an edit of another file, or a read-
+// only call, does not; and a later read cut to fit the window covers nothing.
+func TestMaskReadSupersedingVersions(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	call := func(id, tool, input string) observation { return observe(id, tool, []byte(input), 1, long, true) }
+	for name, c := range map[string]struct {
+		between   []observation
+		truncated bool
+		masked    bool
+	}{
+		"nothing between":           {nil, false, true},
+		"a later read cut to fit":   {nil, true, false},
+		"an edit of the file":       {[]observation{call("e", "edit", `{"path":"f.go"}`)}, false, false},
+		"a write of ./f.go":         {[]observation{call("e", "write", `{"path":"./f.go"}`)}, false, false},
+		"a bash call":               {[]observation{call("e", "bash", `{"command":"gofmt -w ."}`)}, false, false},
+		"an unknown tool":           {[]observation{call("e", "rewrite_all", `{}`)}, false, false},
+		"an edit of another file":   {[]observation{call("e", "edit", `{"path":"g.go"}`)}, false, true},
+		"a grep and a failed write": {[]observation{call("g", "grep", `{"pattern":"x"}`), observe("w", "write", []byte(`{"path":"g.go"}`), 1, "denied", false)}, false, true},
+	} {
+		s := &Session{}
+		s.track(call("a", "read", `{"path":"f.go"}`), false)
+		for _, o := range c.between {
+			s.track(o, false)
+		}
+		s.track(call("b", "read", `{"path":"f.go"}`), c.truncated)
 		got := s.maskStubs(2)
 		if (len(got) == 1 && got[0].ID == "a") != c.masked {
 			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
@@ -182,5 +228,27 @@ func TestMaskCutKeepsRunes(t *testing.T) {
 	}
 	if got := cut("short", 80); got != "short" {
 		t.Fatalf("cut changed a short string: %q", got)
+	}
+}
+
+// A command over several lines is one line in its stub.
+func TestMaskCommandStubIsOneLine(t *testing.T) {
+	s := &Session{obs: []observation{observe("m", "bash", []byte(`{"command":"cd pkg &&\n  go test ./..."}`), 1, strings.Repeat("o\n", 200), true)}}
+	got := s.maskStubs(9)
+	if len(got) != 1 || strings.Contains(got[0].Stub, "\n") || !strings.Contains(got[0].Stub, "`cd pkg && go test ./...`") {
+		t.Fatalf("stubs %+v", got)
+	}
+}
+
+// Through the loop: a later read cut to MaxResultBytes supersedes nothing, so past the threshold no compaction runs.
+func TestMaskObservationsCutReadSupersedesNothing(t *testing.T) {
+	h := maskHarness(t, true, 120,
+		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "read", bigRead), goinfertest.Says("ok"))
+	h.sess.cfg.MaxResultBytes = 4000
+	if _, err := h.sess.Turn(context.Background(), "read it twice"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.payloads(proto.EvCompaction)); n != 0 {
+		t.Fatalf("%d compactions: a read cut to the result cap superseded the earlier one", n)
 	}
 }
