@@ -1924,6 +1924,10 @@ after §12.25's night 2.
     (calibration 7, 11 and 12) reach gold on 0/3, 3/3 and 2/3 in §12.21's B.
   - Passes in each arm are within 2 of each other.
 - **Time:** about 2.5 hours by day.
+- **The model changes (Francis, 2026-10-30 20:10, relayed by the coordinator):** this screen runs on Qwen3.6-35B-A3B at
+  16,384 (§14), after §14.4's 16k row, not on Qwen3-8B. Its arms line names the model, the build and A's settings, and
+  takes its sd from the 35B's 16k per-task reach (§14.4). The line is written before the first run. The predictions
+  above were made for Qwen3-8B and are restated in that line.
 
 ### 13.4 Guard firings in every record
 
@@ -2105,8 +2109,40 @@ Francis chose a 32,768 window for the expanded set ("32 sounds good", relayed by
   - On the tasks both windows ran (1, 10, 11): 16k 7/9, 32k 6/9.
   - The override blocks all ran on mains.
   - The window for the next screens and the model for §13.3's screen are Francis's decisions.
+- **Francis, 2026-10-30 20:10 (relayed by the coordinator):**
+  - the 35B's window for the next screens is 16,384, confirmed first by §14.4's 16k row;
+  - §13.3's repo-map screen runs on the 35B at 16k after that row, not on Qwen3-8B;
+  - C9's three screens (§15) are approved.
+
+### 14.4 The 35B's 16k row on the other 9 tasks (Francis, 2026-10-30 20:10), registered before its runs
+
+- **What:** tasks 2, 12, 6, 5, 3, 4, 7, 9 and 8, 3 runs each (27 runs), at `-ctx 16384`. With §14.2's first set (tasks
+  11, 1 and 10), that makes the 35B's 16k row on all 12 tasks.
+- **The arm:** §14.2's, on the same goinfer `00584c35` with `-moe-cache-experts`.
+  - tack `31a89c2`, the build of §14.3's last blocks. The commits since then change no code.
+  - It runs with `-allow-battery` (§14.3), each run recording its power. In practice it will be on mains.
+  - The bundle, C8's sampling and limits, and the 30-minute cap.
+- **When:** by day on 2026-10-31.
+  - It starts only after §12.25's night 1 has ended (`night-1/done`) and not before 07:00.
+  - Before its first block, a cell check at 16,384 must come up `cuda-resident` and clean.
+  - No block starts after 20:15, so both machines are idle for night 2 at 22:00.
+  - Each block yields to another run waiting on either machine's lock (§14.3's yield), and needs 21 GiB free.
+  - A block with any void run stops it.
+- **The reading:**
+  - **The 12-task row at 16k against §14.3's at 32k,** per task and by stop cause, with tokens at stop. §2's bar is
+    read at 16k: usable at 4 or more passes on 2 or more tasks.
+  - **It confirms 16k** if the 16k row's passes are at least the 32k row's (13) minus 3. Fewer than that is reported
+    to Francis before any C9 screen runs.
+  - **It also fixes the per-task pass rate and reach** from which §13.3's and §15's screens take their sd, in their
+    arms lines.
+- **Predictions (tack's session, before any run):**
+  - the 9 tasks pass 4–9 of 27, so the full 16k row is 11–16 of 36;
+  - window-full stops are more frequent than at 32k, and repeat loops fewer.
 
 ## 15. Amendment C9: loop changes on the 35B — drafted 2026-10-30 for the owner, before any run
+
+**Approved by Francis, 2026-10-30 20:10** (relayed by the coordinator): all three screens, each after §14.4's row and
+§12.25's two nights. Each setting lands in its own product PR, off by default.
 
 **Why.** Francis (16:59, relayed by the coordinator) asked for screens of the cheapest loop candidates in DESIGN §17.1,
 aimed at what C8 showed on Qwen3.6-35B-A3B (`e1-calibration-c8-qwen36-2026-10-30.md`):
