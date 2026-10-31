@@ -1466,6 +1466,34 @@ chafes. On one local model, parallel sessions share one decoder, so worktrees bu
 | R12 | the one-install promise fails on 16 GB Macs: no agent-capable model fits beside the owner's other apps | high | high | E0 on Metal before the app; memory-tiered model offers on first run; a plain message and the remote-server path where nothing fits; goinfer's never-swap and paging work |
 | R13 | the models that fit the owner's hardware do not make agentic edits, even with working tool calls. **Observed:** E1 pilot re-run 2026-10-17, Qwen2.5-7B-Instruct on nobara: 0 of 20; every call parsed and ran, yet 13 runs answered in prose instead of editing, 5 edited the wrong thing and 2 looped (`docs/measurements/e1-pilot-2026-10-17.md`) | high | high | coder-tuned models (an E0 amendment adds coder-tuned 7–8B models with a fit check first); tack's loop treats "answered instead of editing" on an edit task as a failure, not an end; hardware with room for a larger model |
 
+### 17.1 Loop candidates after C8 (R13's mitigations; Francis, 2026-10-30)
+
+C8 put Qwen3.6-35B-A3B on the calibration set (`docs/measurements/e1-calibration-c8-qwen36-2026-10-30.md`). Its figures
+here are as of 17:00 PDT, before the 32k arm ended.
+- At 16,384, 7 of 9 runs passed (tasks 11 and 10 at 3/3, task 1 at 1/3).
+- At 32,768, the first 18 runs passed 5 (task 12 at 3/3, tasks 1 and 3 at 1/3, tasks 2, 5 and 6 at 0/3).
+
+Three patterns are what the candidates below aim at:
+- **The runs read until the window is full, at either size.** Most 32k failures stopped at 31–33k tokens: prompt too
+  long, `window_full`, or a repeat loop near the top. The 16k failures stopped at 14.7–16.5k.
+- **Repeat loops with no edit.** Runs stopped by `stop_repeats` before editing anything.
+- **Harder tasks pass about one run in three.**
+
+The candidates, cheapest first. Each would be a `[run]` setting, off by default, registered as a screen in the
+calibration pre-registration (C9) before it runs.
+
+| # | candidate | cost | what it does | the C8 evidence it targets |
+|---|---|---|---|---|
+| 1 | failing test first | S | before turn 1, the harness runs the task's named test and puts its output (failing assertion, stack trace) in the first message, beside ken's top hits | runs explore until the window fills before finding the code; pairs with `inject_context` (calibration §13.1) |
+| 2 | observation masking | S–M | keep only the latest read of each file; older reads and long command output become a one-line stub ("read server.go 1–200 at request 4") | the window fills with stale reads at 16k and 32k alike. Published agent research reports masking about as good as summarizing, and cheaper; the citation goes with its registration |
+| 3 | a harness-kept notes block | M | a short structured block at the top of each request (task, findings, files ruled out, plan), kept by the harness from the model's own short notes, and surviving masking | repeat loops: the model re-reads what it has already ruled out |
+| 4 | restart from notes, not stop | M | on `stop_repeats` or a nearly full window, start a fresh conversation with the task and the notes block instead of ending the run | runs that end on `repeat_loop` or a full window with no edit |
+| 5 | best of N, with the task's test as verifier | M (wall time) | k independent attempts (fresh context, a different seed), keeping the first that passes the task's own named test | harder tasks at about 1/3 a run: 3 independent attempts would give about 70%. A screen reports the per-attempt rate and any-of-k, and the verifier is only the named test a user would have |
+| 6 | a plan turn before edits | S | one short "write your plan" turn, then execution | exploration without a plan, ending in loops |
+
+Costs: S is about a day of product code with tier-0 tests; M is several days. A candidate's screen states its own
+wall time.
+
 ---
 
 ## 18. Linux and Qt, later
