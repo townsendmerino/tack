@@ -234,7 +234,13 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 
 	var code int
 	if k := cfg.Run.BestOf; k > 1 && *edit {
-		code = bestOf(ctx, k, ws, opts.Edit, func(int) int { return drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr) }, stderr)
+		if t := opts.Sampling.Temperature; t != nil && *t == 0 {
+			fmt.Fprintln(stderr, "tack run: best_of needs sampling: at temperature 0 every attempt would be the same")
+			return exitUsage
+		}
+		code = bestOf(ctx, k, ws, opts.Edit, func(_ int, out io.Writer) int {
+			return drive(ctx, c, ws, question, mode, *jsonOut, out, stderr)
+		}, stdout, stderr)
 	} else {
 		code = drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
 	}

@@ -130,3 +130,50 @@ func TestEditRefusesTackPathsOverlappingTheWorkspace(t *testing.T) {
 		})
 	}
 }
+
+// TestEditRunBestOf: [run] best_of through tack run --edit, in the sandbox. Attempt 1's change fails the package's own
+// test and is undone; attempt 2's passes and is kept. Only attempt 2's events reach stdout, and stderr says how each
+// attempt verified.
+func TestEditRunBestOf(t *testing.T) {
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module x\n\ngo 1.27\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "x.go"), []byte("package x\n\nfunc Add(a, b int) int { return a - b }\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "x_test.go"), []byte("package x\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(2, 2) != 4 {\n\t\tt.Fatal(Add(2, 2))\n\t}\n}\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	script := goinfertest.NewScripted("m", 32768,
+		goinfertest.Calls("", "r1", "read", `{"path":"x.go"}`),
+		goinfertest.Calls("", "w1", "write", `{"path":"x.go","content":"package x\n\nfunc Add(a, b int) int { return a * b + 1 }\n"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"first try"}`),
+		goinfertest.Calls("", "r2", "read", `{"path":"x.go"}`),
+		goinfertest.Calls("", "w2", "write", `{"path":"x.go","content":"package x\n\nfunc Add(a, b int) int { return a + b }\n"}`),
+		goinfertest.Calls("", "d2", "done", `{"reason":"second try"}`))
+	ts := httptest.NewServer(script)
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprint(f, "[run]\nbest_of = 2\n")
+	f.Close()
+	var stdout, stderr bytes.Buffer
+	code := dispatch([]string{"run", "--config", cfg, "--workspace", ws, "--edit", "--json", "Make Add add."}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit %d\nstderr: %s", code, stderr.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "x.go")); !strings.Contains(string(b), "a + b") {
+		t.Fatalf("x.go: %s", b)
+	}
+	if !strings.Contains(stderr.String(), "best_of attempt 1 of 2 fails verification") ||
+		!strings.Contains(stderr.String(), "best_of attempt 2 of 2 passes verification") {
+		t.Fatalf("stderr does not say how the attempts verified:\n%s", stderr.String())
+	}
+	out := stdout.String()
+	if strings.Contains(out, `"w1"`) || !strings.Contains(out, `"w2"`) || strings.Count(out, `"type":"turn.end"`) != 1 {
+		t.Fatalf("stdout should carry attempt 2's events only:\n%.1500s", out)
+	}
+}
