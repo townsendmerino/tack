@@ -234,8 +234,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 
 	var code int
 	if k := cfg.Run.BestOf; k > 1 && *edit {
-		if t := opts.Sampling.Temperature; t != nil && *t == 0 {
-			fmt.Fprintln(stderr, "tack run: best_of needs sampling: at temperature 0 every attempt would be the same")
+		if why := greedy(opts.Sampling); why != "" {
+			fmt.Fprintf(stderr, "tack run: best_of needs sampling: at %s every attempt would be the same\n", why)
 			return exitUsage
 		}
 		code = bestOf(ctx, k, ws, opts.Edit, func(_ int, out io.Writer) int {

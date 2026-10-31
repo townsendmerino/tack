@@ -14,6 +14,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/core"
 	"github.com/townsendmerino/tack/internal/sandbox"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/shell"
 )
 
@@ -88,10 +89,10 @@ func TestBestOf(t *testing.T) {
 			fmt.Fprintf(out, "attempt %d\n", i)
 			setA(ws, map[int]string{1: "bad", 2: "good"}[i])
 			os.WriteFile(filepath.Join(ws, "pkg", fmt.Sprintf("extra%d.go", i)), []byte("package pkg\n"), 0o644)
-			return 10 + i
+			return exitOK
 		}, &stdout, io.Discard)
 		_, extra1 := os.Stat(filepath.Join(ws, "pkg", "extra1.go"))
-		if n != 2 || code != 12 || !strings.Contains(readA(ws), "good") || extra1 == nil || stdout.String() != "attempt 2\n" {
+		if n != 2 || code != exitOK || !strings.Contains(readA(ws), "good") || extra1 == nil || stdout.String() != "attempt 2\n" {
 			t.Fatalf("attempts %d, code %d, a.go %q, extra1.go kept %v, stdout %q", n, code, readA(ws), extra1 == nil, stdout.String())
 		}
 		if len(cmds) != 2 || cmds[0] != "go build -o /dev/null ./... && go test -count=1 ./pkg" {
@@ -151,9 +152,9 @@ func TestBestOf(t *testing.T) {
 		code := bestOf(context.Background(), 1+1, ws, shellKit(ws, &cmds), func(i int, out io.Writer) int {
 			setA(ws, "good")
 			os.Remove(filepath.Join(ws, "pkg", "a_test.go"))
-			return 30 + i
+			return exitOK
 		}, io.Discard, io.Discard)
-		if len(cmds) != 0 || code != 32 {
+		if len(cmds) != 0 || code != exitOK {
 			t.Fatalf("verifications %q, code %d: deleting a_test.go must fail without the verifier", cmds, code)
 		}
 	})
@@ -172,6 +173,61 @@ func TestBestOf(t *testing.T) {
 		}
 	})
 
+	t.Run("an attempt that does not end with exitOK is never kept, though its change would verify", func(t *testing.T) {
+		ws := bestOfRepo(t)
+		var cmds []string
+		n := 0
+		code := bestOf(context.Background(), 3, ws, shellKit(ws, &cmds), func(i int, out io.Writer) int {
+			n = i
+			setA(ws, "good")
+			if i == 1 {
+				return exitError // a budget or server error after a partial edit
+			}
+			return exitOK
+		}, io.Discard, io.Discard)
+		if n != 2 || code != exitOK || len(cmds) != 1 {
+			t.Fatalf("attempts %d, code %d, verifications %q: want attempt 1 refused unverified and attempt 2 kept", n, code, cmds)
+		}
+	})
+
+	t.Run("a cancelled context stops after the running attempt and leaves its tree", func(t *testing.T) {
+		ws := bestOfRepo(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var cmds []string
+		var stdout bytes.Buffer
+		n := 0
+		code := bestOf(ctx, 3, ws, shellKit(ws, &cmds), func(i int, out io.Writer) int {
+			n = i
+			fmt.Fprintf(out, "attempt %d\n", i)
+			setA(ws, "good")
+			cancel()
+			return exitOK
+		}, &stdout, io.Discard)
+		if n != 1 || code != exitError || len(cmds) != 0 || !strings.Contains(readA(ws), "good") || stdout.String() != "attempt 1\n" {
+			t.Fatalf("attempts %d, code %d, verifications %q, a.go %q, stdout %q", n, code, cmds, readA(ws), stdout.String())
+		}
+	})
+
+	t.Run("a later attempt that changes only a non-Go file does not displace an earlier Go change", func(t *testing.T) {
+		ws := bestOfRepo(t)
+		var cmds []string
+		var stdout bytes.Buffer
+		code := bestOf(context.Background(), 2, ws, shellKit(ws, &cmds), func(i int, out io.Writer) int {
+			fmt.Fprintf(out, "attempt %d\n", i)
+			if i == 1 {
+				setA(ws, "bad")
+			} else {
+				os.WriteFile(filepath.Join(ws, "NOTES.md"), []byte("notes\n"), 0o644)
+			}
+			return 40 + i
+		}, &stdout, io.Discard)
+		_, notes := os.Stat(filepath.Join(ws, "NOTES.md"))
+		if !strings.Contains(readA(ws), "bad") || notes == nil || code != 41 || stdout.String() != "attempt 1\n" {
+			t.Fatalf("a.go %q, NOTES.md kept %v, code %d, stdout %q: want attempt 1's Go change", readA(ws), notes == nil, code, stdout.String())
+		}
+	})
+
 	t.Run("a dirty workspace is refused and left as it was", func(t *testing.T) {
 		ws := bestOfRepo(t)
 		setA(ws, "owner")
@@ -184,32 +240,82 @@ func TestBestOf(t *testing.T) {
 	})
 }
 
-// changes reads git status: a modified and an untracked file are changed, a deletion is deleted, and a rename is its
-// new path changed and its old path deleted.
+// changes reads git status, each path once: a modified and an untracked file are changed, a deletion is deleted, a
+// rename is its new path changed and its old path deleted (e.go to f.go), and a path git reports twice (removed from
+// the index, then written again; renamed away, then added again) is changed. A snapshot of them restores that tree.
 func TestBestOfChanges(t *testing.T) {
 	ws := bestOfRepo(t)
 	setA(ws, "x")
 	os.WriteFile(filepath.Join(ws, "pkg2", "new.go"), []byte("package pkg2\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "pkg2", "d.go"), []byte("package pkg2 // d\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "pkg2", "e.go"), []byte("package pkg2 // e\n"), 0o644)
+	gitIn(t, ws, "add", "pkg2/d.go", "pkg2/e.go")
+	gitIn(t, ws, "commit", "-q", "-m", "d")
+	base := gitIn(t, ws, "rev-parse", "HEAD")
+	os.Remove(filepath.Join(ws, "pkg2", "d.go"))
 	gitIn(t, ws, "mv", "pkg2/b.go", "pkg2/c.go")
-	os.Remove(filepath.Join(ws, "pkg", "a_test.go"))
+	gitIn(t, ws, "mv", "pkg2/e.go", "pkg2/f.go")
+	os.WriteFile(filepath.Join(ws, "pkg2", "b.go"), []byte("package pkg2 // again\n"), 0o644)
+	gitIn(t, ws, "add", "pkg2/b.go")
+	gitIn(t, ws, "rm", "-q", "pkg/a_test.go")
+	os.WriteFile(filepath.Join(ws, "pkg", "a_test.go"), []byte("package pkg // rewritten\n"), 0o644)
 	cs, err := changes(ws)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
 	for _, c := range cs {
+		if _, dup := got[c.path]; dup {
+			t.Fatalf("%s reported twice: %v", c.path, cs)
+		}
 		got[c.path] = c.deleted
 	}
-	want := map[string]bool{"pkg/a.go": false, "pkg/a_test.go": true, "pkg2/c.go": false, "pkg2/b.go": true, "pkg2/new.go": false}
+	want := map[string]bool{"pkg/a.go": false, "pkg/a_test.go": false, "pkg2/b.go": false, "pkg2/c.go": false, "pkg2/d.go": true, "pkg2/e.go": true, "pkg2/f.go": false, "pkg2/new.go": false}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("changes %v, want %v", got, want)
 	}
+	snap, err := takeSnapshot(ws, cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resetTree(ws, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := snap.apply(ws); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(ws, "pkg2", "b.go"))
+	_, d := os.Stat(filepath.Join(ws, "pkg2", "d.go"))
+	if string(b) != "package pkg2 // again\n" || d == nil {
+		t.Fatalf("restored b.go %q, d.go present %v: want the re-added b.go and no d.go", b, d == nil)
+	}
 }
 
-// verifyChange tests every changed package still present, once, in order, and builds without writing a binary.
+// greedy refuses the two sampling settings that make every attempt the same.
+func TestBestOfGreedy(t *testing.T) {
+	zero, warm, one, many := 0.0, 0.7, 1, 20
+	for _, c := range []struct {
+		s    server.Sampling
+		want string
+	}{
+		{server.Sampling{}, ""},
+		{server.Sampling{Temperature: &warm, TopK: &many}, ""},
+		{server.Sampling{Temperature: &zero}, "temperature 0"},
+		{server.Sampling{Temperature: &warm, TopK: &one}, "top_k 1"},
+	} {
+		if got := greedy(c.s); got != c.want {
+			t.Errorf("greedy(%+v) = %q, want %q", c.s, got, c.want)
+		}
+	}
+}
+
+// verifyChange tests every changed package still present, once, in order, and builds without writing a binary. A
+// directory left with no Go file (gone/ keeps a README) is not tested: go test ./gone would fail with "no Go files".
 func TestBestOfVerifiesEachChangedPackage(t *testing.T) {
 	ws := bestOfRepo(t)
 	setA(ws, "good")
+	os.MkdirAll(filepath.Join(ws, "gone"), 0o755)
+	os.WriteFile(filepath.Join(ws, "gone", "README"), []byte("kept\n"), 0o644)
 	var cmds []string
 	ok, _ := verifyChange(context.Background(), shellKit(ws, &cmds), ws,
 		[]change{{path: "pkg2/b.go"}, {path: "pkg/a.go"}, {path: "pkg/z.go"}, {path: "gone/x.go", deleted: true}})
