@@ -68,7 +68,8 @@ and B), and Qwen3.5-9B passed it once (§12.24). This set stands as its own read
 All 12 tasks ran 3 times at `-ctx 32768`, after a cell check at 32,768 came up `cuda-resident (int4)` with 1.3 GB of KV
 and a clean cell. There were 0 void runs and 0 cap hits.
 
-**Read under §14.3 (§2's bar): usable.** 13 passes on 8 tasks, against a bar of 4 passes on 2 tasks.
+**Read under §14.3 (§2's bar): usable.** 13 passes on 7 tasks, against a bar of 4 passes on 2 tasks. (Corrected
+2026-10-31 from "8 tasks": the passes are on tasks 11, 12, 4, 10, 1, 3 and 8.)
 
 | task | passes | task | passes | task | passes |
 |---|---|---|---|---|---|
@@ -181,3 +182,77 @@ The guard table shows:
    - The screen's arms line, registered to be fixed before its first run, would then name the 35B. Its sd would come
      from the 35B's own 16k per-task reach, not §12.21's Qwen3-8B rates.
    - Against it: the screen loses comparability with C6's Qwen3-8B history, and needs the 16k row first.
+
+## §14.4, the 16k row on the other 9 tasks, 2026-10-31 07:07–11:05 PDT: 5 of 27; the full 16k row 12 of 36
+
+The 9 tasks ran 3 times each at `-ctx 16384`, on tack `31a89c2` with `-allow-battery`, after a cell check at 16,384 that
+came up `cuda-resident (int4)` and clean. There were 0 void runs and 0 cap hits.
+- One pause was inserted: the launcher held off 07:49–07:54 so nobara-sb01 could take nobara's lock (coordinator,
+  07:52).
+- Every run was on mains.
+
+| task | run | result | how it ended | tokens at stop | requests | wall s |
+|---|---|---|---|---|---|---|
+| 2 | 1 | fail | repeat loop, no edit | 14,858 | 15 | 167 |
+| 2 | 2 | fail | repeat loop, no edit | 14,422 | 23 | 188 |
+| 2 | 3 | fail | window full (prompt too long) | 16,709 | 22 | 198 |
+| 12 | 1 | **pass** | pass (done) | 9,787 | 12 | 122 |
+| 12 | 2 | **pass** | pass (done) | 6,107 | 8 | 75 |
+| 12 | 3 | **pass** | pass (done) | 8,890 | 14 | 120 |
+| 6 | 1 | fail | window full (prompt too long) | 16,491 | 25 | 204 |
+| 6 | 2 | fail | repeat loop, no edit | 15,089 | 23 | 180 |
+| 6 | 3 | fail | repeat loop, no edit | 15,117 | 19 | 176 |
+| 5 | 1 | fail | repeat loop, no edit | 14,772 | 16 | 167 |
+| 5 | 2 | fail | repeat loop, no edit | 14,796 | 18 | 175 |
+| 5 | 3 | fail | repeat loop, no edit | 16,012 | 24 | 198 |
+| 3 | 1 | **pass** | pass (window_full) | 15,352 | 26 | 255 |
+| 3 | 2 | fail | repeat loop, no edit | 15,862 | 28 | 206 |
+| 3 | 3 | fail | repeat loop, no edit | 14,714 | 19 | 173 |
+| 4 | 1 | fail | window full (prompt too long) | 16,546 | 26 | 204 |
+| 4 | 2 | fail | window full (prompt too long) | 16,538 | 27 | 204 |
+| 4 | 3 | fail | window full (prompt too long) | 16,666 | 24 | 200 |
+| 7 | 1 | fail | window full (prompt too long) | 16,433 | 28 | 205 |
+| 7 | 2 | fail | repeat loop, no edit | 14,960 | 20 | 173 |
+| 7 | 3 | fail | window full (prompt too long) | 16,414 | 27 | 201 |
+| 9 | 1 | fail | repeat loop, no edit | 14,914 | 14 | 166 |
+| 9 | 2 | fail | repeat loop, no edit | 16,269 | 25 | 211 |
+| 9 | 3 | fail | repeat loop, no edit | 14,701 | 15 | 162 |
+| 8 | 1 | **pass** | pass (done) | 7,712 | 15 | 222 |
+| 8 | 2 | fail | window full (prompt too long) | 16,450 | 37 | 227 |
+| 8 | 3 | fail | window full (prompt too long) | 16,456 | 32 | 220 |
+
+**The full 16k row** (§14.2's first set and §14.4) against the 32k row (§14.3):
+
+| task | 16k | 32k | task | 16k | 32k | task | 16k | 32k |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1/3 | 1/3 | 5 | 0/3 | 0/3 | 9 | 0/3 | 0/3 |
+| 2 | 0/3 | 0/3 | 6 | 0/3 | 0/3 | 10 | 3/3 | 2/3 |
+| 3 | 1/3 | 1/3 | 7 | 0/3 | 0/3 | 11 | 3/3 | 3/3 |
+| 4 | 0/3 | 2/3 | 8 | 1/3 | 1/3 | 12 | 3/3 | 3/3 |
+| | | | | | | **all** | **12/36** | **13/36** |
+
+**Read under §14.4:**
+- **16k is confirmed.** The 16k row's 12 passes are at least the 32k row's 13 minus 3.
+- **§2's bar at 16k: usable,** at 12 passes on 6 tasks (1, 3, 8, 10, 11 and 12).
+- The two rows differ on task 4 (0/3 against 2/3) and task 10 (3/3 against 2/3). Every other task is the same.
+
+**How the 16k failures ended:** all 22 stopped near the top of the window, at 14.4k tokens or more:
+- 13 were repeat loops with no edit;
+- 9 were a full window (8 prompt-too-long refusals and 1 `window_full`);
+- none was a wrong edit or a cap hit.
+
+**Reach** (`tools/replaycontext`, `FixGold`, without `-include-notes`): **at 16k the 35B reaches gold in 35 of its 36
+runs.**
+- Every task is at 3/3 except task 7 (2/3).
+- 21 of the 22 failures in this set saw gold, and none edited inside it. The first set's 2 failures (task 1) also
+  saw gold and did not edit.
+- **So on this model the failures are not retrieval.** The runs find the code, keep reading, and loop or fill the
+  window before editing.
+
+**What this means for the registered screens** (reported here; the decisions are Francis's):
+- §13.3's repo map and §15.1's `test_first` are both decided by reach, and reach has almost no room left.
+  - From §14.4's per-task reach, the sd of d under no effect is √(2 · 3 · 2/9) = 1.15, and only task 7 can rise, by 1.
+  - Neither screen can reach its +2 sd threshold except by noise. As registered, they cannot show an effect on this
+    model.
+- §15.2 (`mask_observations`, decided by passes) and §15.3 (`best_of`, decided by any-of-k passes) target what the
+  failures show: the window filling, and an edit that never comes.

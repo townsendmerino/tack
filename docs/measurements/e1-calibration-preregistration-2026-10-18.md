@@ -2113,8 +2113,8 @@ Francis chose a 32,768 window for the expanded set ("32 sounds good", relayed by
     adds this line, built clean on both machines. Every other cell rule stays, and each run records its power.
   - **Mac-side timings from these blocks are reported only.** Pass and fail, stops and nobara-side figures stand.
   - **No new block starts with the battery under 30%.** The 21 GiB guard and the 20:15 cut stay.
-- **Outcome (2026-10-30, 12:59–19:46 PDT; record `e1-calibration-c8-qwen36-2026-10-30.md`): usable, 13 of 36 on 8
-  tasks.**
+- **Outcome (2026-10-30, 12:59–19:46 PDT; record `e1-calibration-c8-qwen36-2026-10-30.md`): usable, 13 of 36 on 7
+  tasks** (corrected 2026-10-31 from "8 tasks").
   - Tasks 11 and 12 at 3/3, tasks 4 and 10 at 2/3, tasks 1, 3 and 8 at 1/3, the other five at 0/3.
   - 0 void, 0 cap hits.
   - Of the 23 failures, 10 were repeat loops with no edit, 9 a full window, 2 `max_tokens` and 2 wrong edits. 17 of
@@ -2216,3 +2216,11 @@ This drafts three screens, one registration each, with rigor matched to a screen
 
 **Order:** 15.1, then 15.2, then 15.3, each stacked on what the one before adopted (§12.1). The three are drafted for
 Francis's yes, and their arms lines are fixed before any run.
+- **Outcome of §14.4 (2026-10-31, 07:07–11:05 PDT; record `e1-calibration-c8-qwen36-2026-10-30.md`): 5 of 27, so the
+  full 16k row is 12 of 36 (32k: 13 of 36). 16k is confirmed** under §14.4's rule.
+  - §2's bar at 16k: usable, 12 passes on 6 tasks.
+  - 0 void and 0 cap hits. All 22 failures stopped at 14.4k tokens or more: 13 repeat loops with no edit, 9 a full
+    window.
+  - **The 35B at 16k reaches gold in 35 of 36 runs.** So the reach-decided screens (§13.3's repo map and §15.1's
+    `test_first`) have almost no room: only task 7, at 2/3, can rise.
+  - Whether to run them as registered, re-register them on passes, or drop them, is Francis's decision.
