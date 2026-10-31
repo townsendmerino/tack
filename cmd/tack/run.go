@@ -232,7 +232,18 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)
 
-	code := drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
+	var code int
+	if k := cfg.Run.BestOf; k > 1 && *edit {
+		if why := greedy(opts.Sampling); why != "" {
+			fmt.Fprintf(stderr, "tack run: best_of needs sampling: at %s every attempt would be the same\n", why)
+			return exitUsage
+		}
+		code = bestOf(ctx, k, ws, opts.Edit, func(_ int, out io.Writer) int {
+			return drive(ctx, c, ws, question, mode, *jsonOut, out, stderr)
+		}, stdout, stderr)
+	} else {
+		code = drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
+	}
 
 	if rec != nil {
 		if err := rec.C.Save(*record); err != nil {
