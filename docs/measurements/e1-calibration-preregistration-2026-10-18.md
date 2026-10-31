@@ -1941,6 +1941,9 @@ after §12.25's night 2.
   16,384 (§14), after §14.4's 16k row, not on Qwen3-8B. Its arms line names the model, the build and A's settings, and
   takes its sd from the 35B's 16k per-task reach (§14.4). The line is written before the first run. The predictions
   above were made for Qwen3-8B and are restated in that line.
+- **Closed on the 35B (Francis, 2026-10-31 11:35, relayed by the coordinator): not built or run here.** The 35B at 16k
+  reaches gold in 35 of 36 runs (§14.4), so a reach-decided screen cannot show an effect on it. Revisit on a model whose
+  failures are retrieval.
 
 ### 13.4 Guard firings in every record
 
@@ -2191,6 +2194,9 @@ This drafts three screens, one registration each, with rigor matched to a screen
 - **The decision metric: reach.** Runs that see a `FixGold` line (`tools/replaycontext`), as in §13.1's screen.
 - **The mechanism metric:** the first request that reaches gold, and the tokens spent before it.
 - **Predictions:** d on reach of +3 to +8; passes up by 0–4.
+- **Closed on the 35B (Francis, 2026-10-31 11:35, relayed by the coordinator): not built or run.** The 35B at 16k reaches
+  gold in 35 of 36 runs (§14.4), so a reach-decided screen cannot show an effect on it. Revisit on a model whose
+  failures are retrieval.
 
 ### 15.2 Observation masking (`mask_observations`), decided by passes
 
