@@ -42,3 +42,18 @@ func TestValidate(t *testing.T) {
 		t.Error("max_tokens 0 accepted")
 	}
 }
+
+// ReplaceResult rewrites the result answering an id in place, keeps its error flag, and reports an id nothing answers.
+func TestReplaceResult(t *testing.T) {
+	var c Conversation
+	c.BeginTurn("go", false)
+	c.AddResponse([]proto.ModelBlock{{Type: "tool_use", ID: "t1", Name: "read", Input: []byte(`{}`)}})
+	c.AnswerTools([]ToolResult{{ID: "t1", Result: "long text", IsError: true}})
+	if !c.ReplaceResult("t1", "stub") || c.ReplaceResult("t9", "x") {
+		t.Fatal("ReplaceResult reported the wrong outcome")
+	}
+	b := c.Messages()[2].Content[0]
+	if b.Result != "stub" || !b.IsError || b.ToolUseID != "t1" {
+		t.Fatalf("result block %+v", b)
+	}
+}

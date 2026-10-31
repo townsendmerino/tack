@@ -70,6 +70,11 @@ type Config struct {
 	// StopRepeats ends a turn with repeat_loop when one call repeats RepeatLimit times with an unchanged result
 	// (RepeatGuard; calibration pre-registration §4.5).
 	StopRepeats bool
+	// MaskObservations compacts the history once the last prompt reaches 75% of the served window: a read of a file
+	// that a later read of the same version covers, and command output older than the last 3 requests, each become a
+	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
+	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
+	MaskObservations bool
 	// ResultNotes appends a line saying what to do to an empty glob or grep result and to an unchanged repeat (notes.go;
 	// calibration pre-registration §4.4).
 	ResultNotes bool
@@ -110,6 +115,13 @@ type Session struct {
 	turns    int
 	pending  string // text of the turn Start opened
 	userSeq  int64
+	// obs is every tool result the conversation holds, and lastPrompt the last response's prompt tokens: what
+	// observation masking reads (Config.MaskObservations, mask.go).
+	obs        []observation
+	vers       fileVersions
+	lastPrompt int
+	compacted  bool // a compaction has run
+	maskFloor  int  // the prompt of the first response after the last compaction; 0 until it arrives
 }
 
 // New returns a session's loop.
@@ -250,6 +262,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		requests++
 		s.requests++
 		n := s.requests
+		if s.cfg.MaskObservations {
+			if err := s.compact(n, cause); err != nil {
+				return proto.StopError, err
+			}
+		}
 		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
 		if err != nil {
 			return proto.StopError, err
@@ -293,6 +310,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused, Prefilled: prefilled,
 			Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
+		s.noteUsage(u.Prompt)
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}
@@ -424,6 +442,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
+			if s.cfg.MaskObservations {
+				s.track(observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK), fin.Truncated)
+			}
 			if room != nil {
 				*room = max(0, *room-len(fin.Result))
 			}

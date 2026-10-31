@@ -801,6 +801,19 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
 3. Re-retrieve: run ken over the summaries' open threads, so current code comes back instead of old dumps.
 4. Record a `compaction` event with the before and after composition; the inspector shows what left the window.
 
+**The first compaction point built: observation masking** (`[run] mask_observations`, off by default;
+`internal/loop/mask.go`; calibration §15.2, chosen by Francis on 2026-10-31).
+- **The trigger:** the last prompt reaching 75% of the served window. After a compaction, the next waits until the
+  prompt has grown by 10% of the window past the first prompt after it, so each compaction costs one re-prefill and
+  history that cannot be masked is not rewritten every request.
+- **What it rewrites:** a read of a file that a later read covers, and a command's output older than the last 3
+  requests, each become a one-line stub shorter than what it replaces. A covering read must have succeeded, been
+  returned whole (not cut to fit), and seen the same version of the file: no edit or write of it, and no call that may
+  change files (bash, or any tool not known to only read), between the two. Each result is rewritten at most once.
+- **The record:** a `compaction` event lists every stub, so `loop.Rebuild` replays it.
+- **The cost:** one re-prefill from the first rewritten message, each time it runs.
+- **Not yet built:** the summarizing and re-retrieval steps above.
+
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past
 sessions ("what did we decide about the KV floor?"). It uses ken's markdown chunker and needs no ken change.
 

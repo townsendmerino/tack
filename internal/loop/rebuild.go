@@ -51,6 +51,12 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 					return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 				}
 			}
+		case proto.Compaction:
+			for _, m := range p.Masked {
+				if !conv.ReplaceResult(m.ID, m.Stub) {
+					return nil, fmt.Errorf("rebuild: seq %d: compaction masks %q, which no result answers", ev.Seq, m.ID)
+				}
+			}
 		case proto.ErrorEvent:
 			if p.Class == NoToolCallClass {
 				if err := conv.Nudge(NoToolCallNudge); err != nil {

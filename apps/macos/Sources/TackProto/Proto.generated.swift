@@ -74,6 +74,26 @@ public struct ClientInfo: Codable, Equatable, Sendable {
     }
 }
 
+public struct Compaction: Codable, Equatable, Sendable {
+    public var request: Int
+    public var trigger: String
+    public var prompt: Int
+    public var window: Int
+    public var masked: [MaskedResult]
+    public var before: Int
+    public var after: Int
+
+    enum CodingKeys: String, CodingKey {
+        case request = "request"
+        case trigger = "trigger"
+        case prompt = "prompt"
+        case window = "window"
+        case masked = "masked"
+        case before = "before"
+        case after = "after"
+    }
+}
+
 public struct ContentBlock: Codable, Equatable, Sendable {
     public var type: String
     public var text: String
@@ -181,6 +201,16 @@ public struct InitializeResult: Codable, Equatable, Sendable {
         case daemon = "daemon"
         case `protocol` = "protocol"
         case capabilities = "capabilities"
+    }
+}
+
+public struct MaskedResult: Codable, Equatable, Sendable {
+    public var id: String
+    public var stub: String
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case stub = "stub"
     }
 }
 
@@ -402,6 +432,7 @@ public enum EventPayload: Equatable, Sendable {
     case assistantDelta(AssistantDelta)
     case assistantMessage(AssistantMessage)
     case budgetExceeded(BudgetExceeded)
+    case compaction(Compaction)
     case contextAssembled(ContextAssembled)
     case daemonHaltRefused(DaemonHaltRefused)
     case daemonHalted(DaemonHalted)
@@ -443,6 +474,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "assistant.delta": payload = .assistantDelta(try c.decode(AssistantDelta.self, forKey: .payload))
         case "assistant.message": payload = .assistantMessage(try c.decode(AssistantMessage.self, forKey: .payload))
         case "budget.exceeded": payload = .budgetExceeded(try c.decode(BudgetExceeded.self, forKey: .payload))
+        case "compaction": payload = .compaction(try c.decode(Compaction.self, forKey: .payload))
         case "context.assembled": payload = .contextAssembled(try c.decode(ContextAssembled.self, forKey: .payload))
         case "daemon.halt_refused": payload = .daemonHaltRefused(try c.decode(DaemonHaltRefused.self, forKey: .payload))
         case "daemon.halted": payload = .daemonHalted(try c.decode(DaemonHalted.self, forKey: .payload))
@@ -470,6 +502,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .assistantDelta(let p): try c.encode(p, forKey: .payload)
         case .assistantMessage(let p): try c.encode(p, forKey: .payload)
         case .budgetExceeded(let p): try c.encode(p, forKey: .payload)
+        case .compaction(let p): try c.encode(p, forKey: .payload)
         case .contextAssembled(let p): try c.encode(p, forKey: .payload)
         case .daemonHaltRefused(let p): try c.encode(p, forKey: .payload)
         case .daemonHalted(let p): try c.encode(p, forKey: .payload)
