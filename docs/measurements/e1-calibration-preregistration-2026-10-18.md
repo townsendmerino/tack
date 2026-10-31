@@ -2105,3 +2105,65 @@ Francis chose a 32,768 window for the expanded set ("32 sounds good", relayed by
   - On the tasks both windows ran (1, 10, 11): 16k 7/9, 32k 6/9.
   - The override blocks all ran on mains.
   - The window for the next screens and the model for §13.3's screen are Francis's decisions.
+
+## 15. Amendment C9: loop changes on the 35B — drafted 2026-10-30 for the owner, before any run
+
+**Why.** Francis (16:59, relayed by the coordinator) asked for screens of the cheapest loop candidates in DESIGN §17.1,
+aimed at what C8 showed on Qwen3.6-35B-A3B (`e1-calibration-c8-qwen36-2026-10-30.md`):
+- the runs read until the window is nearly full, at 16k and 32k alike;
+- they repeat-loop without editing (10 of the 32k arm's 23 failures);
+- the harder tasks pass about one run in three.
+
+This drafts three screens, one registration each, with rigor matched to a screen's stakes.
+
+**Common to all three:**
+- **The arm:** the 35B on goinfer `00584c35` with `-moe-cache-experts`, at **16,384** (C8's read recommends it;
+  Francis decides), with the bundle and C8's sampling and limits. A is the bundle; B is A plus the screen's one
+  setting, `[run]`, off by default.
+- **A prerequisite: the 35B's 16k row on the 9 tasks C8's first set did not run** (27 runs, about 1–1.5 hours by day).
+  - With C8's first set, that gives a per-task pass rate and reach at 16k on all 12 tasks.
+  - Each screen's sd comes from those rates, as §12.3's came from C5's. It is fixed in its arms line, with the
+    build, before its first run.
+- **Size and order:** 72 runs, A B B A A B per task, each after the cell check (§12.2). At the 16k first set's 1–4
+  minutes a run, that is about 3–4 hours by day, after §12.25's two nights.
+- **The decision rule:** §12.3's form. d = B − A out of 36 each.
+  - d ≥ 2 sd: adopted.
+  - 1 sd ≤ d < 2 sd: parked, with more runs only if Francis says so.
+  - Otherwise not shown, and the do-nothing arm wins ties.
+- **Each screen also reports one mechanism metric,** never used for adoption (§12.3).
+- **Product code:** each setting is built with tier-0 tests broken first, and merged on Francis's yes before its
+  screen runs.
+
+### 15.1 Failing test first (`test_first`), decided by reach
+
+- **What:** before the first request, the harness runs the task's named test (the oracle's test, at the base, as the
+  user would see it fail) and puts its output in the first message beside the instruction head: the failing
+  assertion and the stack trace, capped at 2,000 tokens.
+- **The decision metric: reach.** Runs that see a `FixGold` line (`tools/replaycontext`), as in §13.1's screen.
+- **The mechanism metric:** the first request that reaches gold, and the tokens spent before it.
+- **Predictions:** d on reach of +3 to +8; passes up by 0–4.
+
+### 15.2 Observation masking (`mask_observations`), decided by passes
+
+- **What:** when a file is read again, the earlier reads of it in the request become a one-line stub ("read pull.go
+  1–200 at request 4; read again below"). A command's output older than its last 3 requests becomes a stub of its
+  first line and its exit. The append-only prefix (CLAUDE.md) is kept: the stubs replace text only at a compaction
+  point the loop already has, and the registration line names that point once it is built.
+- **The decision metric: passes.**
+- **The mechanism metric:** window-full stops (`window_full` plus prompt-too-long), and tokens at stop.
+- **Predictions:** window-full stops halved or better; passes up by 1–4.
+
+### 15.3 Best of N with the task's test as verifier (`best_of`), decided by any-of-k passes
+
+- **What:** up to k = 3 independent attempts per run, each in a fresh context with a different seed. The run keeps the
+  first attempt whose edit makes the task's named test pass. The verifier is only that named test, as a user would
+  have it. The hidden grader is never consulted before the run ends.
+- **Reported:** the per-attempt pass rate and any-of-k, both. Attempts run one after another, inside one 30-minute cap
+  per attempt.
+- **The decision metric: any-of-k passes per run.** B is best-of-3; A is a single attempt.
+- **The mechanism metric:** the verifier's agreement with the grader (false accepts and false rejects).
+- **Predictions:** any-of-k passes on tasks at 1/3 per attempt rise toward 2/3; overall d of +4 to +10; wall time
+  about 2–3 times A's.
+
+**Order:** 15.1, then 15.2, then 15.3, each stacked on what the one before adopted (§12.1). The three are drafted for
+Francis's yes, and their arms lines are fixed before any run.
