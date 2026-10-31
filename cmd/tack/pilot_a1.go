@@ -133,6 +133,7 @@ type remote struct {
 	compare                                settingList     // [run] settings on in arm B only; none runs one arm
 	reps                                   int             // runs per arm per task; 0 means once for one arm, 3 for two
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
+	allowBattery                           bool            // the owner's override: a cell that starts on battery is not void (cellVoid)
 }
 
 // serveCmdArgs is the remote command that starts pilot-serve for r.
@@ -271,7 +272,7 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	}
 	err = withRemoteServer(ctx, r, out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
 		if r.cellCheck {
-			state, void := hostCell(r.host)(ctx)
+			state, void := hostCell(r.host, r.allowBattery)(ctx)
 			fmt.Fprintf(stdout, "cell: %s\nvoid: %q\nfit: %s\n", state, void, srv.Fit)
 			return nil
 		}
@@ -280,7 +281,7 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 			ServerOptions: r.options}
 		o.A1Arms, o.A1Reps = arms, reps
 		if cells {
-			o.Cell = hostCell(r.host)
+			o.Cell = hostCell(r.host, r.allowBattery)
 		}
 		return pilot.RunPilot(ctx, o)
 	})
@@ -322,9 +323,10 @@ func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 
 // hostCell is an A/B job's cell check (owner, 2026-10-19; e1-calibration-preregistration-2026-10-18.md §12.2). host
 // does the timed work, with the model already loaded: a 1-minute load over half its cores, or less than cellMinFreeGB
-// of available memory, voids the cell. So does this Mac on battery. The Mac only drives the runs: its load is recorded,
+// of available memory, voids the cell. So does this Mac on battery, unless allowBattery, the owner's override
+// (calibration §14.3), lets the cell run with its power recorded. The Mac only drives the runs: its load is recorded,
 // never voids.
-func hostCell(host string) func(context.Context) (state, void string) {
+func hostCell(host string, allowBattery bool) func(context.Context) (state, void string) {
 	return func(ctx context.Context) (string, string) {
 		out, err := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", host,
 			"nproc; cut -d' ' -f1 /proc/loadavg; awk '/^MemAvailable:/{print $2}' /proc/meminfo").Output()
@@ -338,7 +340,7 @@ func hostCell(host string) func(context.Context) (state, void string) {
 		avail := float64(kb) / (1 << 20)
 		state := fmt.Sprintf("%s load %.2f of %d cores, %.1f GB available with the model loaded; Mac load %s, power %s",
 			host, load, cores, avail, strings.Trim(strings.TrimSpace(string(mac)), "{} "), power)
-		return state, cellVoid(err, cores, load, avail, power)
+		return state, cellVoid(err, cores, load, avail, power, allowBattery)
 	}
 }
 
@@ -347,7 +349,7 @@ func hostCell(host string) func(context.Context) (state, void string) {
 const cellMinFreeGB = 2
 
 // cellVoid is hostCell's rule on what it read: why the cell is void, or "".
-func cellVoid(readErr error, cores int, load, availGB float64, power string) string {
+func cellVoid(readErr error, cores int, load, availGB float64, power string, allowBattery bool) string {
 	switch {
 	case readErr != nil:
 		return "could not read the host's load: " + readErr.Error()
@@ -355,7 +357,7 @@ func cellVoid(readErr error, cores int, load, availGB float64, power string) str
 		return fmt.Sprintf("heavy load: %.2f over half of %d cores", load, cores)
 	case availGB < cellMinFreeGB:
 		return fmt.Sprintf("heavy load: %.1f GB available with the model loaded, under %d", availGB, cellMinFreeGB)
-	case power == "battery":
+	case power == "battery" && !allowBattery:
 		return "this Mac is on battery"
 	}
 	return ""
