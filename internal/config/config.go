@@ -129,7 +129,14 @@ type Run struct {
 	// 3,000 bytes, into a session's first message after the instruction head (core.Options.RepoMap; calibration §13.3).
 	// Without [ken], tack opens ken's index in bm25 mode for it, at the first prompt, and adds no tool. Default off.
 	RepoMap bool `toml:"repo_map"`
+	// BestOf makes an edit task up to this many attempts, each a fresh session, keeping the first whose change builds and
+	// passes the changed packages' own tests (cmd/tack/bestof.go; calibration §15.3). 0 or 1 is one attempt, the default.
+	// It needs a clean git workspace: between attempts tack restores the tree to where it started.
+	BestOf int `toml:"best_of"`
 }
+
+// MaxBestOf is the most attempts best_of may ask for.
+const MaxBestOf = 5
 
 // Duration is a time.Duration written as a string ("10m").
 type Duration struct{ time.Duration }
@@ -264,6 +271,9 @@ func (c *Config) validate() error {
 	if min(r.MaxRequests, r.MaxToolCalls, r.MaxTokens, r.TurnTokens, r.MaxErrors, r.SessionTokens, r.SessionToolCalls) < 0 ||
 		r.MaxWall.Duration < 0 {
 		return errors.New("run: a budget is negative")
+	}
+	if r.BestOf < 0 || r.BestOf > MaxBestOf {
+		return fmt.Errorf("run: best_of is %d; it must be 0 to %d", r.BestOf, MaxBestOf)
 	}
 	if k := c.Ken; k != nil {
 		if k.Mode == "" {

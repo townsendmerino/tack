@@ -60,6 +60,8 @@ func TestLoadFailsLoudly(t *testing.T) {
 		"top_p over 1":         {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
 		"top_k zero":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
 		"negative budget":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
+		"best_of over the cap": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
+		"best_of negative":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
