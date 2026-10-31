@@ -1669,6 +1669,19 @@ session recommended them. The rest was drafted by tack's session and goes to him
     -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
     $P/both.jsonl
   ```
+- **Night 1 (2026-10-30 23:07 to 2026-10-31 04:02 PDT): complete, checked at 07:07.** It started after four retries
+  (the Mac on battery at 22:01 and 22:17, nobara busy at 22:35 and 22:51).
+  - 168 runs, every task at 7 A and 7 B, 0 void, every run with tack's summary, 0 oracle errors.
+  - tack `f5f7ecc`, all on mains, 3 cap hits, exit 0.
+  - Passes are not tabulated before night 2, as registered.
+- **Night 2 runs by day on 2026-10-31, not from 22:00** (coordinator, 10:47: Francis is away until Sunday, the Mac
+  stays plugged in, and the day/night limits relax).
+  - **Nothing here ties night 2 to night hours for a measurement reason.** The 22:00 start came from the run-budget
+    rule (CLAUDE.md, jobs over about two hours go to night), not from the comparison.
+  - **d is read within each task's interleaved A B B A … block,** so the hour of a block biases neither arm. The cell
+    check still voids a run that starts under heavy load on nobara.
+  - **It starts once §14.4's row ends,** as a day job on the Mac's `night.py`, retried on exit 75 until 20:00. The
+    timing lock, the void rule and its own cell check, which is the fit-only load, are unchanged.
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 
