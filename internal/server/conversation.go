@@ -173,3 +173,18 @@ type Sampling struct {
 	TopP        *float64
 	TopK        *int
 }
+
+// ReplaceResult replaces the text of the tool_result that answers id, keeping its error flag, and says whether one did.
+// It rewrites an earlier message, so the next request no longer shares that message's prefix with the server's cache:
+// only a compaction may call it (loop.Config.MaskObservations).
+func (c *Conversation) ReplaceResult(id, text string) bool {
+	for i := range c.msgs {
+		for j := range c.msgs[i].Content {
+			if b := &c.msgs[i].Content[j]; b.Type == "tool_result" && b.ToolUseID == id {
+				b.Result = text
+				return true
+			}
+		}
+	}
+	return false
+}

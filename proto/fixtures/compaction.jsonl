@@ -1,0 +1,4 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"workspace":"/w","model":"main","mode":"auto"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"session":"s_01JAFIXTURE0000000000000009"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000009","event":{"seq":9,"time":"2026-10-31T12:00:00Z","type":"compaction","cause":1,"payload":{"request":3,"trigger":"window","prompt":12400,"window":16384,"masked":[{"id":"toolu_01","stub":"[masked to fit the window: this read of pull/pull.go (request 1, 14210 bytes) is superseded by a later read of the same file]"}],"before":14210,"after":119}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000009","event":{"seq":10,"time":"2026-10-31T12:00:05Z","type":"turn.end","cause":1,"payload":{"stop_reason":"end_turn"}}}}}

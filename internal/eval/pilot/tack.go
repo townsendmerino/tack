@@ -58,6 +58,7 @@ session_tool_calls = 1000000
 var RunSettings = map[string]bool{
 	"fit_window":             true, // §4.6
 	"stop_repeats":           true, // §4.5
+	"mask_observations":      true, // §15.2, C9's observation masking
 	"result_notes":           true, // §4.4
 	"edit_messages":          true, // §4.1
 	"no_instructions":        true, // §4.8

@@ -40,6 +40,7 @@ const (
 	EvError               EventType = "error"
 	EvDaemonHalted        EventType = "daemon.halted"
 	EvDaemonHaltRefused   EventType = "daemon.halt_refused"
+	EvCompaction          EventType = "compaction"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -70,6 +71,7 @@ var EventTypes = map[EventType]EventSpec{
 	EvError:               {reflect.TypeFor[ErrorEvent](), true, false},
 	EvDaemonHalted:        {reflect.TypeFor[DaemonHalted](), true, false},
 	EvDaemonHaltRefused:   {reflect.TypeFor[DaemonHaltRefused](), true, false},
+	EvCompaction:          {reflect.TypeFor[Compaction](), true, false},
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -291,4 +293,25 @@ type HaltProcess struct {
 	PID   int       `json:"pid"`
 	Name  string    `json:"name"`
 	Start time.Time `json:"start"`
+}
+
+// Compaction records a rewrite of the history before request Request (DESIGN §7.6), the one place history changes
+// between appends. Trigger says what started it ("window": the last prompt passed a share of the served window).
+// Prompt and Window are the last prompt's tokens and the served window when it ran. Masked is each tool result
+// replaced, with the text that replaced it, so replaying the log rebuilds the request. Before and After are the replaced
+// results' total bytes.
+type Compaction struct {
+	Request int            `json:"request"`
+	Trigger string         `json:"trigger"`
+	Prompt  int            `json:"prompt"`
+	Window  int            `json:"window"`
+	Masked  []MaskedResult `json:"masked"`
+	Before  int            `json:"before"`
+	After   int            `json:"after"`
+}
+
+// MaskedResult is one tool result a compaction replaced: the call's ID and the stub sent in its place.
+type MaskedResult struct {
+	ID   string `json:"id"`
+	Stub string `json:"stub"`
 }

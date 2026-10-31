@@ -61,6 +61,8 @@ type Options struct {
 	FitWindow bool
 	// StopRepeats ends a session's turn when one call repeats unchanged (loop.Config.StopRepeats).
 	StopRepeats bool
+	// MaskObservations compacts a session's history past 75% of the window (loop.Config.MaskObservations).
+	MaskObservations bool
 	// ResultNotes adds the loop's notes to tool results (loop.Config.ResultNotes).
 	ResultNotes bool
 	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages).
@@ -378,7 +380,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	}
 	symbols, _ := searcher.(tools.Symbols)
 	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if p.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
