@@ -2306,6 +2306,14 @@ This drafts three screens, one registration each, with rigor matched to a screen
     - passes up by 0 to +3. Most of the 35B's failures are repeat loops without an edit (13 of 22), and masking does
       not touch those.
   - **Time:** 72 runs at about 3.1 minutes each (§14.4's mean, 186 s), plus cell checks and grading: about 4–5 hours.
+- **Outcome (read 2026-11-01; record `e1-calibration-c9-screens-2026-11-01.md`): A 13 of 36, B 12 of 36, d = −1.
+  Masking is not shown; the do-nothing arm wins.**
+  - 72 runs, 0 void, 0 oracle errors, 0 cap hits, on tack `5212608`.
+  - **Masking barely fired:** 11 compactions in 7 of the 36 B runs, masking about 14.7 KB in all. The 35B fills its
+    window with grep output and whole first reads, which the rule does not mask. So the screen did not test what
+    masking does to the window.
+  - Window-full stops: A 7, B 12. The prediction of half or fewer missed.
+  - A wider rule (grep and glob output and old first reads) would need its own registration; it is not started.
 
 ### 15.3 Best of N with the task's test as verifier (`best_of`), decided by any-of-k passes
 
@@ -2355,6 +2363,13 @@ This drafts three screens, one registration each, with rigor matched to a screen
     2/3, the 0/3 tasks stay near 0, and B's wall time is 2–3 times A's.
   - **Time:** A about 2–2.5 hours; B about 4–5 hours (two of three runs fail, so they make all 3 attempts). About
     6–7 hours in all.
+- **Outcome (read 2026-11-01; record `e1-calibration-c9-screens-2026-11-01.md`): A 14 of 36, B 17 of 36, d = +3.
+  Parked: reported, with no more runs unless Francis says so.**
+  - 72 runs, 0 void, 0 oracle errors, 0 cap hits. A was the bundle alone, since §15.2's d was −1.
+  - **The verifier:** 0 false accepts in the 13 verified runs. 4 false rejects: a kept, unverified attempt that the
+    grader passes, counted in B's 17.
+  - **Why attempts failed:** all 75 failed attempts failed on their exit code (48 repeat loops), none on the tests.
+  - B took about 2.2 times A's wall time. All four predictions held.
 
 **The answer-leak audit (2026-10-31, coordinator's read-only audit, relayed at 17:32), before §15.2's first run.**
 - **What it found:**
