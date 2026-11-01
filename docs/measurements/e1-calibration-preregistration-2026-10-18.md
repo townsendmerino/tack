@@ -2528,3 +2528,23 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - d between 0 and +5.
   - Compactions in most of the B runs that reach the note (about 21–26 of 36 in §16.1).
 - **Stopping and void:** as §16.1. It runs when both locks are free, overnight if needed (about 4–5 hours).
+- **Amended before any §16.2 run (Francis, 2026-11-01 14:08, relayed by the coordinator): react when stuck.**
+  - **What changes:** besides the one-shot compaction at the first nearly-full note, `compact_at_cliff` changes what
+    the repeat rule does at the cliff.
+    - When `stop_repeats` would end the turn and the call that reached the limit was last answered with the
+      nearly-full note, tack compacts with the scope above and lets the turn continue.
+    - The cliff's 10% regrowth gate does not apply to it. That call's repeat count starts again from zero.
+    - **At most 2 such compactions per turn.** A third, or one that finds nothing left to stub, ends the turn with
+      `repeat_loop`, as today.
+    - Each is a `compaction` event with the trigger `stuck`.
+  - **A repeat away from the cliff still ends the turn as today.** There the call got its whole, unchanged result
+    each time: the model has the data, and compaction would change nothing it is shown. Letting that turn go on would
+    spend requests without giving it anything new.
+  - **The rest is unchanged:** the arms, base, size, rule and stopping.
+  - **The mechanism metric adds:**
+    - `stuck` compactions per B run;
+    - the turns that continued past a would-be `repeat_loop`, and what they did next (an edit, `done`, or another stop).
+  - **Predictions, restated:**
+    - B's `repeat_loop` stops fall by two-thirds or more against A's;
+    - d between 0 and +5;
+    - B's wall time per run rises.
