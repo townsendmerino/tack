@@ -2474,6 +2474,23 @@ Francis's yes, and their arms lines are fixed before any run.
     answered with the note.
   - Predictions: 2 of 3 held. Repeat loops did not fall by a third.
   - **Parked, so §16.2 is not started:** its condition is "not shown", and a parked result stops for Francis.
+- **The continuation (Francis, 2026-11-01 13:47, relayed by the coordinator; registered by tack's session before
+  any of its runs).** Francis chose both: continue §16.1 with 72 more runs, and build lever 2 meanwhile.
+  - **Size and arms:** 72 more runs, exactly as §16.1's arms line.
+    - The same build (`2f2870d`), arms, model, server, sampling, cap and order.
+    - The same launcher, writing to `s161b`.
+  - **How it combines:** the read is over all 144 runs (72 per arm), the first 72 and these together, with
+    `calreport -rule sd=2.83,n=72` over both results files.
+    - The sd for 6 runs per task per arm, from the same 35B rates as §16.1: var(d) = Σ 6 · 2 · p(1 − p) = 8.0, so
+      sd = 2.83.
+    - **d ≥ +6 (2 sd = 5.66) is adopted, +3 ≤ d ≤ +5 parked, and d ≤ +2 not shown.** A wins ties.
+    - The continuation is not read on its own.
+  - **A known cost:** extending a parked result after its read raises the chance that a setting with no effect is
+    shown. The rule above is fixed now, before any continuation run, and is not changed after.
+  - **What the read decides:**
+    - If `lean_results` is shown on the combined runs, it is adopted, and §16.2 runs with it in both arms (§12.1).
+    - Otherwise §16.2 runs against the bundle alone.
+    - §16.2's screen is not queued until this read.
 
 ### 16.2 Compact at the cliff — registered only if §16.1 is not shown
 
