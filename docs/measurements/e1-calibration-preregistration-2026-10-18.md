@@ -2270,9 +2270,14 @@ This drafts three screens, one registration each, with rigor matched to a screen
   - **The arm:** Qwen3.6-35B-A3B `q4_k_m` on nobara at `-ctx 16384` with `-moe-cache-experts` and `thinking-off`, on
     goinfer `00584c35` (`goinfer-serve-cuda-00584c35`), with sampling 0.7 / 0.8 / 20 and a 30-minute cap per run, as
     in §14.4.
-  - **The build:** tack `dc5a7ae` (main with #29 and #30 merged), built for both machines from a clean clone at that
-    commit (`~/tack-runs/src/tack-dc5a7ae`). The launcher is `~/tack-runs/e1/c9-screens-2026-10-31/launch.sh`
-    (`152` or `153`), a job on the Mac's night.py.
+  - **The build:** tack `5212608` (main with #29, #30 and #34, the sandbox read fix; see "The answer-leak audit"
+    below). It is built for both machines from a clean clone at that commit (`~/tack-runs/src/tack-5212608`).
+    - It replaces `dc5a7ae`, on which no run of either screen took place. Two starts were stopped before any run: at
+      17:16 a cell check lost nobara's lock, and at 17:35 the coordinator stopped the screen for the leak. Their
+      directories are `s152-stopped-*`.
+    - The launcher is `~/tack-runs/e1/c9-screens-2026-10-31/launch.sh` (`152`, or `153` with `1-6` and `7-12`), a job
+      on the Mac's night.py.
+    - Every run's config carries `[sandbox] read = ["~/models"]`, and the first block checks that it does.
   - **A:** the bundle as in §14.4: `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
     `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`. **B:** A plus `mask_observations`.
   - **The setting as built** (DESIGN §7.6; `internal/loop/mask.go`):
