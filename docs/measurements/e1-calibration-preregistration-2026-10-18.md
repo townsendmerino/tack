@@ -2622,3 +2622,17 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     widened one.
   - **The cliff note is per turn:** a cliff note left by a turn that ended (on a budget or a repeat loop) does not
     carry into the next turn.
+- **Amended a sixth time before any §16.2 run (2026-11-01, from Gemini's fourth review of #45, relayed by the
+  coordinator).** It replaces the fifth amendment's counting rule and settles three more points:
+  - **Repeat counting is the same as with the setting off:** on what the model was shown.
+    - A result answered with the nearly-full note is the note.
+    - So consecutive notes are unchanged repeats, and the stuck reaction still fires at the cliff. A change from a
+      note to a shown result resets the count, as does any change in what was shown.
+    - A widening step changes what is shown, so it starts the count again. A call's chain widens at most twice, so
+      `stop_repeats` still reaches its limit, at most 2 calls later.
+    - Counting on the base-cap output is dropped. It hid a change past the base cap that the model could see.
+  - **Widening's chain** advances only on a result shown whole, at the base cap or wider. A result answered with the
+    note, or cut to fit, ends it.
+  - **Superseded reads in one compaction:** a read that makes an earlier read superseded is kept whole from then
+    on. So one compaction cannot stub both an earlier read and the later read that covers it.
+  - **With the setting off, nothing changes,** grep's scan and output included.
