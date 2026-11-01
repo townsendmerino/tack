@@ -2548,3 +2548,30 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     - B's `repeat_loop` stops fall by two-thirds or more against A's;
     - d between 0 and +5;
     - B's wall time per run rises.
+- **Amended again before any §16.2 run (Francis, 2026-11-01 14:11, relayed by the coordinator): progressive
+  widening, in the same lever.** It is one setting, `compact_at_cliff`, with one registration and one screen.
+  - **What it adds:** an unchanged repeat of a whole-file read (no range) or of a grep is shown again with a larger
+    cap, for that call only and never globally.
+    - The first repeat gets 3 times the base cap. The second and later get no cap.
+    - So a whole read goes 80 → 240 → all lines with `lean_results`, and 200 → 600 → all without it. Grep goes 30 → 90
+      → all matches, or 100 → 300 → all.
+    - It works the same on either base, so the design stands whichever base §16.1's continuation decides.
+    - A widened result is still a result: `fit_window` and the result cap apply to it as to any other.
+  - **How repeats are counted with the setting on (a design choice, tack's session, reversible by the coordinator):**
+    - A widened result is a different text, so comparing what was shown would reset the repeat count at every widening.
+    - Instead, the repeat rule compares the call's own output at its base cap, before `fit_window` cuts or replaces
+      it. For a widened call, tack also runs it at the base cap for that comparison, and does not show that run.
+    - Unchanged output at the base cap is an unchanged repeat, however the result was shown. So `stop_repeats`
+      reaches its limit on the same calls as before.
+    - With the setting off, nothing changes.
+  - **How it combines with the rest:**
+    - At the cliff, a widened result becomes the nearly-full note like any other, until a compaction frees room.
+    - So widening helps away from the cliff, and the two compactions (the one-shot at the first note, and the `stuck`
+      reaction at the repeat limit, at most 2 per turn) help at it.
+  - **The mechanism metric adds:**
+    - widened results per B run, by step;
+    - re-asks: unchanged repeats of the same call, per run and per arm.
+  - **Predictions, restated:**
+    - B's `repeat_loop` stops fall by two-thirds or more against A's;
+    - B's re-asks of the same call fall by half or more;
+    - d between 0 and +5.
