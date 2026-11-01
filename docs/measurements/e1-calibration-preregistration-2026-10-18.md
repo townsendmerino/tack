@@ -2456,6 +2456,16 @@ Francis's yes, and their arms lines are fixed before any run.
   - If not shown: §16.2.
   - If shown: stop and report to Francis before §16.2.
   - If parked: report. Lever 2's condition is "not shown", so a parked result also stops for Francis.
+- **Arms line (2026-11-01, tack's session, before any run of this screen):**
+  - **The build:** tack `2f2870d` (main with #39, `lean_results`, and #40, its review follow-ups), built for both
+    machines from a clean clone at that commit (`~/tack-runs/src/tack-2f2870d`).
+  - **The arms:** as above. A is the bundle (`fit_window`, `stop_repeats`, `result_notes`, `instructions_head`,
+    `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`); B is A plus `lean_results`. Both run on the fixed
+    sandbox with `[sandbox] read = ["~/models"]`.
+  - **The launcher:** `~/tack-runs/e1/c10-lean-2026-11-01/launch.sh 161`, a job on the Mac's night.py. On the first
+    block it checks that `lean_results` is in B's configs and not A's, and that every config has `~/models`.
+  - **The read:** `calreport -rule sd=2.0,n=36` over its 72 records, after the void, oracle-error and `left_repo`
+    checks.
 
 ### 16.2 Compact at the cliff — registered only if §16.1 is not shown
 
