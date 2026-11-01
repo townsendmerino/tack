@@ -1682,6 +1682,26 @@ session recommended them. The rest was drafted by tack's session and goes to him
     check still voids a run that starts under heavy load on nobara.
   - **It starts once §14.4's row ends,** as a day job on the Mac's `night.py`, retried on exit 75 until 20:00. The
     timing lock, the void rule and its own cell check, which is the fit-only load, are unchanged.
+- **How the read handles voids, short arms and a parked result (2026-10-31 17:17 PDT, tack's session, written
+  before either night's passes are tabulated).** A read-only audit of this rule against the analysis code (Gemini,
+  relayed by the coordinator at 17:20) found three questions the rule leaves open. The coordinator recommended these
+  answers, and they are adopted here:
+  - **Disclosure:** while checking night 2's progress at 14:01, tack's session saw its first 3 records and 2 log
+    lines, all task 2 and all fails. Nothing else of either night's passes has been read or tabulated.
+  - **(a) A void's remedy.** A run voided inside a run counts as void, not as a fail. That covers disk under the
+    floor, a module download failure, a failed preflight, the host sleeping, and an oracle error (a harness error
+    grading the run, which is not a model failure). After the night, each void run is re-run once in its place:
+    the same task, arm and build, and the same settings. The re-runs are listed. A night that ends early (a crash,
+    the power, a lock) is still re-run whole, as above.
+  - **(b) d when an arm is short.** If an arm has fewer than 168 counted runs after the re-runs, d is rate-scaled to
+    168: d = 168 · (B/n_B − A/n_A). The read says so, and it is judged on the sd edges: shown at d ≥ 6.36 (2 sd),
+    parked at 3.18 ≤ d < 6.36 (1 sd), not shown below. With 168 counted runs in each arm, d is the integer B − A,
+    and those edges are the table's +7, +4 to +6 and +3.
+  - **(c) A parked result** (+4 to +6) is reported, and nothing continues it without Francis. Any continuation he
+    asks for is registered first: its size, and how it combines with these 336 runs.
+  - **The command:** `tools/calreport` takes each night's results file as its own input, so each record keeps its
+    run directory, and it prints d, the sd, the verdict and each arm's n (`-rule` below). The concatenated
+    `both.jsonl` above would point every record at a run directory that does not exist, so it is not used.
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 
