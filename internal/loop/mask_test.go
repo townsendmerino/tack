@@ -270,3 +270,18 @@ func TestMaskReadSupersedingLean(t *testing.T) {
 		}
 	}
 }
+
+// The other order: a whole read first, then a range. Under ReadLines 80 the whole read returned lines 1-80, so a later
+// read of lines 1-100 covers it; under the default 200 it does not.
+func TestMaskWholeReadThenARange(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
+	for readLines, masked := range map[int]bool{80: true, 0: false} {
+		s := &Session{cfg: Config{ReadLines: readLines}}
+		s.track(read("a", `{"path":"f.go"}`), false)
+		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false)
+		if got := s.maskStubs(2); (len(got) == 1 && got[0].ID == "a") != masked {
+			t.Errorf("ReadLines %d: a whole read, then lines 1-100: masked %+v, want %v", readLines, got, masked)
+		}
+	}
+}

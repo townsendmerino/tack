@@ -263,3 +263,26 @@ func TestLeanResults(t *testing.T) {
 		}
 	}
 }
+
+// A zero-valued readTool or grepTool, as a test or a later caller might build one, uses the defaults: 200 lines and
+// 100 matches, not 0.
+func TestZeroValuedToolsUseTheDefaults(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&b, "match %d\n", i)
+	}
+	os.WriteFile(filepath.Join(root, "big.txt"), []byte(b.String()), 0o644)
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := readTool{}.Run(context.Background(), ws, json.RawMessage(`{"path":"big.txt"}`))
+	if n := strings.Count(r.Text, "\tmatch "); n != readMaxLines || !strings.Contains(readTool{}.Spec().Description, "over 200 lines") {
+		t.Errorf("a zero readTool read %d lines; description %q", n, readTool{}.Spec().Description)
+	}
+	g, _ := grepTool{}.Run(context.Background(), ws, json.RawMessage(`{"pattern":"match"}`))
+	if n := strings.Count(g.Text, "big.txt:"); n != grepMaxMatches {
+		t.Errorf("a zero grepTool gave %d matches", n)
+	}
+}

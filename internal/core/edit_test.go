@@ -441,3 +441,38 @@ func TestLeanResultsThroughTheCore(t *testing.T) {
 		}
 	}
 }
+
+// The core tells masking what a lean whole read covers (loop.Config.ReadLines). A range at lines 100-119, then a whole
+// read, past 75% of a 120-token window: with lean_results the whole read returned lines 1-80 and covers nothing, so
+// nothing is masked; without it, the whole read covers lines 1-200 and the range is masked.
+func TestLeanReadLinesThroughTheCore(t *testing.T) {
+	var big strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&big, "// line %d of a file long enough to mask\n", i)
+	}
+	for lean, want := range map[bool]int{true: 0, false: 1} {
+		script := goinfertest.NewScripted("m", 120,
+			goinfertest.Calls("", "r1", "read", `{"path":"big.go","offset":100,"limit":20}`),
+			goinfertest.Calls("", "r2", "read", `{"path":"big.go"}`), goinfertest.Says("ok"))
+		f := newFixtureOn(t, script)
+		f.script = script
+		f.core.opt.LeanResults, f.core.opt.MaskObservations = lean, true
+		ws := gitWorkspace(t, "")
+		os.WriteFile(filepath.Join(ws, "big.go"), []byte(big.String()), 0o644)
+		sid, err := f.sessionIn(t, ws, proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("x")}}, nil)
+		got := 0
+		for _, ev := range f.waitTurnEnd(t) {
+			if ev.Type == proto.EvCompaction {
+				got++
+			}
+		}
+		if got != want {
+			t.Errorf("LeanResults %v: %d compactions, want %d", lean, got, want)
+		}
+	}
+}

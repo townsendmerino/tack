@@ -35,7 +35,7 @@ type readTool struct {
 func (readTool) ReadOnly() bool { return true }
 func (t readTool) Spec() server.Tool {
 	return server.Tool{Name: "read",
-		Description: fmt.Sprintf("Read a file's lines with line numbers. Files over %d lines need offset and limit.", t.lines),
+		Description: fmt.Sprintf("Read a file's lines with line numbers. Files over %d lines need offset and limit.", t.max()),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
 }
 
@@ -74,8 +74,8 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 	}
 	if in.Limit > 0 {
 		n = in.Limit
-	} else if !explicit && len(lines) > t.lines {
-		n = t.lines
+	} else if !explicit && len(lines) > t.max() {
+		n = t.max()
 	}
 	if start > len(lines) && len(lines) > 0 {
 		return errorf("%s has %d lines; offset %d is past the end", in.Path, len(lines), start), nil
@@ -86,8 +86,8 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 	for i := start - 1; i < end; i++ {
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, cut(lines[i]))
 	}
-	if !explicit && len(lines) > t.lines {
-		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), t.lines)
+	if !explicit && len(lines) > t.max() {
+		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), t.max())
 		if t.symbols {
 			fmt.Fprintf(&b, "symbol with path %q lists its functions and types with their lines.\n", in.Path)
 		}
@@ -175,7 +175,7 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	var b strings.Builder
 	matches := 0
 	search := func(rel string) {
-		if matches >= t.max || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
+		if matches >= t.limit() || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
 			return
 		}
 		p := filepath.Join(ws.root, rel)
@@ -191,7 +191,7 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		for n := 1; sc.Scan(); n++ {
 			if re.Match(sc.Bytes()) {
 				matches++
-				if matches > t.max {
+				if matches > t.limit() {
 					return
 				}
 				fmt.Fprintf(&b, "%s:%d:%s\n", rel, n, cut(sc.Text()))
@@ -206,8 +206,8 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if matches == 0 {
 		return Result{Text: "no matches for " + in.Pattern, Empty: true}, nil
 	}
-	if matches > t.max {
-		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", t.max))
+	if matches > t.limit() {
+		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", t.limit()))
 	}
 	return Result{Text: b.String()}, nil
 }
@@ -273,4 +273,20 @@ func cut(s string) string {
 		return s
 	}
 	return string(r[:maxLineRunes]) + "…"
+}
+
+// max is the lines a read with no range returns: t.lines, or readMaxLines for a zero-valued readTool.
+func (t readTool) max() int {
+	if t.lines > 0 {
+		return t.lines
+	}
+	return readMaxLines
+}
+
+// limit is where grep stops: t.max, or grepMaxMatches for a zero-valued grepTool.
+func (t grepTool) limit() int {
+	if t.max > 0 {
+		return t.max
+	}
+	return grepMaxMatches
 }
