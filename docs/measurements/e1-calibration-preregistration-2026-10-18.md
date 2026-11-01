@@ -2528,3 +2528,62 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - d between 0 and +5.
   - Compactions in most of the B runs that reach the note (about 21–26 of 36 in §16.1).
 - **Stopping and void:** as §16.1. It runs when both locks are free, overnight if needed (about 4–5 hours).
+- **Amended before any §16.2 run (Francis, 2026-11-01 14:08, relayed by the coordinator): react when stuck.**
+  - **What changes:** besides the one-shot compaction at the first nearly-full note, `compact_at_cliff` changes what
+    the repeat rule does at the cliff.
+    - When `stop_repeats` would end the turn and the call that reached the limit was last answered with the
+      nearly-full note, tack compacts with the scope above and lets the turn continue.
+    - The cliff's 10% regrowth gate does not apply to it. That call's repeat count starts again from zero.
+    - **At most 2 such compactions per turn.** A third, or one that finds nothing left to stub, ends the turn with
+      `repeat_loop`, as today.
+    - Each is a `compaction` event with the trigger `stuck`.
+  - **A repeat away from the cliff still ends the turn as today.** There the call got its whole, unchanged result
+    each time: the model has the data, and compaction would change nothing it is shown. Letting that turn go on would
+    spend requests without giving it anything new.
+  - **The rest is unchanged:** the arms, base, size, rule and stopping.
+  - **The mechanism metric adds:**
+    - `stuck` compactions per B run;
+    - the turns that continued past a would-be `repeat_loop`, and what they did next (an edit, `done`, or another stop).
+  - **Predictions, restated:**
+    - B's `repeat_loop` stops fall by two-thirds or more against A's;
+    - d between 0 and +5;
+    - B's wall time per run rises.
+- **Amended again before any §16.2 run (Francis, 2026-11-01 14:11, relayed by the coordinator): progressive
+  widening, in the same lever.** It is one setting, `compact_at_cliff`, with one registration and one screen.
+  - **What it adds:** an unchanged repeat of a whole-file read (no range) or of a grep is shown again with a larger
+    cap, for that call only and never globally.
+    - The first repeat gets 3 times the base cap. The second and later get no cap.
+    - So a whole read goes 80 → 240 → all lines with `lean_results`, and 200 → 600 → all without it. Grep goes 30 → 90
+      → all matches, or 100 → 300 → all.
+    - It works the same on either base, so the design stands whichever base §16.1's continuation decides.
+    - A widened result is still a result: `fit_window` and the result cap apply to it as to any other.
+  - **How repeats are counted with the setting on (a design choice, tack's session, reversible by the coordinator):**
+    - A widened result is a different text, so comparing what was shown would reset the repeat count at every widening.
+    - Instead, the repeat rule compares the call's own output at its base cap, before `fit_window` cuts or replaces
+      it. For a widened call, tack also runs it at the base cap for that comparison, and does not show that run.
+    - Unchanged output at the base cap is an unchanged repeat, however the result was shown. So `stop_repeats`
+      reaches its limit on the same calls as before.
+    - With the setting off, nothing changes.
+  - **How it combines with the rest:**
+    - At the cliff, a widened result becomes the nearly-full note like any other, until a compaction frees room.
+    - So widening helps away from the cliff, and the two compactions (the one-shot at the first note, and the `stuck`
+      reaction at the repeat limit, at most 2 per turn) help at it.
+  - **The mechanism metric adds:**
+    - widened results per B run, by step;
+    - re-asks: unchanged repeats of the same call, per run and per arm.
+  - **Predictions, restated:**
+    - B's `repeat_loop` stops fall by two-thirds or more against A's;
+    - B's re-asks of the same call fall by half or more;
+    - d between 0 and +5.
+- **Amended a third time before any §16.2 run (2026-11-01, from Gemini's review of #45, relayed by the coordinator):
+  the cliff's own arming.** The registration above re-arms the cliff compaction on mask_observations' 10% regrowth
+  floor.
+  - **The flaw:** that floor is shared. A narrow compaction past 90% of the window, or a cliff compaction that frees
+    less than 10%, leaves the cliff unable to fire again.
+  - **Instead, the cliff and the stuck reaction each get their own arming, per turn:**
+    - the cliff compaction runs at the first nearly-full note of the turn at which it finds something to stub, then
+      not again that turn;
+    - the stuck reaction runs at most 2 times a turn, as amended.
+    - Neither reads or moves mask_observations' floor.
+  - A pilot run is one turn, so "per turn" is per run.
+  - Everything else is unchanged.
