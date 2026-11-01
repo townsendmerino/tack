@@ -2408,3 +2408,58 @@ Francis's yes, and their arms lines are fixed before any run.
   - **The 35B at 16k reaches gold in 35 of 36 runs.** So the reach-decided screens (§13.3's repo map and §15.1's
     `test_first`) have almost no room: only task 7, at 2/3, can rise.
   - Whether to run them as registered, re-register them on passes, or drop them, is Francis's decision.
+
+## 16. Amendment C10: the 35B's repeat loops — Francis, 2026-11-01 07:55, registered before any run
+
+**Why.** In C9's 144 bundle runs on the 35B at 16k (§15.2 and §15.3, both arms), 56 ended in `repeat_loop`
+(`e1-calibration-c9-screens-2026-11-01.md`):
+- In 54 of the 56, the repeated call was answered with `fit_window`'s "window nearly full" note.
+- 55 of the 56 never made an edit.
+- Before the first such note, those runs made 8.6 calls on average and took in about 34 KB of results: 22.7 KB of
+  reads and 11.6 KB of grep and glob.
+- `stop_repeats` ends such a turn at the 8th unchanged repeat; it does not break the loop.
+- At 32k, 10 of 23 failures were still repeat loops (§14.3), so a bigger window moves the cliff without removing it.
+
+**Francis's order (07:55, relayed by the coordinator):**
+- Lever 1 first.
+- If lever 1 reads "not shown", lever 2 follows with its own registration, with no need to ask again.
+- If lever 1 is shown, the work stops and is reported before lever 2.
+
+### 16.1 Leaner exploration results (`lean_results`), decided by passes
+
+- **What:** a `[run]` setting, off by default. With it on:
+  - a whole-file `read` returns its first 80 lines instead of 200, with the existing "Read more with offset and
+    limit" hint, and the tool's description says 80;
+  - `grep` stops at 30 matches instead of 100, with the existing "narrow the pattern or the path" hint.
+  - Nothing else changes, explicit `offset` and `limit` reads included.
+- **The arms:** the 35B as in §15.2's arms line (Qwen3.6-35B-A3B `q4_k_m` at 16,384, `-moe-cache-experts`, goinfer
+  `00584c35`, sampling 0.7 / 0.8 / 20, a 30-minute cap). A is the bundle as in §14.4; B is A plus `lean_results`.
+  The tack build is named in an arms line, with the setting merged, before the first run.
+- **Size and order:** the 12 tasks, A B B A A B per task, 72 runs, each after the cell check (§12.2).
+- **The decision rule:** §12.3's form, with sd 2.0 as for C9 (§15.2's arms line). d = B − A out of 36 each.
+  - d ≥ +4: adopted.
+  - +2 ≤ d ≤ +3: parked.
+  - d ≤ +1: not shown; the do-nothing arm wins ties.
+  - Voids are re-run in place, and an arm short of 36 is rate-scaled with its sd, as §12.25's rule (b) as refined.
+- **The mechanism metric, reported and never used for adoption:**
+  - calls and result bytes before the first "window nearly full" note, per arm;
+  - `repeat_loop` stops, and repeat loops answered with the note;
+  - window-full stops, and tokens at stop.
+- **Predictions (tack's session, before any run):**
+  - B's calls before the first nearly-full note rise from about 9 to 12 or more;
+  - B's repeat-loop stops fall by a third or more against A's;
+  - d between 0 and +4. A later cliff gives more chances to edit, but the 32k arm suggests more room alone converts
+    few loops into passes.
+- **Stopping and void:** as §15.2's arms line. It runs when both machines' queues are idle and their locks free,
+  overnight if needed (about 4–5 hours).
+- **Then:**
+  - If not shown: §16.2.
+  - If shown: stop and report to Francis before §16.2.
+  - If parked: report. Lever 2's condition is "not shown", so a parked result also stops for Francis.
+
+### 16.2 Compact at the cliff — registered only if §16.1 is not shown
+
+- **What, in outline:** when `fit_window` would give its nearly-full note, compact first, once, by stubbing the
+  oldest grep and glob output and the whole reads already read past. This extends `mask.go`'s scope and gives it
+  this trigger.
+- Its arms line, rule and predictions are registered before it is built, after §16.1's read.
