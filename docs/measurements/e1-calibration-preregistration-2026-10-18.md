@@ -2314,6 +2314,7 @@ This drafts three screens, one registration each, with rigor matched to a screen
     masking does to the window.
   - Window-full stops: A 7, B 12. The prediction of half or fewer missed.
   - A wider rule (grep and glob output and old first reads) would need its own registration; it is not started.
+  - **Decided (the coordinator, 2026-11-01 07:40): masking stays off, with no wider rule for now.**
 
 ### 15.3 Best of N with the task's test as verifier (`best_of`), decided by any-of-k passes
 
@@ -2370,6 +2371,7 @@ This drafts three screens, one registration each, with rigor matched to a screen
     grader passes, counted in B's 17.
   - **Why attempts failed:** all 75 failed attempts failed on their exit code (48 repeat loops), none on the tests.
   - B took about 2.2 times A's wall time. All four predictions held.
+  - **Decided (the coordinator, 2026-11-01 07:40): best_of stays parked and off, with no continuation.**
 
 **The answer-leak audit (2026-10-31, coordinator's read-only audit, relayed at 17:32), before §15.2's first run.**
 - **What it found:**
