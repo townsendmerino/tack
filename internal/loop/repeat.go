@@ -61,3 +61,9 @@ func (g *RepeatGuard) Reset(key string) {
 	delete(g.last, key)
 	delete(g.count, key)
 }
+
+// Same says whether key was seen and its last result was result: the call would be an unchanged repeat.
+func (g *RepeatGuard) Same(key, result string) bool {
+	prev, seen := g.last[key]
+	return seen && prev == result
+}

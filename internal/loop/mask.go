@@ -9,7 +9,6 @@ import (
 
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
-	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Observation masking (Config.MaskObservations; e1-calibration-preregistration-2026-10-18.md §15.2): tack's first
@@ -125,11 +124,18 @@ func (v *fileVersions) touch(o observation) {
 	}
 }
 
-// track adds a tool result to the observations, stamped with its file's version, and counts the call.
-func (s *Session) track(o observation, truncated bool) {
+// track adds a tool result to the observations, stamped with its file's version, and counts the call. level is the
+// call's widening (tools.WithWiden): a widened whole read covers 3 times the base lines, or the whole file.
+func (s *Session) track(o observation, truncated bool, level int) {
 	o.truncated, o.ver, o.whole = truncated, s.vers.of(o.path), s.cfg.ReadLines
 	if o.whole <= 0 {
 		o.whole = wholeReadLines
+	}
+	switch {
+	case level == 1:
+		o.whole *= 3
+	case level >= 2:
+		o.whole = 1 << 30 // every line
 	}
 	s.vers.touch(o)
 	s.obs = append(s.obs, o)
@@ -231,8 +237,8 @@ func (s *Session) due(w int) bool {
 
 // compact runs a compaction before request next when one is due. The cliff comes first (Config.CompactAtCliff): a
 // result got fit_window's nearly-full note in the last response, and no cliff compaction has masked anything this
-// turn. It has its own arming, not mask_observations' regrowth floor, so a compaction that frees little cannot keep
-// the cliff from firing. Then mask_observations' 75% trigger (Config.MaskObservations).
+// turn. It has its own arming and does not read mask_observations' regrowth floor, so a compaction that frees little
+// cannot keep the cliff from firing. Then mask_observations' 75% trigger (Config.MaskObservations).
 func (s *Session) compact(next int, cause int64) error {
 	note := s.cliffNote
 	s.cliffNote = false
@@ -249,8 +255,9 @@ func (s *Session) compact(next int, cause int64) error {
 }
 
 // compactNow stubs what a compaction with trigger ("window", "cliff" or "stuck") masks before request next. It rewrites
-// those results in the conversation, records a compaction event, and returns how many it masked. Only "window" moves
-// mask_observations' regrowth floor; "cliff" and "stuck" are wide (maskStubs).
+// those results in the conversation, records a compaction event, and returns how many it masked. Every trigger moves
+// mask_observations' regrowth floor, so its window trigger waits for regrowth after any compaction; "cliff" and
+// "stuck" are wide (maskStubs) and never read the floor.
 func (s *Session) compactNow(next int, cause int64, trigger string) (int, error) {
 	masked := s.maskStubs(next, trigger != "window")
 	if len(masked) == 0 {
@@ -266,25 +273,21 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		after += len(m.Stub)
 		s.conv.ReplaceResult(m.ID, m.Stub)
 	}
-	if trigger == "window" {
-		s.compacted, s.maskFloor = true, 0
-	}
+	s.compacted, s.maskFloor = true, 0 // every trigger moves mask_observations' floor; only "window" reads it (due)
 	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt,
 		Window: s.cfg.Source.Window(), Masked: masked, Before: before, After: after})
 	return len(masked), err
 }
 
-// widenLevel is the widening for call b with key this turn (Config.CompactAtCliff; tools.WithWiden): 0 for a first
-// call or a call widening does not apply to, 1 for its first unchanged repeat, 2 after.
-func (s *Session) widenLevel(repeats *RepeatGuard, key string, b proto.ModelBlock) int {
-	if !s.cfg.CompactAtCliff || !tools.Widenable(b.Name, b.Input) {
+// widenLevel is the widening for a call with key whose output at the base cap is base (Config.CompactAtCliff;
+// tools.WithWiden): 1 for its first unchanged repeat, 2 after, and 0 for a first call or one whose output changed
+// since the last call with its key.
+func widenLevel(repeats *RepeatGuard, key, base string) int {
+	prior, _ := repeats.Prior(key)
+	if !repeats.Same(key, RepeatResult(base, "")) {
 		return 0
 	}
-	n, seen := repeats.Prior(key)
-	if !seen {
-		return 0
-	}
-	return min(n+1, 2)
+	return min(prior+1, 2)
 }
 
 // baseOutput is what call b returns at its base cap, redacted as runTool redacts: what the repeat count compares for a

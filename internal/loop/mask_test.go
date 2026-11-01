@@ -152,8 +152,8 @@ func TestMaskReadSuperseding(t *testing.T) {
 		"an offset with no limit is never compared": {read("a", `{"path":"f.go","offset":5}`, true), read("b", `{"path":"f.go","offset":1,"limit":500}`, true), false},
 	} {
 		s := &Session{}
-		s.track(c.earlier, false)
-		s.track(c.later, false)
+		s.track(c.earlier, false, 0)
+		s.track(c.later, false, 0)
 		got := s.maskStubs(2, false)
 		if (len(got) == 1 && got[0].ID == "a") != c.masked {
 			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
@@ -182,11 +182,11 @@ func TestMaskReadSupersedingVersions(t *testing.T) {
 		"a grep and a failed write": {[]observation{call("g", "grep", `{"pattern":"x"}`), observe("w", "write", []byte(`{"path":"g.go"}`), 1, "denied", false)}, false, true},
 	} {
 		s := &Session{}
-		s.track(call("a", "read", `{"path":"f.go"}`), false)
+		s.track(call("a", "read", `{"path":"f.go"}`), false, 0)
 		for _, o := range c.between {
-			s.track(o, false)
+			s.track(o, false, 0)
 		}
-		s.track(call("b", "read", `{"path":"f.go"}`), c.truncated)
+		s.track(call("b", "read", `{"path":"f.go"}`), c.truncated, 0)
 		got := s.maskStubs(2, false)
 		if (len(got) == 1 && got[0].ID == "a") != c.masked {
 			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
@@ -263,8 +263,8 @@ func TestMaskReadSupersedingLean(t *testing.T) {
 		`{"path":"f.go","offset":100,"limit":20}`: false,
 	} {
 		s := &Session{cfg: Config{ReadLines: 80}}
-		s.track(read("a", earlier), false)
-		s.track(read("b", `{"path":"f.go"}`), false)
+		s.track(read("a", earlier), false, 0)
+		s.track(read("b", `{"path":"f.go"}`), false, 0)
 		if got := s.maskStubs(2, false); (len(got) == 1) != masked {
 			t.Errorf("%s then a whole read at 80 lines: masked %+v, want %v", earlier, got, masked)
 		}
@@ -278,8 +278,8 @@ func TestMaskWholeReadThenARange(t *testing.T) {
 	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
 	for readLines, masked := range map[int]bool{80: true, 0: false} {
 		s := &Session{cfg: Config{ReadLines: readLines}}
-		s.track(read("a", `{"path":"f.go"}`), false)
-		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false)
+		s.track(read("a", `{"path":"f.go"}`), false, 0)
+		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false, 0)
 		if got := s.maskStubs(2, false); (len(got) == 1 && got[0].ID == "a") != masked {
 			t.Errorf("ReadLines %d: a whole read, then lines 1-100: masked %+v, want %v", readLines, got, masked)
 		}
@@ -314,5 +314,43 @@ func TestMaskStubsWideAtTheCliff(t *testing.T) {
 	}
 	if narrow := (&Session{obs: obs()}).maskStubs(9, false); len(narrow) != 0 {
 		t.Fatalf("not at the cliff, it stubbed %+v", narrow)
+	}
+}
+
+// A widened whole read covers what it showed: under ReadLines 80, a read widened once covers lines 1-240 and is not
+// superseded by a later read of lines 1-100; widened twice it covers the whole file. Unwidened, it is.
+func TestMaskWidenedReadCoverage(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
+	for level, masked := range map[int]bool{0: true, 1: false, 2: false} {
+		s := &Session{cfg: Config{ReadLines: 80}}
+		s.track(read("a", `{"path":"f.go"}`), false, level)
+		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false, 0)
+		if got := s.maskStubs(2, false); (len(got) == 1) != masked {
+			t.Errorf("level %d: masked %+v, want %v", level, got, masked)
+		}
+	}
+}
+
+// widenLevel widens only an unchanged repeat: after A, a base of A is level 1, and after A, A, it is 2. After A then B
+// (a change), a base of C is 0, though the key was seen; a base of B is level 1.
+func TestWidenLevel(t *testing.T) {
+	var g RepeatGuard
+	if l := widenLevel(&g, "k", "A"); l != 0 {
+		t.Fatalf("unseen: %d", l)
+	}
+	g.Observe("k", "A")
+	if l := widenLevel(&g, "k", "A"); l != 1 {
+		t.Fatalf("after A, A: %d", l)
+	}
+	g.Observe("k", "A")
+	if l := widenLevel(&g, "k", "A"); l != 2 {
+		t.Fatalf("after A, A, A: %d", l)
+	}
+	var h RepeatGuard
+	h.Observe("k", "A")
+	h.Observe("k", "B")
+	if l, l2 := widenLevel(&h, "k", "C"), widenLevel(&h, "k", "B"); l != 0 || l2 != 1 {
+		t.Fatalf("after A, B: a C base widens %d, a B base %d; want 0 and 1", l, l2)
 	}
 }

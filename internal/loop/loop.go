@@ -259,7 +259,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
 	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
 	var repeats RepeatGuard               // the turn's unchanged repeats (Config.StopRepeats)
-	stopKey, stopAtCliff := "", false     // the call that reached RepeatLimit, and whether the nearly-full note answered it
+	var stopKeys []string                 // this response's calls that reached RepeatLimit answered with the nearly-full note
+	stopAway := false                     // a call of this response reached RepeatLimit away from the cliff
 	s.cliffDone, s.stuckDone = false, 0   // Config.CompactAtCliff's per-turn arming
 	var verify verifyState                // the turn's changes and verifications (Config.VerifyDone)
 	repeatLoop := false
@@ -370,6 +371,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			var fin proto.ToolFinished
 			var ran tools.Result     // what the tool itself returned, when it ran: its Empty and State
 			raw, rawSet := "", false // the tool's own output at its base cap, before fit_window (Config.CompactAtCliff)
+			level := 0               // the call's widening (tools.WithWiden), 0 for none
 			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
@@ -427,15 +429,23 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				// Progressive widening (Config.CompactAtCliff): a repeat of a whole read or a grep is run with a wider
-				// cap, and once more at its base cap, which the repeat count compares instead (mask.go, widenLevel).
-				level := s.widenLevel(&repeats, key, b)
-				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room); err != nil {
+				// Progressive widening (Config.CompactAtCliff): an unchanged repeat of a whole read or a grep, one whose
+				// output at the base cap matches the last call with its key, runs with a wider cap; the repeat count
+				// compares that base-cap output (raw), not what is shown.
+				wctx := shell.WithApproval(ctx, by)
+				if s.cfg.CompactAtCliff && tools.Widenable(b.Name, b.Input) {
+					if _, seen := repeats.Prior(key); seen {
+						base := s.baseOutput(wctx, b)
+						if level = widenLevel(&repeats, key, base); level > 0 {
+							raw, rawSet = base, true
+						}
+					}
+				}
+				if fin, full, ran, err = s.runTool(tools.WithWiden(wctx, level), b, callEv.Seq, room); err != nil {
 					return proto.StopError, err
 				}
-				raw, rawSet = ran.Text, true
-				if level > 0 {
-					raw = s.baseOutput(shell.WithApproval(ctx, by), b)
+				if !rawSet {
+					raw, rawSet = ran.Text, true
 				}
 				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -448,7 +458,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			// The repeat count is taken on the result before any note, so a note's own count cannot make a repeat
 			// look changed; a replay recovers that result with StripNotes.
-			if s.cfg.StopRepeats || s.cfg.ResultNotes {
+			if s.cfg.StopRepeats || s.cfg.ResultNotes || s.cfg.CompactAtCliff {
 				seen := fin.Result
 				if s.cfg.CompactAtCliff && rawSet {
 					seen = raw // widened or cut, it is the same call's same output
@@ -456,7 +466,11 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				n, stop := repeats.Observe(key, RepeatResult(seen, ran.State))
 				repeatLoop = repeatLoop || (s.cfg.StopRepeats && stop)
 				if s.cfg.StopRepeats && stop {
-					stopKey, stopAtCliff = key, strings.HasPrefix(fin.Result, nearlyFullOpen)
+					if strings.HasPrefix(fin.Result, nearlyFullOpen) {
+						stopKeys = append(stopKeys, key)
+					} else {
+						stopAway = true
+					}
 				}
 				if s.cfg.ResultNotes {
 					fin.Result += resultNotes(b.Name, ran.Empty, n, s.cfg.StopRepeats)
@@ -475,7 +489,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
 			if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
-				s.track(observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK), fin.Truncated)
+				s.track(observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK), fin.Truncated, level)
 			}
 			if room != nil {
 				*room = max(0, *room-len(fin.Result))
@@ -498,19 +512,36 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)
 		}
-		// React when stuck (Config.CompactAtCliff): a repeat loop at the cliff compacts and continues, at most
-		// stuckMax times a turn; then, or with nothing left to stub, the turn ends as before.
-		if repeatLoop && s.cfg.CompactAtCliff && stopAtCliff && s.stuckDone < stuckMax {
-			m, err := s.compactNow(s.requests+1, cause, "stuck")
-			if err != nil {
-				return proto.StopError, err
+		// React when stuck (Config.CompactAtCliff): a repeat loop answered with the nearly-full note compacts and the turn
+		// goes on. Every call of the response that reached the limit must be at the cliff; one away from it ends the
+		// turn as before. The turn's first cliff compaction goes first, if it has not run; otherwise a stuck one, at
+		// most stuckMax a turn. With neither, or nothing left to stub, the turn ends as before.
+		if repeatLoop && s.cfg.CompactAtCliff && !stopAway && len(stopKeys) > 0 {
+			m := 0
+			if s.cliffNote && !s.cliffDone {
+				var err error
+				if m, err = s.compactNow(s.requests+1, cause, "cliff"); err != nil {
+					return proto.StopError, err
+				}
+				s.cliffNote, s.cliffDone = false, m > 0
+			}
+			if m == 0 && s.stuckDone < stuckMax {
+				var err error
+				if m, err = s.compactNow(s.requests+1, cause, "stuck"); err != nil {
+					return proto.StopError, err
+				}
+				if m > 0 {
+					s.stuckDone++
+				}
 			}
 			if m > 0 {
-				s.stuckDone++
-				repeats.Reset(stopKey)
-				repeatLoop, stopAtCliff = false, false
+				for _, k := range stopKeys {
+					repeats.Reset(k)
+				}
+				repeatLoop = false
 			}
 		}
+		stopKeys, stopAway = nil, false
 		if repeatLoop {
 			return end(proto.StopRepeatLoop)
 		}

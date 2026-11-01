@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -387,5 +388,132 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 				t.Errorf("on %v: %s's note does not count %s: %.120q", on, id, rep, h.finished(id).Result[max(0, len(h.finished(id).Result)-160):])
 			}
 		}
+	}
+}
+
+// Widening needs only compact_at_cliff: with stop_repeats and result_notes off, the same whole read three times shows
+// 200, 600, then all 700 lines.
+func TestCompactAtCliffWidensAlone(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 3; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+	}
+	replies = append(replies, goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = 1_000_000
+	h.sess.cfg.StopRepeats, h.sess.cfg.ResultNotes, h.sess.cfg.MaxResultBytes = false, false, 1<<20
+	var wide strings.Builder
+	for i := 1; i <= 700; i++ {
+		fmt.Fprintf(&wide, "w %d\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+	if got := [3]int{lines("r0"), lines("r1"), lines("r2")}; got != [3]int{200, 600, 700} {
+		t.Fatalf("shown %v, want [200 600 700]", got)
+	}
+}
+
+// callsAt is a scripted reply with the given calls (id, name, input triples) that reports a prompt of the given tokens.
+func callsAt(prompt int, calls ...string) goinfertest.Reply {
+	var bs []proto.ModelBlock
+	for i := 0; i+2 < len(calls); i += 3 {
+		bs = append(bs, proto.ModelBlock{Type: "tool_use", ID: calls[i], Name: calls[i+1], Input: json.RawMessage(calls[i+2])})
+	}
+	return goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", prompt, 0, 1, bs...)}
+}
+
+// Several calls in one response: when two calls reach the repeat limit together, one at the cliff and one away from it,
+// the turn ends with repeat_loop, and no stuck compaction runs, though old greps (requests 5 and 6) are there to stub.
+func TestCompactAtCliffEndsOnAnyLoopAwayFromTheCliff(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 6; i++ { // requests 1-6: the cliff stubs 1-4; 5 and 6 are left for a stuck compaction
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", fmt.Sprintf(`{"pattern":"line 0%d"}`, i)))
+	}
+	for i := 0; i < 9; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("b%d", i), "read", bigRead,
+			fmt.Sprintf("s%d", i), "read", `{"path":"small.txt","offset":1,"limit":3}`))
+	}
+	h := cliffHarness(t, true, replies...)
+	h.sess.cfg.StopRepeats = true
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 30, 30
+	stop, err := h.sess.Turn(context.Background(), "x")
+	stuck := 0
+	for _, p := range h.payloads(proto.EvCompaction) {
+		if p.(proto.Compaction).Trigger == "stuck" {
+			stuck++
+		}
+	}
+	if err != nil || stop != proto.StopRepeatLoop || len(h.script.Requests) != 15 || stuck != 0 {
+		t.Fatalf("stop %s, err %v, %d requests, %d stuck compactions; want repeat_loop at 15 and none", stop, err, len(h.script.Requests), stuck)
+	}
+}
+
+// Order at the cliff: when the turn's first nearly-full note lands on the call that reaches the repeat limit, the cliff
+// compaction runs, not a stuck one, and the turn goes on. The window is roomy for 8 responses, then the 9th reports a
+// prompt that leaves no room, so its read (the 8th unchanged repeat) gets the note.
+func TestCompactAtCliffRunsTheCliffFirst(t *testing.T) {
+	const window = 100_000
+	replies := []goinfertest.Reply{goinfertest.Calls("", "g0", "grep", `{"pattern":"line 00"}`), goinfertest.Calls("", "g1", "grep", `{"pattern":"line 01"}`)}
+	for i := 0; i < 8; i++ {
+		replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", `{"path":"small.txt","offset":1,"limit":40}`))
+	}
+	replies = append(replies, callsAt(window-300, "r8", "read", `{"path":"small.txt","offset":1,"limit":40}`), goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = window
+	h.sess.cfg.StopRepeats = true
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 30, 30
+	// A 40-line read of small.txt, about 2.3 KB, is over fitMinBytes, so the 9th, with no room, becomes the note.
+	var b strings.Builder
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&b, "small %02d of a file now long enough to need room\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "small.txt"), []byte(b.String()), 0o644)
+	stop, err := h.sess.Turn(context.Background(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := h.finished("r8"); !strings.HasPrefix(f.Result, "[window nearly full") {
+		t.Fatalf("the 9th read did not get the note: %.80q", f.Result)
+	}
+	var got []string
+	for _, p := range h.payloads(proto.EvCompaction) {
+		got = append(got, p.(proto.Compaction).Trigger)
+	}
+	if strings.Join(got, ",") != "cliff" || stop != proto.StopEndTurn || h.sess.stuckDone != 0 {
+		t.Fatalf("compactions %v, stop %s, stuck %d; want one cliff, the turn going on to end_turn, and no stuck", got, stop, h.sess.stuckDone)
+	}
+}
+
+// With mask_observations on too, a cliff compaction moves its regrowth floor: right after it, a window compaction is
+// not due though the prompt is past 75%; once the prompt has grown 10% of the window past the first prompt after it,
+// it is.
+func TestCliffCompactionMovesTheMaskFloor(t *testing.T) {
+	h := cliffHarness(t, true, goinfertest.Says("ok"))
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil { // the source learns the window from a request
+		t.Fatal(err)
+	}
+	h.sess.cfg.MaskObservations = true
+	w := h.sess.cfg.Source.Window()
+	if w <= 0 {
+		t.Fatalf("window %d", w)
+	}
+	h.sess.track(observe("g", "grep", []byte(`{"pattern":"x"}`), 1, strings.Repeat("y", 600), true), false, 0)
+	h.sess.noteUsage(w * 80 / 100)
+	if !h.sess.due(w) {
+		t.Fatal("before any compaction a window compaction is not due at 80%")
+	}
+	if m, err := h.sess.compactNow(9, 0, "cliff"); err != nil || m != 1 {
+		t.Fatalf("the cliff compaction masked %d, %v", m, err)
+	}
+	h.sess.noteUsage(w * 80 / 100) // the first prompt after it: the floor
+	if h.sess.due(w) {
+		t.Fatal("a window compaction is due right after a cliff compaction, without regrowth")
+	}
+	h.sess.noteUsage(w * 91 / 100)
+	if !h.sess.due(w) {
+		t.Fatal("a window compaction is not due after 11% regrowth")
 	}
 }
