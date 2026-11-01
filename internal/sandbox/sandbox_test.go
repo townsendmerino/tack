@@ -56,6 +56,9 @@ func setup(t *testing.T) fixture {
 	write(filepath.Join(f.home, ".docker", "config.json"), "{\"auths\":\"SECRET=docker\"}\n")
 	write(filepath.Join(f.home, "Library", "Messages", "chat.db"), "SECRET=messages\n")
 	write(filepath.Join(f.home, ".zshrc"), "# owner's\n")
+	write(filepath.Join(f.home, "repos", "mirror.git", "ESCAPED-list"), "SECRET=mirror-fix\n")
+	write(filepath.Join(f.home, ".config", "git", "credentials"), "https://x:SECRET=xdg-git-cred@x\n")
+	write(filepath.Join(f.home, ".gitconfig"), "[user]\n\tname = owner\n")
 	write(filepath.Join(f.state, "token"), "SECRET=tack-token\n")
 	f.ownerGoCache = filepath.Join(f.home, "Library", "Caches", "go-build")
 	f.ownerModCache = filepath.Join(f.home, "go", "pkg", "mod")
@@ -64,6 +67,7 @@ func setup(t *testing.T) fixture {
 	f.cfg = Config{Workspace: f.ws, Temp: dir(), GoCache: dir(), Home: f.home, Tack: []string{f.state}}
 	f.env = []string{"HOME=" + f.home, "TMPDIR=" + f.cfg.Temp, "GOCACHE=" + f.cfg.GoCache, "PATH=" + os.Getenv("PATH"),
 		"GOTOOLCHAIN=local", "GOFLAGS=-mod=mod", "GOPATH=" + filepath.Join(f.home, "go"), "STATE=" + f.state}
+	f.cfg.Read = ReadPaths(f.env, "", f.home)
 	return f
 }
 
@@ -110,7 +114,7 @@ func TestEscapes(t *testing.T) {
 		{"lsappinfo, not on the exec list, reaches LaunchServices", secs(SecLaunch), `/usr/bin/lsappinfo front`, "ASN:"},
 		{"hdiutil reaches disk images", secs(SecMount), `/usr/bin/hdiutil info >/dev/null && echo ESCAPED-hdiutil`, "ESCAPED-hdiutil"},
 		{"network to a local server", secs(SecNetwork), `/usr/bin/curl -s -m 5 ` + url, "ESCAPED-network"},
-		{"reading tack's token", secs(SecTack), `cat "$STATE/token"`, "tack-token"},
+		{"reading tack's token", secs(SecTack + "+" + SecRead), `cat "$STATE/token"`, "tack-token"},
 		{"writing into tack's state", secs(SecTack + "+" + SecWrite), `echo x > "$STATE/approve" && echo ESCAPED-tack-write`, "ESCAPED-tack-write"},
 		{"writing a git hook", secs(SecLater), `echo x > .git/hooks/pre-commit && echo ESCAPED-hook`, "ESCAPED-hook"},
 		{"writing git config", secs(SecLater), `git config core.fsmonitor /evil && echo ESCAPED-gitconfig`, "ESCAPED-gitconfig"},
@@ -121,14 +125,17 @@ func TestEscapes(t *testing.T) {
 		{"planting in the owner's Go build cache", secs(SecWrite), `echo x > "$HOME/Library/Caches/go-build/planted" && echo ESCAPED-gocache`, "ESCAPED-gocache"},
 		{"planting in the owner's module cache", secs(SecWrite), `echo x > "$HOME/go/pkg/mod/planted" && echo ESCAPED-modcache`, "ESCAPED-modcache"},
 		{"reading .env", secs(SecSecrets), `cat .env`, "ws-dotenv"},
-		{"reading an ssh key", secs(SecSecrets), `cat "$HOME/.ssh/id_test"`, "ssh-key"},
-		{"reading gh's token", secs(SecSecrets), `cat "$HOME/.config/gh/hosts.yml"`, "gh-token"},
-		{"reading a keychain file", secs(SecSecrets), `cat "$HOME/Library/Keychains/login.keychain-db"`, "SECRET=keychain"},
+		{"reading an ssh key", secs(SecSecrets + "+" + SecRead), `cat "$HOME/.ssh/id_test"`, "ssh-key"},
+		{"reading gh's token", secs(SecSecrets + "+" + SecRead), `cat "$HOME/.config/gh/hosts.yml"`, "gh-token"},
+		{"reading a keychain file", secs(SecSecrets + "+" + SecRead), `cat "$HOME/Library/Keychains/login.keychain-db"`, "SECRET=keychain"},
 		{"listing the keychain with security", secs(SecSecrets), `/usr/bin/security list-keychains && echo ESCAPED-security`, "ESCAPED-security"},
-		{"reading git credentials", secs(SecSecrets), `cat "$HOME/.git-credentials"`, "SECRET=git-cred"},
-		{"reading .netrc", secs(SecSecrets), `cat "$HOME/.netrc"`, "SECRET=netrc"},
-		{"reading docker's config", secs(SecSecrets), `cat "$HOME/.docker/config.json"`, "SECRET=docker"},
-		{"reading Messages", secs(SecSecrets), `cat "$HOME/Library/Messages/chat.db"`, "SECRET=messages"},
+		{"reading git credentials", secs(SecSecrets + "+" + SecRead), `cat "$HOME/.git-credentials"`, "SECRET=git-cred"},
+		{"reading .netrc", secs(SecSecrets + "+" + SecRead), `cat "$HOME/.netrc"`, "SECRET=netrc"},
+		{"reading docker's config", secs(SecSecrets + "+" + SecRead), `cat "$HOME/.docker/config.json"`, "SECRET=docker"},
+		{"reading Messages", secs(SecSecrets + "+" + SecRead), `cat "$HOME/Library/Messages/chat.db"`, "SECRET=messages"},
+		{"reading git's credentials under .config/git, which git may read", secs(SecSecrets), `cat "$HOME/.config/git/credentials"`, "SECRET=xdg-git-cred"},
+		{"reading another repository outside the workspace", secs(SecRead), `cat "$HOME/repos/mirror.git/ESCAPED-list"`, "SECRET=mirror-fix"},
+		{"listing another repository outside the workspace", secs(SecRead), `ls "$HOME/repos/mirror.git"`, "ESCAPED-list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,5 +317,27 @@ func TestSweepTouchesNothingElse(t *testing.T) {
 	}
 	if !alive(plain) {
 		t.Fatal("a session's sweep killed an unsandboxed process")
+	}
+}
+
+// Config.Read ([sandbox] read) opens one directory and nothing beside it: a checkpoint under it is readable, its
+// sibling is not, and with it left out the checkpoint is not readable either.
+func TestReadAddsOnlyItsDirectory(t *testing.T) {
+	f := setup(t)
+	models, other := filepath.Join(f.home, "models"), filepath.Join(f.home, "other")
+	os.MkdirAll(models, 0o755)
+	os.MkdirAll(other, 0o755)
+	os.WriteFile(filepath.Join(models, "ckpt.gguf"), []byte("OK-checkpoint\n"), 0o644)
+	os.WriteFile(filepath.Join(other, "note"), []byte("SECRET=beside\n"), 0o644)
+	with := f.cfg
+	with.Read = append(append([]string{}, f.cfg.Read...), models)
+	if out := f.run(&with, `cat "$HOME/models/ckpt.gguf"`); !strings.Contains(out, "OK-checkpoint") {
+		t.Errorf("a [sandbox] read directory is not readable: %q", out)
+	}
+	if out := f.run(&with, `cat "$HOME/other/note"`); strings.Contains(out, "SECRET=beside") {
+		t.Errorf("a directory beside the [sandbox] read one is readable: %q", out)
+	}
+	if out := f.run(&f.cfg, `cat "$HOME/models/ckpt.gguf"`); strings.Contains(out, "OK-checkpoint") {
+		t.Errorf("without [sandbox] read the checkpoint is readable: %q", out)
 	}
 }

@@ -14,10 +14,12 @@ import (
 )
 
 // editKit gives an auto-mode session its sandboxed shell (DESIGN §6.6). Commands run in `tack shell` under Seatbelt,
-// marked with the session's group and each command's own mark. They may write only the workspace, a temp directory
-// of the session's own and tack's Go cache (under the user cache directory); tack's state directory and config directory are out of their reach.
+// marked with the session's group and each command's own mark. They may read only the system, the toolchain, the
+// module cache, the PATH directories, the workspace (sandbox.ReadPaths) and the directories in read ([sandbox] read).
+// They may write only the workspace, a temp directory of the session's own and tack's Go cache (under the user cache
+// directory). tack's state directory and config directory are out of their reach.
 // It refuses a workspace that overlaps either directory (sandbox.Config.Check).
-func editKit(stateDir, configDir string) func(root string, group sandbox.Target) (core.EditKit, error) {
+func editKit(stateDir, configDir string, read []string) func(root string, group sandbox.Target) (core.EditKit, error) {
 	return func(root string, group sandbox.Target) (core.EditKit, error) {
 		if err := (sandbox.Config{Workspace: root, Tack: []string{stateDir, configDir}}).Check(); err != nil {
 			return core.EditKit{}, err
@@ -43,11 +45,12 @@ func editKit(stateDir, configDir string) func(root string, group sandbox.Target)
 		if err := os.MkdirAll(gocache, 0o755); err != nil {
 			return core.EditKit{}, err
 		}
-		cfg := sandbox.Config{Workspace: root, Temp: tmp, GoCache: gocache, Home: home, Tack: []string{stateDir, configDir}}
+		// GOPROXY=off: the sandbox has no network, so a module missing from the cache fails as missing.
+		env := []string{"TMPDIR=" + tmp, "GOCACHE=" + gocache, "GOPROXY=off"}
+		cfg := sandbox.Config{Workspace: root, Temp: tmp, GoCache: gocache, Home: home, Tack: []string{stateDir, configDir},
+			Read: append(sandbox.ReadPaths(append(os.Environ(), env...), exe, home), read...)}
 		eng := &perms.Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true}
-		sh := &shell.Session{Exe: exe, Args: []string{"shell"}, Engine: eng, Group: group,
-			// GOPROXY=off: the sandbox has no network, so a module missing from the cache fails as missing.
-			Env: []string{"TMPDIR=" + tmp, "GOCACHE=" + gocache, "GOPROXY=off"},
+		sh := &shell.Session{Exe: exe, Args: []string{"shell"}, Engine: eng, Group: group, Env: env,
 			Wrap: func(c *exec.Cmd, g, mark string) *exec.Cmd {
 				cc := cfg
 				cc.Group, cc.Mark = g, mark

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,7 +113,8 @@ func TestConfig(t *testing.T) {
 }
 
 // TestPrepareRepoReachesNoLaterCommit builds a three-commit repository and prepares a task repository at the middle
-// commit: the base is checked out and nothing after it is reachable, git log --all included.
+// commit: the base is checked out, nothing after it is reachable, git log --all included, and no file under .git names
+// the mirror.
 func TestPrepareRepoReachesNoLaterCommit(t *testing.T) {
 	src := t.TempDir()
 	gitDo := func(dir string, args ...string) string {
@@ -144,6 +146,15 @@ func TestPrepareRepoReachesNoLaterCommit(t *testing.T) {
 	if strings.Contains(all, shas[2]) || !strings.Contains(all, shas[0]) {
 		t.Fatalf("git log --all:\n%s\nmust hold the base's ancestors and not %s", all, shas[2])
 	}
+	// Nothing under .git names the mirror: FETCH_HEAD would, and the mirror holds the fix.
+	filepath.WalkDir(filepath.Join(repo, ".git"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if b, _ := os.ReadFile(p); strings.Contains(string(b), src) {
+				t.Errorf("%s names the mirror %s", p, src)
+			}
+		}
+		return nil
+	})
 }
 
 func TestRunOpencode(t *testing.T) {

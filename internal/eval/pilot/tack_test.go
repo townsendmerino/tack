@@ -143,3 +143,28 @@ func TestSummarizeTackCountsRestatedRefusals(t *testing.T) {
 		t.Fatalf("summary %+v", s)
 	}
 }
+
+// An A1 run's left_repo names each path outside the repository that a tool call's input reaches for: an absolute one
+// and one climbing out with .., once each, but not the repository's own files or the system paths every build reads.
+func TestTackLeftRepo(t *testing.T) {
+	repo, out := t.TempDir(), t.TempDir()
+	mirror := filepath.Join(t.TempDir(), "mirrors", "goinfer.git")
+	call := func(id, name, input string) string {
+		return `{"seq":1,"type":"tool.call","payload":{"id":"` + id + `","name":"` + name + `","input":` + input + `}}`
+	}
+	cmd := func(s string) string { b, _ := json.Marshal(map[string]string{"command": s}); return string(b) }
+	lines := []string{
+		call("1", "read", `{"path":"pkg/a.go"}`),
+		call("2", "bash", cmd("git -C "+mirror+" log --oneline 2>/dev/null | head")),
+		call("3", "bash", cmd("/usr/bin/grep -rn Foo "+filepath.Join(repo, "pkg")+" && ls ../../runs")),
+		call("4", "bash", cmd("cat "+mirror+"/HEAD")),
+		`{"seq":2,"type":"tool.finished","payload":{"id":"2","outcome":"ok","result":"/elsewhere/not/a/call"}}`,
+	}
+	p := filepath.Join(out, "events.jsonl")
+	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	got := TackLeftRepo(p, repo)
+	want := []string{mirror, filepath.Clean(filepath.Join(resolved(repo), "../../runs")), mirror + "/HEAD"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("left_repo %q, want %q", got, want)
+	}
+}

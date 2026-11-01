@@ -50,6 +50,10 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 	if c, err := config.Load(p); err != nil || c.Run.FitWindow {
 		t.Fatalf("an arm with no settings: fit_window %v, %v", c.Run.FitWindow, err)
 	}
+	// Every arm's sandboxed commands may read ~/models and nothing else added.
+	if c, err := config.Load(p); err != nil || len(c.Sandbox.Read) != 1 || c.Sandbox.Read[0] != ModelsDir() {
+		t.Fatalf("an arm's [sandbox] read: %q, %v; want only %s", c.Sandbox.Read, err, ModelsDir())
+	}
 }
 
 func TestRunPilotRefusesABadComparison(t *testing.T) {

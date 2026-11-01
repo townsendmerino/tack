@@ -27,6 +27,15 @@ type Config struct {
 	// StateDir overrides where sessions, blobs and the supervised goinfer's files live; empty means the platform's
 	// default (StateDir).
 	StateDir string `toml:"state_dir"`
+	// Sandbox widens what sandboxed commands may read (DESIGN §6.6).
+	Sandbox Sandbox `toml:"sandbox"`
+}
+
+// Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
+type Sandbox struct {
+	// Read are more directories commands may read, such as ~/models for tests that load a checkpoint; each is
+	// absolute or under ~/, and neither / nor the home directory itself. The secrets deny-list still applies inside.
+	Read []string `toml:"read"`
 }
 
 // Server kinds.
@@ -195,6 +204,14 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	for i, p := range c.Sandbox.Read {
+		p = filepath.Clean(expand(p))
+		home, _ := os.UserHomeDir()
+		if !filepath.IsAbs(p) || p == "/" || p == filepath.Clean(home) {
+			return fmt.Errorf("sandbox.read[%d] = %q: want an absolute directory or one under ~/, not / or ~ itself", i, c.Sandbox.Read[i])
+		}
+		c.Sandbox.Read[i] = p
+	}
 	if len(c.Servers) == 0 {
 		return errors.New("no [servers.<name>] defined")
 	}
