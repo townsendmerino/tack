@@ -47,6 +47,7 @@ type observation struct {
 	bytes     int
 	first     string // the result's first line, cut to a stub's length
 	masked    bool
+	pinned    bool // it superseded an earlier read: kept whole (coveredLater)
 }
 
 // observe is the observation of one tool result.
@@ -175,8 +176,12 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 			continue
 		}
 		var stub string
+		cover := -1 // the read that supersedes this one, pinned if the stub is kept
+		if o.tool == "read" && o.key != "" {
+			cover = s.coveredLater(i)
+		}
 		switch {
-		case o.tool == "read" && o.key != "" && s.coveredLater(i):
+		case cover >= 0:
 			stub = fmt.Sprintf("[masked to fit the window: this read of %s%s (request %d, %d bytes) is superseded by a later read of the same file]",
 				o.key, o.span(), o.req, o.bytes)
 		case o.tool == "bash" && old(o):
@@ -185,7 +190,7 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 		case wide && (o.tool == "grep" || o.tool == "glob") && old(o):
 			stub = fmt.Sprintf("[masked to fit the window: the output of %s for `%s` (request %d, %d bytes). Run it again, narrower, if you need it]",
 				o.tool, cut(o.key, 80), o.req, o.bytes)
-		case wide && o.tool == "read" && o.key != "" && o.from == 0 && o.n == 0 && old(o):
+		case wide && o.tool == "read" && o.key != "" && o.from == 0 && o.n == 0 && !o.pinned && old(o):
 			stub = fmt.Sprintf("[masked to fit the window: this whole read of %s (request %d, %d bytes). Read a range with offset and limit if you need it]",
 				o.key, o.req, o.bytes)
 		default:
@@ -195,21 +200,26 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 			continue
 		}
 		o.masked = true
+		if cover >= 0 { // the superseded case, chosen first
+			s.obs[cover].pinned = true
+		}
 		out = append(out, proto.MaskedResult{ID: o.id, Stub: stub})
 	}
 	return out
 }
 
-// coveredLater says whether a read after obs[i] covers it: of the same file at the same version, successful, and
-// returned whole, not cut to fit.
-func (s *Session) coveredLater(i int) bool {
+// coveredLater is the index of a read after obs[i] that covers it, or -1: of the same file at the same version,
+// successful, returned whole (not cut to fit), and not itself masked. maskStubs pins it when it stubs obs[i], so a wide
+// compaction never stubs both a read and the one that superseded it.
+func (s *Session) coveredLater(i int) int {
 	e := s.obs[i]
-	for _, later := range s.obs[i+1:] {
-		if later.tool == "read" && later.ok && !later.truncated && later.key == e.key && later.ver == e.ver && later.covers(e) {
-			return true
+	for j := i + 1; j < len(s.obs); j++ {
+		later := &s.obs[j]
+		if later.tool == "read" && later.ok && !later.truncated && !later.masked && later.key == e.key && later.ver == e.ver && later.covers(e) {
+			return j
 		}
 	}
-	return false
+	return -1
 }
 
 // noteUsage takes a response's prompt tokens: what the next compaction is decided on, and, for the first response after
@@ -279,7 +289,7 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 
 // shownChain is, per call key this turn, the output at the base cap that the call last showed the model, and how
 // many times in a row it showed it unchanged: what progressive widening steps on (Config.CompactAtCliff;
-// calibration §16.2). A call answered with fit_window's nearly-full note showed nothing, so it ends the chain.
+// calibration §16.2). A result not shown whole, fit_window's nearly-full note or a cut, ends the chain.
 type shownChain map[string]shownLink
 
 type shownLink struct {
@@ -302,11 +312,11 @@ func (c shownChain) same(key, base string) bool {
 	return ok && l.last == base
 }
 
-// record takes a call's base-cap output and whether the nearly-full note replaced it: a note ends the chain; an
-// unchanged output lengthens it; a changed one starts it again.
-func (c shownChain) record(key, base string, note bool) {
+// record takes a call's base-cap output and whether it was not shown whole (the nearly-full note, or a cut): that
+// ends the chain; an unchanged output lengthens it; a changed one starts it again.
+func (c shownChain) record(key, base string, ended bool) {
 	switch l, ok := c[key]; {
-	case note:
+	case ended:
 		delete(c, key)
 	case ok && l.last == base:
 		c[key] = shownLink{last: base, shown: l.shown + 1}

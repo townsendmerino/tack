@@ -98,10 +98,16 @@ func (t readTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		return b.String(), end
 	}
 	text, end := render(widened(ctx, t.max())) // the cap, or a wider one (WithWiden)
-	ws.showed(p, string(data), start, end)
 	r := Result{Text: text}
 	if !explicit && widened(ctx, t.max()) != t.max() {
-		r.Base, _ = render(t.max()) // the same read at its base cap, from the same pass
+		// Widened: the base-cap view comes from the same pass. Only its lines are sure to be shown; the loop calls
+		// ShowWide if it keeps the widened view.
+		var baseEnd int
+		r.Base, baseEnd = render(t.max())
+		ws.showed(p, string(data), start, baseEnd)
+		r.ShowWide = func() { ws.showed(p, string(data), start, end) }
+	} else {
+		ws.showed(p, string(data), start, end)
 	}
 	return r, nil
 }
@@ -183,11 +189,14 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if err != nil {
 		return ws.pathError(in.Path, err), nil
 	}
-	var hits []string                // the matching lines, up to one past the limit
+	// hits are the matching lines, collected as a run with limit would collect them: a new file is not opened once limit
+	// lines are in, and a file stops at the line past it, which shows only as the "stopped" note. A run widened past
+	// the base cap derives its base-cap view from the same hits, by the same rule.
+	type hit struct{ rel, line string }
+	var hits []hit
 	limit := widened(ctx, t.limit()) // 0: no limit (WithWiden)
-	full := func() bool { return limit > 0 && len(hits) > limit }
 	search := func(rel string) {
-		if full() || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
+		if (limit > 0 && len(hits) >= limit) || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
 			return
 		}
 		p := filepath.Join(ws.root, rel)
@@ -200,9 +209,12 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		}
 		sc := bufio.NewScanner(bytes.NewReader(data))
 		sc.Buffer(make([]byte, 1<<16), maxFileBytes)
-		for n := 1; sc.Scan() && !full(); n++ {
+		for n := 1; sc.Scan(); n++ {
 			if re.Match(sc.Bytes()) {
-				hits = append(hits, fmt.Sprintf("%s:%d:%s\n", rel, n, cut(sc.Text())))
+				hits = append(hits, hit{rel, fmt.Sprintf("%s:%d:%s\n", rel, n, cut(sc.Text()))})
+				if limit > 0 && len(hits) > limit {
+					return
+				}
 			}
 		}
 	}
@@ -214,15 +226,18 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if len(hits) == 0 {
 		return Result{Text: "no matches for " + in.Pattern, Empty: true}, nil
 	}
-	// render is the matches cut at max (0: no cut), with the hint when it is cut.
+	// render is what a run with max (0: none) shows: its first max lines, and the "stopped" note when that run would
+	// have found the line past them, in the same file as the last one shown.
 	render := func(max int) string {
 		var b strings.Builder
 		for i, h := range hits {
-			if max > 0 && i >= max {
-				fmt.Fprintf(&b, "… stopped at %d matches; narrow the pattern or the path\n", max)
+			if max > 0 && i == max {
+				if h.rel == hits[i-1].rel {
+					fmt.Fprintf(&b, "… stopped at %d matches; narrow the pattern or the path\n", max)
+				}
 				break
 			}
-			b.WriteString(h)
+			b.WriteString(h.line)
 		}
 		return b.String()
 	}

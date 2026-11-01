@@ -50,20 +50,8 @@ func RepeatResult(result, state string) string {
 	return result + "\x00" + state
 }
 
-// Prior is the unchanged repeats of key observed so far this turn, and whether key was seen at all.
-func (g *RepeatGuard) Prior(key string) (repeats int, seen bool) {
-	_, seen = g.last[key]
-	return g.count[key], seen
-}
-
 // Reset forgets key, so its next call starts a count again (Config.CompactAtCliff's stuck reaction).
 func (g *RepeatGuard) Reset(key string) {
 	delete(g.last, key)
 	delete(g.count, key)
-}
-
-// Same says whether key was seen and its last result was result: the call would be an unchanged repeat.
-func (g *RepeatGuard) Same(key, result string) bool {
-	prev, seen := g.last[key]
-	return seen && prev == result
 }

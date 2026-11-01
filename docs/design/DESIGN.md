@@ -838,11 +838,10 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
     way and lets the turn go on, at most twice a turn. The trigger is `stuck`.
   - **Widening:** a whole read or a grep whose base-cap result was shown, and is asked for again unchanged, is
     shown with 3 times its cap, then with none. It runs once; the tool returns its base-cap view too. A result
-    replaced by the nearly-full note was not shown: it ends the chain, so the first real result after a compaction
-    is at the base cap.
-  - **Counting, with the setting on:** a note counts as one fixed value for its call, and a shown result counts on its
-    redacted base-cap output. A change between the two resets the count, so the first real result after a
-    compaction is never a repeat of the notes before it.
+    replaced by the nearly-full note, or cut, was not shown whole: it ends the chain, so the first real result after
+    a compaction is at the base cap. A read that superseded an earlier one is kept whole.
+  - **Counting:** as with the setting off, on what was shown. A note is the note, so a change from a note to a shown
+    result resets the count. A widening step shows something new and starts the count again, at most twice a chain.
 - **Not yet built:** the summarizing and re-retrieval steps above.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past

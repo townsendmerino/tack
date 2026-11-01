@@ -48,8 +48,11 @@ type Result struct {
 	// the result, so the rule sees what the tool said (loop.StripNotes removes it again).
 	Note string
 	// Base is set by a read or grep run with WithWiden: the same call's output at its base cap, from the same pass, so
-	// the loop can count repeats on it, or show it instead when the output changed (loop.Config.CompactAtCliff).
+	// the loop steps widening on it, or shows it instead when the output changed (loop.Config.CompactAtCliff).
 	Base string
+	// ShowWide is set with Base by a widened read: the loop calls it when it shows the widened view, so the workspace
+	// records those lines as shown (it records the base view's lines itself).
+	ShowWide func()
 }
 
 func errorf(format string, args ...any) Result {

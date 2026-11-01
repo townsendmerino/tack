@@ -348,9 +348,8 @@ func TestCompactAtCliffKeepsTheRepeatRuleAwayFromTheCliff(t *testing.T) {
 }
 
 // Progressive widening: the same whole read of a 700-line file three times shows 200, 600, then all 700 lines, and
-// the same grep over 400 matches shows 100, 300, then all 400. The repeat count is taken on the base-cap output, so the
-// notes count repeat 1 and repeat 2 rather than starting again at each widening. With the setting off, each call shows
-// the base cap.
+// the same grep over 400 matches shows 100, 300, then all 400. Each widening step shows something new, so it starts the
+// repeat count again. With the setting off, each call shows the base cap, and the repeats are counted.
 func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		replies := []goinfertest.Reply{}
@@ -383,9 +382,11 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 		if got != want {
 			t.Errorf("on %v: shown %v, want %v", on, got, want)
 		}
+		// Repeats count on what was shown: on, each widening step shows something new, so no repeat is noted; off,
+		// the same output is shown, and the notes count repeat 1 and 2.
 		for id, rep := range map[string]string{"r1": "repeat 1", "r2": "repeat 2", "g2": "repeat 2"} {
-			if !strings.Contains(h.finished(id).Result, rep) {
-				t.Errorf("on %v: %s's note does not count %s: %.120q", on, id, rep, h.finished(id).Result[max(0, len(h.finished(id).Result)-160):])
+			if strings.Contains(h.finished(id).Result, rep) == on {
+				t.Errorf("on %v: %s's note counting %s is %v", on, id, rep, !on)
 			}
 		}
 	}
@@ -451,39 +452,35 @@ func TestCompactAtCliffEndsOnAnyLoopAwayFromTheCliff(t *testing.T) {
 	}
 }
 
-// Order at the cliff: when the turn's first nearly-full note lands on the call that reaches the repeat limit, the cliff
-// compaction runs, not a stuck one, and the turn goes on. The window is roomy for 8 responses, then the 9th reports a
-// prompt that leaves no room, so its read (the 8th unchanged repeat) gets the note.
+// Order at the cliff: when a repeat loop reaches the limit on note-answered calls and the turn's cliff compaction has not
+// yet found anything to stub, the cliff compaction runs there, not a stuck one, and the turn goes on. The same read gets
+// the note 9 times (the 9th its 8th unchanged repeat). A grep in request 6 is the only thing to stub, and it is old
+// enough (older than the last 3 requests) only before request 10. So the compactions tried before requests 7-9 find
+// nothing, and the one at the limit is a cliff compaction of the grep.
 func TestCompactAtCliffRunsTheCliffFirst(t *testing.T) {
-	const window = 100_000
-	replies := []goinfertest.Reply{goinfertest.Calls("", "g0", "grep", `{"pattern":"line 00"}`), goinfertest.Calls("", "g1", "grep", `{"pattern":"line 01"}`)}
-	for i := 0; i < 8; i++ {
-		replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", `{"path":"small.txt","offset":1,"limit":40}`))
+	var replies []goinfertest.Reply
+	for i := 0; i < 9; i++ {
+		calls := []string{fmt.Sprintf("b%d", i), "read", bigRead}
+		if i == 5 {
+			calls = append(calls, "g5", "grep", `{"pattern":"line 00"}`)
+		}
+		replies = append(replies, goinfertest.Calls("", calls...))
 	}
-	replies = append(replies, callsAt(window-300, "r8", "read", `{"path":"small.txt","offset":1,"limit":40}`), goinfertest.Says("ok"))
+	replies = append(replies, goinfertest.Says("ok"))
 	h := cliffHarness(t, true, replies...)
-	h.script.Window = window
 	h.sess.cfg.StopRepeats = true
 	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 30, 30
-	// A 40-line read of small.txt, about 2.3 KB, is over fitMinBytes, so the 9th, with no room, becomes the note.
-	var b strings.Builder
-	for i := 1; i <= 40; i++ {
-		fmt.Fprintf(&b, "small %02d of a file now long enough to need room\n", i)
-	}
-	os.WriteFile(filepath.Join(h.ws.Root(), "small.txt"), []byte(b.String()), 0o644)
 	stop, err := h.sess.Turn(context.Background(), "x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := h.finished("r8"); !strings.HasPrefix(f.Result, "[window nearly full") {
-		t.Fatalf("the 9th read did not get the note: %.80q", f.Result)
-	}
 	var got []string
 	for _, p := range h.payloads(proto.EvCompaction) {
-		got = append(got, p.(proto.Compaction).Trigger)
+		c := p.(proto.Compaction)
+		got = append(got, fmt.Sprintf("%s@%d", c.Trigger, c.Request))
 	}
-	if strings.Join(got, ",") != "cliff" || stop != proto.StopEndTurn || h.sess.stuckDone != 0 {
-		t.Fatalf("compactions %v, stop %s, stuck %d; want one cliff, the turn going on to end_turn, and no stuck", got, stop, h.sess.stuckDone)
+	if strings.Join(got, ",") != "cliff@10" || stop != proto.StopEndTurn || h.sess.stuckDone != 0 || len(h.script.Requests) != 10 {
+		t.Fatalf("compactions %v, stop %s, stuck %d, %d requests; want cliff@10, the turn going on to end_turn at 10, no stuck", got, stop, h.sess.stuckDone, len(h.script.Requests))
 	}
 }
 
@@ -609,5 +606,58 @@ func TestCompactAtCliffNoteDoesNotCrossTurns(t *testing.T) {
 	}
 	if n := len(h.payloads(proto.EvCompaction)); n != 0 {
 		t.Fatalf("%d compactions: the first turn's note compacted in the second", n)
+	}
+}
+
+// Widening restarts the repeat count at most twice: the same whole read of a 700-line file, with stop_repeats, is
+// shown at 200, 600, then all 700 lines, and its 8th unchanged repeat of the whole file (the 11th call) ends the turn
+// with repeat_loop. Off, the 9th call would.
+func TestCompactAtCliffRepeatRuleStillEndsAWidenedLoop(t *testing.T) {
+	for on, want := range map[bool]int{true: 11, false: 9} {
+		var replies []goinfertest.Reply
+		for i := 0; i < 12; i++ {
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+		}
+		h := cliffHarness(t, on, replies...)
+		h.script.Window = 1_000_000
+		h.sess.cfg.StopRepeats, h.sess.cfg.MaxResultBytes = true, 1<<20
+		h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 20, 20
+		var wide strings.Builder
+		for i := 1; i <= 700; i++ {
+			fmt.Fprintf(&wide, "w %d\n", i)
+		}
+		os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+		stop, err := h.sess.Turn(context.Background(), "x")
+		if err != nil || stop != proto.StopRepeatLoop || len(h.script.Requests) != want {
+			t.Errorf("on %v: stop %s, err %v, %d requests; want repeat_loop at %d", on, stop, err, len(h.script.Requests), want)
+		}
+	}
+}
+
+// A result cut to fit is not shown whole, so it ends the widening chain: with a 1 KB result cap, every read of the
+// 700-line file is cut, and the stored whole output of each (its blob) stays 200 lines rather than widening.
+func TestCompactAtCliffCutResultEndsTheChain(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 3; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+	}
+	replies = append(replies, goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = 1_000_000
+	h.sess.cfg.MaxResultBytes = 1 << 10
+	var wide strings.Builder
+	for i := 1; i <= 700; i++ {
+		fmt.Fprintf(&wide, "w %d\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"r0", "r1", "r2"} {
+		f := h.finished(id)
+		full, err := h.st.Blobs.Get(f.Blob)
+		if !f.Truncated || err != nil || strings.Count(string(full), "\tw ") != 200 {
+			t.Errorf("%s: cut %v, blob err %v, %d lines in its whole output; want cut, 200", id, f.Truncated, err, strings.Count(string(full), "\tw "))
+		}
 	}
 }

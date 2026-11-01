@@ -83,8 +83,8 @@ type Config struct {
 	//   - when StopRepeats would end the turn on a call answered with that note, it compacts the same way and goes on,
 	//     at most stuckMax times a turn;
 	//   - a whole read or grep whose base-cap result was shown, and is asked for again unchanged, is shown with 3 times
-	//     its cap, then none (tools.WithWiden; shownChain). A result replaced by the nearly-full note was not shown;
-	//     with the setting on, it counts for repeats as one fixed value, and a shown result as its base-cap output.
+	//     its cap, then none (tools.WithWiden; shownChain). A result replaced by the nearly-full note, or cut, was not
+	//     shown whole and ends that chain. Repeats are counted on what was shown, as with the setting off.
 	CompactAtCliff bool
 	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
 	// what masking takes such a read to cover. 0 means the default, 200.
@@ -373,9 +373,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			var fin proto.ToolFinished
-			var ran tools.Result     // what the tool itself returned, when it ran: its Empty and State
-			raw, rawSet := "", false // the tool's own output at its base cap, before fit_window (Config.CompactAtCliff)
-			level := 0               // the call's widening (tools.WithWiden), 0 for none
+			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
+			level := 0           // the call's widening (tools.WithWiden), 0 for none
 			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
@@ -451,12 +450,17 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
-				raw, rawSet = ran.Text, true
-				if ran.Base != "" {
-					raw = ran.Base
-				}
 				if widenable {
-					s.shown.record(key, raw, strings.HasPrefix(fin.Result, nearlyFullOpen))
+					// The chain steps on the base-cap view, and only on a result shown whole: a note or a cut
+					// (ToolFinished.Truncated) ends it.
+					base := ran.Text
+					if ran.Base != "" {
+						base = ran.Base
+					}
+					s.shown.record(key, base, fin.Truncated)
+					if level > 0 && ran.ShowWide != nil {
+						ran.ShowWide() // the widened lines were shown: the workspace records them
+					}
 				}
 				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -469,16 +473,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			// The repeat count is taken on the result before any note, so a note's own count cannot make a repeat
 			// look changed; a replay recovers that result with StripNotes.
-			if s.cfg.StopRepeats || s.cfg.ResultNotes || s.cfg.CompactAtCliff {
-				seen := fin.Result
-				if s.cfg.CompactAtCliff && rawSet {
-					// What was shown: a note, as one fixed value, or the output at the base cap however it was widened or cut.
-					seen = raw
-					if strings.HasPrefix(fin.Result, nearlyFullOpen) {
-						seen = nearlyFullOpen
-					}
-				}
-				n, stop := repeats.Observe(key, RepeatResult(seen, ran.State))
+			if s.cfg.StopRepeats || s.cfg.ResultNotes {
+				n, stop := repeats.Observe(key, RepeatResult(fin.Result, ran.State))
 				repeatLoop = repeatLoop || (s.cfg.StopRepeats && stop)
 				if s.cfg.StopRepeats && stop {
 					if strings.HasPrefix(fin.Result, nearlyFullOpen) {

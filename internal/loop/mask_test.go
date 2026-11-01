@@ -372,3 +372,19 @@ func TestMaskWidenedReadSupersedes(t *testing.T) {
 		}
 	}
 }
+
+// One compaction does not stub both a read and the read that superseded it: a range read covered by a later whole read
+// is stubbed, and the whole read, though old enough for the cliff's scope, is kept.
+func TestMaskKeepsTheSuperseder(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	s := &Session{}
+	s.track(observe("a", "read", []byte(`{"path":"f.go","offset":10,"limit":20}`), 1, long, true), false, 0)
+	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
+	got := s.maskStubs(9, true)
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("wide stubs %+v: want only the superseded range read", got)
+	}
+	if again := s.maskStubs(20, true); len(again) != 0 {
+		t.Fatalf("a later wide compaction stubbed the superseder: %+v", again)
+	}
+}
