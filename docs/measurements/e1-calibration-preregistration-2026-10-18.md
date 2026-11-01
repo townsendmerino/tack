@@ -2601,3 +2601,24 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     the last call with that key gave. After a changed output (an edit, say), the next call starts again at the base cap.
   - **What a widened read covers.** A widened whole read covers 3 times the base lines, or the whole file, for the rule
     that stubs a read superseded by a later one.
+- **Amended a fifth time before any §16.2 run (2026-11-01, from Gemini's third review of #45, relayed by the
+  coordinator): what counts as shown.** A result replaced by the nearly-full note was not shown to the model. The
+  rules for repeats and widening now depend on that, and replace the counting and widening lines above:
+  - **Repeat counting, with the setting on:**
+    - A result answered with the note counts as one fixed value for its call. Consecutive notes are unchanged
+      repeats, so `stop_repeats`, and so the stuck reaction, still fire at the cliff.
+    - A shown result counts on its output at the base cap, redacted as the model sees it. Widening therefore never
+      resets the count.
+    - A change between the two, from a note to a shown result or back, is a changed result and resets the count. So
+      the first real result after a compaction cannot end the turn as a repeat of the notes before it.
+  - **Widening:**
+    - A call widens only after its result at the base cap was shown and then asked for again, unchanged: first to 3
+      times the cap, then, after that is shown and asked for again, to no cap.
+    - A call answered with the note neither advances widening nor keeps it. The first real result after a
+      compaction starts again at the base cap.
+    - Widening is per call key and per turn.
+  - **One run per call:** a widened read or grep runs once. The tool returns its base-cap view from the same pass.
+    If that view differs from the last one shown, the output changed, and the base view is shown instead of the
+    widened one.
+  - **The cliff note is per turn:** a cliff note left by a turn that ended (on a budget or a repeat loop) does not
+    carry into the next turn.
