@@ -213,3 +213,53 @@ func TestEditAndWriteReportTheFileState(t *testing.T) {
 		t.Errorf("edit of a missing file: %+v", r)
 	}
 }
+
+// LeanResults: a whole read stops at 80 lines and grep at 30 matches, each with its hint, and the read tool's
+// description says 80; without it, 200 and 100. An explicit range is not cut.
+func TestLeanResults(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&b, "match %d\n", i)
+	}
+	os.WriteFile(filepath.Join(root, "big.txt"), []byte(b.String()), 0o644)
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := func(s string) int { return strings.Count(s, "\tmatch ") }
+	for _, c := range []struct {
+		lean               bool
+		read, grep         int
+		readHint, grepHint string
+	}{
+		{true, 80, 30, "showing 1-80.", "stopped at 30 matches"},
+		{false, 200, 100, "showing 1-200.", "stopped at 100 matches"},
+	} {
+		set := New(Options{LeanResults: c.lean})
+		call := func(name, input string) string {
+			tool, _ := set.Get(name)
+			r, err := tool.Run(context.Background(), ws, json.RawMessage(input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r.Text
+		}
+		if r := call("read", `{"path":"big.txt"}`); lines(r) != c.read || !strings.Contains(r, c.readHint) {
+			t.Errorf("lean %v: a whole read gave %d lines, hint %v", c.lean, lines(r), strings.Contains(r, c.readHint))
+		}
+		if r := call("read", `{"path":"big.txt","offset":1,"limit":150}`); lines(r) != 150 {
+			t.Errorf("lean %v: an explicit range of 150 gave %d lines", c.lean, lines(r))
+		}
+		if r := call("grep", `{"pattern":"match"}`); strings.Count(r, "big.txt:") != c.grep || !strings.Contains(r, c.grepHint) {
+			t.Errorf("lean %v: grep gave %d matches, hint %v", c.lean, strings.Count(r, "big.txt:"), strings.Contains(r, c.grepHint))
+		}
+		read, _ := set.Get("read")
+		if d := read.Spec().Description; !strings.Contains(d, fmt.Sprintf("over %d lines", c.read)) {
+			t.Errorf("lean %v: read's description %q", c.lean, d)
+		}
+		if got := (Options{LeanResults: c.lean}).WholeReadLines(); got != c.read {
+			t.Errorf("lean %v: WholeReadLines %d", c.lean, got)
+		}
+	}
+}

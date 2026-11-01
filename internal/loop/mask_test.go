@@ -252,3 +252,21 @@ func TestMaskObservationsCutReadSupersedesNothing(t *testing.T) {
 		t.Fatalf("%d compactions: a read cut to the result cap superseded the earlier one", n)
 	}
 }
+
+// Under a lean read tool (Config.ReadLines 80), a later whole read covers lines 1-80 only: an earlier range inside them
+// is superseded, and one past line 80 is not.
+func TestMaskReadSupersedingLean(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
+	for earlier, masked := range map[string]bool{
+		`{"path":"f.go","offset":10,"limit":20}`:  true,
+		`{"path":"f.go","offset":100,"limit":20}`: false,
+	} {
+		s := &Session{cfg: Config{ReadLines: 80}}
+		s.track(read("a", earlier), false)
+		s.track(read("b", `{"path":"f.go"}`), false)
+		if got := s.maskStubs(2); (len(got) == 1) != masked {
+			t.Errorf("%s then a whole read at 80 lines: masked %+v, want %v", earlier, got, masked)
+		}
+	}
+}

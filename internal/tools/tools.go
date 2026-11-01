@@ -87,6 +87,9 @@ type Options struct {
 	// EditTolerances lets an edit of a .go file whose old_string has no exact match apply where one tolerance places it
 	// uniquely, when the file still parses (tolerance.go).
 	EditTolerances bool
+	// LeanResults cuts a whole-file read at readLeanLines and grep at grepLeanMatches, each with its narrowing hint, so
+	// exploring takes less of the window (calibration §16.1).
+	LeanResults bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -101,7 +104,11 @@ func New(o Options) *Set {
 	if o.Symbols != nil {
 		ts = append(ts, symbolTool{sym: o.Symbols})
 	}
-	ts = append(ts, readTool{symbols: o.Symbols != nil}, globTool{}, grepTool{})
+	read, grep := readMaxLines, grepMaxMatches
+	if o.LeanResults {
+		read, grep = readLeanLines, grepLeanMatches
+	}
+	ts = append(ts, readTool{symbols: o.Symbols != nil, lines: read}, globTool{}, grepTool{max: grep})
 	if o.Write {
 		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits,
 			cur: o.CurrentSymbol, tolerant: o.EditTolerances},
@@ -339,4 +346,12 @@ func sortedUnique(s []string) []string {
 		}
 	}
 	return out
+}
+
+// WholeReadLines is how many lines a read with no range returns under o: what such a read covers.
+func (o Options) WholeReadLines() int {
+	if o.LeanResults {
+		return readLeanLines
+	}
+	return readMaxLines
 }

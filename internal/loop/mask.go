@@ -26,7 +26,7 @@ const (
 	maskKeepRequests = 3
 	// maskMinBytes is the size up to which a result is kept whole: a stub would save little.
 	maskMinBytes = 300
-	// wholeReadLines is how many lines a read with no range returns (tools.readMaxLines).
+	// wholeReadLines is how many lines a read with no range returns when Config.ReadLines is 0 (tools.readMaxLines).
 	wholeReadLines = 200
 )
 
@@ -39,6 +39,7 @@ type observation struct {
 	ok        bool   // the call succeeded
 	truncated bool   // the result was cut or replaced to fit (ToolFinished.Truncated)
 	ver       int    // a read's file version (fileVersions.of), set by track
+	whole     int    // the lines a read with no range returned (Config.ReadLines), set by track
 	req       int    // the request whose response made the call
 	bytes     int
 	first     string // the result's first line, cut to a stub's length
@@ -114,20 +115,23 @@ func (v *fileVersions) touch(o observation) {
 
 // track adds a tool result to the observations, stamped with its file's version, and counts the call.
 func (s *Session) track(o observation, truncated bool) {
-	o.truncated, o.ver = truncated, s.vers.of(o.path)
+	o.truncated, o.ver, o.whole = truncated, s.vers.of(o.path), s.cfg.ReadLines
+	if o.whole <= 0 {
+		o.whole = wholeReadLines
+	}
 	s.vers.touch(o)
 	s.obs = append(s.obs, o)
 }
 
 // covers says whether the read later returned every line the read earlier did. A read with no range returns its first
-// wholeReadLines lines; a read with an offset and no limit is not compared, and covers nothing.
+// whole lines; a read with an offset and no limit is not compared, and covers nothing.
 func (later observation) covers(earlier observation) bool {
 	lf, ln, ef, en := later.from, later.n, earlier.from, earlier.n
 	if lf == 0 && ln == 0 {
-		lf, ln = 1, wholeReadLines
+		lf, ln = 1, wholeOf(later)
 	}
 	if ef == 0 && en == 0 {
-		ef, en = 1, wholeReadLines
+		ef, en = 1, wholeOf(earlier)
 	}
 	if ln == 0 || en == 0 {
 		return false
@@ -233,4 +237,12 @@ func (s *Session) compact(next int, cause int64) error {
 	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: "window", Prompt: s.lastPrompt, Window: w,
 		Masked: masked, Before: before, After: after})
 	return err
+}
+
+// wholeOf is the lines o returned if it is a read with no range: as track set it, or wholeReadLines.
+func wholeOf(o observation) int {
+	if o.whole > 0 {
+		return o.whole
+	}
+	return wholeReadLines
 }

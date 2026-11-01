@@ -88,6 +88,8 @@ type Options struct {
 	// EditTolerances lets an auto-mode session's edits of .go files apply where one tolerance places old_string uniquely
 	// (tools.Options.EditTolerances).
 	EditTolerances bool
+	// LeanResults cuts whole-file reads and grep shorter (tools.Options.LeanResults; calibration §16.1).
+	LeanResults bool
 	// OpenSpans opens a symbol index over a workspace root for CurrentSymbol alone: it adds no tool. The Core opens one per
 	// root on first use, shares it between that root's sessions, and closes it in Close when it is an io.Closer.
 	OpenSpans func(ctx context.Context, root string) (tools.Symbols, error)
@@ -379,7 +381,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	cfg := loop.Config{Source: src, Tools: tools.New(tools.Options{Searcher: searcher, Symbols: symbols}), WS: ws, Log: log,
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults}
+	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if p.Mode == proto.ModeAuto {
@@ -394,7 +397,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
-			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances})
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close

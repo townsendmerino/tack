@@ -405,3 +405,39 @@ func TestEditTolerancesThroughTheCore(t *testing.T) {
 		}
 	}
 }
+
+// LeanResults reaches the tools of both a plan-mode and an auto-mode session: a whole read of a 300-line file returns
+// 80 lines with the hint, and 200 without the setting.
+func TestLeanResultsThroughTheCore(t *testing.T) {
+	var big strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&big, "// line %d\n", i)
+	}
+	for _, mode := range []proto.Mode{proto.ModePlan, proto.ModeAuto} {
+		for on, want := range map[bool]string{true: "showing 1-80.", false: "showing 1-200."} {
+			f := newFixture(t, goinfertest.Calls("", "r1", "read", `{"path":"big.go"}`), goinfertest.Says("ok"),
+				goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+			f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+				return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+			}
+			f.core.opt.LeanResults = on
+			ws := gitWorkspace(t, "")
+			os.WriteFile(filepath.Join(ws, "big.go"), []byte(big.String()), 0o644)
+			sid, err := f.sessionIn(t, ws, mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+			f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("x")}}, nil)
+			var result string
+			for _, ev := range f.waitTurnEnd(t) {
+				if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished && result == "" {
+					result = v.(proto.ToolFinished).Result
+				}
+			}
+			if !strings.Contains(result, want) {
+				t.Errorf("mode %s, LeanResults %v: the read ends %q, want %q", mode, on, result[max(0, len(result)-120):], want)
+			}
+		}
+	}
+}

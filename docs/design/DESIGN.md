@@ -766,6 +766,8 @@ type Item struct {
   window is the difference between fitting and not.
 - **`read(path, lines?)`.** Over a size threshold (*proposed* 200 lines, set by E1), a whole-file read returns ken's
   outline and the first screen, with a hint to read a range or a symbol. Explicit ranges always work.
+  - `[run] lean_results` (off by default; calibration §16.1) cuts a whole-file read at 80 lines and `grep` at 30
+    matches, each with its narrowing hint, so exploring takes less of a 16k window.
 - **`grep` stays.** Exhaustive enumeration (renames, audits) is grep's job, as ken's README says.
 - Tool descriptions steer "where" and "how" questions to `search` and `symbol`, and "every occurrence" questions to
   `grep`. E1 measures whether a small model follows them.

@@ -16,20 +16,26 @@ import (
 )
 
 const (
-	readMaxLines   = 200     // a whole-file read over this returns the first screen and a hint (DESIGN §7.3)
-	maxLineRunes   = 300     // longer lines are cut, in read and grep output
-	maxFileBytes   = 2 << 20 // grep skips files larger than this
-	globMaxResults = 200
-	grepMaxMatches = 100
+	readMaxLines    = 200     // a whole-file read over this returns the first screen and a hint (DESIGN §7.3)
+	readLeanLines   = 80      // readMaxLines under Options.LeanResults
+	maxLineRunes    = 300     // longer lines are cut, in read and grep output
+	maxFileBytes    = 2 << 20 // grep skips files larger than this
+	globMaxResults  = 200
+	grepMaxMatches  = 100
+	grepLeanMatches = 30 // grepMaxMatches under Options.LeanResults
 )
 
-// readTool reads a file. With symbols, a whole-file read cut at readMaxLines also says how to list the file's symbols.
-type readTool struct{ symbols bool }
+// readTool reads a file. A whole-file read is cut at lines (readMaxLines, or readLeanLines under LeanResults), with a
+// hint; with symbols the hint also says how to list the file's symbols.
+type readTool struct {
+	symbols bool
+	lines   int
+}
 
 func (readTool) ReadOnly() bool { return true }
-func (readTool) Spec() server.Tool {
+func (t readTool) Spec() server.Tool {
 	return server.Tool{Name: "read",
-		Description: "Read a file's lines with line numbers. Files over 200 lines need offset and limit.",
+		Description: fmt.Sprintf("Read a file's lines with line numbers. Files over %d lines need offset and limit.", t.lines),
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
 }
 
@@ -68,8 +74,8 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 	}
 	if in.Limit > 0 {
 		n = in.Limit
-	} else if !explicit && len(lines) > readMaxLines {
-		n = readMaxLines
+	} else if !explicit && len(lines) > t.lines {
+		n = t.lines
 	}
 	if start > len(lines) && len(lines) > 0 {
 		return errorf("%s has %d lines; offset %d is past the end", in.Path, len(lines), start), nil
@@ -80,8 +86,8 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 	for i := start - 1; i < end; i++ {
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, cut(lines[i]))
 	}
-	if !explicit && len(lines) > readMaxLines {
-		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), readMaxLines)
+	if !explicit && len(lines) > t.lines {
+		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), t.lines)
 		if t.symbols {
 			fmt.Fprintf(&b, "symbol with path %q lists its functions and types with their lines.\n", in.Path)
 		}
@@ -133,7 +139,8 @@ func (globTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 	return Result{Text: out}, nil
 }
 
-type grepTool struct{}
+// grepTool searches file contents, stopping at max matches (grepMaxMatches, or grepLeanMatches under LeanResults).
+type grepTool struct{ max int }
 
 func (grepTool) ReadOnly() bool { return true }
 func (grepTool) Spec() server.Tool {
@@ -142,7 +149,7 @@ func (grepTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"directory or file, relative to the repo root; . for all of it (the default)"},"glob":{"type":"string","description":"only files matching"}},"required":["pattern"]}`)}
 }
 
-func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
@@ -168,7 +175,7 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 	var b strings.Builder
 	matches := 0
 	search := func(rel string) {
-		if matches >= grepMaxMatches || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
+		if matches >= t.max || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
 			return
 		}
 		p := filepath.Join(ws.root, rel)
@@ -184,7 +191,7 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 		for n := 1; sc.Scan(); n++ {
 			if re.Match(sc.Bytes()) {
 				matches++
-				if matches > grepMaxMatches {
+				if matches > t.max {
 					return
 				}
 				fmt.Fprintf(&b, "%s:%d:%s\n", rel, n, cut(sc.Text()))
@@ -199,8 +206,8 @@ func (grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (
 	if matches == 0 {
 		return Result{Text: "no matches for " + in.Pattern, Empty: true}, nil
 	}
-	if matches > grepMaxMatches {
-		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", grepMaxMatches))
+	if matches > t.max {
+		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", t.max))
 	}
 	return Result{Text: b.String()}, nil
 }
