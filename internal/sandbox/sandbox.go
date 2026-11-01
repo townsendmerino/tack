@@ -4,10 +4,10 @@
 // profile starts from (deny default) and is built from named sections, each the reason one kind of escape fails; the
 // escape tests (sandbox_test.go, build tag sandboxtest) show each escape caught, and caught by its own section.
 //
-// What it allows: reading the file system, except tack's own files and the secrets deny-list; writing the workspace
-// (except files that would later run outside the sandbox), the session's temp directory and tack's own Go build
-// cache; running programs, except those that launch work outside the sandbox. The network is denied outright (P1;
-// a per-domain proxy arrives with web_fetch in P5).
+// What it allows: reading the system, the toolchains and the workspace (section read), except tack's own files and the
+// secrets deny-list; writing the workspace (except files that would later run outside the sandbox), the session's
+// temp directory and tack's own Go build cache; running programs, except those that launch work outside the sandbox.
+// The network is denied outright (P1; a per-domain proxy arrives with web_fetch in P5).
 package sandbox
 
 import (
@@ -28,6 +28,9 @@ type Config struct {
 	GoCache   string   // tack's own GOCACHE, writable; the owner's caches are not
 	Home      string   // the owner's home, for the secrets deny-list and shell startup files
 	Tack      []string // tack's own socket, lock, token, state directory and config: neither read nor written
+	// Read are the paths readable beyond the system's (systemRead), the workspace, Temp and GoCache: the toolchain,
+	// the module cache, the PATH directories and tack's own executable (ReadPaths).
+	Read []string
 	// Group is the session's mark and Mark the command's, each from NewMark, so that a halt's sweep of the session and
 	// a cancel's sweep of the command reach every process it started (sweep.go, sweep_darwin.go). Nothing is shared
 	// between sessions.
@@ -40,7 +43,7 @@ type Config struct {
 // Sections, in the order they are written.
 const (
 	SecBase    = "base"    // what every process needs: fork, exec, signals within the sandbox, sysctl, mach lookups
-	SecRead    = "read"    // reading the file system
+	SecRead    = "read"    // reading only the system, the toolchains, the workspace and the session's own directories
 	SecWrite   = "write"   // writing only the workspace, the session's temp directory and tack's own Go cache
 	SecLaunch  = "launch"  // open, launchctl, osascript and LaunchServices: a program they start runs outside
 	SecMount   = "mount"   // mounting volumes: a mounted volume is another way out
@@ -114,7 +117,11 @@ func Profile(c Config) string {
 		}
 	}
 	sec(SecMark, marks...)
-	sec(SecRead, "(allow file-read*)")
+	if skip[SecRead] {
+		b.WriteString("(allow file-read*)\n") // the hole the read allowlist closes, for its escape tests
+	} else {
+		sec(SecRead, readLines(c)...)
+	}
 	if skip[SecWrite] {
 		b.WriteString("(allow file-write*)\n") // the hole the write allowlist closes, for its escape tests
 	} else {

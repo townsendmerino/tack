@@ -2351,6 +2351,31 @@ This drafts three screens, one registration each, with rigor matched to a screen
   - **Time:** A about 2–2.5 hours; B about 4–5 hours (two of three runs fail, so they make all 3 attempts). About
     6–7 hours in all.
 
+**The answer-leak audit (2026-10-31, coordinator's read-only audit, relayed at 17:32), before §15.2's first run.**
+- **What it found:**
+  - **A hole in the sandbox.** In every A1 run so far, a sandboxed `bash` could read anything outside the workspace.
+    That includes the E1 mirrors (fix commits and oracle tests), the task file and other runs' records.
+  - **FETCH_HEAD.** The workspace's `.git/FETCH_HEAD` named the mirror's path.
+  - **No record of it.** `left_repo` was not recorded for tack's runs.
+- **No run used the hole.** The coordinator grepped all 2,428 `events.jsonl` under `~/tack-runs/e1`. No run read
+  the mirrors, the task file or another run's files. The only hit was an `ls` in §12.25's task 10 A-5, on both
+  nights, that listed FETCH_HEAD.
+  - The exposure was the same in both arms of every comparison, so A/B reads stand.
+- **The fix lands before §15.2 and §15.3 run**, in its own PR, and their arms lines move to its build:
+  - reads become an allowlist (DESIGN §6.6), with `[sandbox] read = ["~/models"]` in every A1 run's config;
+  - `PrepareRepo` removes FETCH_HEAD;
+  - each A1 record carries `left_repo`.
+  - Both arms of each screen run on that build, so the screens compare like with like. Their runs are not pooled
+    with earlier jobs' runs.
+- **A known limit, recorded and not changed:** four task statements state part of their fix.
+  - Task 3 names `transcodeSelfCheck`'s signature.
+  - Task 5 names `kvF16Decline` on `bannerFacts`.
+  - Task 8 lists the exact stop tokens.
+  - Task 9 states the conclusion that Qwen3-VL's tower is the Qwen3.5 tower.
+  - These statements can inflate absolute pass rates on those four tasks. A/B differences are unaffected, since both
+    arms see the same statement.
+  - Changing the task set in the middle of the calibration is Francis's decision.
+
 **Order:** 15.1, then 15.2, then 15.3, each stacked on what the one before adopted (§12.1). The three are drafted for
 Francis's yes, and their arms lines are fixed before any run.
 - **Outcome of §14.4 (2026-10-31, 07:07–11:05 PDT; record `e1-calibration-c8-qwen36-2026-10-30.md`): 5 of 27, so the

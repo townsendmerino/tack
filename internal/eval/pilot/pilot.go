@@ -16,7 +16,8 @@ import (
 )
 
 // PrepareRepo makes dir a fresh repository holding only base and its ancestors, fetched from mirror, with a main
-// branch at base. No later commit is reachable from its refs.
+// branch at base. No later commit is reachable from its refs, and no file under .git names the mirror: fetch's
+// FETCH_HEAD, which would, is removed.
 func PrepareRepo(mirror, base, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -31,7 +32,7 @@ func PrepareRepo(mirror, base, dir string) error {
 			return fmt.Errorf("git %v: %v: %s", args, err, out)
 		}
 	}
-	return nil
+	return os.Remove(filepath.Join(dir, ".git", "FETCH_HEAD"))
 }
 
 // Server is the goinfer-serve every run talks to.

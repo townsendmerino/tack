@@ -691,7 +691,7 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Recor
 		}
 		tack := SummarizeTack(filepath.Join(dir, "events.jsonl"))
 		rec.TackRun = &tack
-		rec.Events = EventSummary{ToolCalls: tack.ToolCalls}
+		rec.Events = EventSummary{ToolCalls: tack.ToolCalls, LeftRepo: TackLeftRepo(filepath.Join(dir, "events.jsonl"), repo)}
 	} else {
 		rec.Events = SummarizeEvents(filepath.Join(dir, "events.jsonl"), repo)
 	}

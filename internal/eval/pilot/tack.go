@@ -26,6 +26,8 @@ import (
 // tack's consecutive-failure budget is its design's, 8 (owner, after the task-7 smoke); every other budget is out of
 // reach, so the cap otherwise limits the run, as it does opencode's. max_tokens is opencode's reply limit. settings are
 // [run] settings switched on for the arm, each one of RunSettings.
+// Sandboxed commands may also read ModelsDir, so a test that loads a checkpoint runs as it would for the owner; the
+// rest of the home directory, the mirrors and other runs' records stay out of their reach (DESIGN §6.6).
 func tackConfig(s Server, out string, settings ...string) string {
 	f := func(k string) any { return Sampling[k] }
 	return fmt.Sprintf(`main = "pilot"
@@ -40,6 +42,9 @@ temperature = %v
 top_p = %v
 top_k = %v
 
+[sandbox]
+read = [%q]
+
 [run]
 max_wall = "24h"
 max_requests = 1000000
@@ -49,7 +54,7 @@ turn_tokens = 1000000000
 max_errors = 8
 session_tokens = 1000000000
 session_tool_calls = 1000000
-`, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), replyLimit) + runLines(settings)
+`, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), ModelsDir(), replyLimit) + runLines(settings)
 }
 
 // RunSettings are the boolean [run] settings an A1 arm may switch on, each a loop change under the calibration's C6
@@ -403,4 +408,83 @@ func ForcedToolCall(ctx context.Context, baseURL, key, model string) string {
 		}
 	}
 	return ""
+}
+
+// ModelsDir is ~/models on the machine running tack, where tests read checkpoints from (CLAUDE.md: model files are
+// read from ~/models, never the archive).
+func ModelsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/nonexistent-models"
+	}
+	return filepath.Join(home, "models")
+}
+
+// systemPrefixes are paths outside a run's repository that a tool call may name without leaving it in the sense
+// left_repo means: the system and toolchain paths every build reads (internal/sandbox's section read), such as
+// 2>/dev/null or /usr/bin/grep.
+var systemPrefixes = []string{"/dev/", "/usr/", "/bin/", "/sbin/", "/System/", "/Library/", "/opt/homebrew/",
+	"/private/etc/", "/etc/", "/Applications/Xcode.app/"}
+
+// TackLeftRepo is left_repo for an A1 run: each path outside repo that a tool call's input names, from tack's event
+// stream, as EventSummary.LeftRepo is for opencode's, leaving out systemPrefixes. The sandbox denies reading outside
+// the workspace (DESIGN §6.6); this records the attempts, sorted.
+func TackLeftRepo(path, repo string) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	root, plain := resolved(repo), filepath.Clean(repo) // a call may name the repository either way (/tmp is /private/tmp)
+	var out []string
+	seen := map[string]bool{}
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case string:
+			for _, m := range pathLike.FindAllStringSubmatch(t, -1) {
+				p := outside(m[0], root)
+				if p == "" || outside(m[0], plain) == "" || seen[p] || system(p) {
+					continue
+				}
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	for sc.Scan() {
+		var ev proto.Event
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Type != proto.EvToolCall {
+			continue
+		}
+		if v, err := ev.Decode(); err == nil {
+			if c, ok := v.(proto.ToolCall); ok {
+				var in any
+				if json.Unmarshal(c.Input, &in) == nil {
+					walk(in)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func system(p string) bool {
+	for _, s := range systemPrefixes {
+		if strings.HasPrefix(p, s) || p+"/" == s {
+			return true
+		}
+	}
+	return false
 }

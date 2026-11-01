@@ -598,6 +598,22 @@ tool-use smoke set compares this merged set against the split one before it is f
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.
+  - **Reads are an allowlist** (`internal/sandbox/read.go`):
+    - Allowed: the system paths, the workspace, the session's temp directory, tack's Go cache, `GOROOT`,
+      `GOMODCACHE`, Go's checksum cache, the `PATH` directories (never the home directory or `/`), tack's own
+      executable, and git's and Go's configuration.
+    - Allowed by the owner: the directories he adds in `[sandbox] read`, such as `~/models` for tests that load a
+      checkpoint. A directory holding the home directory (`/`, `/Users`) is refused.
+    - Every allowed path is written as its real path, since Seatbelt matches real paths (`/tmp` is `/private/tmp`).
+      So a symlinked entry opens its target.
+    - Denied: everything else, the owner's other repositories included. Any path's metadata can still be read,
+      since paths are resolved through their parents.
+    - **A consequence:** a `go.work` that uses a checkout outside the workspace does not build in the sandbox
+      unless that checkout is in `[sandbox] read`.
+    - **Why:** an E1 run's `bash` could read the E1 mirrors (fix commits and oracle tests), the task file and other
+      runs' records, which no measured run may see (coordinator's audit, 2026-10-31).
+    - **The escape tests:** reading or listing another repository outside the workspace, and, through `RunPilot`,
+      a run asking the mirror for its fix (`TestA1CannotReadTheMirror`).
 - **A repo's own configuration is untrusted until the owner trusts the repo.** Its hooks, MCP servers (P5) and
   `.tack/config.toml` take effect only after a trust step, recorded as an event; MCP servers then run under a sandbox
   profile of their own.

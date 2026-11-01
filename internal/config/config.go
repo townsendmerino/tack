@@ -27,6 +27,16 @@ type Config struct {
 	// StateDir overrides where sessions, blobs and the supervised goinfer's files live; empty means the platform's
 	// default (StateDir).
 	StateDir string `toml:"state_dir"`
+	// Sandbox widens what sandboxed commands may read (DESIGN §6.6).
+	Sandbox Sandbox `toml:"sandbox"`
+}
+
+// Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
+type Sandbox struct {
+	// Read are more directories commands may read, such as ~/models for tests that load a checkpoint; each is
+	// absolute or under ~/, and neither the home directory nor one holding it (/, /Users). It is stored with symlinks
+	// resolved, as Seatbelt matches real paths. The secrets deny-list still applies inside.
+	Read []string `toml:"read"`
 }
 
 // Server kinds.
@@ -195,6 +205,20 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	for i, p := range c.Sandbox.Read {
+		p = filepath.Clean(expand(p))
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r // Seatbelt matches real paths
+		}
+		home, _ := os.UserHomeDir()
+		if h, err := filepath.EvalSymlinks(home); err == nil {
+			home = h
+		}
+		if rel, err := filepath.Rel(p, filepath.Clean(home)); !filepath.IsAbs(p) || err == nil && !strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("sandbox.read[%d] = %q: want an absolute directory or one under ~/, not ~ or a directory holding it", i, c.Sandbox.Read[i])
+		}
+		c.Sandbox.Read[i] = p
+	}
 	if len(c.Servers) == 0 {
 		return errors.New("no [servers.<name>] defined")
 	}

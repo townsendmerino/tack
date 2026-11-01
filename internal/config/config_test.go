@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,20 +49,23 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 
 func TestLoadFailsLoudly(t *testing.T) {
 	cases := map[string]struct{ body, want string }{
-		"typo":                 {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
-		"unknown kind":         {"[servers.a]\nkind = \"ollama\"\n", "kind"},
-		"child no ctx":         {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
-		"remote no url":        {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
-		"mixed":                {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
-		"main missing":         {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
-		"no servers":           {"main = \"z\"\n", "no [servers"},
-		"bad duration":         {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
-		"negative temperature": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = -0.1\n", "temperature must be"},
-		"top_p over 1":         {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
-		"top_k zero":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
-		"negative budget":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
-		"best_of over the cap": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
-		"best_of negative":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
+		"typo":                  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
+		"unknown kind":          {"[servers.a]\nkind = \"ollama\"\n", "kind"},
+		"child no ctx":          {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
+		"remote no url":         {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
+		"mixed":                 {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
+		"main missing":          {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
+		"no servers":            {"main = \"z\"\n", "no [servers"},
+		"bad duration":          {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
+		"negative temperature":  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = -0.1\n", "temperature must be"},
+		"top_p over 1":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
+		"top_k zero":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
+		"negative budget":       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
+		"best_of over the cap":  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
+		"best_of negative":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
+		"sandbox read relative": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"models\"]\n", "sandbox.read[0]"},
+		"sandbox read root":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not ~ or a directory holding it"},
+		"sandbox read home":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"~/\"]\n", "not ~ or a directory holding it"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -116,5 +120,29 @@ func TestServerSampling(t *testing.T) {
 	}
 	if c, _ := load(t, "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"); c.Servers["a"].TopK != nil {
 		t.Fatal("unset top_k is not nil")
+	}
+}
+
+// [sandbox] read takes ~/ paths, expanded; with no [sandbox], nothing is added.
+func TestSandboxRead(t *testing.T) {
+	base := "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	home, _ := os.UserHomeDir()
+	c, err := load(t, base+"[sandbox]\nread = [\"~/models\", \"/opt/data/\"]\n")
+	if err != nil || len(c.Sandbox.Read) != 2 || c.Sandbox.Read[0] != filepath.Join(home, "models") || c.Sandbox.Read[1] != "/opt/data" {
+		t.Fatalf("read %q, %v", c.Sandbox.Read, err)
+	}
+	if c, err := load(t, base); err != nil || c.Sandbox.Read != nil {
+		t.Fatalf("no [sandbox]: %q, %v", c.Sandbox.Read, err)
+	}
+	// A directory holding the home directory is refused; a symlink is stored as its target.
+	if _, err := load(t, base+"[sandbox]\nread = ["+strconv.Quote(filepath.Dir(home))+"]\n"); err == nil || !strings.Contains(err.Error(), "holding it") {
+		t.Errorf("%s, which holds ~, was accepted: %v", filepath.Dir(home), err)
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "models")
+	os.Symlink(target, link)
+	real, _ := filepath.EvalSymlinks(target)
+	if c, err := load(t, base+"[sandbox]\nread = ["+strconv.Quote(link)+"]\n"); err != nil || c.Sandbox.Read[0] != real {
+		t.Errorf("a symlink: %q, %v; want its target %s", c.Sandbox.Read, err, real)
 	}
 }

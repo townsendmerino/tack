@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -386,5 +387,43 @@ func TestA1LoneArmRepeatsWithSettings(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "A1-1 A1-2" || checks != 2 {
 		t.Fatalf("records %v after %d cell checks, want A1-1 A1-2 after 2", got, checks)
+	}
+}
+
+// TestA1CannotReadTheMirror is the answer-leak escape test, run as an E1 run is: tack's own binary through RunPilot,
+// in the sandbox. The model's bash asks the mirror for the fix commit's test, and the workspace's git for FETCH_HEAD,
+// which would name the mirror. The mirror cannot be read, FETCH_HEAD is gone, and the record's left_repo names the
+// mirror the call reached for.
+func TestA1CannotReadTheMirror(t *testing.T) {
+	task, mirrors := a1Task(t, false)
+	mirror := filepath.Join(mirrors, "m.git")
+	show, _ := json.Marshal(map[string]string{"command": "git -C " + mirror + " show " + task.Commit + ":calc/calc_test.go"})
+	script := goinfertest.NewScripted("qwen", 32768,
+		goinfertest.Calls("", "b1", "bash", string(show)),
+		goinfertest.Calls("", "b2", "bash", `{"command":"cat .git/FETCH_HEAD"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
+	rec, out := a1Run(t, task, mirrors, script)
+	evs, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "events.jsonl"))
+	results := map[string]string{}
+	for _, line := range strings.Split(string(evs), "\n") {
+		var ev struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID     string `json:"id"`
+				Result string `json:"result"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &ev) == nil && ev.Type == "tool.finished" {
+			results[ev.Payload.ID] = ev.Payload.Result
+		}
+	}
+	if r := results["b1"]; strings.Contains(r, "func TestAdd") || !strings.Contains(r, "Operation not permitted") {
+		t.Errorf("the mirror's fix test reached the model, or git failed for a reason other than the sandbox: %q", r)
+	}
+	if r := results["b2"]; r == "" || strings.Contains(r, mirror) || !strings.Contains(r, "No such file") {
+		t.Errorf("FETCH_HEAD: %q", r)
+	}
+	if !slices.Contains(rec.Events.LeftRepo, mirror) {
+		t.Errorf("left_repo %q does not name the mirror %s", rec.Events.LeftRepo, mirror)
 	}
 }
