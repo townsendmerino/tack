@@ -1714,6 +1714,11 @@ session recommended them. The rest was drafted by tack's session and goes to him
   - **The nights' voids:** night 1 and night 2 each have 168 records, 84 per arm, 0 void and 0 oracle errors
     (checked 2026-10-31 after this amendment was committed, reading those fields only). So no re-run is needed, and
     d is the integer B − A.
+- **Outcome (read 2026-10-31; record `e1-calibration-c6-powered-2026-10-31.md`): A 9 of 168, B 26 of 168, d = +17.
+  The bundle is shown to beat A1** (+7 or more, against 2 sd = 6.36).
+  - The gain is on tasks 1 (+12), 11 (+3) and 12 (+2); the other nine tasks pass in neither arm.
+  - Five of the seven predictions held. d was predicted at +3 to +14 and came out above it. B's window-full stops
+    were predicted at 6 or fewer and were 12.
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 
