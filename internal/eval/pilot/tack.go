@@ -428,7 +428,7 @@ var systemPrefixes = []string{"/dev/", "/usr/", "/bin/", "/sbin/", "/System/", "
 
 // TackLeftRepo is left_repo for an A1 run: each path outside repo that a tool call's input names, from tack's event
 // stream, as EventSummary.LeftRepo is for opencode's, leaving out systemPrefixes. The sandbox denies reading outside
-// the workspace (DESIGN §6.6); this records the attempts.
+// the workspace (DESIGN §6.6); this records the attempts, sorted.
 func TackLeftRepo(path, repo string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -476,6 +476,7 @@ func TackLeftRepo(path, repo string) []string {
 			}
 		}
 	}
+	sort.Strings(out)
 	return out
 }
 

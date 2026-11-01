@@ -603,7 +603,9 @@ tool-use smoke set compares this merged set against the split one before it is f
       `GOMODCACHE`, Go's checksum cache, the `PATH` directories (never the home directory or `/`), tack's own
       executable, and git's and Go's configuration.
     - Allowed by the owner: the directories he adds in `[sandbox] read`, such as `~/models` for tests that load a
-      checkpoint.
+      checkpoint. A directory holding the home directory (`/`, `/Users`) is refused.
+    - Every allowed path is written as its real path, since Seatbelt matches real paths (`/tmp` is `/private/tmp`).
+      So a symlinked entry opens its target.
     - Denied: everything else, the owner's other repositories included. Any path's metadata can still be read,
       since paths are resolved through their parents.
     - **A consequence:** a `go.work` that uses a checkout outside the workspace does not build in the sandbox

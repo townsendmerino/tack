@@ -53,12 +53,14 @@ func readLines(c Config) []string {
 }
 
 // ReadPaths are the paths a command needs to read beyond the system's, for Config.Read: tack's own executable (the
-// sandboxed shell is `tack shell`), Go's GOROOT and GOMODCACHE as go reports them under env, and env's PATH
-// directories, without the home directory, the root or a relative entry, any of which would open far more.
+// sandboxed shell is `tack shell`), Go's GOROOT, GOMODCACHE and checksum-database cache (GOPATH/pkg/sumdb, which a
+// toolchain switch verifies against) as go reports them under env, and env's PATH directories, without the home
+// directory, the root or a relative entry, any of which would open far more. Each is its real path, symlinks
+// resolved, as Seatbelt matches.
 func ReadPaths(env []string, exe, home string) []string {
 	var out []string
 	if exe != "" {
-		out = append(out, exe)
+		out = append(out, real(exe))
 	}
 	var path string
 	for _, kv := range env {
@@ -72,16 +74,22 @@ func ReadPaths(env []string, exe, home string) []string {
 			continue
 		}
 		if r := real(d); r != "/" && r != h {
-			out = append(out, d)
+			out = append(out, r)
 		}
 	}
 	if goExe, err := lookPath("go", path); err == nil {
-		cmd := exec.Command(goExe, "env", "GOROOT", "GOMODCACHE")
+		cmd := exec.Command(goExe, "env", "GOROOT", "GOMODCACHE", "GOPATH")
 		cmd.Env = env
 		if b, err := cmd.Output(); err == nil {
-			for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-				if l = strings.TrimSpace(l); filepath.IsAbs(l) {
-					out = append(out, l)
+			if v := strings.Split(strings.TrimSpace(string(b)), "\n"); len(v) == 3 {
+				ps := []string{v[0], v[1]}
+				if gp := filepath.SplitList(strings.TrimSpace(v[2])); len(gp) > 0 {
+					ps = append(ps, filepath.Join(gp[0], "pkg", "sumdb"))
+				}
+				for _, p := range ps {
+					if p = strings.TrimSpace(p); filepath.IsAbs(p) {
+						out = append(out, real(p))
+					}
 				}
 			}
 		}

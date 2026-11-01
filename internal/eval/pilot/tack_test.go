@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -145,7 +146,7 @@ func TestSummarizeTackCountsRestatedRefusals(t *testing.T) {
 }
 
 // An A1 run's left_repo names each path outside the repository that a tool call's input reaches for: an absolute one
-// and one climbing out with .., once each, but not the repository's own files or the system paths every build reads.
+// and one climbing out with .., once each, sorted, but not the repository's own files or the system paths every build reads.
 func TestTackLeftRepo(t *testing.T) {
 	repo, out := t.TempDir(), t.TempDir()
 	mirror := filepath.Join(t.TempDir(), "mirrors", "goinfer.git")
@@ -164,6 +165,7 @@ func TestTackLeftRepo(t *testing.T) {
 	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 	got := TackLeftRepo(p, repo)
 	want := []string{mirror, filepath.Clean(filepath.Join(resolved(repo), "../../runs")), mirror + "/HEAD"}
+	sort.Strings(want)
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("left_repo %q, want %q", got, want)
 	}

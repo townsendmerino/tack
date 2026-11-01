@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -147,6 +148,19 @@ func TestEscapes(t *testing.T) {
 			}
 			if out := f.run(f.without(tc.sections...), tc.script); !strings.Contains(out, tc.mark) {
 				t.Errorf("with %v removed it still did not get out, so they are not what stops it: %q", tc.sections, out)
+			}
+			// A case read also stops: with the home and tack's state readable, as [sandbox] read could make a parent
+			// of them, its own section still stops it, and removing only that section lets it out.
+			if own := slices.DeleteFunc(slices.Clone(tc.sections), func(s string) bool { return s == SecRead }); len(own) > 0 && len(own) < len(tc.sections) {
+				open := f.cfg
+				open.Read = append(slices.Clone(f.cfg.Read), f.home, f.state)
+				if out := f.run(&open, tc.script); strings.Contains(out, tc.mark) {
+					t.Errorf("with the home readable, %v did not stop it: %q", own, out)
+				}
+				open.Without = own
+				if out := f.run(&open, tc.script); !strings.Contains(out, tc.mark) {
+					t.Errorf("with the home readable and %v removed, it still did not get out: %q", own, out)
+				}
 			}
 			// Leave nothing behind for the next case.
 			os.Remove(filepath.Join(f.ws, ".git", "hooks", "pre-commit"))
@@ -339,5 +353,22 @@ func TestReadAddsOnlyItsDirectory(t *testing.T) {
 	}
 	if out := f.run(&f.cfg, `cat "$HOME/models/ckpt.gguf"`); strings.Contains(out, "OK-checkpoint") {
 		t.Errorf("without [sandbox] read the checkpoint is readable: %q", out)
+	}
+}
+
+// A [sandbox] read directory given through a symlink is readable, since the profile writes its real path.
+func TestReadThroughASymlink(t *testing.T) {
+	f := setup(t)
+	target := filepath.Join(f.home, "store", "models")
+	os.MkdirAll(target, 0o755)
+	os.WriteFile(filepath.Join(target, "ckpt.gguf"), []byte("OK-linked\n"), 0o644)
+	link := filepath.Join(f.home, "models")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	c := f.cfg
+	c.Read = append(append([]string{}, f.cfg.Read...), link)
+	if out := f.run(&c, `cat "$HOME/models/ckpt.gguf"`); !strings.Contains(out, "OK-linked") {
+		t.Errorf("a [sandbox] read symlink is not readable: %q", out)
 	}
 }

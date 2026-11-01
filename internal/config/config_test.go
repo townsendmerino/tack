@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,8 +64,8 @@ func TestLoadFailsLoudly(t *testing.T) {
 		"best_of over the cap":  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
 		"best_of negative":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
 		"sandbox read relative": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"models\"]\n", "sandbox.read[0]"},
-		"sandbox read root":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not / or ~ itself"},
-		"sandbox read home":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"~/\"]\n", "not / or ~ itself"},
+		"sandbox read root":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not ~ or a directory holding it"},
+		"sandbox read home":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"~/\"]\n", "not ~ or a directory holding it"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -132,5 +133,16 @@ func TestSandboxRead(t *testing.T) {
 	}
 	if c, err := load(t, base); err != nil || c.Sandbox.Read != nil {
 		t.Fatalf("no [sandbox]: %q, %v", c.Sandbox.Read, err)
+	}
+	// A directory holding the home directory is refused; a symlink is stored as its target.
+	if _, err := load(t, base+"[sandbox]\nread = ["+strconv.Quote(filepath.Dir(home))+"]\n"); err == nil || !strings.Contains(err.Error(), "holding it") {
+		t.Errorf("%s, which holds ~, was accepted: %v", filepath.Dir(home), err)
+	}
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "models")
+	os.Symlink(target, link)
+	real, _ := filepath.EvalSymlinks(target)
+	if c, err := load(t, base+"[sandbox]\nread = ["+strconv.Quote(link)+"]\n"); err != nil || c.Sandbox.Read[0] != real {
+		t.Errorf("a symlink: %q, %v; want its target %s", c.Sandbox.Read, err, real)
 	}
 }

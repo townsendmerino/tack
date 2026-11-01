@@ -34,7 +34,8 @@ type Config struct {
 // Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
 type Sandbox struct {
 	// Read are more directories commands may read, such as ~/models for tests that load a checkpoint; each is
-	// absolute or under ~/, and neither / nor the home directory itself. The secrets deny-list still applies inside.
+	// absolute or under ~/, and neither the home directory nor one holding it (/, /Users). It is stored with symlinks
+	// resolved, as Seatbelt matches real paths. The secrets deny-list still applies inside.
 	Read []string `toml:"read"`
 }
 
@@ -206,9 +207,15 @@ func Load(path string) (*Config, error) {
 func (c *Config) validate() error {
 	for i, p := range c.Sandbox.Read {
 		p = filepath.Clean(expand(p))
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r // Seatbelt matches real paths
+		}
 		home, _ := os.UserHomeDir()
-		if !filepath.IsAbs(p) || p == "/" || p == filepath.Clean(home) {
-			return fmt.Errorf("sandbox.read[%d] = %q: want an absolute directory or one under ~/, not / or ~ itself", i, c.Sandbox.Read[i])
+		if h, err := filepath.EvalSymlinks(home); err == nil {
+			home = h
+		}
+		if rel, err := filepath.Rel(p, filepath.Clean(home)); !filepath.IsAbs(p) || err == nil && !strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("sandbox.read[%d] = %q: want an absolute directory or one under ~/, not ~ or a directory holding it", i, c.Sandbox.Read[i])
 		}
 		c.Sandbox.Read[i] = p
 	}

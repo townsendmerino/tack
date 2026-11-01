@@ -417,8 +417,8 @@ func TestA1CannotReadTheMirror(t *testing.T) {
 			results[ev.Payload.ID] = ev.Payload.Result
 		}
 	}
-	if r := results["b1"]; r == "" || strings.Contains(r, "func TestAdd") {
-		t.Errorf("the mirror's fix test reached the model: %q", r)
+	if r := results["b1"]; strings.Contains(r, "func TestAdd") || !strings.Contains(r, "Operation not permitted") {
+		t.Errorf("the mirror's fix test reached the model, or git failed for a reason other than the sandbox: %q", r)
 	}
 	if r := results["b2"]; r == "" || strings.Contains(r, mirror) || !strings.Contains(r, "No such file") {
 		t.Errorf("FETCH_HEAD: %q", r)
