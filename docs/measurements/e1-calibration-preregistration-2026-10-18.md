@@ -2466,6 +2466,14 @@ Francis's yes, and their arms lines are fixed before any run.
     block it checks that `lean_results` is in B's configs and not A's, and that every config has `~/models`.
   - **The read:** `calreport -rule sd=2.0,n=36` over its 72 records, after the void, oracle-error and `left_repo`
     checks.
+- **Outcome (read 2026-11-01; record `e1-calibration-c10-lean-2026-11-01.md`): A 13 of 36, B 15 of 36, d = +2.
+  Parked: reported, with no more runs unless Francis says so.**
+  - 72 runs, 0 void, 0 oracle errors, 0 cap hits. The +2 is all on task 8 (1/3 to 3/3).
+  - **The mechanism:** B reached the nearly-full note in 21 runs against A's 26, after 12.2 calls against 8.0, but
+    with about the same 33 KB of results. Repeat-loop stops fell from 12 to 10, and every loop in both arms was still
+    answered with the note.
+  - Predictions: 2 of 3 held. Repeat loops did not fall by a third.
+  - **Parked, so §16.2 is not started:** its condition is "not shown", and a parked result stops for Francis.
 
 ### 16.2 Compact at the cliff — registered only if §16.1 is not shown
 
