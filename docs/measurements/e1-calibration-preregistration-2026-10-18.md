@@ -2575,3 +2575,15 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     - B's `repeat_loop` stops fall by two-thirds or more against A's;
     - B's re-asks of the same call fall by half or more;
     - d between 0 and +5.
+- **Amended a third time before any §16.2 run (2026-11-01, from Gemini's review of #45, relayed by the coordinator):
+  the cliff's own arming.** The registration above re-arms the cliff compaction on mask_observations' 10% regrowth
+  floor.
+  - **The flaw:** that floor is shared. A narrow compaction past 90% of the window, or a cliff compaction that frees
+    less than 10%, leaves the cliff unable to fire again.
+  - **Instead, the cliff and the stuck reaction each get their own arming, per turn:**
+    - the cliff compaction runs at the first nearly-full note of the turn at which it finds something to stub, then
+      not again that turn;
+    - the stuck reaction runs at most 2 times a turn, as amended.
+    - Neither reads or moves mask_observations' floor.
+  - A pilot run is one turn, so "per turn" is per run.
+  - Everything else is unchanged.
