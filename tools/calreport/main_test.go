@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,11 +230,11 @@ func TestRuleBands(t *testing.T) {
 		passA, passB int
 		want         string
 	}{
-		{10, 17, "d = B − A = +7.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: shown: B beats A**"},
-		{10, 16, "d = B − A = +6.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: parked"},
-		{10, 14, "d = B − A = +4.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: parked"},
-		{10, 13, "d = B − A = +3.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: not shown"},
-		{14, 10, "d = B − A = -4.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: not shown"},
+		{10, 17, "d = B − A = +7; edges 3.18 (1 sd) and 6.36 (2 sd), the registered sd\n- **verdict: shown: B beats A**"},
+		{10, 16, "d = B − A = +6; edges 3.18 (1 sd) and 6.36 (2 sd), the registered sd\n- **verdict: parked"},
+		{10, 14, "d = B − A = +4; edges 3.18 (1 sd) and 6.36 (2 sd), the registered sd\n- **verdict: parked"},
+		{10, 13, "d = B − A = +3; edges 3.18 (1 sd) and 6.36 (2 sd), the registered sd\n- **verdict: not shown"},
+		{14, 10, "d = B − A = -4; edges 3.18 (1 sd) and 6.36 (2 sd), the registered sd\n- **verdict: not shown"},
 	} {
 		n1 := night(t, 84, c.passA/2, 84, c.passB/2)
 		n2 := night(t, 84, c.passA-c.passA/2, 84, c.passB-c.passB/2)
@@ -276,15 +277,20 @@ func TestRuleShortArmAndOracleError(t *testing.T) {
 		}
 	}
 	bad := rec(1, "B", false, "done")
+	bad.Pass = true // graded a pass, yet its oracle did not run: it must count in neither arm
 	bad.Rep, bad.OracleErr = 168, "copy pkg/a_test.go: no such file"
 	p := writeResults(t, append(recs, bad))
 	var out strings.Builder
-	run([]string{"-rule", "sd=3.18,n=168", p}, &out)
+	if code := run([]string{"-rule", "sd=3.18,n=168", p}, &out); code != 0 {
+		t.Fatalf("exit %d, want 0:\n%s", code, out.String())
+	}
 	s := out.String()
 	for _, want := range []string{
 		"- B: 16 passes of 167 counted runs (registered 168: -1)",
 		"- void runs, in neither count: 1",
-		"d = rate-scaled to 168: 168 · (16/167 − 10/168) = +6.10",
+		"d = rate-scaled to 168: 168 · (16/167 − 10/168) = +6.0958",
+		"the sd scaled for the short arm: 3.18 · √(168/2 · (1/168 + 1/167))",
+		"edges 3.1847",
 		"verdict: parked",
 		"oracle error (a harness error, not a model failure): copy pkg/a_test.go",
 	} {
@@ -298,9 +304,50 @@ func TestParseRule(t *testing.T) {
 	if r, err := parseRule("sd=3.18,n=168"); err != nil || r.sd != 3.18 || r.n != 168 {
 		t.Fatalf("%+v %v", r, err)
 	}
-	for _, bad := range []string{"sd=3.18", "n=168", "sd=0,n=1", "sd=1,n=x", "sd=1,n=2,k=3", "3.18"} {
+	for _, bad := range []string{"sd=3.18", "n=168", "sd=0,n=1", "sd=1,n=x", "sd=1,n=2,k=3", "3.18",
+		"sd=NaN,n=168", "sd=+Inf,n=168", "sd=-Inf,n=168", "sd=1,sd=2,n=168", "sd=1,n=168,n=2"} {
 		if _, err := parseRule(bad); err == nil {
 			t.Errorf("%q parsed", bad)
 		}
+	}
+}
+
+// band compares unrounded: d at exactly 2 sd is shown and a hair under is parked; d at exactly 1 sd is parked and a
+// hair under is not shown.
+func TestBandEdges(t *testing.T) {
+	for _, c := range []struct {
+		d    float64
+		want string
+	}{
+		{6.36, "shown"}, {math.Nextafter(6.36, 0), "parked"}, {7, "shown"},
+		{3.18, "parked"}, {math.Nextafter(3.18, 0), "not shown"}, {0, "not shown"},
+	} {
+		if got := band(c.d, 3.18); !strings.HasPrefix(got, c.want) {
+			t.Errorf("band(%v, 3.18) = %q, want %s", c.d, got, c.want)
+		}
+	}
+}
+
+// A rate-scaled d just under 2 sd prints in full, so it never reads as the edge, and is judged on the sd scaled for
+// the short arm: A 54 of 168, B 60 of 167 gives d = 6.3593…, parked, not "6.36" beside a parked verdict.
+func TestRuleShortArmNearTheEdge(t *testing.T) {
+	var recs []pilot.Record
+	for i := 1; i <= 168; i++ {
+		a := rec(1, "A", i <= 54, "done")
+		a.Rep = i
+		recs = append(recs, a)
+		if i <= 167 {
+			b := rec(1, "B", i <= 60, "done")
+			b.Rep = i
+			recs = append(recs, b)
+		}
+	}
+	var out strings.Builder
+	if code := run([]string{"-rule", "sd=3.18,n=168", writeResults(t, recs)}, &out); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "= +6.3592") || strings.Contains(s, "= +6.36;") || !strings.Contains(s, "verdict: parked") {
+		t.Errorf("want d in full and parked:\n%s", s[strings.Index(s, "## The registered rule"):])
 	}
 }

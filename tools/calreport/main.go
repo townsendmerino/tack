@@ -7,9 +7,9 @@
 // pilot voided it or its oracle failed to run (a harness error, not a model failure).
 //
 // With -rule sd=S,n=N it also prints §12.3's A/B statistic: d = B's passes − A's, each arm's n against the
-// registered N, and d's band. An arm short of N has d rate-scaled to N, 168 · (B/n_B − A/n_A), and judged on the
-// sd edges (§12.25's amendment of 2026-10-31). Otherwise it decides nothing: a record's verdict is read under its
-// own registered rule.
+// registered N, and d's band. An arm short of N has d rate-scaled to N, N · (B/n_B − A/n_A), and judged on the
+// sd scaled to match, sd · √(N/2 · (1/n_A + 1/n_B)) (§12.25's amendment of 2026-10-31, as refined after its
+// read). Otherwise it decides nothing: a record's verdict is read under its own registered rule.
 //
 //	go run ./tools/calreport [-compare OTHER/results.jsonl]... [-rule sd=S,n=N] JOB/results.jsonl[,MORE/results.jsonl]
 //

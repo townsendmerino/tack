@@ -1719,6 +1719,28 @@ session recommended them. The rest was drafted by tack's session and goes to him
   - The gain is on tasks 1 (+12), 11 (+3) and 12 (+2); the other nine tasks pass in neither arm.
   - Five of the seven predictions held. d was predicted at +3 to +14 and came out above it. B's window-full stops
     were predicted at 6 or fewer and were 12.
+  - **The voids and short arms rules did not decide this read.** Both arms have 168 counted runs and 0 voids. d = +17
+    is far past the 6.36 edge. So neither rule (a) nor rule (b) could have changed the band.
+- **The order of the amendment and the read (recorded 2026-10-31 after the read, at the coordinator's question).**
+  Times are PDT, from git's reflog and the files' modification times, all on the Mac's one clock:
+  - 17:11:58: the audit's answer file is written (`~/goinfer-work/gemini-tasks/tack-1225-rule/answer.txt`). The
+    coordinator's message relaying it is labeled 17:20. It reached tack's session before 17:17:19, when the
+    amendment's branch was made, so the label is not its send time.
+  - 17:17:44: the amendment is committed. Its content came from that message (the coordinator's recommended
+    answers to (a) to (c)) and the answer file.
+  - 17:17:50: it is amended once, only to correct its own time from "17:25" to "17:17". That is `71c95aa`.
+  - **Its text is unchanged since then.** It was not amended after 17:20, nor after any tabulation.
+  - After 17:17:50: night 2's records are checked for voids and oracle errors, reading only those fields.
+  - 17:20:26: `calreport -rule` is committed (`8ff336f`).
+  - About 17:22: the first tabulation, the read, runs.
+  - 17:23:33: the read is committed (`c4d2f4b`).
+  - The only pass data seen before the amendment is the 14:01 glimpse it discloses: 3 records of task 2, all fails.
+- **Rule (b) refined after the read (2026-10-31, at Gemini's review of the tool).** An arm short of 168 rate-scales
+  d, and now its sd as well: sd · √(168/2 · (1/n_A + 1/n_B)). Holding the edges fixed would loosen them for short
+  arms.
+  - `tools/calreport` compares unrounded and prints d in full.
+  - The refinement does not apply to this read, which has 168 in each arm.
+  - It does apply to later reads that use (b).
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 

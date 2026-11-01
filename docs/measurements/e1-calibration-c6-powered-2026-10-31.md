@@ -5,7 +5,8 @@
 This is the read of `e1-calibration-preregistration-2026-10-18.md` §12.25: the bundle (B) against A1 with no
 settings (A), on Qwen3-8B `Q4_K_M` at 16,384, goinfer `b2b5e816`, tack `f5f7ecc`, over two nights of 168 runs. It
 is read under §12.25's rule and its amendment of 2026-10-31 17:17 PDT, which was committed before either night's
-passes were tabulated.
+passes were tabulated. The order of the amendment, the tool and the read, with each time, is in §12.25 ("The order of
+the amendment and the read").
 
 ## The nights
 
