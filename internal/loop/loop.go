@@ -75,9 +75,14 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
-	// CompactAtCliff compacts once when a result gets FitWindow's nearly-full note, before the next request: besides what
-	// MaskObservations stubs, grep and glob output and whole-file reads from before the last 3 requests become one-line
-	// stubs. It re-arms on a later note once the prompt has grown 10% of the window (mask.go; calibration §16.2).
+	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
+	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
+	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
+	//     3 requests become one-line stubs;
+	//   - when StopRepeats would end the turn on a call answered with that note, it compacts the same way and goes on,
+	//     at most stuckMax times a turn;
+	//   - an unchanged repeat of a whole read or a grep is shown with 3 times its cap, then none (tools.WithWiden),
+	//     and repeats are counted on the output at the base cap.
 	CompactAtCliff bool
 	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
 	// what masking takes such a read to cover. 0 means the default, 200.
@@ -130,6 +135,8 @@ type Session struct {
 	compacted  bool // a compaction has run
 	maskFloor  int  // the prompt of the first response after the last compaction; 0 until it arrives
 	cliffNote  bool // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
+	cliffDone  bool // a cliff compaction masked something this turn
+	stuckDone  int  // stuck compactions this turn (stuckMax)
 }
 
 // New returns a session's loop.
@@ -252,6 +259,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
 	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
 	var repeats RepeatGuard               // the turn's unchanged repeats (Config.StopRepeats)
+	stopKey, stopAtCliff := "", false     // the call that reached RepeatLimit, and whether the nearly-full note answered it
+	s.cliffDone, s.stuckDone = false, 0   // Config.CompactAtCliff's per-turn arming
 	var verify verifyState                // the turn's changes and verifications (Config.VerifyDone)
 	repeatLoop := false
 	for {
@@ -359,7 +368,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			var fin proto.ToolFinished
-			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
+			var ran tools.Result     // what the tool itself returned, when it ran: its Empty and State
+			raw, rawSet := "", false // the tool's own output at its base cap, before fit_window (Config.CompactAtCliff)
 			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
@@ -417,8 +427,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				if fin, full, ran, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
+				// Progressive widening (Config.CompactAtCliff): a repeat of a whole read or a grep is run with a wider
+				// cap, and once more at its base cap, which the repeat count compares instead (mask.go, widenLevel).
+				level := s.widenLevel(&repeats, key, b)
+				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room); err != nil {
 					return proto.StopError, err
+				}
+				raw, rawSet = ran.Text, true
+				if level > 0 {
+					raw = s.baseOutput(shell.WithApproval(ctx, by), b)
 				}
 				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -432,8 +449,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			// The repeat count is taken on the result before any note, so a note's own count cannot make a repeat
 			// look changed; a replay recovers that result with StripNotes.
 			if s.cfg.StopRepeats || s.cfg.ResultNotes {
-				n, stop := repeats.Observe(key, RepeatResult(fin.Result, ran.State))
+				seen := fin.Result
+				if s.cfg.CompactAtCliff && rawSet {
+					seen = raw // widened or cut, it is the same call's same output
+				}
+				n, stop := repeats.Observe(key, RepeatResult(seen, ran.State))
 				repeatLoop = repeatLoop || (s.cfg.StopRepeats && stop)
+				if s.cfg.StopRepeats && stop {
+					stopKey, stopAtCliff = key, strings.HasPrefix(fin.Result, nearlyFullOpen)
+				}
 				if s.cfg.ResultNotes {
 					fin.Result += resultNotes(b.Name, ran.Empty, n, s.cfg.StopRepeats)
 				}
@@ -473,6 +497,19 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)
+		}
+		// React when stuck (Config.CompactAtCliff): a repeat loop at the cliff compacts and continues, at most
+		// stuckMax times a turn; then, or with nothing left to stub, the turn ends as before.
+		if repeatLoop && s.cfg.CompactAtCliff && stopAtCliff && s.stuckDone < stuckMax {
+			m, err := s.compactNow(s.requests+1, cause, "stuck")
+			if err != nil {
+				return proto.StopError, err
+			}
+			if m > 0 {
+				s.stuckDone++
+				repeats.Reset(stopKey)
+				repeatLoop, stopAtCliff = false, false
+			}
 		}
 		if repeatLoop {
 			return end(proto.StopRepeatLoop)

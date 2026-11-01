@@ -830,10 +830,14 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   change files (bash, or any tool not known to only read), between the two. Each result is rewritten at most once.
 - **The record:** a `compaction` event lists every stub, so `loop.Rebuild` replays it.
 - **The cost:** one re-prefill from the first rewritten message, each time it runs.
-- **A second trigger: the cliff** (`[run] compact_at_cliff`, off by default; calibration §16.2). When a result gets
-  `fit_window`'s "window nearly full" note, a compaction runs before the next request. Besides the above, it stubs grep
-  and glob output and whole-file reads from before the last 3 requests. Its event's trigger is `cliff`, and it re-arms
-  on a later note once the prompt has grown 10% of the window.
+- **Reacting when stuck** (`[run] compact_at_cliff`, off by default; calibration §16.2). It does three things:
+  - **At the cliff:** at a turn's first "window nearly full" note from `fit_window` where something can be stubbed,
+    a compaction runs before the next request. Besides the above, it stubs grep and glob output and whole-file reads
+    from before the last 3 requests. The trigger is `cliff`.
+  - **When stuck:** when `stop_repeats` would end the turn on a call answered with that note, it compacts the same
+    way and lets the turn go on, at most twice a turn. The trigger is `stuck`.
+  - **Widening:** an unchanged repeat of a whole read or a grep is shown with 3 times its cap, then with none.
+    Repeats are counted on the output at the base cap, so widening never resets the count.
 - **Not yet built:** the summarizing and re-retrieval steps above.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past

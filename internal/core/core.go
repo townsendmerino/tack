@@ -90,7 +90,7 @@ type Options struct {
 	EditTolerances bool
 	// LeanResults cuts whole-file reads and grep shorter (tools.Options.LeanResults; calibration §16.1).
 	LeanResults bool
-	// CompactAtCliff compacts once at fit_window's nearly-full note (loop.Config.CompactAtCliff; calibration §16.2).
+	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// OpenSpans opens a symbol index over a workspace root for CurrentSymbol alone: it adds no tool. The Core opens one per
 	// root on first use, shares it between that root's sessions, and closes it in Close when it is an io.Closer.

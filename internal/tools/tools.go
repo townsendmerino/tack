@@ -355,3 +355,42 @@ func (o Options) WholeReadLines() int {
 	}
 	return readMaxLines
 }
+
+type widenKey struct{}
+
+// WithWiden asks the read and grep run with ctx for a wider result than their cap (loop.Config.CompactAtCliff's
+// progressive widening, calibration §16.2): level 1 is 3 times the cap, 2 or more is no cap. A read with a range is
+// never widened.
+func WithWiden(ctx context.Context, level int) context.Context {
+	if level <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, widenKey{}, level)
+}
+
+// widened is the cap base becomes under ctx's widening: base, 3 times base, or 0 for none.
+func widened(ctx context.Context, base int) int {
+	switch level, _ := ctx.Value(widenKey{}).(int); {
+	case level <= 0:
+		return base
+	case level == 1:
+		return 3 * base
+	}
+	return 0
+}
+
+// Widenable says whether a call to tool name with input is one progressive widening applies to: a read with no range,
+// or a grep.
+func Widenable(name string, input []byte) bool {
+	switch name {
+	case "grep":
+		return true
+	case "read":
+		var in struct {
+			Offset int `json:"offset"`
+			Limit  int `json:"limit"`
+		}
+		return json.Unmarshal(input, &in) == nil && in.Offset <= 0 && in.Limit <= 0
+	}
+	return false
+}

@@ -1,12 +1,15 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Observation masking (Config.MaskObservations; e1-calibration-preregistration-2026-10-18.md §15.2): tack's first
@@ -28,6 +31,9 @@ const (
 	maskMinBytes = 300
 	// wholeReadLines is how many lines a read with no range returns when Config.ReadLines is 0 (tools.readMaxLines).
 	wholeReadLines = 200
+	// stuckMax is how many stuck compactions a turn may make before a repeat loop at the cliff ends it
+	// (Config.CompactAtCliff).
+	stuckMax = 2
 )
 
 // observation is one tool result the conversation holds, as the masking rule reads it.
@@ -223,26 +229,32 @@ func (s *Session) due(w int) bool {
 	return w > 0 && s.lastPrompt*100 >= maskShare*w && s.regrown(w)
 }
 
-// compact runs a compaction before request next when one is due and something is left to mask, rewrites those results
-// in the conversation, records a compaction event, and resets the floor. The cliff (Config.CompactAtCliff: a result
-// got fit_window's nearly-full note in the last response) is checked first and widens what is masked; the note is
-// spent whether or not anything was masked. Then mask_observations' 75% trigger (Config.MaskObservations).
+// compact runs a compaction before request next when one is due. The cliff comes first (Config.CompactAtCliff): a
+// result got fit_window's nearly-full note in the last response, and no cliff compaction has masked anything this
+// turn. It has its own arming, not mask_observations' regrowth floor, so a compaction that frees little cannot keep
+// the cliff from firing. Then mask_observations' 75% trigger (Config.MaskObservations).
 func (s *Session) compact(next int, cause int64) error {
-	w := s.cfg.Source.Window()
-	trigger := ""
-	switch {
-	case s.cfg.CompactAtCliff && s.cliffNote && s.regrown(w):
-		trigger = "cliff"
-	case s.cfg.MaskObservations && s.due(w):
-		trigger = "window"
-	}
+	note := s.cliffNote
 	s.cliffNote = false
-	if trigger == "" {
-		return nil
+	if s.cfg.CompactAtCliff && note && !s.cliffDone {
+		m, err := s.compactNow(next, cause, "cliff")
+		s.cliffDone = m > 0
+		return err
 	}
-	masked := s.maskStubs(next, trigger == "cliff")
+	if s.cfg.MaskObservations && s.due(s.cfg.Source.Window()) {
+		_, err := s.compactNow(next, cause, "window")
+		return err
+	}
+	return nil
+}
+
+// compactNow stubs what a compaction with trigger ("window", "cliff" or "stuck") masks before request next. It rewrites
+// those results in the conversation, records a compaction event, and returns how many it masked. Only "window" moves
+// mask_observations' regrowth floor; "cliff" and "stuck" are wide (maskStubs).
+func (s *Session) compactNow(next int, cause int64, trigger string) (int, error) {
+	masked := s.maskStubs(next, trigger != "window")
 	if len(masked) == 0 {
-		return nil
+		return 0, nil
 	}
 	before, after := 0, 0
 	for _, m := range masked {
@@ -254,10 +266,40 @@ func (s *Session) compact(next int, cause int64) error {
 		after += len(m.Stub)
 		s.conv.ReplaceResult(m.ID, m.Stub)
 	}
-	s.compacted, s.maskFloor = true, 0
-	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt, Window: w,
-		Masked: masked, Before: before, After: after})
-	return err
+	if trigger == "window" {
+		s.compacted, s.maskFloor = true, 0
+	}
+	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt,
+		Window: s.cfg.Source.Window(), Masked: masked, Before: before, After: after})
+	return len(masked), err
+}
+
+// widenLevel is the widening for call b with key this turn (Config.CompactAtCliff; tools.WithWiden): 0 for a first
+// call or a call widening does not apply to, 1 for its first unchanged repeat, 2 after.
+func (s *Session) widenLevel(repeats *RepeatGuard, key string, b proto.ModelBlock) int {
+	if !s.cfg.CompactAtCliff || !tools.Widenable(b.Name, b.Input) {
+		return 0
+	}
+	n, seen := repeats.Prior(key)
+	if !seen {
+		return 0
+	}
+	return min(n+1, 2)
+}
+
+// baseOutput is what call b returns at its base cap, redacted as runTool redacts: what the repeat count compares for a
+// widened call. It is not shown or recorded.
+func (s *Session) baseOutput(ctx context.Context, b proto.ModelBlock) string {
+	t, ok := s.cfg.Tools.Get(b.Name)
+	if !ok {
+		return ""
+	}
+	r, err := t.Run(ctx, s.cfg.WS, b.Input)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	text, _ := perms.Redact(r.Text)
+	return text
 }
 
 // wholeOf is the lines o returned if it is a read with no range: as track set it, or wholeReadLines.

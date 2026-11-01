@@ -218,18 +218,20 @@ func cliffHarness(t *testing.T, on bool, replies ...goinfertest.Reply) *harness 
 	return h
 }
 
-// At the cliff: request 5's read gets the nearly-full note, so before request 6 a compaction stubs the grep (request
-// 1) and the whole read of small.txt (request 2), which are older than the last 3 requests. It does not stub the glob or
-// the range read, which are short or recent. The event's trigger is "cliff", and the log rebuilds the request. Off, or
-// with room enough that no note is given, nothing is compacted.
+// At the cliff: request 6's read gets the nearly-full note, so before request 7 a compaction stubs what is older than
+// the last 3 requests (requests 1-3) and in scope: the grep (request 1) and the whole read of small.txt (request 3).
+// It keeps the range read of big.txt (request 2), which is old and large, so only the range rule keeps it. The event's
+// trigger is "cliff", and the log rebuilds the request. Off, or with room enough that no note is given, nothing is
+// compacted.
 func TestCompactAtCliff(t *testing.T) {
 	replies := func() []goinfertest.Reply {
 		return []goinfertest.Reply{
 			goinfertest.Calls("", "g1", "grep", `{"pattern":"line 00"}`),
-			goinfertest.Calls("", "r2", "read", `{"path":"small.txt"}`),
-			goinfertest.Calls("", "l3", "glob", `{"pattern":"*.txt"}`),
-			goinfertest.Calls("", "r4", "read", `{"path":"small.txt","offset":1,"limit":3}`),
-			goinfertest.Calls("", "b5", "read", bigRead),
+			goinfertest.Calls("", "r2", "read", `{"path":"big.txt","offset":1,"limit":15}`),
+			goinfertest.Calls("", "r3", "read", `{"path":"small.txt"}`),
+			goinfertest.Calls("", "l4", "glob", `{"pattern":"*.txt"}`),
+			goinfertest.Calls("", "r5", "read", `{"path":"small.txt","offset":1,"limit":3}`),
+			goinfertest.Calls("", "b6", "read", bigRead),
 			goinfertest.Says("ok"),
 		}
 	}
@@ -237,8 +239,11 @@ func TestCompactAtCliff(t *testing.T) {
 	if _, err := h.sess.Turn(context.Background(), "explore"); err != nil {
 		t.Fatal(err)
 	}
-	if f := h.finished("b5"); !strings.HasPrefix(f.Result, "[window nearly full") {
-		t.Fatalf("request 5's read did not get the note: %.80q", f.Result)
+	if f := h.finished("b6"); !strings.HasPrefix(f.Result, "[window nearly full") {
+		t.Fatalf("request 6's read did not get the note: %.80q", f.Result)
+	}
+	if f := h.finished("r2"); len(f.Result) <= maskMinBytes {
+		t.Fatalf("the range read is %d bytes; the test needs it over %d", len(f.Result), maskMinBytes)
 	}
 	var comps []proto.Compaction
 	for _, p := range h.payloads(proto.EvCompaction) {
@@ -251,20 +256,136 @@ func TestCompactAtCliff(t *testing.T) {
 		}
 		return strings.Join(s, ",")
 	}
-	if len(comps) != 1 || comps[0].Trigger != "cliff" || comps[0].Request != 6 || ids(comps[0]) != "g1,r2" {
+	if len(comps) != 1 || comps[0].Trigger != "cliff" || comps[0].Request != 7 || ids(comps[0]) != "g1,r3" {
 		t.Fatalf("compactions %+v", comps)
 	}
-	if last := string(h.script.Requests[5]); strings.Contains(last, "line 001 of the big file") || !strings.Contains(last, "this whole read of small.txt (request 2") {
-		t.Fatalf("request 6 still carries the grep output or lacks the stub:\n%.400s", last)
+	if last := string(h.script.Requests[6]); strings.Contains(last, "big.txt:1:line 001") || !strings.Contains(last, "this whole read of small.txt (request 3") {
+		t.Fatalf("request 7 still carries the grep output or lacks the stub:\n%.400s", last)
 	}
 	h.checkRebuild(t)
 
 	off := cliffHarness(t, false, replies()...)
-	off.sess.Turn(context.Background(), "explore")
+	if _, err := off.sess.Turn(context.Background(), "explore"); err != nil {
+		t.Fatal(err)
+	}
 	roomy := cliffHarness(t, true, replies()...)
 	roomy.script.Window = 100_000
-	roomy.sess.Turn(context.Background(), "explore")
+	if _, err := roomy.sess.Turn(context.Background(), "explore"); err != nil {
+		t.Fatal(err)
+	}
+	if len(off.script.Requests) != 7 || len(roomy.script.Requests) != 7 {
+		t.Fatalf("the negative turns made %d and %d requests, want 7 each", len(off.script.Requests), len(roomy.script.Requests))
+	}
 	if n, m := len(off.payloads(proto.EvCompaction)), len(roomy.payloads(proto.EvCompaction)); n != 0 || m != 0 {
 		t.Fatalf("off: %d compactions; with room and no note: %d; want 0 and 0", n, m)
+	}
+}
+
+// React when stuck, and the arming. Six greps (requests 1-6), then the same read at the cliff 9 times (requests
+// 7-15, the 9th an 8th unchanged repeat). The first note compacts once as "cliff" (requests 1-4). The 8th repeat would
+// end the turn; instead a "stuck" compaction stubs requests 5-6 and the turn goes on. After a new grep and 9 more of the
+// read, a second "stuck" compaction stubs it. After a third grep and 9 more, the cap is reached, and the turn ends with
+// repeat_loop at request 35. No second "cliff" compaction runs, though every later read also gets the note.
+func TestCompactAtCliffReactsWhenStuck(t *testing.T) {
+	grep := func(id, pat string) goinfertest.Reply {
+		return goinfertest.Calls("", id, "grep", `{"pattern":"`+pat+`"}`)
+	}
+	var replies []goinfertest.Reply
+	for i, p := range []string{"line 00", "line 01", "line 02", "line 03", "line 04", "line 05"} {
+		replies = append(replies, grep(fmt.Sprintf("g%d", i+1), p))
+	}
+	reads := func(tag string) {
+		for i := 0; i < 9; i++ {
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("%s%d", tag, i), "read", bigRead))
+		}
+	}
+	reads("a")
+	replies = append(replies, grep("g7", "line 06"))
+	reads("b")
+	replies = append(replies, grep("g8", "line 07"))
+	reads("c")
+	replies = append(replies, goinfertest.Says("never reached"))
+	h := cliffHarness(t, true, replies...)
+	h.sess.cfg.StopRepeats = true
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 60, 60
+	stop, err := h.sess.Turn(context.Background(), "explore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range h.payloads(proto.EvCompaction) {
+		c := p.(proto.Compaction)
+		var ids []string
+		for _, m := range c.Masked {
+			ids = append(ids, m.ID)
+		}
+		got = append(got, fmt.Sprintf("%s@%d:%s", c.Trigger, c.Request, strings.Join(ids, ",")))
+	}
+	want := "cliff@8:g1,g2,g3,g4 stuck@16:g5,g6 stuck@26:g7"
+	if strings.Join(got, " ") != want || stop != proto.StopRepeatLoop || len(h.script.Requests) != 35 {
+		t.Fatalf("compactions %q, want %q; stop %s after %d requests, want repeat_loop after 35", got, want, stop, len(h.script.Requests))
+	}
+	h.checkRebuild(t)
+}
+
+// A repeat away from the cliff (the call gets its whole result each time) still ends the turn with repeat_loop, as
+// without the setting, and compacts nothing, though an old, large grep is there to stub.
+func TestCompactAtCliffKeepsTheRepeatRuleAwayFromTheCliff(t *testing.T) {
+	var replies []goinfertest.Reply
+	replies = append(replies, goinfertest.Calls("", "g0", "grep", `{"pattern":"line 00"}`)) // old and large: stubbable if it compacted
+	for i := 0; i < 9; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"small.txt","offset":1,"limit":3}`))
+	}
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = 100_000
+	h.sess.cfg.StopRepeats = true
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 20, 20
+	stop, err := h.sess.Turn(context.Background(), "x")
+	if err != nil || stop != proto.StopRepeatLoop || len(h.script.Requests) != 10 || len(h.payloads(proto.EvCompaction)) != 0 {
+		t.Fatalf("stop %s, err %v, %d requests, %d compactions; want repeat_loop at 10 and none", stop, err, len(h.script.Requests), len(h.payloads(proto.EvCompaction)))
+	}
+}
+
+// Progressive widening: the same whole read of a 700-line file three times shows 200, 600, then all 700 lines, and
+// the same grep over 400 matches shows 100, 300, then all 400. The repeat count is taken on the base-cap output, so the
+// notes count repeat 1 and repeat 2 rather than starting again at each widening. With the setting off, each call shows
+// the base cap.
+func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		replies := []goinfertest.Reply{}
+		for i := 0; i < 3; i++ {
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+		}
+		for i := 0; i < 3; i++ {
+			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"^hit ","path":"hits.txt"}`))
+		}
+		replies = append(replies, goinfertest.Says("ok"))
+		h := cliffHarness(t, on, replies...)
+		h.script.Window = 1_000_000
+		h.sess.cfg.ResultNotes, h.sess.cfg.MaxResultBytes = true, 1<<20
+		var wide, hits strings.Builder
+		for i := 1; i <= 700; i++ {
+			fmt.Fprintf(&wide, "w %d\n", i)
+		}
+		for i := 1; i <= 400; i++ {
+			fmt.Fprintf(&hits, "hit %d\n", i)
+		}
+		os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+		os.WriteFile(filepath.Join(h.ws.Root(), "hits.txt"), []byte(hits.String()), 0o644)
+		if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+			t.Fatal(err)
+		}
+		lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+		matches := func(id string) int { return strings.Count(h.finished(id).Result, "hits.txt:") }
+		want := map[bool][6]int{true: {200, 600, 700, 100, 300, 400}, false: {200, 200, 200, 100, 100, 100}}[on]
+		got := [6]int{lines("r0"), lines("r1"), lines("r2"), matches("g0"), matches("g1"), matches("g2")}
+		if got != want {
+			t.Errorf("on %v: shown %v, want %v", on, got, want)
+		}
+		for id, rep := range map[string]string{"r1": "repeat 1", "r2": "repeat 2", "g2": "repeat 2"} {
+			if !strings.Contains(h.finished(id).Result, rep) {
+				t.Errorf("on %v: %s's note does not count %s: %.120q", on, id, rep, h.finished(id).Result[max(0, len(h.finished(id).Result)-160):])
+			}
+		}
 	}
 }

@@ -286,3 +286,40 @@ func TestZeroValuedToolsUseTheDefaults(t *testing.T) {
 		t.Errorf("a zero grepTool gave %d matches", n)
 	}
 }
+
+// WithWiden: level 1 shows 3 times a whole read's and a grep's cap, level 2 no cap; an explicit range is never
+// widened; Widenable names the calls it applies to.
+func TestWithWiden(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 1; i <= 700; i++ {
+		fmt.Fprintf(&b, "match %d\n", i)
+	}
+	os.WriteFile(filepath.Join(root, "big.txt"), []byte(b.String()), 0o644)
+	ws, _ := NewWorkspace(root)
+	set := New(Options{LeanResults: true})
+	call := func(level int, name, input string) string {
+		tool, _ := set.Get(name)
+		r, err := tool.Run(WithWiden(context.Background(), level), ws, json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Text
+	}
+	for level, want := range map[int][3]int{0: {80, 30, 50}, 1: {240, 90, 50}, 2: {700, 700, 50}} {
+		got := [3]int{strings.Count(call(level, "read", `{"path":"big.txt"}`), "\tmatch "),
+			strings.Count(call(level, "grep", `{"pattern":"match"}`), "big.txt:"),
+			strings.Count(call(level, "read", `{"path":"big.txt","offset":1,"limit":50}`), "\tmatch ")}
+		if got != want {
+			t.Errorf("level %d: read, grep, range %v, want %v", level, got, want)
+		}
+	}
+	for in, want := range map[string]bool{`{"path":"a"}`: true, `{"path":"a","offset":3}`: false, `{"path":"a","limit":9}`: false} {
+		if Widenable("read", []byte(in)) != want {
+			t.Errorf("Widenable(read, %s) != %v", in, want)
+		}
+	}
+	if !Widenable("grep", []byte(`{"pattern":"x"}`)) || Widenable("glob", []byte(`{"pattern":"x"}`)) {
+		t.Error("Widenable: grep yes, glob no")
+	}
+}

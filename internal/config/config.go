@@ -134,8 +134,8 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
-	// CompactAtCliff compacts once when a result gets fit_window's nearly-full note, stubbing old grep and glob output
-	// and whole-file reads besides what mask_observations stubs (loop.Config.CompactAtCliff; calibration §16.2). Default off.
+	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
+	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`
 	// InjectContext puts the code ken finds for a session's first prompt, up to 1,600 tokens, into its first message
 	// (core.Options.InjectContext; calibration §13.1). Without [ken], tack opens ken's index in bm25 mode for it, at the
