@@ -47,6 +47,9 @@ type Result struct {
 	// Note is set by edit with Options.CurrentSymbol: a note the loop appends to Text after the repeat rule has compared
 	// the result, so the rule sees what the tool said (loop.StripNotes removes it again).
 	Note string
+	// Base is set by a read or grep run with WithWiden: the same call's output at its base cap, from the same pass, so
+	// the loop can count repeats on it, or show it instead when the output changed (loop.Config.CompactAtCliff).
+	Base string
 }
 
 func errorf(format string, args ...any) Result {

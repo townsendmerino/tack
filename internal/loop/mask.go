@@ -1,13 +1,11 @@
 package loop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -279,30 +277,42 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 	return len(masked), err
 }
 
-// widenLevel is the widening for a call with key whose output at the base cap is base (Config.CompactAtCliff;
-// tools.WithWiden): 1 for its first unchanged repeat, 2 after, and 0 for a first call or one whose output changed
-// since the last call with its key.
-func widenLevel(repeats *RepeatGuard, key, base string) int {
-	prior, _ := repeats.Prior(key)
-	if !repeats.Same(key, RepeatResult(base, "")) {
-		return 0
-	}
-	return min(prior+1, 2)
+// shownChain is, per call key this turn, the output at the base cap that the call last showed the model, and how
+// many times in a row it showed it unchanged: what progressive widening steps on (Config.CompactAtCliff;
+// calibration §16.2). A call answered with fit_window's nearly-full note showed nothing, so it ends the chain.
+type shownChain map[string]shownLink
+
+type shownLink struct {
+	last  string
+	shown int
 }
 
-// baseOutput is what call b returns at its base cap, redacted as runTool redacts: what the repeat count compares for a
-// widened call. It is not shown or recorded.
-func (s *Session) baseOutput(ctx context.Context, b proto.ModelBlock) string {
-	t, ok := s.cfg.Tools.Get(b.Name)
-	if !ok {
-		return ""
+// level is the widening for the next call with key: 1 once its base-cap result was shown, 2 once that was shown
+// again, and 0 with no chain. The call widens only if its output proves unchanged (same).
+func (c shownChain) level(key string) int {
+	if l, ok := c[key]; ok {
+		return min(l.shown, 2)
 	}
-	r, err := t.Run(ctx, s.cfg.WS, b.Input)
-	if err != nil {
-		return "error: " + err.Error()
+	return 0
+}
+
+// same says whether base is what the call with key last showed.
+func (c shownChain) same(key, base string) bool {
+	l, ok := c[key]
+	return ok && l.last == base
+}
+
+// record takes a call's base-cap output and whether the nearly-full note replaced it: a note ends the chain; an
+// unchanged output lengthens it; a changed one starts it again.
+func (c shownChain) record(key, base string, note bool) {
+	switch l, ok := c[key]; {
+	case note:
+		delete(c, key)
+	case ok && l.last == base:
+		c[key] = shownLink{last: base, shown: l.shown + 1}
+	default:
+		c[key] = shownLink{last: base, shown: 1}
 	}
-	text, _ := perms.Redact(r.Text)
-	return text
 }
 
 // wholeOf is the lines o returned if it is a read with no range: as track set it, or wholeReadLines.

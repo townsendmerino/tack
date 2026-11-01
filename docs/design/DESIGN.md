@@ -836,8 +836,13 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
     from before the last 3 requests. The trigger is `cliff`.
   - **When stuck:** when `stop_repeats` would end the turn on a call answered with that note, it compacts the same
     way and lets the turn go on, at most twice a turn. The trigger is `stuck`.
-  - **Widening:** an unchanged repeat of a whole read or a grep is shown with 3 times its cap, then with none.
-    Repeats are counted on the output at the base cap, so widening never resets the count.
+  - **Widening:** a whole read or a grep whose base-cap result was shown, and is asked for again unchanged, is
+    shown with 3 times its cap, then with none. It runs once; the tool returns its base-cap view too. A result
+    replaced by the nearly-full note was not shown: it ends the chain, so the first real result after a compaction
+    is at the base cap.
+  - **Counting, with the setting on:** a note counts as one fixed value for its call, and a shown result counts on its
+    redacted base-cap output. A change between the two resets the count, so the first real result after a
+    compaction is never a repeat of the notes before it.
 - **Not yet built:** the summarizing and re-retrieval steps above.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past

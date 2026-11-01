@@ -332,25 +332,43 @@ func TestMaskWidenedReadCoverage(t *testing.T) {
 	}
 }
 
-// widenLevel widens only an unchanged repeat: after A, a base of A is level 1, and after A, A, it is 2. After A then B
-// (a change), a base of C is 0, though the key was seen; a base of B is level 1.
-func TestWidenLevel(t *testing.T) {
-	var g RepeatGuard
-	if l := widenLevel(&g, "k", "A"); l != 0 {
-		t.Fatalf("unseen: %d", l)
+// The shown chain widens only after a result was shown and asked for again unchanged: level 0 before any, 1 after A
+// was shown, 2 after A was shown twice. A changed output starts the chain again, and a note ends it, so the first real
+// result after it is at the base cap.
+func TestShownChain(t *testing.T) {
+	c := shownChain{}
+	if c.level("k") != 0 {
+		t.Fatal("unseen widens")
 	}
-	g.Observe("k", "A")
-	if l := widenLevel(&g, "k", "A"); l != 1 {
-		t.Fatalf("after A, A: %d", l)
+	c.record("k", "A", false)
+	if c.level("k") != 1 || !c.same("k", "A") || c.same("k", "B") {
+		t.Fatalf("after A shown: level %d", c.level("k"))
 	}
-	g.Observe("k", "A")
-	if l := widenLevel(&g, "k", "A"); l != 2 {
-		t.Fatalf("after A, A, A: %d", l)
+	c.record("k", "A", false)
+	if c.level("k") != 2 {
+		t.Fatalf("after A shown twice: level %d", c.level("k"))
 	}
-	var h RepeatGuard
-	h.Observe("k", "A")
-	h.Observe("k", "B")
-	if l, l2 := widenLevel(&h, "k", "C"), widenLevel(&h, "k", "B"); l != 0 || l2 != 1 {
-		t.Fatalf("after A, B: a C base widens %d, a B base %d; want 0 and 1", l, l2)
+	c.record("k", "B", false)
+	if c.level("k") != 1 || !c.same("k", "B") {
+		t.Fatalf("after a change to B: level %d", c.level("k"))
+	}
+	c.record("k", "B", true)
+	if c.level("k") != 0 || c.same("k", "B") {
+		t.Fatalf("after a note: level %d, same %v; want the chain ended", c.level("k"), c.same("k", "B"))
+	}
+}
+
+// The other direction: under ReadLines 80, an earlier read of lines 1-200 is superseded by a later whole read widened
+// once (lines 1-240) or twice (all lines), and not by an unwidened one (lines 1-80).
+func TestMaskWidenedReadSupersedes(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
+	for level, masked := range map[int]bool{0: false, 1: true, 2: true} {
+		s := &Session{cfg: Config{ReadLines: 80}}
+		s.track(read("a", `{"path":"f.go","offset":1,"limit":200}`), false, 0)
+		s.track(read("b", `{"path":"f.go"}`), false, level)
+		if got := s.maskStubs(2, false); (len(got) == 1 && got[0].ID == "a") != masked {
+			t.Errorf("a later whole read at level %d: masked %+v, want %v", level, got, masked)
+		}
 	}
 }

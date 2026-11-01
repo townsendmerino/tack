@@ -517,3 +517,97 @@ func TestCliffCompactionMovesTheMaskFloor(t *testing.T) {
 		t.Fatal("a window compaction is not due after 11% regrowth")
 	}
 }
+
+// After the cliff, the first shown result starts the repeat count again. The same read gets the nearly-full note 4
+// times, then, with room, is shown 5 times: 9 calls, but the 5 shown ones are only 4 unchanged repeats of each other,
+// so stop_repeats does not end the turn (counting the notes and the shown results as one output would, at the 9th).
+func TestCompactAtCliffShownResultStartsTheCountAgain(t *testing.T) {
+	const window = 100_000
+	read := `{"path":"small.txt","offset":1,"limit":40}`
+	var replies []goinfertest.Reply
+	for i := 0; i < 4; i++ {
+		replies = append(replies, callsAt(window-300, fmt.Sprintf("n%d", i), "read", read))
+	}
+	for i := 0; i < 5; i++ {
+		replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
+	}
+	replies = append(replies, goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = window
+	h.sess.cfg.StopRepeats = true
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 30, 30
+	var b strings.Builder
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&b, "small %02d of a file now long enough to need room\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "small.txt"), []byte(b.String()), 0o644)
+	stop, err := h.sess.Turn(context.Background(), "x")
+	if err != nil || stop != proto.StopEndTurn || len(h.script.Requests) != 10 {
+		t.Fatalf("stop %s, err %v, %d requests; want end_turn after 10", stop, err, len(h.script.Requests))
+	}
+	if !strings.HasPrefix(h.finished("n3").Result, "[window nearly full") || strings.HasPrefix(h.finished("s0").Result, "[window nearly full") {
+		t.Fatal("the script did not give 4 notes and then room")
+	}
+}
+
+// A note neither advances widening nor keeps it, and widening works through redaction. The same whole read of a
+// 700-line file (one line holding an AWS key id, which redaction replaces) is first answered with the note, then shown
+// at 200 lines (not 600), then 600, then all 700.
+func TestCompactAtCliffWideningStartsAfterTheNote(t *testing.T) {
+	const window = 100_000
+	read := `{"path":"wide.txt"}`
+	replies := []goinfertest.Reply{callsAt(window-300, "n0", "read", read)}
+	for i := 0; i < 3; i++ {
+		replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
+	}
+	replies = append(replies, goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = window
+	h.sess.cfg.MaxResultBytes = 1 << 20
+	var wide strings.Builder
+	for i := 1; i <= 700; i++ {
+		if i == 5 {
+			wide.WriteString("w key=AKIAIOSFODNN7EXAMPLE\n")
+			continue
+		}
+		fmt.Fprintf(&wide, "w %d\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+	if !strings.HasPrefix(h.finished("n0").Result, "[window nearly full") {
+		t.Fatalf("the first read did not get the note: %.80q", h.finished("n0").Result)
+	}
+	if got := [3]int{lines("s0"), lines("s1"), lines("s2")}; got != [3]int{200, 600, 700} {
+		t.Fatalf("after the note, shown %v, want [200 600 700]", got)
+	}
+	if strings.Contains(h.finished("s2").Result, "AKIAIOSFODNN7EXAMPLE") {
+		t.Fatal("the widened result was not redacted")
+	}
+}
+
+// The cliff note is per turn: a turn that ends on its budget right after a note leaves no cliff compaction for the next
+// turn's first request.
+func TestCompactAtCliffNoteDoesNotCrossTurns(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 4; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", fmt.Sprintf(`{"pattern":"line 0%d"}`, i)))
+	}
+	replies = append(replies, goinfertest.Calls("", "b0", "read", bigRead), goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.sess.cfg.Budget.MaxRequests = 5 // the turn trips its request budget right after the note
+	if stop, err := h.sess.Turn(context.Background(), "first"); err != nil || stop == proto.StopEndTurn {
+		t.Fatalf("the first turn: stop %s, err %v; want a budget stop", stop, err)
+	}
+	if !strings.HasPrefix(h.finished("b0").Result, "[window nearly full") {
+		t.Fatal("the first turn's last read did not get the note")
+	}
+	if _, err := h.sess.Turn(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.payloads(proto.EvCompaction)); n != 0 {
+		t.Fatalf("%d compactions: the first turn's note compacted in the second", n)
+	}
+}
