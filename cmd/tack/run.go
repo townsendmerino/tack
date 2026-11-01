@@ -158,6 +158,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		EditLines:            cfg.Run.EditLines,
 		CurrentSymbol:        cfg.Run.CurrentSymbol,
 		EditTolerances:       cfg.Run.EditTolerances,
+		LeanResults:          cfg.Run.LeanResults,
 		InjectContext:        cfg.Run.InjectContext,
 		RepoMap:              cfg.Run.RepoMap,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,

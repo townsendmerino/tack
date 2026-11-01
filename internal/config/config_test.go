@@ -146,3 +146,14 @@ func TestSandboxRead(t *testing.T) {
 		t.Errorf("a symlink: %q, %v; want its target %s", c.Sandbox.Read, err, real)
 	}
 }
+
+// lean_results is a [run] setting, off by default.
+func TestLeanResultsSetting(t *testing.T) {
+	base := "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	if c, err := load(t, base); err != nil || c.Run.LeanResults {
+		t.Fatalf("default: %v, %v", c.Run.LeanResults, err)
+	}
+	if c, err := load(t, base+"[run]\nlean_results = true\n"); err != nil || !c.Run.LeanResults {
+		t.Fatalf("on: %v, %v", c.Run.LeanResults, err)
+	}
+}

@@ -78,6 +78,7 @@ var RunSettings = map[string]bool{
 	"inject_context":         true, // §13.1, C7's turn-1 injection
 	"repo_map":               true, // §13.3, C7's generated repository map
 	"best_of_3":              true, // §15.3, C9's best of three, written as best_of = 3 (runValues)
+	"lean_results":           true, // §16.1, C10's leaner exploration results
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

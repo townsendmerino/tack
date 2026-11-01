@@ -75,6 +75,9 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
+	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
+	// what masking takes such a read to cover. 0 means the default, 200.
+	ReadLines int
 	// ResultNotes appends a line saying what to do to an empty glob or grep result and to an unchanged repeat (notes.go;
 	// calibration pre-registration §4.4).
 	ResultNotes bool
