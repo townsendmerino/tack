@@ -1682,6 +1682,65 @@ session recommended them. The rest was drafted by tack's session and goes to him
     check still voids a run that starts under heavy load on nobara.
   - **It starts once §14.4's row ends,** as a day job on the Mac's `night.py`, retried on exit 75 until 20:00. The
     timing lock, the void rule and its own cell check, which is the fit-only load, are unchanged.
+- **How the read handles voids, short arms and a parked result (2026-10-31 17:17 PDT, tack's session, written
+  before either night's passes are tabulated).** A read-only audit of this rule against the analysis code (Gemini,
+  relayed by the coordinator at 17:20) found three questions the rule leaves open. The coordinator recommended these
+  answers, and they are adopted here:
+  - **Disclosure:** while checking night 2's progress at 14:01, tack's session saw its first 3 records and 2 log
+    lines, all task 2 and all fails. Nothing else of either night's passes has been read or tabulated.
+  - **(a) A void's remedy.** A run voided inside a run counts as void, not as a fail. That covers disk under the
+    floor, a module download failure, a failed preflight, the host sleeping, and an oracle error (a harness error
+    grading the run, which is not a model failure). After the night, each void run is re-run once in its place:
+    the same task, arm and build, and the same settings. The re-runs are listed. A night that ends early (a crash,
+    the power, a lock) is still re-run whole, as above.
+  - **(b) d when an arm is short.** If an arm has fewer than 168 counted runs after the re-runs, d is rate-scaled to
+    168: d = 168 · (B/n_B − A/n_A). The read says so, and it is judged on the sd edges: shown at d ≥ 6.36 (2 sd),
+    parked at 3.18 ≤ d < 6.36 (1 sd), not shown below. With 168 counted runs in each arm, d is the integer B − A,
+    and those edges are the table's +7, +4 to +6 and +3.
+  - **(c) A parked result** (+4 to +6) is reported, and nothing continues it without Francis. Any continuation he
+    asks for is registered first: its size, and how it combines with these 336 runs.
+  - **The command:** `tools/calreport` takes each night's results file as its own input, so each record keeps its
+    run directory, and it prints d, the sd, the verdict and each arm's n (`-rule` below). The concatenated
+    `both.jsonl` above would point every record at a run directory that does not exist, so it is not used.
+    `tools/calreport` also counts an oracle error as a void run, as (a) says. The read is:
+
+    ```
+    E=~/tack-runs/e1; P=$E/c6-powered-2026-10-30
+    go run ./tools/calreport -rule sd=3.18,n=168 \
+      -compare $E/c6-bundle-2026-10-28/runs/results.jsonl \
+      -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
+      $P/night-1/runs/results.jsonl,$P/night-2/runs/results.jsonl
+    ```
+  - **The nights' voids:** night 1 and night 2 each have 168 records, 84 per arm, 0 void and 0 oracle errors
+    (checked 2026-10-31 after this amendment was committed, reading those fields only). So no re-run is needed, and
+    d is the integer B − A.
+- **Outcome (read 2026-10-31; record `e1-calibration-c6-powered-2026-10-31.md`): A 9 of 168, B 26 of 168, d = +17.
+  The bundle is shown to beat A1** (+7 or more, against 2 sd = 6.36).
+  - The gain is on tasks 1 (+12), 11 (+3) and 12 (+2); the other nine tasks pass in neither arm.
+  - Five of the seven predictions held. d was predicted at +3 to +14 and came out above it. B's window-full stops
+    were predicted at 6 or fewer and were 12.
+  - **The voids and short arms rules did not decide this read.** Both arms have 168 counted runs and 0 voids. d = +17
+    is far past the 6.36 edge. So neither rule (a) nor rule (b) could have changed the band.
+- **The order of the amendment and the read (recorded 2026-10-31 after the read, at the coordinator's question).**
+  Times are PDT, from git's reflog and the files' modification times, all on the Mac's one clock:
+  - 17:11:58: the audit's answer file is written (`~/goinfer-work/gemini-tasks/tack-1225-rule/answer.txt`). The
+    coordinator's message relaying it is labeled 17:20. It reached tack's session before 17:17:19, when the
+    amendment's branch was made, so the label is not its send time.
+  - 17:17:44: the amendment is committed. Its content came from that message (the coordinator's recommended
+    answers to (a) to (c)) and the answer file.
+  - 17:17:50: it is amended once, only to correct its own time from "17:25" to "17:17". That is `71c95aa`.
+  - **Its text is unchanged since then.** It was not amended after 17:20, nor after any tabulation.
+  - After 17:17:50: night 2's records are checked for voids and oracle errors, reading only those fields.
+  - 17:20:26: `calreport -rule` is committed (`8ff336f`).
+  - About 17:22: the first tabulation, the read, runs.
+  - 17:23:33: the read is committed (`c4d2f4b`).
+  - The only pass data seen before the amendment is the 14:01 glimpse it discloses: 3 records of task 2, all fails.
+- **Rule (b) refined after the read (2026-10-31, at Gemini's review of the tool).** An arm short of 168 rate-scales
+  d, and now its sd as well: sd · √(168/2 · (1/n_A + 1/n_B)). Holding the edges fixed would loosen them for short
+  arms.
+  - `tools/calreport` compares unrounded and prints d in full.
+  - The refinement does not apply to this read, which has 168 in each arm.
+  - It does apply to later reads that use (b).
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 

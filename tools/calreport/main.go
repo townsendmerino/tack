@@ -1,11 +1,17 @@
 // Command calreport prints a calibration job's "reported, not decided on" figures from its results.jsonl, per arm:
 // passes per task, stops by reason, window-full stops, cap hits, requests and wall time per run, the server's
 // first-token times, done and verification refusals, each setting's firings and what followed them (§13.4), the cell
-// states, and §2's bar
-// (e1-calibration-preregistration-2026-10-18.md §2, §12.2, §12.3). With -compare, each of another job's arms is set
-// beside them task by task. It decides nothing: a record's verdict is read under its own registered rule.
+// states, and §2's bar (e1-calibration-preregistration-2026-10-18.md §2, §12.2, §12.3). A job may span several
+// results files, comma-separated (§12.25's two nights); each record's run directory stays beside its own file. With
+// -compare, each of another job's arms is set beside them task by task. A run is void, in no count but listed, when
+// pilot voided it or its oracle failed to run (a harness error, not a model failure).
 //
-//	go run ./tools/calreport [-compare OTHER/results.jsonl]... JOB/results.jsonl
+// With -rule sd=S,n=N it also prints §12.3's A/B statistic: d = B's passes − A's, each arm's n against the
+// registered N, and d's band. An arm short of N has d rate-scaled to N, N · (B/n_B − A/n_A), and judged on the
+// sd scaled to match, sd · √(N/2 · (1/n_A + 1/n_B)) (§12.25's amendment of 2026-10-31, as refined after its
+// read). Otherwise it decides nothing: a record's verdict is read under its own registered rule.
+//
+//	go run ./tools/calreport [-compare OTHER/results.jsonl]... [-rule sd=S,n=N] JOB/results.jsonl[,MORE/results.jsonl]
 //
 // It ends with VERDICT: PASS when every line parsed and every counted run carries tack's summary, INCONCLUSIVE when
 // there is no counted run or a run lacks its summary, and FAIL when a line does not parse.
@@ -48,11 +54,21 @@ func run(args []string, w io.Writer) int {
 	fs.Var(&compare, "compare", "another job's results.jsonl, set beside this one task by task; repeatable; a comma-separated list is one job split over files (C5's passes)")
 	mirrors := fs.String("mirrors", "", "the E1 mirrors directory (<repo>.git): with it, the guard table also counts new gold lines seen after a firing (FixGold)")
 	taskFiles := fs.String("tasks", "eval/e1/calibration.jsonl,eval/e1/pilot.jsonl", "with -mirrors: the task files whose test_files FixGold leaves out, comma-separated")
+	ruleSpec := fs.String("rule", "", "the registered A/B rule, as sd=S,n=N (§12.25: sd=3.18,n=168): prints d = B − A with each arm's n, and its band")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: usage: [-compare OTHER/results.jsonl]... [-mirrors DIR [-tasks FILES]] JOB/results.jsonl"))
+		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: usage: [-compare OTHER/results.jsonl]... [-mirrors DIR [-tasks FILES]] [-rule sd=S,n=N] JOB/results.jsonl[,MORE/results.jsonl...]"))
 		return 2
 	}
-	job, err := load(fs.Arg(0))
+	var rl *rule
+	if *ruleSpec != "" {
+		r, err := parseRule(*ruleSpec)
+		if err != nil {
+			fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: -rule: "+err.Error()))
+			return 2
+		}
+		rl = &r
+	}
+	job, err := loadMerged(strings.Split(fs.Arg(0), ","))
 	if err != nil {
 		fmt.Fprintln(w, gate.Verdict(gate.Fail, "calreport: "+err.Error()))
 		return 1
@@ -76,6 +92,9 @@ func run(args []string, w io.Writer) int {
 		gs = src
 	}
 	report(w, job, others, gs)
+	if rl != nil {
+		rl.read(w, job)
+	}
 	switch {
 	case job.counted() == 0:
 		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "calreport: no counted run in "+job.path))
@@ -141,7 +160,7 @@ func load(path string) (*jobData, error) {
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			return nil, fmt.Errorf("%s:%d: %w", path, line, err)
 		}
-		if r.Run.Void != "" {
+		if voidWhy(r) != "" {
 			j.voids = append(j.voids, r)
 			continue
 		}
@@ -269,7 +288,7 @@ func cells(w io.Writer, j *jobData) {
 	}
 	fmt.Fprintf(w, "- void runs: %d\n", len(j.voids))
 	for _, v := range j.voids {
-		fmt.Fprintf(w, "  - task %d %s rep %d: %s\n", v.Task, v.Run.Arm, v.Rep, v.Run.Void)
+		fmt.Fprintf(w, "  - task %d %s rep %d: %s\n", v.Task, v.Run.Arm, v.Rep, voidWhy(v))
 	}
 	if len(loads) > 0 {
 		fmt.Fprintf(w, "- server load at the cells' starts: %.2f–%.2f; memory available %.1f–%.1f GB; Mac 1-minute load %.2f–%.2f (recorded only)\n",
