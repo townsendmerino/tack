@@ -2587,3 +2587,17 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     - Neither reads or moves mask_observations' floor.
   - A pilot run is one turn, so "per turn" is per run.
   - Everything else is unchanged.
+- **Amended a fourth time before any §16.2 run (2026-11-01, from Gemini's second review of #45, relayed by the
+  coordinator).** These settle what the earlier lines left open; the lever is the same:
+  - **The floor.** A cliff or stuck compaction now moves mask_observations' regrowth floor, though it still never
+    reads it. So when both settings are on, a window compaction waits for 10% regrowth after any compaction, not only
+    after its own. This replaces "neither reads or moves" above. (§16.2's screen runs without mask_observations.)
+  - **Order at the cliff.** When a turn's first nearly-full note and a repeat loop arrive in the same response, the cliff
+    compaction runs, not a stuck one, so it does not spend one of the 2 stuck compactions.
+  - **Several calls in one response.** If any call reached the repeat limit away from the cliff, the turn ends with
+    `repeat_loop`, as today. The stuck reaction applies only when every call that reached the limit was answered with
+    the nearly-full note, and it resets each of them.
+  - **When widening applies.** A call is widened only on an unchanged repeat: its output at the base cap matches what
+    the last call with that key gave. After a changed output (an edit, say), the next call starts again at the base cap.
+  - **What a widened read covers.** A widened whole read covers 3 times the base lines, or the whole file, for the rule
+    that stubs a read superseded by a later one.
