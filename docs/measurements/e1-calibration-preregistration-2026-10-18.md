@@ -1702,6 +1702,18 @@ session recommended them. The rest was drafted by tack's session and goes to him
   - **The command:** `tools/calreport` takes each night's results file as its own input, so each record keeps its
     run directory, and it prints d, the sd, the verdict and each arm's n (`-rule` below). The concatenated
     `both.jsonl` above would point every record at a run directory that does not exist, so it is not used.
+    `tools/calreport` also counts an oracle error as a void run, as (a) says. The read is:
+
+    ```
+    E=~/tack-runs/e1; P=$E/c6-powered-2026-10-30
+    go run ./tools/calreport -rule sd=3.18,n=168 \
+      -compare $E/c6-bundle-2026-10-28/runs/results.jsonl \
+      -compare $E/cal-c4c5-2026-10-18/c5/pass-1/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-2/results.jsonl,$E/cal-c4c5-2026-10-18/c5/pass-3/results.jsonl \
+      $P/night-1/runs/results.jsonl,$P/night-2/runs/results.jsonl
+    ```
+  - **The nights' voids:** night 1 and night 2 each have 168 records, 84 per arm, 0 void and 0 oracle errors
+    (checked 2026-10-31 after this amendment was committed, reading those fields only). So no re-run is needed, and
+    d is the integer B − A.
 
 ## 13. Amendment C7: context before and during the turn — drafted 2026-10-30 for the owner, before any run
 

@@ -196,3 +196,111 @@ func TestReport_GuardFiringsGold(t *testing.T) {
 		t.Errorf("missing %q in:\n%s", want, out.String())
 	}
 }
+
+// night writes one night's results: per arm, n runs of task 1 with reps 1..n, the first passes of them passing, each
+// with an events.jsonl in its run directory beside the file.
+func night(t *testing.T, nA, passA, nB, passB int) string {
+	t.Helper()
+	var recs []pilot.Record
+	for _, a := range []struct {
+		arm     string
+		n, pass int
+	}{{"A", nA, passA}, {"B", nB, passB}} {
+		for i := 1; i <= a.n; i++ {
+			r := rec(1, a.arm, i <= a.pass, "done")
+			r.Rep = i
+			recs = append(recs, r)
+		}
+	}
+	p := writeResults(t, recs)
+	for _, r := range recs {
+		d := runDirOf(p, r)
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "events.jsonl"), []byte(`{"seq":1,"type":"user.message","payload":{}}`+"\n"), 0o644)
+	}
+	return p
+}
+
+// -rule prints d = B − A, each arm's n, and d's band at its edges (§12.25: sd 3.18, n 168, so +7 is shown, +4 to +6
+// parked, +3 not shown). A job given as two night files keeps each record's run directory beside its own file, though
+// both nights number their reps from 1.
+func TestRuleBands(t *testing.T) {
+	for _, c := range []struct {
+		passA, passB int
+		want         string
+	}{
+		{10, 17, "d = B − A = +7.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: shown: B beats A**"},
+		{10, 16, "d = B − A = +6.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: parked"},
+		{10, 14, "d = B − A = +4.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: parked"},
+		{10, 13, "d = B − A = +3.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: not shown"},
+		{14, 10, "d = B − A = -4.00; edges 3.18 (1 sd) and 6.36 (2 sd)\n- **verdict: not shown"},
+	} {
+		n1 := night(t, 84, c.passA/2, 84, c.passB/2)
+		n2 := night(t, 84, c.passA-c.passA/2, 84, c.passB-c.passB/2)
+		var out strings.Builder
+		if code := run([]string{"-rule", "sd=3.18,n=168", n1 + "," + n2}, &out); code != 0 {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		s := out.String()
+		if !strings.Contains(s, c.want) || !strings.Contains(s, "- A: ") || strings.Contains(s, "registered 168") {
+			t.Errorf("A %d, B %d: want %q in\n%s", c.passA, c.passB, c.want, s[strings.Index(s, "## The registered rule"):])
+		}
+		if strings.Contains(s, "could not be read") {
+			t.Errorf("the two nights' run directories were not found:\n%s", s)
+		}
+	}
+	// The registered command's both.jsonl, the two nights concatenated in another directory, finds no run directory.
+	n1, n2 := night(t, 2, 1, 2, 1), night(t, 2, 1, 2, 1)
+	b1, _ := os.ReadFile(n1)
+	b2, _ := os.ReadFile(n2)
+	both := filepath.Join(t.TempDir(), "both.jsonl")
+	os.WriteFile(both, append(b1, b2...), 0o644)
+	var out strings.Builder
+	run([]string{both}, &out)
+	if !strings.Contains(out.String(), "8 runs' events could not be read") {
+		t.Errorf("a concatenated file read its runs' events:\n%s", out.String())
+	}
+}
+
+// An arm short of n is rate-scaled to n and judged on the sd edges, and an oracle error is a void run, in no count.
+func TestRuleShortArmAndOracleError(t *testing.T) {
+	recs := []pilot.Record{}
+	for i := 1; i <= 168; i++ {
+		a := rec(1, "A", i <= 10, "done")
+		a.Rep = i
+		recs = append(recs, a)
+		if i <= 167 {
+			b := rec(1, "B", i <= 16, "done")
+			b.Rep = i
+			recs = append(recs, b)
+		}
+	}
+	bad := rec(1, "B", false, "done")
+	bad.Rep, bad.OracleErr = 168, "copy pkg/a_test.go: no such file"
+	p := writeResults(t, append(recs, bad))
+	var out strings.Builder
+	run([]string{"-rule", "sd=3.18,n=168", p}, &out)
+	s := out.String()
+	for _, want := range []string{
+		"- B: 16 passes of 167 counted runs (registered 168: -1)",
+		"- void runs, in neither count: 1",
+		"d = rate-scaled to 168: 168 · (16/167 − 10/168) = +6.10",
+		"verdict: parked",
+		"oracle error (a harness error, not a model failure): copy pkg/a_test.go",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("want %q in\n%s", want, s)
+		}
+	}
+}
+
+func TestParseRule(t *testing.T) {
+	if r, err := parseRule("sd=3.18,n=168"); err != nil || r.sd != 3.18 || r.n != 168 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	for _, bad := range []string{"sd=3.18", "n=168", "sd=0,n=1", "sd=1,n=x", "sd=1,n=2,k=3", "3.18"} {
+		if _, err := parseRule(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+}
