@@ -63,6 +63,7 @@ func (s *Session) fit(fin proto.ToolFinished, text string, room int) (proto.Tool
 		}
 		fin.Result = fmt.Sprintf("[window nearly full: this output (%d bytes, %d lines) is not shown. Finish up: %s]",
 			len(text), lineCount(text), finish)
+		s.cliffNote = true // the cliff: Config.CompactAtCliff compacts before the next request
 		return fin, full, nil
 	}
 	head, tail := limit*3/4, limit/4

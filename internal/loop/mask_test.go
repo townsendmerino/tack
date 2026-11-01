@@ -84,11 +84,11 @@ func TestMaskStubsCommandOutput(t *testing.T) {
 		observe("short", "bash", []byte(`{"command":"ls"}`), 1, "a\nb\n", true),
 		observe("recent", "bash", []byte(`{"command":"go build ./..."}`), 4, long, true),
 	}}
-	got := s.maskStubs(5)
+	got := s.maskStubs(5, false)
 	if len(got) != 1 || got[0].ID != "old" || !strings.Contains(got[0].Stub, "the output of `go test ./...` (request 1") {
 		t.Fatalf("masked %+v", got)
 	}
-	if again := s.maskStubs(9); len(again) != 1 || again[0].ID != "recent" {
+	if again := s.maskStubs(9, false); len(again) != 1 || again[0].ID != "recent" {
 		t.Fatalf("a second compaction masked %+v, want only the newly old output", again)
 	}
 }
@@ -154,7 +154,7 @@ func TestMaskReadSuperseding(t *testing.T) {
 		s := &Session{}
 		s.track(c.earlier, false)
 		s.track(c.later, false)
-		got := s.maskStubs(2)
+		got := s.maskStubs(2, false)
 		if (len(got) == 1 && got[0].ID == "a") != c.masked {
 			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
 		}
@@ -187,7 +187,7 @@ func TestMaskReadSupersedingVersions(t *testing.T) {
 			s.track(o, false)
 		}
 		s.track(call("b", "read", `{"path":"f.go"}`), c.truncated)
-		got := s.maskStubs(2)
+		got := s.maskStubs(2, false)
 		if (len(got) == 1 && got[0].ID == "a") != c.masked {
 			t.Errorf("%s: masked %+v, want the earlier read masked: %v", name, got, c.masked)
 		}
@@ -203,7 +203,7 @@ func TestMaskEdges(t *testing.T) {
 	}
 	s := &Session{obs: []observation{bash("at-min", 1, maskMinBytes), bash("over-min", 1, maskMinBytes+1), bash("edge", 6, 1000), bash("inside", 7, 1000)}}
 	got := map[string]bool{}
-	for _, m := range s.maskStubs(10) {
+	for _, m := range s.maskStubs(10, false) {
 		got[m.ID] = true
 	}
 	if got["at-min"] || !got["over-min"] || !got["edge"] || got["inside"] {
@@ -213,7 +213,7 @@ func TestMaskEdges(t *testing.T) {
 	r := func(id string) observation {
 		return observe(id, "read", []byte(`{"path":"`+longPath+`"}`), 1, strings.Repeat("z", 350), true)
 	}
-	if s := (&Session{obs: []observation{r("a"), r("b")}}); len(s.maskStubs(2)) != 0 {
+	if s := (&Session{obs: []observation{r("a"), r("b")}}); len(s.maskStubs(2, false)) != 0 {
 		t.Fatal("a stub longer than its 350-byte result was sent")
 	}
 }
@@ -234,7 +234,7 @@ func TestMaskCutKeepsRunes(t *testing.T) {
 // A command over several lines is one line in its stub.
 func TestMaskCommandStubIsOneLine(t *testing.T) {
 	s := &Session{obs: []observation{observe("m", "bash", []byte(`{"command":"cd pkg &&\n  go test ./..."}`), 1, strings.Repeat("o\n", 200), true)}}
-	got := s.maskStubs(9)
+	got := s.maskStubs(9, false)
 	if len(got) != 1 || strings.Contains(got[0].Stub, "\n") || !strings.Contains(got[0].Stub, "`cd pkg && go test ./...`") {
 		t.Fatalf("stubs %+v", got)
 	}
@@ -265,7 +265,7 @@ func TestMaskReadSupersedingLean(t *testing.T) {
 		s := &Session{cfg: Config{ReadLines: 80}}
 		s.track(read("a", earlier), false)
 		s.track(read("b", `{"path":"f.go"}`), false)
-		if got := s.maskStubs(2); (len(got) == 1) != masked {
+		if got := s.maskStubs(2, false); (len(got) == 1) != masked {
 			t.Errorf("%s then a whole read at 80 lines: masked %+v, want %v", earlier, got, masked)
 		}
 	}
@@ -280,8 +280,39 @@ func TestMaskWholeReadThenARange(t *testing.T) {
 		s := &Session{cfg: Config{ReadLines: readLines}}
 		s.track(read("a", `{"path":"f.go"}`), false)
 		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false)
-		if got := s.maskStubs(2); (len(got) == 1 && got[0].ID == "a") != masked {
+		if got := s.maskStubs(2, false); (len(got) == 1 && got[0].ID == "a") != masked {
 			t.Errorf("ReadLines %d: a whole read, then lines 1-100: masked %+v, want %v", readLines, got, masked)
 		}
+	}
+}
+
+// At the cliff (wide), grep and glob output and whole-file reads from before the last maskKeepRequests requests are
+// stubbed, besides what mask_observations stubs; a read of a range, a recent grep, and a short output are not. Not at
+// the cliff, none of them is.
+func TestMaskStubsWideAtTheCliff(t *testing.T) {
+	long := strings.Repeat("y", 600)
+	obs := func() []observation {
+		return []observation{
+			observe("grep", "grep", []byte(`{"pattern":"func   Foo","path":"pkg"}`), 1, long, true),
+			observe("glob", "glob", []byte(`{"pattern":"**/*.go"}`), 1, long, true),
+			observe("whole", "read", []byte(`{"path":"a.go"}`), 2, long, true),
+			observe("range", "read", []byte(`{"path":"b.go","offset":10,"limit":40}`), 2, long, true),
+			observe("short", "grep", []byte(`{"pattern":"x"}`), 1, "a.go:1:x\n", true),
+			observe("recent", "grep", []byte(`{"pattern":"Bar"}`), 6, long, true),
+		}
+	}
+	got := map[string]string{}
+	s := &Session{obs: obs()}
+	for _, m := range s.maskStubs(9, true) {
+		got[m.ID] = m.Stub
+	}
+	if len(got) != 3 || got["range"] != "" || got["short"] != "" || got["recent"] != "" ||
+		!strings.Contains(got["grep"], "the output of grep for `func Foo in pkg` (request 1, 600 bytes). Run it again, narrower") ||
+		!strings.Contains(got["glob"], "the output of glob for `**/*.go`") ||
+		!strings.Contains(got["whole"], "this whole read of a.go (request 2, 600 bytes). Read a range with offset and limit") {
+		t.Fatalf("wide stubs %q", got)
+	}
+	if narrow := (&Session{obs: obs()}).maskStubs(9, false); len(narrow) != 0 {
+		t.Fatalf("not at the cliff, it stubbed %+v", narrow)
 	}
 }

@@ -75,6 +75,10 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
+	// CompactAtCliff compacts once when a result gets FitWindow's nearly-full note, before the next request: besides what
+	// MaskObservations stubs, grep and glob output and whole-file reads from before the last 3 requests become one-line
+	// stubs. It re-arms on a later note once the prompt has grown 10% of the window (mask.go; calibration §16.2).
+	CompactAtCliff bool
 	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
 	// what masking takes such a read to cover. 0 means the default, 200.
 	ReadLines int
@@ -125,6 +129,7 @@ type Session struct {
 	lastPrompt int
 	compacted  bool // a compaction has run
 	maskFloor  int  // the prompt of the first response after the last compaction; 0 until it arrives
+	cliffNote  bool // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
 }
 
 // New returns a session's loop.
@@ -265,7 +270,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		requests++
 		s.requests++
 		n := s.requests
-		if s.cfg.MaskObservations {
+		if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
 			if err := s.compact(n, cause); err != nil {
 				return proto.StopError, err
 			}
@@ -445,7 +450,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
-			if s.cfg.MaskObservations {
+			if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
 				s.track(observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK), fin.Truncated)
 			}
 			if room != nil {

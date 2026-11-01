@@ -203,3 +203,68 @@ func TestFitWindowNoteIsNotAFailure(t *testing.T) {
 		}
 	}
 }
+
+// cliffHarness is fitHarness with 600 bytes of room per response, so the 14 KB bigRead gets the nearly-full note, and
+// small.txt (15 lines, under 1 KB, so it passes whole) for a whole read before it.
+func cliffHarness(t *testing.T, on bool, replies ...goinfertest.Reply) *harness {
+	t.Helper()
+	h := fitHarness(t, fitUsed+100, replies...)
+	var b strings.Builder
+	for i := 1; i <= 15; i++ {
+		fmt.Fprintf(&b, "small %02d of a short file, long enough to count\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "small.txt"), []byte(b.String()), 0o644)
+	h.sess.cfg.CompactAtCliff = on
+	return h
+}
+
+// At the cliff: request 5's read gets the nearly-full note, so before request 6 a compaction stubs the grep (request
+// 1) and the whole read of small.txt (request 2), which are older than the last 3 requests. It does not stub the glob or
+// the range read, which are short or recent. The event's trigger is "cliff", and the log rebuilds the request. Off, or
+// with room enough that no note is given, nothing is compacted.
+func TestCompactAtCliff(t *testing.T) {
+	replies := func() []goinfertest.Reply {
+		return []goinfertest.Reply{
+			goinfertest.Calls("", "g1", "grep", `{"pattern":"line 00"}`),
+			goinfertest.Calls("", "r2", "read", `{"path":"small.txt"}`),
+			goinfertest.Calls("", "l3", "glob", `{"pattern":"*.txt"}`),
+			goinfertest.Calls("", "r4", "read", `{"path":"small.txt","offset":1,"limit":3}`),
+			goinfertest.Calls("", "b5", "read", bigRead),
+			goinfertest.Says("ok"),
+		}
+	}
+	h := cliffHarness(t, true, replies()...)
+	if _, err := h.sess.Turn(context.Background(), "explore"); err != nil {
+		t.Fatal(err)
+	}
+	if f := h.finished("b5"); !strings.HasPrefix(f.Result, "[window nearly full") {
+		t.Fatalf("request 5's read did not get the note: %.80q", f.Result)
+	}
+	var comps []proto.Compaction
+	for _, p := range h.payloads(proto.EvCompaction) {
+		comps = append(comps, p.(proto.Compaction))
+	}
+	ids := func(c proto.Compaction) string {
+		var s []string
+		for _, m := range c.Masked {
+			s = append(s, m.ID)
+		}
+		return strings.Join(s, ",")
+	}
+	if len(comps) != 1 || comps[0].Trigger != "cliff" || comps[0].Request != 6 || ids(comps[0]) != "g1,r2" {
+		t.Fatalf("compactions %+v", comps)
+	}
+	if last := string(h.script.Requests[5]); strings.Contains(last, "line 001 of the big file") || !strings.Contains(last, "this whole read of small.txt (request 2") {
+		t.Fatalf("request 6 still carries the grep output or lacks the stub:\n%.400s", last)
+	}
+	h.checkRebuild(t)
+
+	off := cliffHarness(t, false, replies()...)
+	off.sess.Turn(context.Background(), "explore")
+	roomy := cliffHarness(t, true, replies()...)
+	roomy.script.Window = 100_000
+	roomy.sess.Turn(context.Background(), "explore")
+	if n, m := len(off.payloads(proto.EvCompaction)), len(roomy.payloads(proto.EvCompaction)); n != 0 || m != 0 {
+		t.Fatalf("off: %d compactions; with room and no note: %d; want 0 and 0", n, m)
+	}
+}

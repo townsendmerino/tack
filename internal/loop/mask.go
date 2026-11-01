@@ -54,6 +54,7 @@ func observe(id, tool string, input json.RawMessage, req int, result string, ok 
 		Offset  int    `json:"offset"`
 		Limit   int    `json:"limit"`
 		Command string `json:"command"`
+		Pattern string `json:"pattern"`
 	}
 	_ = json.Unmarshal(input, &in)
 	o.path = strings.TrimPrefix(in.Path, "./")
@@ -65,6 +66,11 @@ func observe(id, tool string, input json.RawMessage, req int, result string, ok 
 		}
 	case "bash":
 		o.key = strings.Join(strings.Fields(in.Command), " ")
+	case "grep", "glob":
+		o.key = strings.Join(strings.Fields(in.Pattern), " ")
+		if o.path != "" && o.path != "." {
+			o.key += " in " + o.path
+		}
 	}
 	return o
 }
@@ -146,30 +152,32 @@ func (o observation) span() string {
 	return fmt.Sprintf(" from line %d, %d lines", o.from, o.n)
 }
 
-// maskStubs is what a compaction before request next would replace, each stub shorter than the result it replaces:
-// each unmasked read that a later read covers (coveredLater), and each unmasked command output from before the last
-// maskKeepRequests requests, over maskMinBytes. It marks them masked.
-func (s *Session) maskStubs(next int) []proto.MaskedResult {
+// maskStubs is what a compaction before request next would replace, each stub shorter than the result it replaces,
+// over maskMinBytes: each unmasked read that a later read covers (coveredLater), and each unmasked command output from
+// before the last maskKeepRequests requests. With wide (a compaction at the cliff, Config.CompactAtCliff), also each
+// grep or glob output and each whole-file read from before the last maskKeepRequests requests. It marks them masked.
+func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 	var out []proto.MaskedResult
+	old := func(o *observation) bool { return o.req <= next-1-maskKeepRequests }
 	for i := range s.obs {
 		o := &s.obs[i]
 		if o.masked || o.bytes <= maskMinBytes {
 			continue
 		}
 		var stub string
-		switch o.tool {
-		case "read":
-			if o.key == "" || !s.coveredLater(i) {
-				continue
-			}
+		switch {
+		case o.tool == "read" && o.key != "" && s.coveredLater(i):
 			stub = fmt.Sprintf("[masked to fit the window: this read of %s%s (request %d, %d bytes) is superseded by a later read of the same file]",
 				o.key, o.span(), o.req, o.bytes)
-		case "bash":
-			if o.req > next-1-maskKeepRequests {
-				continue
-			}
+		case o.tool == "bash" && old(o):
 			stub = fmt.Sprintf("[masked to fit the window: the output of `%s` (request %d, %d bytes; its first line: %s). Run it again if you need it]",
 				cut(o.key, 80), o.req, o.bytes, o.first)
+		case wide && (o.tool == "grep" || o.tool == "glob") && old(o):
+			stub = fmt.Sprintf("[masked to fit the window: the output of %s for `%s` (request %d, %d bytes). Run it again, narrower, if you need it]",
+				o.tool, cut(o.key, 80), o.req, o.bytes)
+		case wide && o.tool == "read" && o.key != "" && o.from == 0 && o.n == 0 && old(o):
+			stub = fmt.Sprintf("[masked to fit the window: this whole read of %s (request %d, %d bytes). Read a range with offset and limit if you need it]",
+				o.key, o.req, o.bytes)
 		default:
 			continue
 		}
@@ -203,23 +211,36 @@ func (s *Session) noteUsage(prompt int) {
 	}
 }
 
-// due says whether a compaction may run before the next request: the last prompt has reached maskShare of window w,
-// and either none has run or the prompt has grown maskRegrowShare of w past the floor since the last.
-func (s *Session) due(w int) bool {
-	if w <= 0 || s.lastPrompt*100 < maskShare*w {
-		return false
-	}
+// regrown says whether another compaction may run in window w: none has run, or the prompt has grown maskRegrowShare
+// of w past the floor since the last.
+func (s *Session) regrown(w int) bool {
 	return !s.compacted || (s.maskFloor > 0 && (s.lastPrompt-s.maskFloor)*100 >= maskRegrowShare*w)
 }
 
-// compact runs a compaction before request next when one is due and something is left to mask: it rewrites those
-// results in the conversation, records a compaction event, and resets the floor.
+// due says whether a compaction may run before the next request for mask_observations: the last prompt has reached
+// maskShare of window w, and it has regrown.
+func (s *Session) due(w int) bool {
+	return w > 0 && s.lastPrompt*100 >= maskShare*w && s.regrown(w)
+}
+
+// compact runs a compaction before request next when one is due and something is left to mask, rewrites those results
+// in the conversation, records a compaction event, and resets the floor. The cliff (Config.CompactAtCliff: a result
+// got fit_window's nearly-full note in the last response) is checked first and widens what is masked; the note is
+// spent whether or not anything was masked. Then mask_observations' 75% trigger (Config.MaskObservations).
 func (s *Session) compact(next int, cause int64) error {
 	w := s.cfg.Source.Window()
-	if !s.due(w) {
+	trigger := ""
+	switch {
+	case s.cfg.CompactAtCliff && s.cliffNote && s.regrown(w):
+		trigger = "cliff"
+	case s.cfg.MaskObservations && s.due(w):
+		trigger = "window"
+	}
+	s.cliffNote = false
+	if trigger == "" {
 		return nil
 	}
-	masked := s.maskStubs(next)
+	masked := s.maskStubs(next, trigger == "cliff")
 	if len(masked) == 0 {
 		return nil
 	}
@@ -234,7 +255,7 @@ func (s *Session) compact(next int, cause int64) error {
 		s.conv.ReplaceResult(m.ID, m.Stub)
 	}
 	s.compacted, s.maskFloor = true, 0
-	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: "window", Prompt: s.lastPrompt, Window: w,
+	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt, Window: w,
 		Masked: masked, Before: before, After: after})
 	return err
 }

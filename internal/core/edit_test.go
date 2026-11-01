@@ -476,3 +476,47 @@ func TestLeanReadLinesThroughTheCore(t *testing.T) {
 		}
 	}
 }
+
+// CompactAtCliff reaches the loop through the core: with FitWindow and a window too small for a 14 KB read, the read
+// gets the nearly-full note, and the grep from 3 requests before is compacted, once, with trigger "cliff". Without the
+// setting nothing is.
+func TestCompactAtCliffThroughTheCore(t *testing.T) {
+	var big strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&big, "line %03d of the big file, long enough to count\n", i)
+	}
+	for on, want := range map[bool]int{true: 1, false: 0} {
+		script := goinfertest.NewScripted("m", 130,
+			goinfertest.Calls("", "g1", "grep", `{"pattern":"line 00"}`),
+			goinfertest.Calls("", "l2", "glob", `{"pattern":"*.txt"}`),
+			goinfertest.Calls("", "r3", "read", `{"path":"big.txt","offset":1,"limit":2}`),
+			goinfertest.Calls("", "b4", "read", `{"path":"big.txt","offset":1,"limit":300}`), goinfertest.Says("ok"))
+		f := newFixtureOn(t, script)
+		f.script = script
+		f.core.opt.FitWindow, f.core.opt.CompactAtCliff = true, on
+		f.core.opt.Budget.MaxRequests, f.core.opt.Budget.MaxToolCalls = 8, 8
+		ws := gitWorkspace(t, "")
+		os.WriteFile(filepath.Join(ws, "big.txt"), []byte(big.String()), 0o644)
+		sid, err := f.sessionIn(t, ws, proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("x")}}, nil)
+		got, note := 0, false
+		for _, ev := range f.waitTurnEnd(t) {
+			v, _ := ev.Decode()
+			switch p := v.(type) {
+			case proto.Compaction:
+				if p.Trigger == "cliff" && len(p.Masked) == 1 && p.Masked[0].ID == "g1" {
+					got++
+				}
+			case proto.ToolFinished:
+				note = note || strings.HasPrefix(p.Result, "[window nearly full")
+			}
+		}
+		if !note || got != want {
+			t.Errorf("CompactAtCliff %v: the note given %v, %d cliff compactions of the grep, want %d", on, note, got, want)
+		}
+	}
+}

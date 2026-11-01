@@ -830,6 +830,10 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   change files (bash, or any tool not known to only read), between the two. Each result is rewritten at most once.
 - **The record:** a `compaction` event lists every stub, so `loop.Rebuild` replays it.
 - **The cost:** one re-prefill from the first rewritten message, each time it runs.
+- **A second trigger: the cliff** (`[run] compact_at_cliff`, off by default; calibration §16.2). When a result gets
+  `fit_window`'s "window nearly full" note, a compaction runs before the next request. Besides the above, it stubs grep
+  and glob output and whole-file reads from before the last 3 requests. Its event's trigger is `cliff`, and it re-arms
+  on a later note once the prompt has grown 10% of the window.
 - **Not yet built:** the summarizing and re-retrieval steps above.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past
