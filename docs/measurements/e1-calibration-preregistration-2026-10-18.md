@@ -2492,9 +2492,39 @@ Francis's yes, and their arms lines are fixed before any run.
     - Otherwise §16.2 runs against the bundle alone.
     - §16.2's screen is not queued until this read.
 
-### 16.2 Compact at the cliff — registered only if §16.1 is not shown
+### 16.2 Compact at the cliff (`compact_at_cliff`), decided by passes — registered 2026-11-01, before it is built
 
-- **What, in outline:** when `fit_window` would give its nearly-full note, compact first, once, by stubbing the
-  oldest grep and glob output and the whole reads already read past. This extends `mask.go`'s scope and gives it
-  this trigger.
-- Its arms line, rule and predictions are registered before it is built, after §16.1's read.
+Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 while §16.1's continuation runs.
+- **The base:**
+  - If §16.1's combined read shows `lean_results`, it is adopted, and both arms here carry it (§12.1).
+  - Otherwise both arms are the bundle alone.
+  - The screen is not queued until that read.
+- **What:** a `[run]` setting, off by default. It makes the loop compact once at the cliff:
+  - **The trigger:** when a response's tool result gets `fit_window`'s "window nearly full" note, a compaction runs
+    before the next request.
+  - **What it stubs:** each result over 300 bytes from before the last 3 requests that is:
+    - a `grep` or `glob` output; or
+    - a whole-file read, one with no range (already read, and readable again by range);
+    - or what `mask_observations` already stubs: a read covered by a later whole read of the same file version, and
+      old command output.
+  - Each stub is a one-line note saying what was there and how to get it back (a narrower grep, a read by range).
+  - **One-shot:** after a compaction, the next one waits for another nearly-full note, and for the prompt to have
+    grown by 10% of the window past the first prompt after the last one, as in `mask_observations`.
+  - **Recorded:** each compaction is a `compaction` event that names every stub, with the trigger `cliff`, so a
+    replay of the log rebuilds the request.
+- **The arms:** the 35B as in §16.1's arms line. A is the base; B is A plus `compact_at_cliff`. The tack build is
+  named in an arms line, with the setting merged, before the first run.
+- **Size and order:** the 12 tasks, A B B A A B per task, 72 runs, each after the cell check.
+- **The decision rule:** sd 2.0 as for §16.1. d ≥ +4 is adopted, +2 to +3 parked, +1 or less not shown, with A
+  winning ties.
+- **The mechanism metric, reported and never used for adoption:**
+  - compactions per B run, and the bytes they freed;
+  - `repeat_loop` stops, and loops answered with the nearly-full note;
+  - the calls made after the first note;
+  - window-full stops.
+- **Predictions (tack's session, before it is built):**
+  - B's repeat-loop stops fall by half or more against A's. In §16.1 all 22 loops were the model asking again at the
+    note.
+  - d between 0 and +5.
+  - Compactions in most of the B runs that reach the note (about 21–26 of 36 in §16.1).
+- **Stopping and void:** as §16.1. It runs when both locks are free, overnight if needed (about 4–5 hours).
