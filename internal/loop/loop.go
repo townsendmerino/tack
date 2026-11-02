@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,6 +76,18 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
+	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
+	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
+	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
+	//     3 requests become one-line stubs;
+	//   - when StopRepeats would end the turn on a call answered with that note, it compacts the same way and goes on,
+	//     at most stuckMax times a turn.
+	CompactAtCliff bool
+	// WidenRepeats is progressive widening: a whole read or grep whose base-cap result was shown, and is asked for
+	// again unchanged, is shown with 3 times its cap, then none (tools.WithWiden; shownChain). A result replaced by the
+	// nearly-full note, or cut, was not shown whole and freezes the chain. Repeats are counted on what was shown. It is
+	// separate from CompactAtCliff and not yet screened (calibration §16.2, Francis 2026-11-01 18:00).
+	WidenRepeats bool
 	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
 	// what masking takes such a read to cover. 0 means the default, 200.
 	ReadLines int
@@ -123,8 +136,12 @@ type Session struct {
 	obs        []observation
 	vers       fileVersions
 	lastPrompt int
-	compacted  bool // a compaction has run
-	maskFloor  int  // the prompt of the first response after the last compaction; 0 until it arrives
+	compacted  bool       // a compaction has run
+	maskFloor  int        // the prompt of the first response after the last compaction; 0 until it arrives
+	cliffNote  bool       // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
+	cliffDone  bool       // a cliff compaction masked something this turn
+	stuckDone  int        // stuck compactions this turn (stuckMax)
+	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
 }
 
 // New returns a session's loop.
@@ -242,12 +259,16 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.conv.Model = s.cfg.Source.Model()
 
 	requests, calls, tokens, errorsInARow := 0, 0, 0, 0
-	doneRefused, finished := false, false // an edit task's done (Config.EditTask)
-	lastFailed := "\x00"                  // the last call's key when it failed (callKey); no call has that key
-	resent := 0                           // resends of this request after a refusal for no tool call (NoToolCallNudge)
-	var room *int                         // bytes this response's results may still take (Config.FitWindow); nil: no window cap
-	var repeats RepeatGuard               // the turn's unchanged repeats (Config.StopRepeats)
-	var verify verifyState                // the turn's changes and verifications (Config.VerifyDone)
+	doneRefused, finished := false, false                   // an edit task's done (Config.EditTask)
+	lastFailed := "\x00"                                    // the last call's key when it failed (callKey); no call has that key
+	resent := 0                                             // resends of this request after a refusal for no tool call (NoToolCallNudge)
+	var room *int                                           // bytes this response's results may still take (Config.FitWindow); nil: no window cap
+	var repeats RepeatGuard                                 // the turn's unchanged repeats (Config.StopRepeats)
+	var stopKeys []string                                   // this response's calls that reached RepeatLimit answered with the nearly-full note
+	stopAway := false                                       // a call of this response reached RepeatLimit away from the cliff
+	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
+	s.shown = shownChain{}                                  // and its widening
+	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
 	repeatLoop := false
 	for {
 		switch el := s.cfg.Now().Sub(start); {
@@ -265,7 +286,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		requests++
 		s.requests++
 		n := s.requests
-		if s.cfg.MaskObservations {
+		if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
 			if err := s.compact(n, cause); err != nil {
 				return proto.StopError, err
 			}
@@ -355,6 +376,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			var fin proto.ToolFinished
 			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
+			level := 0           // the call's widening (tools.WithWiden), 0 for none
 			key := callKey(b)
 			switch {
 			case resp.Malformed[b.ID] != "":
@@ -412,8 +434,45 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				if fin, full, ran, err = s.runTool(shell.WithApproval(ctx, by), b, callEv.Seq, room); err != nil {
+				// Progressive widening (Config.WidenRepeats; mask.go, shownChain): a whole read or a grep whose result
+				// at the base cap was shown, and is asked for again, runs once at a wider cap; the tool also returns its
+				// base-cap view (Base). If that differs from what was last shown, the output changed, and the base view
+				// is shown instead.
+				var pick func(*tools.Result)
+				widenable := s.cfg.WidenRepeats && tools.Widenable(b.Name, b.Input)
+				if widenable {
+					if level = s.shown.level(key); level > 0 {
+						pick = func(r *tools.Result) {
+							base := r.Base
+							if base == "" { // nothing to widen: no matches, an emptied file, an error
+								base = r.Text
+							}
+							if !s.shown.same(key, base) { // the output changed: show it at the base cap
+								if r.Base != "" {
+									r.Text = r.Base
+								}
+								level = 0
+							}
+						}
+					}
+				}
+				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
+				}
+				if widenable {
+					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
+					// freezes the chain, and the widened lines are not recorded as shown.
+					base := ran.Text
+					if ran.Base != "" {
+						base = ran.Base
+					}
+					s.shown.record(key, base, level, !fin.Truncated)
+					if fin.Truncated {
+						level = 0 // for coverage: a widened result not shown whole covers no more than the base
+					}
+					if level > 0 && ran.ShowWide != nil {
+						ran.ShowWide() // the widened lines were shown: the workspace records them
+					}
 				}
 				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
@@ -429,6 +488,13 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			if s.cfg.StopRepeats || s.cfg.ResultNotes {
 				n, stop := repeats.Observe(key, RepeatResult(fin.Result, ran.State))
 				repeatLoop = repeatLoop || (s.cfg.StopRepeats && stop)
+				if s.cfg.StopRepeats && stop {
+					if strings.HasPrefix(fin.Result, nearlyFullOpen) {
+						stopKeys = append(stopKeys, key)
+					} else {
+						stopAway = true
+					}
+				}
 				if s.cfg.ResultNotes {
 					fin.Result += resultNotes(b.Name, ran.Empty, n, s.cfg.StopRepeats)
 				}
@@ -445,8 +511,10 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return proto.StopError, err
 			}
 			results = append(results, server.ToolResult{ID: fin.ID, Result: fin.Result, IsError: fin.Outcome != proto.OutcomeOK})
-			if s.cfg.MaskObservations {
-				s.track(observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK), fin.Truncated)
+			if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
+				o := observe(fin.ID, b.Name, b.Input, n, fin.Result, fin.Outcome == proto.OutcomeOK)
+				o.callKey = key // a compaction that stubs it clears its widening chain
+				s.track(o, fin.Truncated, level)
 			}
 			if room != nil {
 				*room = max(0, *room-len(fin.Result))
@@ -469,6 +537,36 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)
 		}
+		// React when stuck (Config.CompactAtCliff): a repeat loop answered with the nearly-full note compacts and the turn
+		// goes on. Every call of the response that reached the limit must be at the cliff; one away from it ends the
+		// turn as before. The turn's first cliff compaction goes first, if it has not run; otherwise a stuck one, at
+		// most stuckMax a turn. With neither, or nothing left to stub, the turn ends as before.
+		if repeatLoop && s.cfg.CompactAtCliff && !stopAway && len(stopKeys) > 0 {
+			m := 0
+			if s.cliffNote && !s.cliffDone {
+				var err error
+				if m, err = s.compactNow(s.requests+1, cause, "cliff"); err != nil {
+					return proto.StopError, err
+				}
+				s.cliffNote, s.cliffDone = false, m > 0
+			}
+			if m == 0 && s.stuckDone < stuckMax {
+				var err error
+				if m, err = s.compactNow(s.requests+1, cause, "stuck"); err != nil {
+					return proto.StopError, err
+				}
+				if m > 0 {
+					s.stuckDone++
+				}
+			}
+			if m > 0 {
+				for _, k := range stopKeys {
+					repeats.Reset(k)
+				}
+				repeatLoop = false
+			}
+		}
+		stopKeys, stopAway = nil, false
 		if repeatLoop {
 			return end(proto.StopRepeatLoop)
 		}
@@ -565,7 +663,7 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 // and full holds the bytes; the caller stores them before recording the payload (ADR-004). room, when not nil, is the
 // bytes the window has left for this response's results (Config.FitWindow). r is what the tool returned, redacted, for its
 // Empty and State.
-func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int) (fin proto.ToolFinished, full []byte, r tools.Result, err error) {
+func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int, pick func(*tools.Result)) (fin proto.ToolFinished, full []byte, r tools.Result, err error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
 	if !ok { // checked by the client already; kept so a server that skipped the check cannot reach a nil tool
 		return proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: "error: no tool named " + b.Name}, nil, tools.Result{}, nil
@@ -580,6 +678,18 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	// Redaction comes first, so neither the model, the log nor the blob store ever holds a credential it caught.
 	var kinds []string
 	r.Text, kinds = perms.Redact(r.Text)
+	if r.Base != "" {
+		var bk []string
+		r.Base, bk = perms.Redact(r.Base)
+		for _, k := range bk {
+			if !slices.Contains(kinds, k) {
+				kinds = append(kinds, k)
+			}
+		}
+	}
+	if pick != nil { // chooses, on redacted text, what is shown (Config.CompactAtCliff's widening)
+		pick(&r)
+	}
 	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError

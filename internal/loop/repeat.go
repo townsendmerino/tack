@@ -49,3 +49,9 @@ func RepeatResult(result, state string) string {
 	}
 	return result + "\x00" + state
 }
+
+// Reset forgets key, so its next call starts a count again (Config.CompactAtCliff's stuck reaction).
+func (g *RepeatGuard) Reset(key string) {
+	delete(g.last, key)
+	delete(g.count, key)
+}

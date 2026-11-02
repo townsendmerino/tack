@@ -286,3 +286,107 @@ func TestZeroValuedToolsUseTheDefaults(t *testing.T) {
 		t.Errorf("a zero grepTool gave %d matches", n)
 	}
 }
+
+// WithWiden: level 1 shows 3 times a whole read's and a grep's cap, level 2 no cap; an explicit range is never
+// widened; Widenable names the calls it applies to.
+func TestWithWiden(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 1; i <= 700; i++ {
+		fmt.Fprintf(&b, "match %d\n", i)
+	}
+	os.WriteFile(filepath.Join(root, "big.txt"), []byte(b.String()), 0o644)
+	ws, _ := NewWorkspace(root)
+	set := New(Options{LeanResults: true})
+	call := func(level int, name, input string) string {
+		tool, _ := set.Get(name)
+		r, err := tool.Run(WithWiden(context.Background(), level), ws, json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Text
+	}
+	for level, want := range map[int][3]int{0: {80, 30, 50}, 1: {240, 90, 50}, 2: {700, 700, 50}} {
+		got := [3]int{strings.Count(call(level, "read", `{"path":"big.txt"}`), "\tmatch "),
+			strings.Count(call(level, "grep", `{"pattern":"match"}`), "big.txt:"),
+			strings.Count(call(level, "read", `{"path":"big.txt","offset":1,"limit":50}`), "\tmatch ")}
+		if got != want {
+			t.Errorf("level %d: read, grep, range %v, want %v", level, got, want)
+		}
+	}
+	for in, want := range map[string]bool{`{"path":"a"}`: true, `{"path":"a","offset":3}`: false, `{"path":"a","limit":9}`: false} {
+		if Widenable("read", []byte(in)) != want {
+			t.Errorf("Widenable(read, %s) != %v", in, want)
+		}
+	}
+	if !Widenable("grep", []byte(`{"pattern":"x"}`)) || Widenable("glob", []byte(`{"pattern":"x"}`)) {
+		t.Error("Widenable: grep yes, glob no")
+	}
+}
+
+// Off, grep scans and shows exactly as it always has: a new file is not opened once 100 matches are in, and the
+// "stopped" note appears only when the 101st match is in the file of the 100th. A widened run's base view (Result.Base)
+// is the same text.
+func TestGrepStopsAsBeforeAndTheBaseViewMatches(t *testing.T) {
+	lines := func(prefix string, n int) string {
+		var b strings.Builder
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "match %s %d\n", prefix, i)
+		}
+		return b.String()
+	}
+	for name, c := range map[string]struct {
+		a, b         int
+		bShown, note bool
+	}{
+		"100 in a, more in b": {100, 5, false, false},
+		"103 in a":            {103, 0, false, true},
+		"50 in a, 60 in b":    {50, 60, true, true},
+	} {
+		root := t.TempDir()
+		os.WriteFile(filepath.Join(root, "a.txt"), []byte(lines("a", c.a)), 0o644)
+		if c.b > 0 {
+			os.WriteFile(filepath.Join(root, "b.txt"), []byte(lines("b", c.b)), 0o644)
+		}
+		ws, _ := NewWorkspace(root)
+		tool, _ := New(Options{}).Get("grep")
+		off, _ := tool.Run(context.Background(), ws, json.RawMessage(`{"pattern":"match"}`))
+		if n := strings.Count(off.Text, ".txt:"); n != 100 {
+			t.Errorf("%s: %d matches shown, want 100", name, n)
+		}
+		if strings.Contains(off.Text, "b.txt:") != c.bShown || strings.Contains(off.Text, "stopped at 100 matches") != c.note {
+			t.Errorf("%s: b.txt shown %v, note %v; want %v, %v", name, strings.Contains(off.Text, "b.txt:"), strings.Contains(off.Text, "stopped at"), c.bShown, c.note)
+		}
+		wide, _ := tool.Run(WithWiden(context.Background(), 2), ws, json.RawMessage(`{"pattern":"match"}`))
+		if wide.Base != off.Text || off.Base != "" {
+			t.Errorf("%s: the widened run's base view differs from the off run's output", name)
+		}
+	}
+}
+
+// A widened read records only its base-cap lines as shown; ShowWide records the rest, when the loop keeps the widened
+// view.
+func TestWidenedReadRecordsShownLinesOnShowWide(t *testing.T) {
+	root := t.TempDir()
+	var b strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&b, "l %d\n", i)
+	}
+	p := filepath.Join(root, "f.txt")
+	os.WriteFile(p, []byte(b.String()), 0o644)
+	ws, _ := NewWorkspace(root)
+	tool, _ := New(Options{LeanResults: true}).Get("read")
+	r, err := tool.Run(WithWiden(context.Background(), 1), ws, json.RawMessage(`{"path":"f.txt"}`))
+	if err != nil || r.ShowWide == nil || r.Base == "" {
+		t.Fatalf("a widened read: err %v, ShowWide set %v, Base set %v", err, r.ShowWide != nil, r.Base != "")
+	}
+	real, _ := filepath.EvalSymlinks(p)
+	shown := func() [][2]int { s, _ := ws.lastShown(real); return s.ranges }
+	if got := shown(); fmt.Sprint(got) != "[[1 80]]" {
+		t.Fatalf("before ShowWide: shown %v, want [[1 80]]", got)
+	}
+	r.ShowWide()
+	if got := shown(); fmt.Sprint(got) != "[[1 80] [1 240]]" {
+		t.Fatalf("after ShowWide: shown %v, want [[1 80] [1 240]]", got)
+	}
+}

@@ -159,6 +159,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		CurrentSymbol:        cfg.Run.CurrentSymbol,
 		EditTolerances:       cfg.Run.EditTolerances,
 		LeanResults:          cfg.Run.LeanResults,
+		CompactAtCliff:       cfg.Run.CompactAtCliff,
+		WidenRepeats:         cfg.Run.WidenRepeats,
 		InjectContext:        cfg.Run.InjectContext,
 		RepoMap:              cfg.Run.RepoMap,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,

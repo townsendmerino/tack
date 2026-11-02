@@ -12,6 +12,8 @@ import (
 const (
 	// fitMarginTokens is kept free beyond the next reply's max_tokens.
 	fitMarginTokens = 512
+	// nearlyFullOpen opens the note a result becomes when the window is nearly full: the cliff (Config.CompactAtCliff).
+	nearlyFullOpen = "[window nearly full"
 	// fitMinBytes is the least room a cut is worth: with less, a result longer than this becomes the nearly-full note.
 	fitMinBytes = 1 << 10
 	// fitDefaultRate is the bytes per token before a response has reported its prompt.
@@ -61,8 +63,9 @@ func (s *Session) fit(fin proto.ToolFinished, text string, room int) (proto.Tool
 		if s.cfg.EditTask {
 			finish = "make your last edit and call done."
 		}
-		fin.Result = fmt.Sprintf("[window nearly full: this output (%d bytes, %d lines) is not shown. Finish up: %s]",
+		fin.Result = fmt.Sprintf(nearlyFullOpen+": this output (%d bytes, %d lines) is not shown. Finish up: %s]",
 			len(text), lineCount(text), finish)
+		s.cliffNote = true // the cliff: Config.CompactAtCliff compacts before the next request
 		return fin, full, nil
 	}
 	head, tail := limit*3/4, limit/4

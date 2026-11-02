@@ -47,6 +47,12 @@ type Result struct {
 	// Note is set by edit with Options.CurrentSymbol: a note the loop appends to Text after the repeat rule has compared
 	// the result, so the rule sees what the tool said (loop.StripNotes removes it again).
 	Note string
+	// Base is set by a read or grep run with WithWiden: the same call's output at its base cap, from the same pass, so
+	// the loop steps widening on it, or shows it instead when the output changed (loop.Config.CompactAtCliff).
+	Base string
+	// ShowWide is set with Base by a widened read: the loop calls it when it shows the widened view, so the workspace
+	// records those lines as shown (it records the base view's lines itself).
+	ShowWide func()
 }
 
 func errorf(format string, args ...any) Result {
@@ -354,4 +360,43 @@ func (o Options) WholeReadLines() int {
 		return readLeanLines
 	}
 	return readMaxLines
+}
+
+type widenKey struct{}
+
+// WithWiden asks the read and grep run with ctx for a wider result than their cap (loop.Config.CompactAtCliff's
+// progressive widening, calibration §16.2): level 1 is 3 times the cap, 2 or more is no cap. A read with a range is
+// never widened.
+func WithWiden(ctx context.Context, level int) context.Context {
+	if level <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, widenKey{}, level)
+}
+
+// widened is the cap base becomes under ctx's widening: base, 3 times base, or 0 for none.
+func widened(ctx context.Context, base int) int {
+	switch level, _ := ctx.Value(widenKey{}).(int); {
+	case level <= 0:
+		return base
+	case level == 1:
+		return 3 * base
+	}
+	return 0
+}
+
+// Widenable says whether a call to tool name with input is one progressive widening applies to: a read with no range,
+// or a grep.
+func Widenable(name string, input []byte) bool {
+	switch name {
+	case "grep":
+		return true
+	case "read":
+		var in struct {
+			Offset int `json:"offset"`
+			Limit  int `json:"limit"`
+		}
+		return json.Unmarshal(input, &in) == nil && in.Offset <= 0 && in.Limit <= 0
+	}
+	return false
 }

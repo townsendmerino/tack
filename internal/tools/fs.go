@@ -39,7 +39,7 @@ func (t readTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"relative to the repo root"},"offset":{"type":"integer","description":"first line, from 1"},"limit":{"type":"integer"}},"required":["path"]}`)}
 }
 
-func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
+func (t readTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -67,32 +67,49 @@ func (t readTool) Run(_ context.Context, ws *Workspace, input json.RawMessage) (
 	if len(data) == 0 {
 		lines = nil
 	}
-	start, n := 1, len(lines)
+	start := 1
 	explicit := in.Offset > 0 || in.Limit > 0
 	if in.Offset > 0 {
 		start = in.Offset
 	}
-	if in.Limit > 0 {
-		n = in.Limit
-	} else if !explicit && len(lines) > t.max() {
-		n = t.max()
-	}
 	if start > len(lines) && len(lines) > 0 {
 		return errorf("%s has %d lines; offset %d is past the end", in.Path, len(lines), start), nil
 	}
-	end := min(start-1+n, len(lines))
-	ws.showed(p, string(data), start, end)
-	var b strings.Builder
-	for i := start - 1; i < end; i++ {
-		fmt.Fprintf(&b, "%6d\t%s\n", i+1, cut(lines[i]))
-	}
-	if !explicit && len(lines) > t.max() {
-		fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), t.max())
-		if t.symbols {
-			fmt.Fprintf(&b, "symbol with path %q lists its functions and types with their lines.\n", in.Path)
+	// render is the read cut at limit lines (0: no cut), with the hint when it is cut.
+	render := func(limit int) (string, int) {
+		n := len(lines)
+		short := !explicit && limit > 0 && len(lines) > limit
+		if in.Limit > 0 {
+			n = in.Limit
+		} else if short {
+			n = limit
 		}
+		end := min(start-1+n, len(lines))
+		var b strings.Builder
+		for i := start - 1; i < end; i++ {
+			fmt.Fprintf(&b, "%6d\t%s\n", i+1, cut(lines[i]))
+		}
+		if short {
+			fmt.Fprintf(&b, "… %s has %d lines; showing 1-%d. Read more with offset and limit.\n", in.Path, len(lines), limit)
+			if t.symbols {
+				fmt.Fprintf(&b, "symbol with path %q lists its functions and types with their lines.\n", in.Path)
+			}
+		}
+		return b.String(), end
 	}
-	return Result{Text: b.String()}, nil
+	text, end := render(widened(ctx, t.max())) // the cap, or a wider one (WithWiden)
+	r := Result{Text: text}
+	if !explicit && widened(ctx, t.max()) != t.max() {
+		// Widened: the base-cap view comes from the same pass. Only its lines are sure to be shown; the loop calls
+		// ShowWide if it keeps the widened view.
+		var baseEnd int
+		r.Base, baseEnd = render(t.max())
+		ws.showed(p, string(data), start, baseEnd)
+		r.ShowWide = func() { ws.showed(p, string(data), start, end) }
+	} else {
+		ws.showed(p, string(data), start, end)
+	}
+	return r, nil
 }
 
 type globTool struct{}
@@ -172,10 +189,14 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if err != nil {
 		return ws.pathError(in.Path, err), nil
 	}
-	var b strings.Builder
-	matches := 0
+	// hits are the matching lines, collected as a run with limit would collect them: a new file is not opened once limit
+	// lines are in, and a file stops at the line past it, which shows only as the "stopped" note. A run widened past
+	// the base cap derives its base-cap view from the same hits, by the same rule.
+	type hit struct{ rel, line string }
+	var hits []hit
+	limit := widened(ctx, t.limit()) // 0: no limit (WithWiden)
 	search := func(rel string) {
-		if matches >= t.limit() || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
+		if (limit > 0 && len(hits) >= limit) || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
 			return
 		}
 		p := filepath.Join(ws.root, rel)
@@ -190,11 +211,10 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		sc.Buffer(make([]byte, 1<<16), maxFileBytes)
 		for n := 1; sc.Scan(); n++ {
 			if re.Match(sc.Bytes()) {
-				matches++
-				if matches > t.limit() {
+				hits = append(hits, hit{rel, fmt.Sprintf("%s:%d:%s\n", rel, n, cut(sc.Text()))})
+				if limit > 0 && len(hits) > limit {
 					return
 				}
-				fmt.Fprintf(&b, "%s:%d:%s\n", rel, n, cut(sc.Text()))
 			}
 		}
 	}
@@ -203,13 +223,29 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	} else if err := walk(ctx, ws, start, search); err != nil {
 		return Result{}, err
 	}
-	if matches == 0 {
+	if len(hits) == 0 {
 		return Result{Text: "no matches for " + in.Pattern, Empty: true}, nil
 	}
-	if matches > t.limit() {
-		b.WriteString(fmt.Sprintf("… stopped at %d matches; narrow the pattern or the path\n", t.limit()))
+	// render is what a run with max (0: none) shows: its first max lines, and the "stopped" note when that run would
+	// have found the line past them, in the same file as the last one shown.
+	render := func(max int) string {
+		var b strings.Builder
+		for i, h := range hits {
+			if max > 0 && i == max {
+				if h.rel == hits[i-1].rel {
+					fmt.Fprintf(&b, "… stopped at %d matches; narrow the pattern or the path\n", max)
+				}
+				break
+			}
+			b.WriteString(h.line)
+		}
+		return b.String()
 	}
-	return Result{Text: b.String()}, nil
+	r := Result{Text: render(limit)}
+	if limit != t.limit() {
+		r.Base = render(t.limit()) // the same grep at its base cap, from the same pass
+	}
+	return r, nil
 }
 
 // walk calls fn with the workspace-relative path of every regular file under dir, in lexical order, skipping
