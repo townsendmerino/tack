@@ -2491,6 +2491,9 @@ Francis's yes, and their arms lines are fixed before any run.
     - If `lean_results` is shown on the combined runs, it is adopted, and §16.2 runs with it in both arms (§12.1).
     - Otherwise §16.2 runs against the bundle alone.
     - §16.2's screen is not queued until this read.
+  - **Outcome (read 2026-11-02; record `e1-calibration-c10-lean-2026-11-01.md`): over all 144 runs, A 25 of 72, B 29 of
+    72, d = +4, against edges of 2.83 and 5.66. Parked: `lean_results` is not adopted, and §16.2 runs against the
+    bundle alone.**
 
 ### 16.2 Compact at the cliff (`compact_at_cliff`), decided by passes — registered 2026-11-01, before it is built
 
@@ -2683,3 +2686,19 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
       the third is new:
       - (5) a frozen chain never steps down when its frozen level is cut too, so it can stay stuck at 3 times.
     - These do not touch §16.2's arms, which run without widening.
+- **§16.2's arms line (2026-11-02, tack's session, after §16.1's combined read and before any run of this screen):**
+  - **The base:** §16.1's 144 runs read parked, so `lean_results` is not adopted. Both arms are the bundle alone.
+  - **The arms:** the 35B as in §16.1's arms line (Qwen3.6-35B-A3B `q4_k_m` on nobara at 16,384, `-moe-cache-experts`,
+    goinfer `00584c35`, sampling 0.7 / 0.8 / 20, a 30-minute cap). A is the bundle (`fit_window`, `stop_repeats`,
+    `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`). B is A plus
+    `compact_at_cliff`: the cliff compaction and the stuck reaction. `widen_repeats` is off in both.
+  - **The build:** tack `38541a9` (#45's merge; main since then is docs only), built for both machines from a clean
+    clone at that commit (`~/tack-runs/src/tack-38541a9`).
+  - **The launcher:** `~/tack-runs/e1/c10-cliff-2026-11-02/launch.sh 162`, a job on the Mac's night.py.
+    - On the first block it checks that `compact_at_cliff` is in B's configs and not A's, that `lean_results`,
+      `widen_repeats` and `mask_observations` are in none, and that every config has `~/models`.
+    - It stops on a task without all six slots counted, or on a block that fails.
+  - **The read:** `calreport -rule sd=2.0,n=36` over its 72 records, after the void, oracle-error and `left_repo` checks.
+    d ≥ +4 is adopted, +2 to +3 parked, +1 or less not shown, with A winning ties.
+  - **The mechanism metric and predictions** are as in the amendments above (the ninth restates the predictions).
+  - **Time:** about 4 to 5 hours (§16.1's first half took 4 h 16 min, warm-up included).
