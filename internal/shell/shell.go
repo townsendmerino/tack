@@ -200,6 +200,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	}
 	s.state = rep.State
 	s.Engine.SessionEnv = maps.Clone(rep.State.Env) // approval sees what later commands inherit
+	s.Engine.SessionDir = rep.State.Dir             // and where they start
 	res.Exit, res.Stopped = rep.Exit, rep.Stopped
 	if out.dropped > 0 {
 		res.Output += fmt.Sprintf("\n[… %d more bytes of output were not kept …]\n", out.dropped)
@@ -373,12 +374,11 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			expanded.Literal[i] = true // expanded already: these are the real arguments
 		}
 		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
-		if filepath.Base(path) == "git" {
-			for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
-				if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
-					if r := perms.HooksOff(name, v); r != "" {
-						why = append(why, r)
-					}
+		// Whatever the program, since it may be the one that runs git: env, or a shell.
+		for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
+			if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
+				if r := perms.HooksOff(name, v); r != "" {
+					why = append(why, r)
 				}
 			}
 		}

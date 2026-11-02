@@ -139,38 +139,33 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 				"run, which no rule covers", name, v))
 		}
 	}
-	syntax.Walk(f, func(n syntax.Node) bool {
+	walkDirs(f, e.startDir(), func(n syntax.Node, dir string) {
 		switch n := n.(type) {
 		case *syntax.Assign:
 			why = append(why, assignment(n)...)
-			always = appendNew(always, assignAsks(n)...)
-		case *syntax.BinaryCmd:
-			always = appendNew(always, e.pipedAsks(n, e.Root, 0)...)
 		case *syntax.WordIter:
 			if n.Name != nil && ChangesPrograms(n.Name.Value) {
 				why = append(why, setsVariable(n.Name.Value))
 			}
 		case *syntax.CallExpr:
 			if len(n.Args) == 0 { // assignments only
-				return true
+				return
 			}
-			s, reasons := e.simple(n.Args)
+			s, reasons := e.simple(n.Args, dir)
 			if s != nil {
 				cmds = append(cmds, *s)
-				always = appendNew(always, e.AlwaysAsks(*s, e.Root)...)
 			}
 			why = append(why, reasons...)
 		case *syntax.Redirect:
 			why = append(why, e.redirect(n)...)
-			always = appendNew(always, e.redirectAsks(n)...)
 		}
-		return true
 	})
-	return cmds, why, always
+	return cmds, why, e.scanAsks(f, scan{dir: e.startDir()})
 }
 
-// simple resolves one simple command's program, looking through wrappers, and checks it against the rules.
-func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
+// simple resolves one simple command's program from dir, where it runs, looking through wrappers, and checks it against
+// the rules.
+func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 	for len(words) > 0 {
 		name, ok := literal(words[0])
 		if !ok {
@@ -194,7 +189,7 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 			}
 			continue
 		}
-		prog, err := e.resolve(name)
+		prog, err := e.resolveFrom(name, dir)
 		if err != nil {
 			return nil, []string{err.Error()}
 		}
@@ -266,22 +261,6 @@ func (e *Engine) redirect(r *syntax.Redirect) []string {
 	return nil
 }
 
-// redirectAsks is PathAsks for an output redirection whose target is fixed; the run-time check sees the others.
-func (e *Engine) redirectAsks(r *syntax.Redirect) []string {
-	switch r.Op {
-	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll:
-	default:
-		return nil
-	}
-	if r.Word == nil {
-		return nil
-	}
-	if target, ok := literal(r.Word); ok {
-		return e.PathAsks(target)
-	}
-	return nil
-}
-
 // resolve returns a program's absolute path with symlinks resolved: a name is looked up on the engine's PATH, a path
 // is taken relative to the workspace root.
 func (e *Engine) resolve(name string) (string, error) {
@@ -305,6 +284,14 @@ func (e *Engine) resolve(name string) (string, error) {
 		return "", fmt.Errorf("%s is not a program tack can find", name)
 	}
 	return real, nil
+}
+
+// resolveFrom is resolve for a command running in dir: a relative path means what it means there.
+func (e *Engine) resolveFrom(name, dir string) (string, error) {
+	if strings.Contains(name, "/") && !filepath.IsAbs(name) && !strings.HasPrefix(name, "~") {
+		name = filepath.Join(dir, name)
+	}
+	return e.resolve(name)
 }
 
 // allowed reports whether a rule covers s: the same resolved program, and s's first arguments equal to the rule's,
@@ -414,13 +401,6 @@ func within(root, p string) bool {
 func (e *Engine) Analyze(command string) []Simple {
 	cmds, _, _ := e.checkShell(command)
 	return cmds
-}
-
-// AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs. A user who approved it
-// approved these; the run-time check holds what expansion adds against them.
-func (e *Engine) AlwaysAsksIn(command string) []string {
-	_, _, always := e.checkShell(command)
-	return always
 }
 
 // Covers reports whether a rule allows s without asking: the engine must run its commands inside the sandbox, a rule

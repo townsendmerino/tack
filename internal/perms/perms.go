@@ -87,6 +87,8 @@ type Engine struct {
 	// the engine fails closed: auto mode refuses shell commands, and no rule allows one without asking, because the
 	// sandbox, not the rules, is the boundary.
 	Sandboxed bool
+	// SessionDir is where this session's next command starts (internal/shell.Session keeps it current), or "" for Root.
+	SessionDir string
 	// SessionEnv is the exported variables earlier commands set in this session (internal/shell.Session keeps it
 	// current). One that changes what programs run makes every command ask.
 	SessionEnv map[string]string

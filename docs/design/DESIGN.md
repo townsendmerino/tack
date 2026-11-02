@@ -605,10 +605,14 @@ tool-use smoke set compares this merged set against the split one before it is f
       (`node_modules`, `dist`, `build` and the like, not through a symlink), and a path under the temp directory. Anything
       else asks, inside the workspace or out.
     - The parse looks through what runs another program (`env`, `nice`, `timeout`, `xargs`, `sudo`, `find -exec`, `npx`), and
-      into `sh -c` and code printed straight into a shell.
+      into code a shell is given as text: `sh -c`, `env -S`, `npx -c`, a `git` alias starting with `!`, a here-document, and
+      text printed straight into a shell. Paths are read after a `cd` with a fixed target.
+    - What only shows after expansion stops when it runs (`internal/shell`, the exec and open checks), in `auto` too.
+    - **Code a real shell runs is never checked again,** because those checks see only tack's own interpreter. So inside it,
+      a program, a redirection, `eval` or an argument of `git` or `rm` that expands asks before it runs. This over-asks on
+      purpose: `sh -c 'rm -f "$f"'` asks.
     - A script file, code piped in from a program, and a program that deletes files on its own are not visible to it. In
       `auto` those stay with the sandbox until snapshots exist.
-    - What only shows after expansion stops when it runs (`internal/shell`, the exec and open checks), in `auto` too.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,

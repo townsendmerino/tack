@@ -312,3 +312,57 @@ func TestDestroyingWorkTheUserApproved(t *testing.T) {
 		t.Fatalf("the approved reset did not happen: %q", b)
 	}
 }
+
+// The library's pair for rm: $HOME stops and $TMPDIR runs, which only the expanded path can tell. The home path does not
+// exist, so a failure here costs nothing.
+func TestRmByExpandedPathAtRunTime(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	s := session(t, true, "rm")
+	if r := runBy(t, s, perms.ByMode, `rm -rf $HOME/tack-destroy-test-no-such-dir`); r.Stopped == "" {
+		t.Fatalf("$HOME was not stopped: %+v", r)
+	}
+	if r := runBy(t, s, perms.ByMode, `rm -rf $TMPDIR/tack-destroy-test-no-such-dir`); r.Stopped != "" {
+		t.Fatalf("$TMPDIR was stopped: %s", r.Stopped)
+	}
+}
+
+// A hook-disabling value that only shows at run time stops whatever program it is handed to, not only git.
+func TestHooksOffStopsAnyProgramAtRunTime(t *testing.T) {
+	s := session(t, true, "git", "env", "sh")
+	destroyRepo(t, s)
+	for _, cmd := range []string{`x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`, `x=0; HUSKY=$x sh -c "git status"`,
+		`x=1; HUSKY_SKIP_HOOKS=$x env git status`} {
+		if r := runBy(t, s, perms.ByMode, cmd); r.Stopped == "" {
+			t.Errorf("%s: not stopped: %+v", cmd, r)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `x=1; HUSKY=$x env git status`); r.Stopped != "" {
+		t.Errorf("HUSKY=1 was stopped: %s", r.Stopped)
+	}
+}
+
+// A user who approved a command that changes directory first approved what they were shown: it runs, in that directory,
+// and from the directory an earlier command left the session in.
+func TestApprovalHoldsAfterCd(t *testing.T) {
+	s := session(t, true)
+	root := s.Engine.Root
+	script := "#!/bin/sh\necho flushed\n"
+	if err := os.WriteFile(filepath.Join(root, "sub", "manage.py"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{`cd sub && ./manage.py flush`, `./manage.py flush`} { // the first leaves the session in sub
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Fatalf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+	os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("orders\n"), 0o644)
+	if r := runBy(t, s, perms.ByUser, `cd .. && echo new > CLAUDE.md`); r.Stopped != "" {
+		t.Fatalf("an approved redirect after cd: %+v", r)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md")); string(b) != "new\n" {
+		t.Fatalf("the approved redirect did not happen: %q", b)
+	}
+}

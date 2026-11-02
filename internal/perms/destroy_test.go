@@ -102,7 +102,7 @@ var destroyCases = []commandCases{
 		"rm -rf -- src", "rm -f .git/hooks/pre-commit",
 	}, append(mentions("rm -Rf /home/user/projects"),
 		"rm -rf ./node_modules", "rm -rf node_modules", "rm -rf build/", "rm -rf dist", "./confirm -rf x", "rm package-lock.json",
-		"rm -f /tmp/app.pid", "rm -rf $TMPDIR/scratch", "rm -rf /tmp/scratch", `wc -l < log; echo "--- rm -rf / ---"; grep -c x log`,
+		"rm -f /tmp/app.pid", "rm -rf /tmp/scratch", `wc -l < log; echo "--- rm -rf / ---"; grep -c x log`,
 		"rm src/api.ts")},
 	{"accept data loss", []string{
 		"npx prisma db push --accept-data-loss", "npx prisma migrate reset --force-reset", "npx prisma db push --force",
@@ -221,8 +221,11 @@ func TestAlwaysAsksOnExpandedArguments(t *testing.T) {
 		}
 	}
 	// An argument that expands at run time is not judged before it runs: it may be either, and the run-time check decides.
-	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("git reset $how")); v.Action != Allow {
-		t.Errorf("git reset $how in auto: %s %v", v.Action, v.Reasons)
+	// So neither of the library's pair differs here, and internal/shell's TestRmByExpandedPathAtRunTime tells them apart.
+	for _, command := range []string{"git reset $how", "rm -rf $TMPDIR/scratch", "rm -rf $HOME/src"} {
+		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Allow {
+			t.Errorf("%s in auto: %s %v", command, v.Action, v.Reasons)
+		}
 	}
 	// A symlink named like a build directory is not one.
 	os.Symlink(filepath.Join(e.Root, "src"), filepath.Join(e.Root, "build"))
@@ -322,5 +325,77 @@ func TestDestroyWorkWithoutTheSandbox(t *testing.T) {
 	v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset --hard"))
 	if v.Action != Ask || !strings.Contains(strings.Join(v.Reasons, ";"), "reset --hard") {
 		t.Fatalf("ask: %s %v", v.Action, v.Reasons)
+	}
+}
+
+// nestedCases are from Gemini's review of #60. sh -c, env -S and code printed into a shell run in a real /bin/sh, which the
+// run-time check never sees, so what expands there has to be judged before it runs.
+var nestedCases = commandCases{"nested code", []string{
+	`sh -c "echo x > CLAUDE.md"`, `sh -c "echo x > .github/workflows/ci.yml"`, `sh -c 'echo x > "$f"'`,
+	`sh -c 'how=--hard; git reset $how'`, `sh -c 'rm -rf s*'`, `sh -c 'eval "git reset --hard"'`, `sh -c 'eval $x'`,
+	`sh -c '$p clean -fd'`, `bash -lc 'git "$@"'`, `sh -c 'git $sub --hard'`, `sh -c 'git checkout "$b"'`, `sh -c 'rm "$f"'`,
+	`env -S 'sh -c "rm -rf src"'`, `echo 'how=--hard; git reset $how' | sh`, `echo "$x" | sh`,
+	`find . -exec sh -c 'rm -rf "$1"' _ {} ;`, `find . -exec $x {} + | sh -c 'rm -rf "$1"'`, `xargs sh -c 'git reset "$@"'`,
+	`sh -c 'HUSKY=$x git commit -m y'`, `sh -c 'cd .github/workflows && echo x > ci.yml'`, `sh -c 'x=$(rm -rf src)'`,
+	`sh -c 'sh -c "git reset --hard"'`, `sh -c 'timeout 5 $x'`, `sh -c 'sh -c "$x"'`, `sh -c 'trap "git reset --hard" EXIT'`,
+	`npx -c "git reset --hard"`, `npx --call "rm -rf src"`, `npx --call="rm -rf src"`,
+	`printf '%s\n' 'git reset --hard' | sh`, `printf 'git reset --hard\n' | sh`, `printf '%s %s\n' 'rm -rf' src | bash`,
+	`echo -n 'git reset --hard' | sh`, `sh <<< "git reset --hard"`, "sh <<EOF\ngit reset --hard\nEOF", "sh <<'EOF'\nrm -rf src\nEOF",
+	"sh <<EOF\n$x\nEOF", `git -c alias.x='!rm -rf src' x`,
+}, []string{
+	`sh -c 'git log $x'`, `sh -c 'git -C "$d" status'`, `sh -c 'echo $HOME'`, `sh -c 'go test "$pkg"'`, `sh -c 'echo x > /dev/null'`,
+	`sh -c 'cd src && rm -rf node_modules'`, `sh -c 'x=1; echo $x'`, `sh -c 'go test ./... 2>&1'`, `sh -c 'git commit -m "$msg"'`,
+	`printf '%s\n' 'git status' | sh`, `printf '%d\n' 3`, `printf 'hello\n' | grep h`, `echo "$x" | grep h`, `sh <<< "git status"`,
+	"sh <<EOF\ngit status\nEOF", `git -c alias.x='!git status' x`, `git -c alias.x=status x`, `npx -c "go test ./..."`,
+}}
+
+// cdCases are commands whose paths mean what they mean after an earlier cd.
+var cdCases = commandCases{"after cd", []string{
+	"cd backend && ./manage.py flush", "cd .github/workflows && echo x > ci.yml", "cd .github/workflows; echo x >> ci.yml",
+	"(cd .github/workflows && echo x > ci.yml)", "cd src && rm -rf generated", "cd src && git checkout api.ts",
+	"cd nowhere && ./manage.py flush", "x=$(cd .github/workflows && echo y > ci.yml)",
+}, []string{
+	"(cd .github/workflows); echo x > ci.yml", "cd .github/workflows && cd ../.. && echo x > ci.yml", "cd src && rm -rf node_modules",
+	"x=$(cd .github/workflows); echo x > ci.yml", "cd src && git checkout main",
+}}
+
+func TestNestedCodeAndCdAskInEveryMode(t *testing.T) {
+	for _, c := range []commandCases{nestedCases, cdCases} {
+		t.Run(c.name, func(t *testing.T) {
+			e := destroyEngine(t)
+			os.MkdirAll(filepath.Join(e.Root, ".github", "workflows"), 0o755)
+			os.MkdirAll(filepath.Join(e.Root, "backend"), 0o755)
+			os.WriteFile(filepath.Join(e.Root, "backend", "manage.py"), []byte("#!/bin/sh\n"), 0o755)
+			for _, command := range c.catch {
+				if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask || len(v.Reasons) == 0 {
+					t.Errorf("%s in auto: %s %v, want it to ask", command, v.Action, v.Reasons)
+				}
+			}
+			for _, command := range c.leave {
+				if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Allow {
+					t.Errorf("%s in auto: %s %v, want it left alone", command, v.Action, v.Reasons)
+				}
+			}
+		})
+	}
+}
+
+// A shell's session directory is where its next command runs, so a path means what it means there. A reason is the same
+// text before it runs and when it does, or a user's approval would not cover it.
+func TestSessionDirectoryAndApprovalAgree(t *testing.T) {
+	e := destroyEngine(t)
+	os.MkdirAll(filepath.Join(e.Root, ".github", "workflows"), 0o755)
+	e.SessionDir = filepath.Join(e.Root, ".github", "workflows")
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("echo x > ci.yml")); v.Action != Ask {
+		t.Fatalf("a redirect from the session's directory: %s", v.Action)
+	}
+	e.SessionDir = filepath.Join(e.Root, "src")
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("git checkout api.ts")); v.Action != Ask {
+		t.Fatalf("a path from the session's directory: %s", v.Action)
+	}
+	// A program not on PATH still asks.
+	e.SessionDir = ""
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("./nowhere/manage.py flush")); v.Action != Ask {
+		t.Fatalf("a program that doesn't resolve: %s", v.Action)
 	}
 }
