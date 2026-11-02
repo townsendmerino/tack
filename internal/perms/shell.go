@@ -15,6 +15,7 @@ import (
 // path, and its arguments. Args holds an argument's literal text, or ok=false in Literal where it expands at run time.
 type Simple struct {
 	Program string   // absolute, symlinks resolved; "" for a builtin
+	Name    string   // the program as written, which a multi-call binary goes by
 	Builtin string   // the builtin's name, for a builtin
 	Args    []string // the arguments after the program, as written
 	Literal []bool   // Literal[i] is false when Args[i] expands at run time
@@ -125,13 +126,13 @@ var wrappers = map[string]bool{"exec": true, "command": true, "builtin": true, "
 //
 // The only check here of where a command writes is its redirections. What the programs themselves write (go build
 // -o, a test writing a file) is not checked here; the sandbox enforces it.
-func (e *Engine) checkShell(command string) ([]Simple, []string) {
+//
+// always is what asks in every mode (AlwaysAsks, PathAsks), whatever the rules say.
+func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string) {
 	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
-		return nil, []string{"the command does not parse: " + err.Error()}
+		return nil, []string{"the command does not parse: " + err.Error()}, nil
 	}
-	var cmds []Simple
-	var why []string
 	for _, name := range sortedKeys(e.SessionEnv) {
 		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != os.Getenv(name) {
 			why = append(why, fmt.Sprintf("%s=%s was set by an earlier command in this session and changes what programs "+
@@ -142,6 +143,9 @@ func (e *Engine) checkShell(command string) ([]Simple, []string) {
 		switch n := n.(type) {
 		case *syntax.Assign:
 			why = append(why, assignment(n)...)
+			always = appendNew(always, assignAsks(n)...)
+		case *syntax.BinaryCmd:
+			always = appendNew(always, e.pipedAsks(n, e.Root, 0)...)
 		case *syntax.WordIter:
 			if n.Name != nil && ChangesPrograms(n.Name.Value) {
 				why = append(why, setsVariable(n.Name.Value))
@@ -153,14 +157,16 @@ func (e *Engine) checkShell(command string) ([]Simple, []string) {
 			s, reasons := e.simple(n.Args)
 			if s != nil {
 				cmds = append(cmds, *s)
+				always = appendNew(always, e.AlwaysAsks(*s, e.Root)...)
 			}
 			why = append(why, reasons...)
 		case *syntax.Redirect:
 			why = append(why, e.redirect(n)...)
+			always = appendNew(always, e.redirectAsks(n)...)
 		}
 		return true
 	})
-	return cmds, why
+	return cmds, why, always
 }
 
 // simple resolves one simple command's program, looking through wrappers, and checks it against the rules.
@@ -192,7 +198,7 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 		if err != nil {
 			return nil, []string{err.Error()}
 		}
-		s := Simple{Program: prog}
+		s := Simple{Program: prog, Name: name}
 		s.Args, s.Literal = args(words[1:])
 		if filepath.Base(prog) == "env" {
 			for i, a := range s.Args {
@@ -256,6 +262,22 @@ func (e *Engine) redirect(r *syntax.Redirect) []string {
 	if !within(e.root(), resolveExisting(filepath.Clean(p))) {
 		return []string{"a redirection writes outside the repository: " + target + " (this checks the shell's " +
 			"redirections only; the sandbox enforces where programs write)"}
+	}
+	return nil
+}
+
+// redirectAsks is PathAsks for an output redirection whose target is fixed; the run-time check sees the others.
+func (e *Engine) redirectAsks(r *syntax.Redirect) []string {
+	switch r.Op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll:
+	default:
+		return nil
+	}
+	if r.Word == nil {
+		return nil
+	}
+	if target, ok := literal(r.Word); ok {
+		return e.PathAsks(target)
 	}
 	return nil
 }
@@ -390,8 +412,15 @@ func within(root, p string) bool {
 
 // Analyze returns a command line's simple commands as approval sees them, without judging them.
 func (e *Engine) Analyze(command string) []Simple {
-	cmds, _ := e.checkShell(command)
+	cmds, _, _ := e.checkShell(command)
 	return cmds
+}
+
+// AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs. A user who approved it
+// approved these; the run-time check holds what expansion adds against them.
+func (e *Engine) AlwaysAsksIn(command string) []string {
+	_, _, always := e.checkShell(command)
+	return always
 }
 
 // Covers reports whether a rule allows s without asking: the engine must run its commands inside the sandbox, a rule

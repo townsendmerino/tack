@@ -49,6 +49,7 @@ type request struct {
 	Root       string   `json:"root"`
 	Approved   []string `json:"approved"`    // programs approval saw, absolute and resolved
 	RunFlags   []string `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
+	Asked      []string `json:"asked"`       // why it asks in every mode, as approval read it (perms.AlwaysAsksIn)
 	Rules      []string `json:"rules"`       // the engine's rules, as written
 	Path       string   `json:"path"`        // the PATH the engine resolves rules on
 	Sandboxed  bool     `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
@@ -124,6 +125,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 			}
 		}
 	}
+	req.Asked = s.Engine.AlwaysAsksIn(command)
 	for _, r := range s.Engine.Rules {
 		req.Rules = append(req.Rules, r.String())
 	}
@@ -310,18 +312,22 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
+	asked    map[string]bool
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
-	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
+	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{}, asked: map[string]bool{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
 	}
 	for _, f := range req.RunFlags {
 		ck.runFlags[f] = true
+	}
+	for _, a := range req.Asked {
+		ck.asked[a] = true
 	}
 	for _, s := range req.Rules {
 		if r, err := perms.ParseRule(s); err == nil {
@@ -340,12 +346,20 @@ func (ck *checker) stop(format string, args ...any) error {
 	return interp.ExitStatus(126)
 }
 
+// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks), unless the user approved
+// a command that showed that reason: expansion can't add what they were not asked about. It returns the stop's error, or nil.
+func (ck *checker) everyMode(why []string, ran string) error {
+	for _, w := range why {
+		if ck.req.ApprovedBy != perms.ByUser || !ck.asked[w] {
+			return ck.stop("%s; it asks in every mode, and approval did not show it (%s)", w, ran)
+		}
+	}
+	return nil
+}
+
 // exec checks a program as the interpreter is about to run it, after expansion.
 func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
-		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
-			return next(ctx, args)
-		}
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
@@ -354,6 +368,26 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		if real, err := filepath.EvalSymlinks(path); err == nil {
 			path = real
 		}
+		expanded := perms.Simple{Program: path, Name: args[0], Args: args[1:], Literal: make([]bool, len(args)-1)}
+		for i := range expanded.Literal {
+			expanded.Literal[i] = true // expanded already: these are the real arguments
+		}
+		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
+		if filepath.Base(path) == "git" {
+			for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
+				if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
+					if r := perms.HooksOff(name, v); r != "" {
+						why = append(why, r)
+					}
+				}
+			}
+		}
+		if err := ck.everyMode(why, strings.Join(args, " ")); err != nil {
+			return err
+		}
+		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
+			return next(ctx, args)
+		}
 		for _, a := range args[1:] {
 			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] {
 				return ck.stop("%s %s runs another program, and approval did not see it (the command expanded to: %s)",
@@ -361,11 +395,7 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			}
 		}
 		if !ck.approved[path] {
-			s := perms.Simple{Program: path, Args: args[1:], Literal: make([]bool, len(args)-1)}
-			for i := range s.Literal {
-				s.Literal[i] = true // expanded already: these are the real arguments
-			}
-			if !ck.engine.Covers(s) {
+			if !ck.engine.Covers(expanded) {
 				return ck.stop("%s was not approved: it appeared only when the command ran (%s)",
 					path, strings.Join(args, " "))
 			}
@@ -391,6 +421,11 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 		p = filepath.Join(hc.Dir, p)
 	}
 	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0
+	if write && p != "/dev/null" {
+		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path); err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case p == "/dev/null":
 	case write && perms.Outside(ck.req.Root, p):

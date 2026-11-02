@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,4 +224,68 @@ func TestToolOutputIsRedacted(t *testing.T) {
 			t.Fatalf("the log holds the token in %s", ev.Type)
 		}
 	}
+}
+
+// Through the loop in auto, what asks in every mode reaches the approver, and with no one attached it is refused, with a
+// reason the model can use, and nothing runs or changes. What isn't on the list runs without a question.
+func TestDestroyedWorkAsksInAuto(t *testing.T) {
+	setup := func(ap Approver, sh *buildShell, replies ...goinfertest.Reply) *harness {
+		h := permHarness(t, proto.ModeAuto, ap, true, replies...)
+		cfg := h.sess.cfg
+		cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh})
+		cfg.Perms.Sandboxed = true
+		h.sess = New(cfg)
+		return h
+	}
+	run := func(h *harness) {
+		t.Helper()
+		if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bash := func(id, command string) goinfertest.Reply {
+		return goinfertest.Calls("", id, "bash", fmt.Sprintf(`{"command":%q}`, command))
+	}
+	t.Run("no one attached", func(t *testing.T) {
+		sh := &buildShell{}
+		h := setup(nil, sh, bash("b1", "git reset --hard"), bash("b2", "git status"),
+			goinfertest.Calls("", "w1", "write", `{"path":"CLAUDE.md","content":"new orders"}`), goinfertest.Says("done"))
+		os.WriteFile(filepath.Join(h.ws.Root(), "CLAUDE.md"), []byte("orders"), 0o644)
+		run(h)
+		for _, id := range []string{"b1", "w1"} {
+			f := h.finished(id)
+			if f.Outcome != proto.OutcomeDenied || !strings.Contains(f.Result, "needs the user's approval") {
+				t.Fatalf("%s: %+v", id, f)
+			}
+		}
+		if !strings.Contains(h.finished("b1").Result, "reset --hard") || !strings.Contains(h.finished("w1").Result, "instruction file") {
+			t.Fatalf("no reason: %q, %q", h.finished("b1").Result, h.finished("w1").Result)
+		}
+		if len(sh.ran) != 1 || sh.ran[0] != "git status" {
+			t.Fatalf("ran %q, want only git status", sh.ran)
+		}
+		if b, _ := os.ReadFile(filepath.Join(h.ws.Root(), "CLAUDE.md")); string(b) != "orders" {
+			t.Fatalf("the instruction file changed: %q", b)
+		}
+	})
+	t.Run("the user approves", func(t *testing.T) {
+		sh := &buildShell{}
+		ap := &approver{answer: Approval{Allow: true}}
+		h := setup(ap, sh, bash("b1", "git reset --hard"), bash("b2", "git status"), goinfertest.Says("done"))
+		run(h)
+		if len(ap.asked) != 1 || ap.asked[0].Command != "git reset --hard" || !strings.Contains(strings.Join(ap.asked[0].Reasons, ";"), "reset --hard") {
+			t.Fatalf("asked %+v", ap.asked)
+		}
+		if len(sh.ran) != 2 {
+			t.Fatalf("ran %q", sh.ran)
+		}
+	})
+	t.Run("the user declines", func(t *testing.T) {
+		sh := &buildShell{}
+		h := setup(&approver{}, sh, bash("b1", "git reset --hard"), goinfertest.Says("done"))
+		run(h)
+		if len(sh.ran) != 0 || h.finished("b1").Outcome != proto.OutcomeDenied {
+			t.Fatalf("ran %q, %+v", sh.ran, h.finished("b1"))
+		}
+	})
 }

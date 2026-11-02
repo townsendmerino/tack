@@ -214,3 +214,101 @@ func TestEngineAndSandboxMustAgree(t *testing.T) {
 		t.Fatalf("a sandboxed shell with no session group ran: %v", err)
 	}
 }
+
+// destroyRepo is session's workspace as a git repository with one committed file, changed since, so a discard shows.
+func destroyRepo(t *testing.T, s *Session) (file string) {
+	t.Helper()
+	root := s.Engine.Root
+	file = filepath.Join(root, "work.txt")
+	os.WriteFile(file, []byte("committed\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "work.txt"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "x"}} {
+		c := exec.Command("git", args...)
+		c.Dir = root
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	os.WriteFile(file, []byte("a day's work\n"), 0o644)
+	return file
+}
+
+func runBy(t *testing.T, s *Session, by, cmd string) Result {
+	t.Helper()
+	r, err := s.Run(WithApproval(context.Background(), by), cmd, 30*time.Second)
+	if err != nil {
+		t.Fatalf("%q: %v", cmd, err)
+	}
+	return r
+}
+
+// What the parse can't see is stopped when it runs (DESIGN §6.6, "Checked again as it runs"), in auto too, where the
+// sandbox would let it through: a day's work survives, and a directory.
+func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
+	for _, by := range []string{perms.ByMode, perms.ByRule, perms.ByUser} {
+		t.Run(by, func(t *testing.T) {
+			s := session(t, true, "git", "rm")
+			file := destroyRepo(t, s)
+			os.MkdirAll(filepath.Join(s.Engine.Root, "src", "deep"), 0o755)
+			os.WriteFile(filepath.Join(s.Engine.Root, "CLAUDE.md"), []byte("orders\n"), 0o644)
+			for _, cmd := range []string{
+				`how=--hard; git reset $how`,
+				`set -- reset --hard; git "$@"`,
+				`eval "git reset --hard"`,
+				`d=src; rm -rf $d`,
+				`rm -rf s*`,
+				`p=git; $p clean -fd`,
+				`x=rm; env $x -rf src`,
+				`how="-c 'git reset --hard'"; eval sh $how`,
+				`f=CLAUDE.md; echo overwritten > $f`,
+				`x=0; HUSKY=$x git status`,
+			} {
+				r := runBy(t, s, by, cmd)
+				if r.Stopped == "" || r.Exit == 0 {
+					t.Errorf("%s: not stopped: %+v", cmd, r)
+				}
+			}
+			if b, _ := os.ReadFile(file); string(b) != "a day's work\n" {
+				t.Errorf("the work is gone: %q", b)
+			}
+			if _, err := os.Stat(filepath.Join(s.Engine.Root, "src", "deep")); err != nil {
+				t.Errorf("the directory is gone: %v", err)
+			}
+			if b, _ := os.ReadFile(filepath.Join(s.Engine.Root, "CLAUDE.md")); string(b) != "orders\n" {
+				t.Errorf("the instruction file changed: %q", b)
+			}
+			// What isn't on the list runs. Expanded or not, ordinary git and a temp directory go through.
+			tmp, err := os.MkdirTemp("", "tack-destroy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(tmp) })
+			for _, cmd := range []string{`how=--soft; git reset $how HEAD`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
+				if r := runBy(t, s, by, cmd); r.Stopped != "" {
+					t.Errorf("%s: stopped: %s", cmd, r.Stopped)
+				}
+			}
+			if _, err := os.Stat(tmp); err == nil {
+				t.Errorf("rm -rf of the temp directory did not run")
+			}
+		})
+	}
+}
+
+// A user who was asked about a destructive command approved that command, and it runs. Approval covers only what they
+// were shown.
+func TestDestroyingWorkTheUserApproved(t *testing.T) {
+	s := session(t, true, "git")
+	file := destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `git status; how=--hard; git reset $how`); r.Stopped == "" {
+		t.Fatalf("the approval did not show --hard: %+v", r)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "a day's work\n" {
+		t.Fatalf("the work is gone: %q", b)
+	}
+	if r := runBy(t, s, perms.ByUser, `git reset --hard`); r.Stopped != "" || r.Exit != 0 {
+		t.Fatalf("the approved command did not run: %+v", r)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "committed\n" {
+		t.Fatalf("the approved reset did not happen: %q", b)
+	}
+}

@@ -313,3 +313,20 @@ func TestBash(t *testing.T) {
 		}
 	}
 }
+
+// The file tools never write inside .git, in any letter case: macOS's file system takes .GIT/config for .git/config.
+func TestFileToolsNeverWriteInGitAnyCase(t *testing.T) {
+	ws := workspace(t)
+	s := full(memBlobs{}, nil)
+	for _, p := range []string{".GIT/config", ".Git/hooks/pre-commit", "sub/.gIT/x"} {
+		if r := call(t, s, ws, "write", `{"path":"`+p+`","content":"x"}`); !r.IsError {
+			t.Errorf("write %s: %q", p, r.Text)
+		}
+	}
+	if r := call(t, s, ws, "write", `{"path":"git.txt","content":"x"}`); r.IsError {
+		t.Errorf("write git.txt, a near-miss: %q", r.Text)
+	}
+	if r := call(t, s, ws, "write", `{"path":".gitignore","content":"x"}`); r.IsError {
+		t.Errorf("write .gitignore, a near-miss: %q", r.Text)
+	}
+}

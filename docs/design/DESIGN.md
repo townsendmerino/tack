@@ -600,6 +600,15 @@ tool-use smoke set compares this merged set against the split one before it is f
     `grep` that mentions `git reset --hard` doesn't match.
   - The library's tested examples, the commands each rule must catch and the near-misses it must leave alone, become
     the Go tests for tack's port.
+  - **As built** (`internal/perms/destroy.go:AlwaysAsks`; the tests are `internal/perms/destroy_test.go`):
+    - `rm -r` leaves alone what the library's near-misses do: a rebuilt directory directly where the command runs
+      (`node_modules`, `dist`, `build` and the like, not through a symlink), and a path under the temp directory. Anything
+      else asks, inside the workspace or out.
+    - The parse looks through what runs another program (`env`, `nice`, `timeout`, `xargs`, `sudo`, `find -exec`, `npx`), and
+      into `sh -c` and code printed straight into a shell.
+    - A script file, code piped in from a program, and a program that deletes files on its own are not visible to it. In
+      `auto` those stay with the sandbox until snapshots exist.
+    - What only shows after expansion stops when it runs (`internal/shell`, the exec and open checks), in `auto` too.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
@@ -609,6 +618,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     otherwise rewrite to change its own standing orders (§6.7);
   - `git --no-verify`, `git -c core.hooksPath=…` and `git config core.hooksPath`, which skip the owner's hooks;
   - starting another agent from `bash` (`claude`, `codex`, `gemini`, `tack` and the like).
+  - These are `internal/perms/destroy.go:AlwaysAsks` and `PathAsks`. A shell redirection to a CI definition or an instruction
+    file asks too; another program writing one (`tee`, `sed -i`) is not visible to the parse.
   - **Never, from the file tools:** a write inside `.git/`. Git's own commands still write there.
   - **Already covered, by the sandbox profile:** secrets, shell history and logs outside the workspace, host-key
     checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, `.git/hooks`, `.git/config` and
