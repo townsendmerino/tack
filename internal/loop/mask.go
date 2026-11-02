@@ -201,7 +201,7 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 			continue
 		}
 		o.masked = true
-		if cover >= 0 && (o.from != 0 || o.n != 0) { // a range read superseded: keep the read that covers it whole
+		if cover >= 0 && (o.from != 0 || o.n != 0 || o.pinned) { // a range read, or a kept one, superseded: keep its coverer whole
 			s.obs[cover].pinned = true
 		}
 		out = append(out, proto.MaskedResult{ID: o.id, Stub: stub})
@@ -211,8 +211,8 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 
 // coveredLater is the index of a read after obs[i] that covers it, or -1: of the same file at the same version,
 // successful, returned whole (not cut to fit), and not itself masked. maskStubs pins it when it stubs a range read
-// obs[i], so one compaction never stubs both that range and the read that covers it; a whole read is not pinned, so
-// the largest reads stay stubbable at the cliff.
+// obs[i], or a pinned one, so the pin carries along a chain of superseders and one compaction never stubs every read
+// of the file; a whole read that superseded only another whole read is not pinned, so large reads stay stubbable.
 func (s *Session) coveredLater(i int) int {
 	e := s.obs[i]
 	for j := i + 1; j < len(s.obs); j++ {

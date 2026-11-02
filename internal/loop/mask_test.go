@@ -413,3 +413,21 @@ func TestMaskWholeReadStaysStubbable(t *testing.T) {
 		t.Fatalf("wide stubs %+v: want both the superseded whole read and the old whole read that covered it", got)
 	}
 }
+
+// Pinning carries along a chain of superseders: a range read, then a whole read, then a newer whole read. One wide
+// compaction stubs the range and the first whole read as superseded, and keeps the newest whole, so the content stays
+// in the request once.
+func TestMaskPinCarriesAlongSuperseders(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	s := &Session{}
+	s.track(observe("a", "read", []byte(`{"path":"f.go","offset":10,"limit":20}`), 1, long, true), false, 0)
+	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
+	s.track(observe("c", "read", []byte(`{"path":"f.go"}`), 3, long, true), false, 0)
+	var got []string
+	for _, m := range s.maskStubs(9, true) {
+		got = append(got, m.ID)
+	}
+	if strings.Join(got, ",") != "a,b" {
+		t.Fatalf("wide stubs %v, want a,b: the newest whole read c kept", got)
+	}
+}
