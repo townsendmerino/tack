@@ -553,6 +553,18 @@ tool-use smoke set compares this merged set against the split one before it is f
   (read-only); `auto` (anything that stays inside the sandbox is approved; anything that needs to leave it asks).
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
+- **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
+  sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
+  - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval
+    issues a grant.
+  - A grant covers one spawn of the exact approved command, and only the approved delta: one path to write, one host
+    and port to reach. It expires when the command starts, or after a short time limit if it never does.
+  - The command still runs sandboxed, with that one delta added to its profile. An approval never runs a command
+    unsandboxed.
+  - Allow once is this grant. Allow for session and Add rule… write a rule, and each matching spawn gets its own grant.
+  - Deny can never be opened by a grant.
+  - **Why:** the parse, and the exec and open checks, decide when to ask; the kernel profile then holds the command to
+    what was approved, so a command whose expansion reaches further than its approval is stopped twice.
 - **What is approved is what runs.** Shell commands run in tack's own shell, `tackd shell`, which parses and executes with
   one pure-Go library (`mvdan.cc/sh/v3`: its parser and its interpreter) and is itself started under the sandbox. No zsh
   or bash 3.2 dialect gap separates what was parsed from what executes. Only the working directory and exported
@@ -578,6 +590,16 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **Network** is denied by default; through P4 it is denied outright, with an escape test proving it. From P5, with
     `web_fetch`, opening it per domain goes through a local proxy that enforces the list, because
     Seatbelt filters addresses, not host names.
+    - **The proxy's design, taken from looprig's sandbox** (2026-11-02; README, "Target-scoped network enforcement"):
+      - The proxy runs in the daemon, outside the sandbox, and handles HTTP forwarding and HTTPS `CONNECT`.
+      - The profile lets the command reach only the proxy's loopback port. Every other outside address stays denied.
+      - The proxy allows only approved host names and ports, and requires a per-spawn credential, so a different
+        process on the Mac cannot borrow it.
+      - TLS stays end to end. The proxy sees the host and port, never the path, and claims no more than that.
+      - It never falls back to a direct connection. A client that ignores the proxy settings fails closed.
+      - Ending a spawn cancels its open requests and tunnels.
+    - The same proxy serves `go mod download` and `git fetch` over HTTPS once a rule allows `proxy.golang.org` or
+      `github.com`. SSH is not proxied, so git over SSH stays denied.
   - **Loopback is allowed, except to what was already listening** (ADR-005; built after the calibration baseline,
     `e1-calibration-preregistration-2026-10-18.md` §4.3).
     - A command may bind, accept and connect on loopback, so tests that start a local server (`httptest`) run.
@@ -1546,10 +1568,20 @@ wall time.
 ## 18. Linux and Qt, later
 
 Designed in now: thin clients; a transport-agnostic protocol; `internal/daemon` with a systemd user-unit path beside
-launchd; a sandbox interface with a Seatbelt implementation now and bubblewrap or Landlock later; a generator that can
-gain a C++ emitter when `apps/linux/` starts (or the Qt app reads JSON through generated accessors). Qt 6 is the native
-toolkit on nobara's KDE Plasma desktop. The Linux daemon is useful before any Linux GUI exists: the CLI and TUI run on
-nobara from P1, next to its GPU.
+launchd; a sandbox interface with a Seatbelt implementation now and bubblewrap or Landlock later (looprig's sandbox is
+the reference design, below); a generator that can gain a C++ emitter when `apps/linux/` starts (or the Qt app reads
+JSON through generated accessors). Qt 6 is the native toolkit on nobara's KDE Plasma desktop. The Linux daemon is useful
+before any Linux GUI exists: the CLI and TUI run on nobara from P1, next to its GPU.
+
+**The Linux sandbox: start from looprig's** (noted 2026-11-02; `github.com/looprig/sandbox`, Apache-2.0, pure Go).
+- It enforces on Linux with namespaces, Landlock, seccomp and nftables, a ladder of strengths, and fails closed when a
+  machine supports none of them.
+- It reports what the chosen backend actually enforces on that machine, rather than what the profile asked for. tack's
+  escape tests would check that report.
+- **Against depending on it:** one maintainer, about four months old, no push since 2026-10-16. Its Linux side does not
+  yet enforce host-scoped network access.
+- **Decided when the Linux daemon needs a sandbox:** depend on it if it is maintained by then; otherwise follow its
+  design in `internal/sandbox`.
 
 **An alternative to try first: MyGo** (noted 2026-10-23; `github.com/egoist/mygo`, MIT). It is a Go framework for desktop
 apps on macOS, Windows and Linux. A window shows either a web page in the system's web view (WebKitGTK on Linux) or
