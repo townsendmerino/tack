@@ -2636,3 +2636,16 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - **Superseded reads in one compaction:** a read that makes an earlier read superseded is kept whole from then
     on. So one compaction cannot stub both an earlier read and the later read that covers it.
   - **With the setting off, nothing changes,** grep's scan and output included.
+- **Amended a seventh time before any §16.2 run (2026-11-01, from Gemini's fifth review of #45, the coordinator's
+  simpler rule): widening's chain.** It replaces the chain rules above:
+  - **Up only:** a call's widening level goes up only on an unchanged repeat whose result was shown whole: base, then
+    3 times, then no cap.
+  - **Freezing:** a result cut to fit, or answered with the nearly-full note, never drops the level. It freezes the
+    chain at the last level that fit whole. Later repeats are served at that level and count as ordinary repeats, so
+    the level cannot swing between base and wider, resetting the count each time and keeping `stop_repeats` from
+    firing.
+  - **A changed output** (a different base view, an emptied file included) starts the chain again at the base cap.
+  - **Compaction** clears the chain of every call it stubs, so the first re-run after a compaction is at the base cap.
+  - **Coverage and shown lines:** a widened result counts as widened only if it was shown whole.
+  - **Pinning:** a read that supersedes an earlier read is kept whole only when the earlier one was a range read. A
+    whole read stays stubbable at the cliff, so the largest results cannot become immune.
