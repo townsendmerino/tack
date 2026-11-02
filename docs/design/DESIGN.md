@@ -486,8 +486,9 @@ Around the turn:
   read-only or wait.
 
 **When the model calls `done`, the result shows what it did to the tests** (from the test-integrity group of
-AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02)). The claim check (the model's reason, beside the last verification's command and exit status) also reports,
-from the session's own edits and commands:
+AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02)). The claim check
+(the model's reason, beside the last verification's command and exit status) also reports, from the session's own edits
+and commands:
 - a test file deleted, or a test function removed;
 - a skip added (`t.Skip`, `@pytest.mark.skip` and the like), including through `sed` or `perl`;
 - an edit to a test file the task names;
