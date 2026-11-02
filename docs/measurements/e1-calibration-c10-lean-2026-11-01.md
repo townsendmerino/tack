@@ -136,3 +136,8 @@ repeat loop in both arms is still the model asking again at the cliff.
 - **Command timeouts: none.** The text "timed out" appears in 3 of task 10's runs only as a repository document in grep
   output.
 - All of this is in `~/tack-runs/e1/c10-lean-2026-11-01/notes.txt`. The report is `calreport-s161-combined.md` there.
+
+## Francis's override (2026-11-02 07:00, relayed by the coordinator)
+
+"Un-park leaner results." `lean_results` is adopted by Francis's decision, not by the rule: the read above stands at
+d = +4, parked. §16.2's base is the bundle plus `lean_results`, in both arms (§16.2's last amendment).
