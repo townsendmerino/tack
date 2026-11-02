@@ -1,0 +1,27 @@
+?   	github.com/townsendmerino/tack/internal/acp	[no test files]
+ok  	github.com/townsendmerino/tack/internal/config	0.010s
+ok  	github.com/townsendmerino/tack/internal/core	0.690s
+?   	github.com/townsendmerino/tack/internal/daemon	[no test files]
+ok  	github.com/townsendmerino/tack/internal/eval	2.034s
+ok  	github.com/townsendmerino/tack/internal/eval/mine	3.677s
+ok  	github.com/townsendmerino/tack/internal/eval/pilot	3.929s
+ok  	github.com/townsendmerino/tack/internal/halt	0.065s
+ok  	github.com/townsendmerino/tack/internal/kenrun	0.006s
+ok  	github.com/townsendmerino/tack/internal/kensearch	0.144s
+ok  	github.com/townsendmerino/tack/internal/loop	1.467s
+ok  	github.com/townsendmerino/tack/internal/models	1.067s
+ok  	github.com/townsendmerino/tack/internal/perms	0.006s
+ok  	github.com/townsendmerino/tack/internal/proto	0.039s
+ok  	github.com/townsendmerino/tack/internal/proto/swiftgen	0.004s
+?   	github.com/townsendmerino/tack/internal/render	[no test files]
+ok  	github.com/townsendmerino/tack/internal/sandbox	0.004s
+ok  	github.com/townsendmerino/tack/internal/server	0.003s
+?   	github.com/townsendmerino/tack/internal/server/cassette	[no test files]
+ok  	github.com/townsendmerino/tack/internal/server/goinfer	0.033s
+?   	github.com/townsendmerino/tack/internal/server/goinfer/goinfertest	[no test files]
+ok  	github.com/townsendmerino/tack/internal/shell	0.421s
+ok  	github.com/townsendmerino/tack/internal/store	0.007s
+ok  	github.com/townsendmerino/tack/internal/tools	0.089s
+?   	github.com/townsendmerino/tack/internal/tui	[no test files]
+ok  	github.com/townsendmerino/tack/internal/window	0.008s
+go: downloading github.com/townsendmerino/ken v1.12.1

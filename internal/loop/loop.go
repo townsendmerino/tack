@@ -84,7 +84,7 @@ type Config struct {
 	//     at most stuckMax times a turn.
 	CompactAtCliff bool
 	// WidenRepeats is progressive widening: a whole read or grep whose base-cap result was shown, and is asked for
-	// again unchanged, is shown with 3 times its cap, then none (tools.WithWiden; shownChain). A result replaced by the
+	// again unchanged, is shown with 3 times its cap, then all of a file or 10 times a grep's cap (tools.WithWiden; shownChain). A result replaced by the
 	// nearly-full note, or cut, was not shown whole and freezes the chain. Repeats are counted on what was shown. It is
 	// separate from CompactAtCliff and not yet screened (calibration §16.2, Francis 2026-11-01 18:00).
 	WidenRepeats bool
@@ -661,7 +661,7 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 // runTool records tool.started (fsynced by the store, so a crash leaves the call marked started), runs the tool and
 // returns its tool.finished payload. When the output is too long for the model, the payload names a blob by handle
 // and full holds the bytes; the caller stores them before recording the payload (ADR-004). room, when not nil, is the
-// bytes the window has left for this response's results (Config.FitWindow). r is what the tool returned, redacted, for its
+// bytes the window has left for this response's results (Config.FitWindow). r is what the tool returned, redacted and escaped, for its
 // Empty and State.
 func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64, room *int, pick func(*tools.Result)) (fin proto.ToolFinished, full []byte, r tools.Result, err error) {
 	t, ok := s.cfg.Tools.Get(b.Name)
@@ -687,6 +687,8 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 			}
 		}
 	}
+	// Then the control characters, before anything measures, compares, cuts or stores the text.
+	r.Text, r.Base, r.Note = escapeControl(r.Text), escapeControl(r.Base), escapeControl(r.Note)
 	if pick != nil { // chooses, on redacted text, what is shown (Config.CompactAtCliff's widening)
 		pick(&r)
 	}

@@ -84,7 +84,8 @@ func (s *Session) buildNote(ctx context.Context, input json.RawMessage) string {
 		return ""
 	}
 	out, _ := perms.Redact(res.Output)
-	return buildErrors(shown, out, mod)
+	// Escaped last: a line ending the note reshapes is not a line ending any more.
+	return escapeControl(buildErrors(shown, out, mod))
 }
 
 // buildErrors is the note for a build that failed with output: its lines, without go's "# package" headers and with
