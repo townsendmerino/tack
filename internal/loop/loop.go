@@ -84,7 +84,7 @@ type Config struct {
 	//     at most stuckMax times a turn.
 	CompactAtCliff bool
 	// WidenRepeats is progressive widening: a whole read or grep whose base-cap result was shown, and is asked for
-	// again unchanged, is shown with 3 times its cap, then none (tools.WithWiden; shownChain). A result replaced by the
+	// again unchanged, is shown with 3 times its cap, then all of a file or 10 times a grep's cap (tools.WithWiden; shownChain). A result replaced by the
 	// nearly-full note, or cut, was not shown whole and freezes the chain. Repeats are counted on what was shown. It is
 	// separate from CompactAtCliff and not yet screened (calibration §16.2, Francis 2026-11-01 18:00).
 	WidenRepeats bool

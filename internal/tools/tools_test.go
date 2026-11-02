@@ -287,8 +287,8 @@ func TestZeroValuedToolsUseTheDefaults(t *testing.T) {
 	}
 }
 
-// WithWiden: level 1 shows 3 times a whole read's and a grep's cap, level 2 no cap; an explicit range is never
-// widened; Widenable names the calls it applies to.
+// WithWiden: level 1 shows 3 times a whole read's and a grep's cap, level 2 all of a file and 10 times a grep's cap;
+// an explicit range is never widened; Widenable names the calls it applies to.
 func TestWithWiden(t *testing.T) {
 	root := t.TempDir()
 	var b strings.Builder
@@ -306,7 +306,7 @@ func TestWithWiden(t *testing.T) {
 		}
 		return r.Text
 	}
-	for level, want := range map[int][3]int{0: {80, 30, 50}, 1: {240, 90, 50}, 2: {700, 700, 50}} {
+	for level, want := range map[int][3]int{0: {80, 30, 50}, 1: {240, 90, 50}, 2: {700, 300, 50}} {
 		got := [3]int{strings.Count(call(level, "read", `{"path":"big.txt"}`), "\tmatch "),
 			strings.Count(call(level, "grep", `{"pattern":"match"}`), "big.txt:"),
 			strings.Count(call(level, "read", `{"path":"big.txt","offset":1,"limit":50}`), "\tmatch ")}

@@ -333,9 +333,9 @@ func TestMaskWidenedReadCoverage(t *testing.T) {
 }
 
 // The shown chain: a first result shown whole puts the next call at level 1, and an unchanged one at 1 puts it at 2,
-// where it stays. A result not shown whole freezes the chain at the level below it: served at 1 and cut, the chain
-// freezes at 0, and stays there while the output is unchanged, whether later results fit or not. A changed output
-// starts the chain again.
+// where it stays. A result not shown whole freezes the chain at the level below it: cut at 2, it freezes at 1, and
+// steps down to 0 when a later call served at 1 is also not shown whole; cut at 1, it freezes at 0 and stays there
+// while the output is unchanged. A changed output starts the chain again.
 func TestShownChain(t *testing.T) {
 	c := shownChain{}
 	if c.level("k") != 0 {
@@ -349,6 +349,15 @@ func TestShownChain(t *testing.T) {
 	c.record("k", "A", 2, true)
 	if c.level("k") != 2 {
 		t.Fatalf("after A shown at 1 and 2: level %d", c.level("k"))
+	}
+	c.record("k", "A", 2, false) // cut at 2: freeze at 1
+	c.record("k", "A", 1, true)
+	if c.level("k") != 1 {
+		t.Fatalf("after a cut at 2 then whole at 1: level %d, want frozen at 1", c.level("k"))
+	}
+	c.record("k", "A", 1, false) // cut or a note at 1 while frozen: step down to 0
+	if c.level("k") != 0 {
+		t.Fatalf("after a cut at 1 while frozen: level %d, want stepped down to 0", c.level("k"))
 	}
 	f := shownChain{}
 	f.record("k", "A", 0, true)

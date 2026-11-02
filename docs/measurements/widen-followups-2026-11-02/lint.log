@@ -1,0 +1,6 @@
+ok            staticcheck version version=staticcheck 2026.2.1 (0.8.1)
+ok            canary/darwin
+ok            staticcheck/darwin
+ok            canary/linux
+ok            staticcheck/linux
+VERDICT: PASS — lint: 5/5 applicable checks passed (0 failed, 0 inconclusive, 0 n/a)

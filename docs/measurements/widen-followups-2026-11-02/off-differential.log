@@ -1,0 +1,5 @@
+# widen_repeats off, on a scripted turn of repeated reads and greps over a cliff: sha256 of every tool result and compaction event
+this branch: DIFF cliff=true sha=005a51c6262467a6fd83065b44bfc92916b0a23f60d6d9a000b74cbe68b21e6d compactions=1 shown=0 r9=200 g0=100 g1=100 g9=0 g9head=""
+this branch: DIFF cliff=false sha=b45818caa5151f9f19b5cb76795d7ab1d2666b159c4c375b3172ec80c925a440 compactions=0 shown=0 r9=200 g0=100 g1=100 g9=0 g9head=""
+main: DIFF cliff=true sha=005a51c6262467a6fd83065b44bfc92916b0a23f60d6d9a000b74cbe68b21e6d compactions=1 shown=0 r9=200 g0=100 g1=100 g9=0 g9head=""
+main: DIFF cliff=false sha=b45818caa5151f9f19b5cb76795d7ab1d2666b159c4c375b3172ec80c925a440 compactions=0 shown=0 r9=200 g0=100 g1=100 g9=0 g9head=""

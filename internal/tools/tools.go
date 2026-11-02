@@ -365,8 +365,8 @@ func (o Options) WholeReadLines() int {
 type widenKey struct{}
 
 // WithWiden asks the read and grep run with ctx for a wider result than their cap (loop.Config.CompactAtCliff's
-// progressive widening, calibration §16.2): level 1 is 3 times the cap, 2 or more is no cap. A read with a range is
-// never widened.
+// progressive widening, calibration §16.2): level 1 is 3 times the cap; 2 or more is no cap on a read and 10 times the cap on a
+// grep, whose hits are held in memory before any cut. A read with a range is never widened.
 func WithWiden(ctx context.Context, level int) context.Context {
 	if level <= 0 {
 		return ctx
