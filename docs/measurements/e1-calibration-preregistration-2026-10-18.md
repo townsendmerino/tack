@@ -2716,3 +2716,5 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     less not shown, A winning ties) and the predictions as the ninth amendment restates them.
   - **Not pooled:** these runs are not pooled with §16.1's.
   - **Time:** about 4.5 to 5.5 hours, since `lean_results` runs took longer in §16.1 (B 246 min of runs, A 222).
+- **Outcome (read 2026-11-02; record `e1-calibration-c10-cliff-2026-11-02.md`): A 16 of 36, B 17 of 36, d = +1, against
+  edges of 2 and 4. Not shown: the do-nothing arm A wins, and `compact_at_cliff` is not adopted.**
