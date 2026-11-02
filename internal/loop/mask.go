@@ -47,7 +47,8 @@ type observation struct {
 	bytes     int
 	first     string // the result's first line, cut to a stub's length
 	masked    bool
-	pinned    bool // it superseded an earlier read: kept whole (coveredLater)
+	pinned    bool   // it superseded an earlier read: kept whole (coveredLater)
+	callKey   string // the call's CallKey, set by the loop: a compaction that stubs it clears its widening chain
 }
 
 // observe is the observation of one tool result.
@@ -200,7 +201,7 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 			continue
 		}
 		o.masked = true
-		if cover >= 0 { // the superseded case, chosen first
+		if cover >= 0 && (o.from != 0 || o.n != 0) { // a range read superseded: keep the read that covers it whole
 			s.obs[cover].pinned = true
 		}
 		out = append(out, proto.MaskedResult{ID: o.id, Stub: stub})
@@ -209,8 +210,9 @@ func (s *Session) maskStubs(next int, wide bool) []proto.MaskedResult {
 }
 
 // coveredLater is the index of a read after obs[i] that covers it, or -1: of the same file at the same version,
-// successful, returned whole (not cut to fit), and not itself masked. maskStubs pins it when it stubs obs[i], so a wide
-// compaction never stubs both a read and the one that superseded it.
+// successful, returned whole (not cut to fit), and not itself masked. maskStubs pins it when it stubs a range read
+// obs[i], so one compaction never stubs both that range and the read that covers it; a whole read is not pinned, so
+// the largest reads stay stubbable at the cliff.
 func (s *Session) coveredLater(i int) int {
 	e := s.obs[i]
 	for j := i + 1; j < len(s.obs); j++ {
@@ -276,6 +278,7 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		for _, o := range s.obs {
 			if o.id == m.ID {
 				before += o.bytes
+				delete(s.shown, o.callKey) // its next call starts again at the base cap
 			}
 		}
 		after += len(m.Stub)
@@ -287,42 +290,48 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 	return len(masked), err
 }
 
-// shownChain is, per call key this turn, the output at the base cap that the call last showed the model, and how
-// many times in a row it showed it unchanged: what progressive widening steps on (Config.CompactAtCliff;
-// calibration §16.2). A result not shown whole, fit_window's nearly-full note or a cut, ends the chain.
+// shownChain is progressive widening's state, per call key this turn (Config.CompactAtCliff; calibration §16.2): the
+// base-cap output the call last showed, and the level its next call is served at. The level only goes up, and only on
+// an unchanged result shown whole. A result cut to fit, or answered with fit_window's nearly-full note, freezes the
+// chain at the last level that fit whole. A changed output starts it again, and a compaction that stubs the call
+// clears it (compactNow).
 type shownChain map[string]shownLink
 
 type shownLink struct {
-	last  string
-	shown int
+	last   string // the base-cap output last shown
+	level  int    // the widening the next call is served at: 0, 1 or 2 (tools.WithWiden)
+	frozen bool   // a result at a higher level did not fit whole
 }
 
-// level is the widening for the next call with key: 1 once its base-cap result was shown, 2 once that was shown
-// again, and 0 with no chain. The call widens only if its output proves unchanged (same).
-func (c shownChain) level(key string) int {
-	if l, ok := c[key]; ok {
-		return min(l.shown, 2)
-	}
-	return 0
-}
+// level is the widening the next call with key is served at.
+func (c shownChain) level(key string) int { return c[key].level }
 
-// same says whether base is what the call with key last showed.
+// same says whether base is the base-cap output the call with key last showed.
 func (c shownChain) same(key, base string) bool {
 	l, ok := c[key]
 	return ok && l.last == base
 }
 
-// record takes a call's base-cap output and whether it was not shown whole (the nearly-full note, or a cut): that
-// ends the chain; an unchanged output lengthens it; a changed one starts it again.
-func (c shownChain) record(key, base string, ended bool) {
-	switch l, ok := c[key]; {
-	case ended:
-		delete(c, key)
-	case ok && l.last == base:
-		c[key] = shownLink{last: base, shown: l.shown + 1}
+// record takes a call's base-cap output, the level it was served at, and whether its result was shown whole. A first
+// call, or a changed output, starts the chain at the base cap; a frozen chain stays; an unchanged result shown whole
+// goes up a level; one not shown whole freezes the chain at the level below, the last that fit.
+func (c shownChain) record(key, base string, served int, whole bool) {
+	l, ok := c[key]
+	switch {
+	case !ok || l.last != base:
+		l = shownLink{last: base}
+		if whole {
+			l.level = 1
+		} else {
+			l.frozen = true
+		}
+	case l.frozen:
+	case whole:
+		l.level = min(served+1, 2)
 	default:
-		c[key] = shownLink{last: base, shown: 1}
+		l.level, l.frozen = max(served-1, 0), true
 	}
+	c[key] = l
 }
 
 // wholeOf is the lines o returned if it is a read with no range: as track set it, or wholeReadLines.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -547,20 +548,13 @@ func TestCompactAtCliffShownResultStartsTheCountAgain(t *testing.T) {
 	}
 }
 
-// A note neither advances widening nor keeps it, and widening works through redaction. The same whole read of a
-// 700-line file (one line holding an AWS key id, which redaction replaces) is first answered with the note, then shown
-// at 200 lines (not 600), then 600, then all 700.
+// A note freezes the chain, and widening works through redaction. The same whole read of a 700-line file (one line
+// holding an AWS key id, which redaction replaces):
+//   - first answered with the note, then shown: 200 lines each time, the chain frozen at the base cap;
+//   - shown from the first call: 200, 600, then all 700 lines, redacted.
 func TestCompactAtCliffWideningStartsAfterTheNote(t *testing.T) {
 	const window = 100_000
 	read := `{"path":"wide.txt"}`
-	replies := []goinfertest.Reply{callsAt(window-300, "n0", "read", read)}
-	for i := 0; i < 3; i++ {
-		replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
-	}
-	replies = append(replies, goinfertest.Says("ok"))
-	h := cliffHarness(t, true, replies...)
-	h.script.Window = window
-	h.sess.cfg.MaxResultBytes = 1 << 20
 	var wide strings.Builder
 	for i := 1; i <= 700; i++ {
 		if i == 5 {
@@ -569,18 +563,34 @@ func TestCompactAtCliffWideningStartsAfterTheNote(t *testing.T) {
 		}
 		fmt.Fprintf(&wide, "w %d\n", i)
 	}
-	os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
-	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
-		t.Fatal(err)
+	run := func(first int) *harness {
+		replies := []goinfertest.Reply{callsAt(first, "n0", "read", read)}
+		for i := 0; i < 3; i++ {
+			replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
+		}
+		replies = append(replies, goinfertest.Says("ok"))
+		h := cliffHarness(t, true, replies...)
+		h.script.Window = window
+		h.sess.cfg.MaxResultBytes = 1 << 20
+		os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+		if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+			t.Fatal(err)
+		}
+		return h
 	}
-	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
-	if !strings.HasPrefix(h.finished("n0").Result, "[window nearly full") {
-		t.Fatalf("the first read did not get the note: %.80q", h.finished("n0").Result)
+	lines := func(h *harness, id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+	noted := run(window - 300)
+	if !strings.HasPrefix(noted.finished("n0").Result, "[window nearly full") {
+		t.Fatalf("the first read did not get the note: %.80q", noted.finished("n0").Result)
 	}
-	if got := [3]int{lines("s0"), lines("s1"), lines("s2")}; got != [3]int{200, 600, 700} {
-		t.Fatalf("after the note, shown %v, want [200 600 700]", got)
+	if got := [3]int{lines(noted, "s0"), lines(noted, "s1"), lines(noted, "s2")}; got != [3]int{200, 200, 200} {
+		t.Fatalf("after the note, shown %v, want [200 200 200]: the chain frozen at the base cap", got)
 	}
-	if strings.Contains(h.finished("s2").Result, "AKIAIOSFODNN7EXAMPLE") {
+	shown := run(100)
+	if got := [4]int{lines(shown, "n0"), lines(shown, "s0"), lines(shown, "s1"), lines(shown, "s2")}; got != [4]int{200, 600, 700, 700} {
+		t.Fatalf("shown from the start: %v, want [200 600 700 700]", got)
+	}
+	if strings.Contains(shown.finished("s1").Result, "AKIAIOSFODNN7EXAMPLE") {
 		t.Fatal("the widened result was not redacted")
 	}
 }
@@ -659,5 +669,98 @@ func TestCompactAtCliffCutResultEndsTheChain(t *testing.T) {
 		if !f.Truncated || err != nil || strings.Count(string(full), "\tw ") != 200 {
 			t.Errorf("%s: cut %v, blob err %v, %d lines in its whole output; want cut, 200", id, f.Truncated, err, strings.Count(string(full), "\tw "))
 		}
+	}
+}
+
+// wideFile writes wide.txt, 700 short lines, into h's workspace.
+func wideFile(h *harness) {
+	var wide strings.Builder
+	for i := 1; i <= 700; i++ {
+		fmt.Fprintf(&wide, "w %d\n", i)
+	}
+	os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
+}
+
+// The chain freezes. With a 5 KB result cap, the 200-line read fits whole and the 600-line one is cut. So the same
+// read is shown at 200, then cut at 600, then frozen at 200 from then on, with no swing between base and wider. Its 8th
+// unchanged repeat at 200 (the 11th call) ends the turn with repeat_loop.
+func TestCompactAtCliffChainFreezesOnACut(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 14; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+	}
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = 1_000_000
+	h.sess.cfg.StopRepeats, h.sess.cfg.MaxResultBytes = true, 5000
+	h.sess.cfg.Budget.MaxRequests, h.sess.cfg.Budget.MaxToolCalls = 20, 20
+	wideFile(h)
+	stop, err := h.sess.Turn(context.Background(), "x")
+	if err != nil || stop != proto.StopRepeatLoop || len(h.script.Requests) != 11 {
+		t.Fatalf("stop %s, err %v, %d requests; want repeat_loop at 11", stop, err, len(h.script.Requests))
+	}
+	if f := h.finished("r1"); !f.Truncated {
+		t.Fatal("the 600-line read was not cut: the test needs it cut")
+	}
+	for _, id := range []string{"r0", "r2", "r5", "r10"} {
+		if f := h.finished(id); f.Truncated || strings.Count(f.Result, "\tw ") != 200 {
+			t.Errorf("%s: cut %v, %d lines; want 200 whole", id, f.Truncated, strings.Count(f.Result, "\tw "))
+		}
+	}
+}
+
+// A compaction clears the chain of the calls it stubs: the same whole read widens to all 700 lines; then a read at the
+// cliff gets the note, and the cliff compaction stubs the old whole reads; so the next whole read is at the base cap,
+// 200 lines, not 700.
+func TestCompactAtCliffCompactionClearsTheChain(t *testing.T) {
+	const window = 100_000
+	read := `{"path":"wide.txt"}`
+	var replies []goinfertest.Reply
+	for i := 0; i < 3; i++ {
+		replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", read))
+	}
+	replies = append(replies, callsAt(window-300, "b0", "read", bigRead), callsAt(100, "r3", "read", read), goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = window
+	h.sess.cfg.MaxResultBytes = 1 << 20
+	wideFile(h)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	var cliff bool
+	for _, p := range h.payloads(proto.EvCompaction) {
+		cliff = cliff || p.(proto.Compaction).Trigger == "cliff"
+	}
+	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+	if !cliff || lines("r2") != 700 || lines("r3") != 200 {
+		t.Fatalf("cliff compaction %v, r2 %d lines, r3 %d lines; want a cliff compaction, then 700 and 200", cliff, lines("r2"), lines("r3"))
+	}
+}
+
+// A widened result cut to fit covers only the base cap: with a 5 KB result cap, the second whole read (widened to 600
+// lines) is cut, so it covers lines 1-200, and a later read of lines 1-300 supersedes it. Taken as covering 600 lines,
+// it would not be superseded.
+func TestCompactAtCliffCutWideReadCoversTheBase(t *testing.T) {
+	replies := []goinfertest.Reply{
+		goinfertest.Calls("", "r0", "read", `{"path":"wide.txt"}`),
+		goinfertest.Calls("", "r1", "read", `{"path":"wide.txt"}`),
+		goinfertest.Calls("", "r2", "read", `{"path":"wide.txt","offset":1,"limit":300}`),
+		goinfertest.Says("ok"),
+	}
+	h := cliffHarness(t, true, replies...)
+	h.script.Window = 1_000_000
+	h.sess.cfg.MaxResultBytes = 5000
+	wideFile(h)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !h.finished("r1").Truncated || h.finished("r2").Truncated {
+		t.Fatal("the test needs r1 cut and r2 whole")
+	}
+	var stubbed []string
+	for _, m := range h.sess.maskStubs(9, false) {
+		stubbed = append(stubbed, m.ID)
+	}
+	if !slices.Contains(stubbed, "r1") {
+		t.Fatalf("stubbed %v: the cut widened read r1 was not superseded by lines 1-300", stubbed)
 	}
 }

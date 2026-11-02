@@ -332,29 +332,42 @@ func TestMaskWidenedReadCoverage(t *testing.T) {
 	}
 }
 
-// The shown chain widens only after a result was shown and asked for again unchanged: level 0 before any, 1 after A
-// was shown, 2 after A was shown twice. A changed output starts the chain again, and a note ends it, so the first real
-// result after it is at the base cap.
+// The shown chain: a first result shown whole puts the next call at level 1, and an unchanged one at 1 puts it at 2,
+// where it stays. A result not shown whole freezes the chain at the level below it: served at 1 and cut, the chain
+// freezes at 0, and stays there while the output is unchanged, whether later results fit or not. A changed output
+// starts the chain again.
 func TestShownChain(t *testing.T) {
 	c := shownChain{}
 	if c.level("k") != 0 {
 		t.Fatal("unseen widens")
 	}
-	c.record("k", "A", false)
+	c.record("k", "A", 0, true)
 	if c.level("k") != 1 || !c.same("k", "A") || c.same("k", "B") {
-		t.Fatalf("after A shown: level %d", c.level("k"))
+		t.Fatalf("after A shown at 0: level %d", c.level("k"))
 	}
-	c.record("k", "A", false)
+	c.record("k", "A", 1, true)
+	c.record("k", "A", 2, true)
 	if c.level("k") != 2 {
-		t.Fatalf("after A shown twice: level %d", c.level("k"))
+		t.Fatalf("after A shown at 1 and 2: level %d", c.level("k"))
 	}
-	c.record("k", "B", false)
-	if c.level("k") != 1 || !c.same("k", "B") {
-		t.Fatalf("after a change to B: level %d", c.level("k"))
+	f := shownChain{}
+	f.record("k", "A", 0, true)
+	f.record("k", "A", 1, false) // cut at 1: freeze at 0
+	for i := 0; i < 3; i++ {
+		f.record("k", "A", f.level("k"), i%2 == 0)
+		if f.level("k") != 0 {
+			t.Fatalf("after a cut at 1, repeat %d: level %d, want frozen at 0", i, f.level("k"))
+		}
 	}
-	c.record("k", "B", true)
-	if c.level("k") != 0 || c.same("k", "B") {
-		t.Fatalf("after a note: level %d, same %v; want the chain ended", c.level("k"), c.same("k", "B"))
+	f.record("k", "B", 0, true)
+	if f.level("k") != 1 {
+		t.Fatalf("after a change to B: level %d, want the chain started again", f.level("k"))
+	}
+	n := shownChain{}
+	n.record("k", "A", 0, false) // the first result cut or a note: frozen at the base cap
+	n.record("k", "A", 0, true)
+	if n.level("k") != 0 {
+		t.Fatalf("after a first result not shown whole: level %d, want 0", n.level("k"))
 	}
 }
 
@@ -386,5 +399,17 @@ func TestMaskKeepsTheSuperseder(t *testing.T) {
 	}
 	if again := s.maskStubs(20, true); len(again) != 0 {
 		t.Fatalf("a later wide compaction stubbed the superseder: %+v", again)
+	}
+}
+
+// A whole read is not pinned when it supersedes an earlier whole read, so the cliff can still stub it: both are old,
+// and one wide compaction stubs both.
+func TestMaskWholeReadStaysStubbable(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	s := &Session{}
+	s.track(observe("a", "read", []byte(`{"path":"f.go"}`), 1, long, true), false, 0)
+	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
+	if got := s.maskStubs(9, true); len(got) != 2 {
+		t.Fatalf("wide stubs %+v: want both the superseded whole read and the old whole read that covered it", got)
 	}
 }
