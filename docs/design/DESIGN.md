@@ -485,6 +485,20 @@ Around the turn:
 - **Concurrency on one workspace.** Until worktree sessions arrive (P5), one session per workspace may write; others are
   read-only or wait.
 
+**When the model calls `done`, the result shows what it did to the tests** (from the test-integrity group of
+AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02)). The claim check
+(the model's reason, beside the last verification's command and exit status) also reports, from the session's own edits
+and commands:
+- a test file deleted, or a test function removed;
+- a skip added (`t.Skip`, `@pytest.mark.skip` and the like), including through `sed` or `perl`;
+- an edit to a test file the task names;
+- test settings loosened (a narrower `-run`, a lowered coverage gate);
+- a test run that ran nothing. `go test` prints `ok` with `[no tests to run]` when `-run` matches no test, and that
+  counts as no verification, not a pass.
+
+These are shown, not refused: a task may rightly change a test. In E1 they can't change the grade, because the oracle's
+tests come from the fix commit after the run, so they are mechanism metrics there.
+
 **Message-structure rules the loop enforces** — the Messages API's, which goinfer's `/v1/messages` follows, mapped by
 the OpenAI-compatible adapter — each with a cassette test:
 
@@ -572,6 +586,33 @@ tool-use smoke set compares this merged set against the split one before it is f
   approval time, and a rule matches the resolved path and its flags. An allow rule for `go test` therefore does not cover
   `go test ./... && curl … | sh`: every simple command in a pipeline, list, subshell or substitution must be allowed on
   its own, and a redirect to a path outside the workspace asks.
+- **Commands that destroy work inside the workspace ask, in every mode, until §6.8's snapshots exist.** The sandbox
+  keeps a command inside the workspace; it does not stop the command from wiping it. In `auto`, `git reset --hard`
+  over a day's uncommitted work runs without a question and cannot be rewound.
+  - The list, from the working-tree and destructive-data groups of AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02):
+    - `git reset --hard`, `--merge` and `--keep`;
+    - `git checkout` or `git restore` used to discard changes;
+    - `git clean -f` in any form;
+    - `rm -r` on a directory in the workspace, or on the workspace itself;
+    - `git branch -D`, `git stash drop` and `git stash clear`;
+    - a flag that accepts data loss (`--force-reset`, `--accept-data-loss`) and a migration reset.
+  - Matching is on the parsed command: the resolved program and its flags, never the text. A commit message or a
+    `grep` that mentions `git reset --hard` doesn't match.
+  - The library's tested examples, the commands each rule must catch and the near-misses it must leave alone, become
+    the Go tests for tack's port.
+  - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
+    snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
+- **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
+  agent-context and safety-bypass groups:
+  - edits to CI definitions (`.github/workflows/`, `.gitlab-ci.yml` and the like);
+  - edits to the instruction files (`AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `.agents/`), which a model could
+    otherwise rewrite to change its own standing orders (§6.7);
+  - `git --no-verify`, `git -c core.hooksPath=…` and `git config core.hooksPath`, which skip the owner's hooks;
+  - starting another agent from `bash` (`claude`, `codex`, `gemini`, `tack` and the like).
+  - **Never, from the file tools:** a write inside `.git/`. Git's own commands still write there.
+  - **Already covered, by the sandbox profile:** secrets, shell history and logs outside the workspace, host-key
+    checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, `.git/hooks`, `.git/config` and
+    shell startup files.
 - **Checked again as it runs.** Approval reads the parsed text, but `$GOBIN/tool` or `for f in …; do … > "$f"; done`
   only show their real program and paths after expansion. So `tackd shell` also checks every command and every file it
   opens at the moment the interpreter runs it (the interpreter's exec and open handlers), against the same rules. A
@@ -1024,6 +1065,12 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
 - **Fixtures.** `proto/fixtures/` holds golden transcripts: requests, responses and events. Go tests replay them against
   the daemon; Swift tests decode, re-encode and compare after normalization. A change that breaks a fixture fails both
   sides in the same CI run.
+- **Tool output is text, never terminal control** (from the same library's safety-bypass group, 2026-11-02).
+  - The daemon replaces control characters in tool output, except newline and tab, with a visible escape before any
+    client or the model sees it.
+  - Otherwise a command's output could move the cursor, rewrite earlier lines, or forge an approval prompt in the
+    TUI, or set the clipboard through OSC 52.
+  - Nothing in `internal/` handles control characters today.
 - **Clients never parse markdown or diffs.** The log stores the model's raw output (§6.2); what clients receive in
   `session/event` is rendered from it by `internal/render`: blocks — paragraph (inline runs of text, code,
   emphasis, links), heading, list, code (language, text, highlight spans), table, quote, rule, image, diagram. Highlight
