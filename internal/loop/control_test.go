@@ -62,6 +62,34 @@ func noRawControl(t *testing.T, where, s string) {
 	}
 }
 
+// jsonStrings is every string in a JSON document, decoded.
+func jsonStrings(t *testing.T, doc []byte) []string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(doc, &v); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	var walk func(any)
+	walk = func(v any) {
+		switch v := v.(type) {
+		case string:
+			out = append(out, v)
+		case []any:
+			for _, e := range v {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range v {
+				out = append(out, k)
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -96,17 +124,11 @@ func TestToolOutputControlIsEscaped(t *testing.T) {
 				t.Fatal(err)
 			}
 			noRawControl(t, "the blob", string(full))
-			// What the model was sent, decoded from the second request.
-			var req struct {
-				Messages []struct {
-					Content json.RawMessage `json:"content"`
-				} `json:"messages"`
-			}
-			if err := json.Unmarshal(h.script.Requests[1], &req); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(req.Messages[len(req.Messages)-1].Content), `\\x1b[2K`) {
-				t.Fatalf("the request does not show the escape: %.300s", h.script.Requests[1])
+			// What the model was sent and what the log holds, decoded: JSON spells a control character out, so its text hides one.
+			sent := jsonStrings(t, h.script.Requests[1])
+			noRawControl(t, "the request", strings.Join(sent, "\n"))
+			if !strings.Contains(strings.Join(sent, "\n"), rawControlEscaped) {
+				t.Fatalf("the request does not show the escapes: %.300s", h.script.Requests[1])
 			}
 			evs, err := h.st.Events("s_test", 0)
 			if err != nil {
@@ -116,10 +138,7 @@ func TestToolOutputControlIsEscaped(t *testing.T) {
 				t.Fatal("the log holds no events")
 			}
 			for _, ev := range evs {
-				noRawControl(t, "the log's "+string(ev.Type), string(ev.Payload))
-				if strings.Contains(string(ev.Payload), `\u001b`) {
-					t.Fatalf("the log's %s holds an encoded ESC: %.200s", ev.Type, ev.Payload)
-				}
+				noRawControl(t, "the log's "+string(ev.Type), strings.Join(jsonStrings(t, ev.Payload), "\n"))
 			}
 		})
 	}
@@ -137,6 +156,9 @@ func TestBuildNoteControlIsEscaped(t *testing.T) {
 		t.Fatalf("no build note: %q", f.Result)
 	}
 	noRawControl(t, "the build note", f.Result)
+	if !strings.Contains(f.Result, rawControlEscaped) {
+		t.Fatalf("the build note does not show the escapes: %q", f.Result)
+	}
 }
 
 // edit's current-symbol note quotes the file, and the loop appends it after the tool's own result.
@@ -161,6 +183,9 @@ func TestCurrentSymbolNoteControlIsEscaped(t *testing.T) {
 		t.Fatalf("no current-symbol note: %q", f.Result)
 	}
 	noRawControl(t, "the note", f.Result)
+	if !strings.Contains(f.Result, rawControlEscaped) {
+		t.Fatalf("the note does not show the escapes: %q", f.Result)
+	}
 }
 
 // A widened read whose output changed shows its base view (Result.Base) in place of the widened text: the base view is
@@ -187,6 +212,9 @@ func TestWidenedBaseControlIsEscaped(t *testing.T) {
 		t.Fatalf("shown %d lines, want the base view's 200", n)
 	}
 	noRawControl(t, "the base view", f.Result)
+	if !strings.Contains(f.Result, rawControlEscaped) {
+		t.Fatalf("the base view does not show the escapes: %.200q", f.Result)
+	}
 }
 
 // A build note's last line is followed by the note's own text, so a CR there is not a line ending.
@@ -201,6 +229,9 @@ func TestBuildNoteLineEndingIsEscaped(t *testing.T) {
 		t.Fatalf("no build note: %q", f.Result)
 	}
 	noRawControl(t, "the build note", f.Result)
+	if !strings.Contains(f.Result, `bad\r`) {
+		t.Fatalf("the build note does not show the escape: %q", f.Result)
+	}
 }
 
 // crlfFile is mcp/token_budget.go with CRLF line endings.
@@ -267,5 +298,36 @@ func TestCurrentSymbolNoteKeepsCRLF(t *testing.T) {
 	f := h.finished("e2")
 	if !strings.Contains(f.Result, tools.CurrentSymbolOpen) || !strings.Contains(f.Result, "func applyTokenBudget() {}\r\n") {
 		t.Fatalf("the note does not quote the file: %q", f.Result)
+	}
+}
+
+// A cut at any byte leaves no raw control character: not the CR of a CRLF it divides, and not a lone byte of a character
+// it divides, whose continuation bytes fall in the C1 range. Every offset, through both caps.
+func TestCutsLeaveNoRawControl(t *testing.T) {
+	body := strings.Repeat("FIND a\r\nFIND …日本語🙂\r\n", 200)
+	for _, fit := range []bool{false, true} {
+		for size := fitMinBytes; size < fitMinBytes+64; size++ {
+			h := newHarness(t, Budget{}, goinfertest.Calls("", "g1", "read", `{"path":"out.txt"}`), goinfertest.Says("ok"))
+			writeFile(t, filepath.Join(h.ws.Root(), "out.txt"), body)
+			h.sess.cfg.FitWindow = fit
+			h.script.Window = 100_000
+			h.sess.cfg.MaxResultBytes = size
+			if _, err := h.sess.Turn(context.Background(), "read it"); err != nil {
+				t.Fatal(err)
+			}
+			evs, err := h.st.Events("s_test", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f := h.finished("g1"); !f.Truncated {
+				t.Fatalf("fit=%v size=%d: not cut", fit, size)
+			}
+			for _, ev := range evs {
+				noRawControl(t, fmt.Sprintf("fit=%v size=%d", fit, size), strings.Join(jsonStrings(t, ev.Payload), "\n"))
+				if strings.Contains(string(ev.Payload), `\ufffd`) || strings.ContainsRune(string(ev.Payload), utf8.RuneError) {
+					t.Fatalf("fit=%v size=%d: a cut divided a character: %.200s", fit, size, ev.Payload)
+				}
+			}
+		}
 	}
 }
