@@ -2649,3 +2649,33 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - **Coverage and shown lines:** a widened result counts as widened only if it was shown whole.
   - **Pinning:** a read that supersedes an earlier read is kept whole only when the earlier one was a range read. A
     whole read stays stubbable at the cliff, so the largest results cannot become immune.
+- **Amended an eighth time before any §16.2 run (2026-11-01, from Gemini's sixth review of #45): the pin carries.**
+  A read that supersedes a range read, or a read that is itself kept whole, is kept whole. So along a chain (a range,
+  then a whole read, then a newer whole read), one compaction keeps the newest whole read rather than stubbing all
+  three. A whole read that supersedes only another whole read stays stubbable, as before.
+- **Amended a ninth time before any §16.2 run (Francis, 2026-11-01 18:00, relayed by the coordinator): widening is
+  split out.**
+  - **The new setting:** progressive widening moves to its own `[run]` setting, `widen_repeats`, off by default. It is
+    not part of this screen.
+  - **This screen's arms:** B is the base plus `compact_at_cliff`, which is now only the cliff compaction and the
+    stuck reaction. The base is the bundle, plus `lean_results` if §16.1's 144 runs show it. A is the base alone.
+  - **Why (tack's session, the case Francis decided on):**
+    - In §16.1's first 72 runs, all 22 repeat loops were the model asking again for a call answered with the
+      nearly-full note. In C9's runs, 54 of 56 were.
+    - Widening applies away from the cliff, and a note freezes its chain, so its expected effect on those loops is
+      near zero.
+    - It carried most of the bugs found in six review rounds.
+    - With it out, B tests one mechanism.
+  - **Dropped from this screen's metrics and predictions:** widened results and re-asks.
+  - **Predictions, restated:**
+    - B's `repeat_loop` stops fall by two-thirds or more against A's;
+    - d between 0 and +5;
+    - B's wall time per run rises.
+  - **The `widen_repeats` follow-up, for its own later registration and screen.** Gemini's sixth review of #45 found
+    these on the widening path; they stay open:
+    - (2) stubbing an older read clears the chain for a newer, unmasked read with the same key; clear it only when the
+      newest observation for the key is stubbed;
+    - (3) TestCompactAtCliffCompactionClearsTheChain passes only through (2), since its read r2 is never old at the
+      compaction;
+    - (4) a note freezes the chain at level 0 even after the cliff compaction it triggers frees room; and a level-2
+      grep buffers every match, so level 2 needs a hard ceiling.
