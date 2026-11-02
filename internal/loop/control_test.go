@@ -301,8 +301,9 @@ func TestCurrentSymbolNoteKeepsCRLF(t *testing.T) {
 	}
 }
 
-// A cut at any byte leaves no raw control character: not the CR of a CRLF it divides, and not a lone byte of a character
-// it divides, whose continuation bytes fall in the C1 range. Every offset, through both caps.
+// A cut leaves no raw control character: not the CR of a CRLF it divides, and not a lone byte of a character it divides,
+// whose continuation bytes fall in the C1 range. It sweeps 64 cap sizes through both caps, which moves the cuts across
+// the file's repeating CRLF and multi-byte text.
 func TestCutsLeaveNoRawControl(t *testing.T) {
 	body := strings.Repeat("FIND a\r\nFIND …日本語🙂\r\n", 200)
 	for _, fit := range []bool{false, true} {
