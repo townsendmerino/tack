@@ -2679,3 +2679,7 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
       compaction;
     - (4) a note freezes the chain at level 0 even after the cliff compaction it triggers frees room; and a level-2
       grep buffers every match, so level 2 needs a hard ceiling.
+    - From Gemini's seventh review of #45 (merged 2026-11-01). Its first two points restate (2) and (3) above; only
+      the third is new:
+      - (5) a frozen chain never steps down when its frozen level is cut too, so it can stay stuck at 3 times.
+    - These do not touch §16.2's arms, which run without widening.
