@@ -2649,3 +2649,7 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - **Coverage and shown lines:** a widened result counts as widened only if it was shown whole.
   - **Pinning:** a read that supersedes an earlier read is kept whole only when the earlier one was a range read. A
     whole read stays stubbable at the cliff, so the largest results cannot become immune.
+- **Amended an eighth time before any §16.2 run (2026-11-01, from Gemini's sixth review of #45): the pin carries.**
+  A read that supersedes a range read, or a read that is itself kept whole, is kept whole. So along a chain (a range,
+  then a whole read, then a newer whole read), one compaction keeps the newest whole read rather than stubbing all
+  three. A whole read that supersedes only another whole read stays stubbable, as before.
