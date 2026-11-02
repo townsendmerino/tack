@@ -1068,6 +1068,8 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
 - **Tool output is text, never terminal control** (from the same library's safety-bypass group, 2026-11-02).
   - The daemon replaces control characters in tool output, except newline and tab, with a visible escape before any
     client or the model sees it.
+  - The carriage return of a CRLF stays too. It overwrites nothing, and a model copies those lines into `edit`, which must
+    match the file. Any other carriage return is escaped.
   - Otherwise a command's output could move the cursor, rewrite earlier lines, or forge an approval prompt in the
     TUI, or set the clipboard through OSC 52.
   - `internal/loop/control.go:escapeControl` does this in `runTool`, right after redaction, and on the build note.

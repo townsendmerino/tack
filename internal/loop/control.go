@@ -8,8 +8,10 @@ import (
 )
 
 // escapeControl replaces the control characters in a tool's output with a visible escape, so that output can't move a
-// terminal's cursor, rewrite earlier lines, forge a prompt or set the clipboard (DESIGN §9.3). Newline and tab pass.
-//   - C0 and DEL become \xNN, except carriage return, which becomes \r: CRLF files have one on every line.
+// terminal's cursor, rewrite earlier lines, forge a prompt or set the clipboard (DESIGN §9.3). Newline and tab pass, and
+// so does the carriage return of a CRLF, which overwrites nothing: a model copies those lines into edit, which must match
+// the file.
+//   - C0 and DEL become \xNN, except any other carriage return, which becomes \r.
 //   - C1 becomes \uNNNN, and a lone invalid byte in the C1 range becomes \xNN.
 //   - Other invalid bytes pass: they control nothing, and their encoding on the way to a client is not this pass's.
 //
@@ -23,7 +25,9 @@ func escapeControl(s string) string {
 		switch {
 		case r == '\n' || r == '\t':
 		case r == '\r':
-			esc = `\r`
+			if i+1 >= len(s) || s[i+1] != '\n' {
+				esc = `\r`
+			}
 		case r < 0x20 || r == 0x7f, r == utf8.RuneError && n == 1 && s[i] >= 0x80 && s[i] < 0xa0:
 			esc = fmt.Sprintf(`\x%02x`, s[i])
 		case unicode.IsControl(r):
