@@ -2494,6 +2494,8 @@ Francis's yes, and their arms lines are fixed before any run.
   - **Outcome (read 2026-11-02; record `e1-calibration-c10-lean-2026-11-01.md`): over all 144 runs, A 25 of 72, B 29 of
     72, d = +4, against edges of 2.83 and 5.66. Parked: `lean_results` is not adopted, and §16.2 runs against the
     bundle alone.**
+  - **Francis's override (2026-11-02 07:00, relayed by the coordinator): "un-park leaner results." `lean_results` is
+    adopted by his decision. The read stands at d = +4, parked; the rule did not show it.**
 
 ### 16.2 Compact at the cliff (`compact_at_cliff`), decided by passes — registered 2026-11-01, before it is built
 
@@ -2702,3 +2704,15 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
     d ≥ +4 is adopted, +2 to +3 parked, +1 or less not shown, with A winning ties.
   - **The mechanism metric and predictions** are as in the amendments above (the ninth restates the predictions).
   - **Time:** about 4 to 5 hours (§16.1's first half took 4 h 16 min, warm-up included).
+- **Amended before any §16.2 run (Francis, 2026-11-02 07:00, relayed by the coordinator): `lean_results` is in both
+  arms.** This replaces "The base" and "The arms" in the arms line above, and the ninth amendment's condition on the base.
+  - **The arms:** A is the bundle plus `lean_results`. B is A plus `compact_at_cliff`. `widen_repeats` and
+    `mask_observations` stay off in both.
+  - **No run is affected:** the job queued at 06:30 made two attempts, at 06:31 and 06:47, and both stopped at the
+    launcher's check of nobara's lock, before any model load.
+  - **The launcher:** the same file, with `-setting lean_results` added. Its first-block check now stops the screen if
+    any config lacks `lean_results`, and still stops on `widen_repeats` or `mask_observations`.
+  - **Unchanged:** the build, the 72 runs, the read (`calreport -rule sd=2.0,n=36`, d ≥ +4 adopted, +2 to +3 parked, +1 or
+    less not shown, A winning ties) and the predictions as the ninth amendment restates them.
+  - **Not pooled:** these runs are not pooled with §16.1's.
+  - **Time:** about 4.5 to 5.5 hours, since `lean_results` runs took longer in §16.1 (B 246 min of runs, A 222).
