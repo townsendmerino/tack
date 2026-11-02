@@ -194,7 +194,10 @@ func (t grepTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	// the base cap derives its base-cap view from the same hits, by the same rule.
 	type hit struct{ rel, line string }
 	var hits []hit
-	limit := widened(ctx, t.limit()) // 0: no limit (WithWiden)
+	limit := widened(ctx, t.limit()) // 0: the widest level (WithWiden)
+	if limit == 0 {
+		limit = 10 * t.limit() // bound what is held in memory before any cut
+	}
 	search := func(rel string) {
 		if (limit > 0 && len(hits) >= limit) || (only != nil && !only.MatchString(rel) && !only.MatchString(filepath.Base(rel))) {
 			return

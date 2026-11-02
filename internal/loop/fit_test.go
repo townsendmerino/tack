@@ -349,8 +349,9 @@ func TestCompactAtCliffKeepsTheRepeatRuleAwayFromTheCliff(t *testing.T) {
 }
 
 // Progressive widening: the same whole read of a 700-line file three times shows 200, 600, then all 700 lines, and
-// the same grep over 400 matches shows 100, 300, then all 400. Each widening step shows something new, so it starts the
-// repeat count again. With the setting off, each call shows the base cap, and the repeats are counted.
+// the same grep over 1200 matches shows 100, 300, then 1000 (level 2's 10x ceiling). Each widening step shows something
+// new, so it starts the repeat count again. With the setting off, each call shows the base cap, and the repeats are
+// counted.
 func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		replies := []goinfertest.Reply{}
@@ -368,7 +369,7 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 		for i := 1; i <= 700; i++ {
 			fmt.Fprintf(&wide, "w %d\n", i)
 		}
-		for i := 1; i <= 400; i++ {
+		for i := 1; i <= 1200; i++ {
 			fmt.Fprintf(&hits, "hit %d\n", i)
 		}
 		os.WriteFile(filepath.Join(h.ws.Root(), "wide.txt"), []byte(wide.String()), 0o644)
@@ -378,7 +379,7 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 		}
 		lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
 		matches := func(id string) int { return strings.Count(h.finished(id).Result, "hits.txt:") }
-		want := map[bool][6]int{true: {200, 600, 700, 100, 300, 400}, false: {200, 200, 200, 100, 100, 100}}[on]
+		want := map[bool][6]int{true: {200, 600, 700, 100, 300, 1000}, false: {200, 200, 200, 100, 100, 100}}[on]
 		got := [6]int{lines("r0"), lines("r1"), lines("r2"), matches("g0"), matches("g1"), matches("g2")}
 		if got != want {
 			t.Errorf("on %v: shown %v, want %v", on, got, want)
@@ -709,17 +710,64 @@ func TestCompactAtCliffChainFreezesOnACut(t *testing.T) {
 	}
 }
 
-// A compaction clears the chain of the calls it stubs: the same whole read widens to all 700 lines; then a read at the
-// cliff gets the note, and the cliff compaction stubs the old whole reads; so the next whole read is at the base cap,
-// 200 lines, not 700.
+// A compaction clears the chain of a call only when no unmasked observation with its key remains: the same whole read
+// widens to all 700 lines (r0, r1, r2); when the cliff compaction stubs only the superseded r0 and r1 while r2 (within
+// the last 3 requests) stays unmasked, r3 stays at 700 lines; when two more calls age r2 past the last 3 requests so
+// the cliff compaction stubs r2 too, r3 starts again at the base cap, 200 lines.
 func TestCompactAtCliffCompactionClearsTheChain(t *testing.T) {
 	const window = 100_000
 	read := `{"path":"wide.txt"}`
-	var replies []goinfertest.Reply
-	for i := 0; i < 3; i++ {
-		replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", read))
+	run := func(gap int) (r2Masked bool, r2Lines, r3Lines int) {
+		var replies []goinfertest.Reply
+		for i := 0; i < 3; i++ {
+			replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", read))
+		}
+		for i := 0; i < gap; i++ {
+			replies = append(replies, callsAt(100, fmt.Sprintf("g%d", i), "glob", `{"pattern":"*.txt"}`))
+		}
+		replies = append(replies, callsAt(window-300, "b0", "read", bigRead), callsAt(100, "r3", "read", read), goinfertest.Says("ok"))
+		h := cliffHarness(t, true, replies...)
+		h.script.Window = window
+		h.sess.cfg.MaxResultBytes = 1 << 20
+		wideFile(h)
+		if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+			t.Fatal(err)
+		}
+		var masked []string
+		for _, p := range h.payloads(proto.EvCompaction) {
+			for _, m := range p.(proto.Compaction).Masked {
+				masked = append(masked, m.ID)
+			}
+		}
+		if !slices.Contains(masked, "r0") {
+			t.Fatalf("gap %d: masked %v, want r0 stubbed", gap, masked)
+		}
+		lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+		return slices.Contains(masked, "r2"), lines("r2"), lines("r3")
 	}
-	replies = append(replies, callsAt(window-300, "b0", "read", bigRead), callsAt(100, "r3", "read", read), goinfertest.Says("ok"))
+	if r2Masked, r2, r3 := run(0); r2Masked || r2 != 700 || r3 != 700 {
+		t.Fatalf("with r2 unmasked (%v): r2 %d lines, r3 %d lines; want false, 700 and 700", r2Masked, r2, r3)
+	}
+	if r2Masked, r2, r3 := run(2); !r2Masked || r2 != 700 || r3 != 200 {
+		t.Fatalf("with r2 stubbed (%v): r2 %d lines, r3 %d lines; want true, 700 and 200", r2Masked, r2, r3)
+	}
+}
+
+// A nearly-full note freezes the chain at level 0; when the cliff compaction that note triggers stubs the call's old
+// observation (while the note itself stays unmasked), it unfreezes the chain so later calls widen again.
+func TestCompactAtCliffCompactionUnfreezesTheChain(t *testing.T) {
+	const window = 100_000
+	read := `{"path":"wide.txt"}`
+	replies := []goinfertest.Reply{
+		callsAt(100, "r0", "read", read),
+		callsAt(100, "g0", "glob", `{"pattern":"*.txt"}`),
+		callsAt(100, "g1", "glob", `{"pattern":"*.txt"}`),
+		callsAt(window-300, "n0", "read", read),
+		callsAt(100, "r1", "read", read),
+		callsAt(100, "r2", "read", read),
+		callsAt(100, "r3", "read", read),
+		goinfertest.Says("ok"),
+	}
 	h := cliffHarness(t, true, replies...)
 	h.script.Window = window
 	h.sess.cfg.MaxResultBytes = 1 << 20
@@ -727,13 +775,12 @@ func TestCompactAtCliffCompactionClearsTheChain(t *testing.T) {
 	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
-	var cliff bool
-	for _, p := range h.payloads(proto.EvCompaction) {
-		cliff = cliff || p.(proto.Compaction).Trigger == "cliff"
+	if !strings.HasPrefix(h.finished("n0").Result, "[window nearly full") {
+		t.Fatalf("n0 did not get the note: %.80q", h.finished("n0").Result)
 	}
 	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
-	if !cliff || lines("r2") != 700 || lines("r3") != 200 {
-		t.Fatalf("cliff compaction %v, r2 %d lines, r3 %d lines; want a cliff compaction, then 700 and 200", cliff, lines("r2"), lines("r3"))
+	if got := [3]int{lines("r1"), lines("r2"), lines("r3")}; got != [3]int{200, 600, 700} {
+		t.Fatalf("after compaction stubbed r0: shown %v, want [200 600 700]", got)
 	}
 }
 

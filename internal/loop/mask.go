@@ -278,7 +278,12 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		for _, o := range s.obs {
 			if o.id == m.ID {
 				before += o.bytes
-				delete(s.shown, o.callKey) // its next call starts again at the base cap
+				if !s.unmasked(o.callKey) {
+					delete(s.shown, o.callKey) // its next call starts again at the base cap
+				} else if l, ok := s.shown[o.callKey]; ok && l.frozen {
+					l.frozen = false
+					s.shown[o.callKey] = l
+				}
 			}
 		}
 		after += len(m.Stub)
@@ -290,11 +295,21 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 	return len(masked), err
 }
 
+// unmasked says whether an unmasked observation with callKey remains.
+func (s *Session) unmasked(callKey string) bool {
+	for _, o := range s.obs {
+		if o.callKey == callKey && !o.masked {
+			return true
+		}
+	}
+	return false
+}
+
 // shownChain is progressive widening's state, per call key this turn (Config.WidenRepeats; calibration §16.2): the
-// base-cap output the call last showed, and the level its next call is served at. The level only goes up, and only on
-// an unchanged result shown whole. A result cut to fit, or answered with fit_window's nearly-full note, freezes the
-// chain at the last level that fit whole. A changed output starts it again, and a compaction that stubs the call
-// clears it (compactNow).
+// base-cap output the call last showed, and the level its next call is served at. An unchanged result shown whole goes
+// up a level unless the chain is frozen. A result cut to fit, or answered with fit_window's nearly-full note, freezes
+// the chain at the level below, the last that fit. A changed output starts it again; a compaction that stubs an
+// observation unfreezes its chain, and clears the chain when no unmasked observation with its key remains (compactNow).
 type shownChain map[string]shownLink
 
 type shownLink struct {
@@ -313,8 +328,9 @@ func (c shownChain) same(key, base string) bool {
 }
 
 // record takes a call's base-cap output, the level it was served at, and whether its result was shown whole. A first
-// call, or a changed output, starts the chain at the base cap; a frozen chain stays; an unchanged result shown whole
-// goes up a level; one not shown whole freezes the chain at the level below, the last that fit.
+// call, or a changed output, starts the chain at the base cap; an unchanged result not shown whole freezes the chain at
+// the level below, the last that fit (stepping a frozen chain down when that level no longer fits); one shown whole
+// goes up a level unless the chain is frozen.
 func (c shownChain) record(key, base string, served int, whole bool) {
 	l, ok := c[key]
 	switch {
@@ -325,11 +341,10 @@ func (c shownChain) record(key, base string, served int, whole bool) {
 		} else {
 			l.frozen = true
 		}
-	case l.frozen:
-	case whole:
-		l.level = min(served+1, 2)
-	default:
+	case !whole:
 		l.level, l.frozen = max(served-1, 0), true
+	case !l.frozen:
+		l.level = min(served+1, 2)
 	}
 	c[key] = l
 }
