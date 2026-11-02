@@ -384,6 +384,9 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 		if got != want {
 			t.Errorf("on %v: shown %v, want %v", on, got, want)
 		}
+		if !on && len(h.sess.shown) != 0 {
+			t.Errorf("off: the chain holds %d calls, want none", len(h.sess.shown))
+		}
 		// Repeats count on what was shown: on, each widening step shows something new, so no repeat is noted; off,
 		// the same output is shown, and the notes count repeat 1 and 2.
 		for id, rep := range map[string]string{"r1": "repeat 1", "r2": "repeat 2", "g2": "repeat 2"} {
@@ -753,19 +756,21 @@ func TestCompactAtCliffCompactionClearsTheChain(t *testing.T) {
 	}
 }
 
-// A nearly-full note freezes the chain at level 0; when the cliff compaction that note triggers stubs the call's old
-// observation (while the note itself stays unmasked), it unfreezes the chain so later calls widen again.
+// A nearly-full note on a call served at level 2 freezes its chain at level 1. The cliff compaction that note triggers stubs the
+// old reads but not the note, so the chain is kept and unfrozen: the next calls show 600 lines, then 700. Cleared, they would show
+// 200 and 600; still frozen, 600 and 600.
 func TestCompactAtCliffCompactionUnfreezesTheChain(t *testing.T) {
 	const window = 100_000
 	read := `{"path":"wide.txt"}`
 	replies := []goinfertest.Reply{
 		callsAt(100, "r0", "read", read),
+		callsAt(100, "r1", "read", read),
+		callsAt(100, "r2", "read", read),
 		callsAt(100, "g0", "glob", `{"pattern":"*.txt"}`),
 		callsAt(100, "g1", "glob", `{"pattern":"*.txt"}`),
 		callsAt(window-300, "n0", "read", read),
-		callsAt(100, "r1", "read", read),
-		callsAt(100, "r2", "read", read),
 		callsAt(100, "r3", "read", read),
+		callsAt(100, "r4", "read", read),
 		goinfertest.Says("ok"),
 	}
 	h := cliffHarness(t, true, replies...)
@@ -778,9 +783,18 @@ func TestCompactAtCliffCompactionUnfreezesTheChain(t *testing.T) {
 	if !strings.HasPrefix(h.finished("n0").Result, "[window nearly full") {
 		t.Fatalf("n0 did not get the note: %.80q", h.finished("n0").Result)
 	}
+	var masked []string
+	for _, p := range h.payloads(proto.EvCompaction) {
+		for _, m := range p.(proto.Compaction).Masked {
+			masked = append(masked, m.ID)
+		}
+	}
+	if !slices.Contains(masked, "r2") || slices.Contains(masked, "n0") {
+		t.Fatalf("masked %v, want r2 stubbed and the note kept", masked)
+	}
 	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
-	if got := [3]int{lines("r1"), lines("r2"), lines("r3")}; got != [3]int{200, 600, 700} {
-		t.Fatalf("after compaction stubbed r0: shown %v, want [200 600 700]", got)
+	if got := [2]int{lines("r3"), lines("r4")}; got != [2]int{600, 700} {
+		t.Fatalf("after the compaction: shown %v, want [600 700]", got)
 	}
 }
 

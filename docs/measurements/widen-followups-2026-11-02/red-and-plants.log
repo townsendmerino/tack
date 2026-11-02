@@ -1,0 +1,47 @@
+# the fixed tests on this branch: exit 0
+--- PASS: TestCompactAtCliffWidensARepeatedCall (0.04s)
+--- PASS: TestCompactAtCliffCompactionClearsTheChain (0.04s)
+--- PASS: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+--- PASS: TestShownChain (0.00s)
+--- PASS: TestWithWiden (0.00s)
+# the same tests on main's mask.go and fs.go: exit 1
+fit_test.go:385: on true: shown [200 600 700 100 300 1200], want [200 600 700 100 300 1000]
+--- FAIL: TestCompactAtCliffWidensARepeatedCall (0.05s)
+fit_test.go:752: with r2 unmasked (false): r2 700 lines, r3 200 lines; want false, 700 and 700
+--- FAIL: TestCompactAtCliffCompactionClearsTheChain (0.02s)
+fit_test.go:797: after the compaction: shown [200 600], want [600 700]
+--- FAIL: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+mask_test.go:360: after a cut at 1 while frozen: level 1, want stepped down to 0
+--- FAIL: TestShownChain (0.00s)
+tools_test.go:314: level 2: read, grep, range [700 700 50], want [700 300 50]
+--- FAIL: TestWithWiden (0.00s)
+# plant: a compaction does not unfreeze (D): exit 1
+--- PASS: TestCompactAtCliffWidensARepeatedCall (0.04s)
+--- PASS: TestCompactAtCliffCompactionClearsTheChain (0.04s)
+fit_test.go:797: after the compaction: shown [600 600], want [600 700]
+--- FAIL: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+--- PASS: TestShownChain (0.00s)
+--- PASS: TestWithWiden (0.00s)
+# plant: compaction always clears (A): exit 1
+--- PASS: TestCompactAtCliffWidensARepeatedCall (0.04s)
+fit_test.go:752: with r2 unmasked (false): r2 700 lines, r3 200 lines; want false, 700 and 700
+--- FAIL: TestCompactAtCliffCompactionClearsTheChain (0.02s)
+fit_test.go:797: after the compaction: shown [200 600], want [600 700]
+--- FAIL: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+--- PASS: TestShownChain (0.00s)
+--- PASS: TestWithWiden (0.00s)
+# plant: a frozen chain does not step down (C): exit 1
+--- PASS: TestCompactAtCliffWidensARepeatedCall (0.04s)
+--- PASS: TestCompactAtCliffCompactionClearsTheChain (0.04s)
+--- PASS: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+mask_test.go:360: after a cut at 1 while frozen: level 1, want stepped down to 0
+--- FAIL: TestShownChain (0.00s)
+--- PASS: TestWithWiden (0.00s)
+# plant: level-2 grep unbounded (E): exit 1
+fit_test.go:385: on true: shown [200 600 700 100 300 1200], want [200 600 700 100 300 1000]
+--- FAIL: TestCompactAtCliffWidensARepeatedCall (0.05s)
+--- PASS: TestCompactAtCliffCompactionClearsTheChain (0.04s)
+--- PASS: TestCompactAtCliffCompactionUnfreezesTheChain (0.02s)
+--- PASS: TestShownChain (0.00s)
+tools_test.go:314: level 2: read, grep, range [700 700 50], want [700 300 50]
+--- FAIL: TestWithWiden (0.00s)

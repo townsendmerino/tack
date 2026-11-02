@@ -1,0 +1,29 @@
+touched: 11 files; gofmt 8, build+vet 18 packages, test 10 packages
+  test pass github.com/townsendmerino/tack/internal/config (pass=9 fail=0 skip=0)
+  test pass github.com/townsendmerino/tack/internal/window (pass=4 fail=0 skip=0)
+  test skip github.com/townsendmerino/tack/tools/replaytolerant (pass=0 fail=0 skip=0)
+  test pass github.com/townsendmerino/tack/internal/kensearch (pass=6 fail=0 skip=1)
+  test pass github.com/townsendmerino/tack/internal/tools (pass=65 fail=0 skip=0)
+  test pass github.com/townsendmerino/tack/cmd/tack (pass=39 fail=0 skip=1)
+  test pass github.com/townsendmerino/tack/internal/core (pass=24 fail=0 skip=0)
+  test pass github.com/townsendmerino/tack/internal/models (pass=9 fail=0 skip=1)
+  test pass github.com/townsendmerino/tack/internal/loop (pass=97 fail=0 skip=0)
+  test pass github.com/townsendmerino/tack/internal/eval/pilot (pass=37 fail=0 skip=0)
+ok            gofmt files=8
+ok            modules/darwin
+ok            modules/linux
+ok            build/darwin packages=18
+ok            vet/darwin packages=18
+ok            build/linux packages=18
+ok            vet/linux packages=18
+ok            test github.com/townsendmerino/tack/cmd/tack pass=39 fail=0 skip=1
+ok            test github.com/townsendmerino/tack/internal/config pass=9 fail=0 skip=0
+ok            test github.com/townsendmerino/tack/internal/core pass=24 fail=0 skip=0
+ok            test github.com/townsendmerino/tack/internal/eval/pilot pass=37 fail=0 skip=0
+ok            test github.com/townsendmerino/tack/internal/kensearch pass=6 fail=0 skip=1
+ok            test github.com/townsendmerino/tack/internal/loop pass=97 fail=0 skip=0
+ok            test github.com/townsendmerino/tack/internal/models pass=9 fail=0 skip=1
+ok            test github.com/townsendmerino/tack/internal/tools pass=65 fail=0 skip=0
+ok            test github.com/townsendmerino/tack/internal/window pass=4 fail=0 skip=0
+n/a           test github.com/townsendmerino/tack/tools/replaytolerant pass=0 fail=0 skip=0
+VERDICT: PASS — touched: 16/16 applicable checks passed (0 failed, 0 inconclusive, 1 n/a)
