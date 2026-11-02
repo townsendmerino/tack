@@ -84,6 +84,7 @@ func (s *Session) buildNote(ctx context.Context, input json.RawMessage) string {
 		return ""
 	}
 	out, _ := perms.Redact(res.Output)
+	out = escapeControl(out)
 	return buildErrors(shown, out, mod)
 }
 

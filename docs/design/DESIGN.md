@@ -1070,7 +1070,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
     client or the model sees it.
   - Otherwise a command's output could move the cursor, rewrite earlier lines, or forge an approval prompt in the
     TUI, or set the clipboard through OSC 52.
-  - Nothing in `internal/` handles control characters today.
+  - `internal/loop/control.go:escapeControl` does this in `runTool`, right after redaction, and on the build note.
 - **Clients never parse markdown or diffs.** The log stores the model's raw output (§6.2); what clients receive in
   `session/event` is rendered from it by `internal/render`: blocks — paragraph (inline runs of text, code,
   emphasis, links), heading, list, code (language, text, highlight spans), table, quote, rule, image, diagram. Highlight
