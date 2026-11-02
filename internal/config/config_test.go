@@ -168,3 +168,14 @@ func TestCompactAtCliffSetting(t *testing.T) {
 		t.Fatalf("on: %v, %v", c.Run.CompactAtCliff, err)
 	}
 }
+
+// widen_repeats is a [run] setting, off by default, apart from compact_at_cliff.
+func TestWidenRepeatsSetting(t *testing.T) {
+	base := "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	if c, err := load(t, base+"[run]\ncompact_at_cliff = true\n"); err != nil || c.Run.WidenRepeats {
+		t.Fatalf("compact_at_cliff alone: widen_repeats %v, %v", c.Run.WidenRepeats, err)
+	}
+	if c, err := load(t, base+"[run]\nwiden_repeats = true\n"); err != nil || !c.Run.WidenRepeats || c.Run.CompactAtCliff {
+		t.Fatalf("widen_repeats alone: %+v, %v", c.Run, err)
+	}
+}

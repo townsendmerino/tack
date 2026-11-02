@@ -290,7 +290,7 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 	return len(masked), err
 }
 
-// shownChain is progressive widening's state, per call key this turn (Config.CompactAtCliff; calibration §16.2): the
+// shownChain is progressive widening's state, per call key this turn (Config.WidenRepeats; calibration §16.2): the
 // base-cap output the call last showed, and the level its next call is served at. The level only goes up, and only on
 // an unchanged result shown whole. A result cut to fit, or answered with fit_window's nearly-full note, freezes the
 // chain at the last level that fit whole. A changed output starts it again, and a compaction that stubs the call

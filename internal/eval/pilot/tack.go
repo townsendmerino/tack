@@ -80,6 +80,7 @@ var RunSettings = map[string]bool{
 	"best_of_3":              true, // §15.3, C9's best of three, written as best_of = 3 (runValues)
 	"lean_results":           true, // §16.1, C10's leaner exploration results
 	"compact_at_cliff":       true, // §16.2, C10's compaction at the nearly-full note
+	"widen_repeats":          true, // §16.2's widening, split out (Francis 2026-11-01 18:00): its own later screen
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

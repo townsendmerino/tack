@@ -830,19 +830,22 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   change files (bash, or any tool not known to only read), between the two. Each result is rewritten at most once.
 - **The record:** a `compaction` event lists every stub, so `loop.Rebuild` replays it.
 - **The cost:** one re-prefill from the first rewritten message, each time it runs.
-- **Reacting when stuck** (`[run] compact_at_cliff`, off by default; calibration §16.2). It does three things:
+- **Reacting when stuck** (`[run] compact_at_cliff`, off by default; calibration §16.2). It does two things:
   - **At the cliff:** at a turn's first "window nearly full" note from `fit_window` where something can be stubbed,
     a compaction runs before the next request. Besides the above, it stubs grep and glob output and whole-file reads
-    from before the last 3 requests. The trigger is `cliff`.
+    from before the last 3 requests. The trigger is `cliff`. A read that superseded an earlier range read, or a read
+    kept that way, is kept whole.
   - **When stuck:** when `stop_repeats` would end the turn on a call answered with that note, it compacts the same
     way and lets the turn go on, at most twice a turn. The trigger is `stuck`.
-  - **Widening:** a whole read or a grep whose base-cap result was shown, and is asked for again unchanged, is
-    shown with 3 times its cap, then with none. It runs once; the tool returns its base-cap view too. A result
-    replaced by the nearly-full note, or cut, was not shown whole: it freezes the chain at the last level that fit.
-    A changed output starts the chain again, and a compaction clears the chain of each call it stubs, so the first
-    re-run after it is at the base cap. A read that superseded an earlier range read is kept whole.
-  - **Counting:** as with the setting off, on what was shown. A note is the note, so a change from a note to a shown
-    result resets the count. A widening step shows something new and starts the count again, at most twice a chain.
+- **Progressive widening** (`[run] widen_repeats`, off by default; built, not yet screened). A whole read or a grep
+  whose base-cap result was shown, and is asked for again unchanged, is shown with 3 times its cap, then with none.
+  - It runs once; the tool returns its base-cap view too.
+  - A result replaced by the nearly-full note, or cut, was not shown whole: it freezes the chain at the last level
+    that fit. A changed output starts the chain again, and a compaction clears the chain of each call it stubs.
+  - Repeats are counted on what was shown, as without it, so a widening step starts the count again, at most twice a
+    chain.
+  - Francis split it from `compact_at_cliff` on 2026-11-01. The data put the repeat loops at the cliff, where widening
+    does not apply.
 - **Not yet built:** the summarizing and re-retrieval steps above.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past

@@ -81,11 +81,13 @@ type Config struct {
 	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
 	//     3 requests become one-line stubs;
 	//   - when StopRepeats would end the turn on a call answered with that note, it compacts the same way and goes on,
-	//     at most stuckMax times a turn;
-	//   - a whole read or grep whose base-cap result was shown, and is asked for again unchanged, is shown with 3 times
-	//     its cap, then none (tools.WithWiden; shownChain). A result replaced by the nearly-full note, or cut, was not
-	//     shown whole and freezes the chain. Repeats are counted on what was shown, as with the setting off.
+	//     at most stuckMax times a turn.
 	CompactAtCliff bool
+	// WidenRepeats is progressive widening: a whole read or grep whose base-cap result was shown, and is asked for
+	// again unchanged, is shown with 3 times its cap, then none (tools.WithWiden; shownChain). A result replaced by the
+	// nearly-full note, or cut, was not shown whole and freezes the chain. Repeats are counted on what was shown. It is
+	// separate from CompactAtCliff and not yet screened (calibration §16.2, Francis 2026-11-01 18:00).
+	WidenRepeats bool
 	// ReadLines is how many lines the session's read tool returns for a read with no range (tools.Options.WholeReadLines):
 	// what masking takes such a read to cover. 0 means the default, 200.
 	ReadLines int
@@ -432,12 +434,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				var full []byte
-				// Progressive widening (Config.CompactAtCliff; mask.go, shownChain): a whole read or a grep whose result
+				// Progressive widening (Config.WidenRepeats; mask.go, shownChain): a whole read or a grep whose result
 				// at the base cap was shown, and is asked for again, runs once at a wider cap; the tool also returns its
 				// base-cap view (Base). If that differs from what was last shown, the output changed, and the base view
 				// is shown instead.
 				var pick func(*tools.Result)
-				widenable := s.cfg.CompactAtCliff && tools.Widenable(b.Name, b.Input)
+				widenable := s.cfg.WidenRepeats && tools.Widenable(b.Name, b.Input)
 				if widenable {
 					if level = s.shown.level(key); level > 0 {
 						pick = func(r *tools.Result) {

@@ -216,7 +216,7 @@ func cliffHarness(t *testing.T, on bool, replies ...goinfertest.Reply) *harness 
 		fmt.Fprintf(&b, "small %02d of a short file, long enough to count\n", i)
 	}
 	os.WriteFile(filepath.Join(h.ws.Root(), "small.txt"), []byte(b.String()), 0o644)
-	h.sess.cfg.CompactAtCliff = on
+	h.sess.cfg.CompactAtCliff, h.sess.cfg.WidenRepeats = on, on // the widening tests need both; the rest are unaffected
 	return h
 }
 
@@ -393,8 +393,8 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 	}
 }
 
-// Widening needs only compact_at_cliff: with stop_repeats and result_notes off, the same whole read three times shows
-// 200, 600, then all 700 lines.
+// Widening needs only widen_repeats: with compact_at_cliff, stop_repeats and result_notes off, the same whole read
+// three times shows 200, 600, then all 700 lines.
 func TestCompactAtCliffWidensAlone(t *testing.T) {
 	var replies []goinfertest.Reply
 	for i := 0; i < 3; i++ {
@@ -404,6 +404,7 @@ func TestCompactAtCliffWidensAlone(t *testing.T) {
 	h := cliffHarness(t, true, replies...)
 	h.script.Window = 1_000_000
 	h.sess.cfg.StopRepeats, h.sess.cfg.ResultNotes, h.sess.cfg.MaxResultBytes = false, false, 1<<20
+	h.sess.cfg.CompactAtCliff = false // widen_repeats alone
 	var wide strings.Builder
 	for i := 1; i <= 700; i++ {
 		fmt.Fprintf(&wide, "w %d\n", i)
@@ -762,5 +763,27 @@ func TestCompactAtCliffCutWideReadCoversTheBase(t *testing.T) {
 	}
 	if !slices.Contains(stubbed, "r1") {
 		t.Fatalf("stubbed %v: the cut widened read r1 was not superseded by lines 1-300", stubbed)
+	}
+}
+
+// compact_at_cliff without widen_repeats, as §16.2's screen runs it, never widens: the same whole read three times
+// shows 200 lines each time.
+func TestCompactAtCliffAloneDoesNotWiden(t *testing.T) {
+	var replies []goinfertest.Reply
+	for i := 0; i < 3; i++ {
+		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
+	}
+	replies = append(replies, goinfertest.Says("ok"))
+	h := cliffHarness(t, true, replies...)
+	h.sess.cfg.WidenRepeats = false
+	h.script.Window = 1_000_000
+	h.sess.cfg.MaxResultBytes = 1 << 20
+	wideFile(h)
+	if _, err := h.sess.Turn(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	lines := func(id string) int { return strings.Count(h.finished(id).Result, "\tw ") }
+	if got := [3]int{lines("r0"), lines("r1"), lines("r2")}; got != [3]int{200, 200, 200} {
+		t.Fatalf("shown %v, want [200 200 200]", got)
 	}
 }
