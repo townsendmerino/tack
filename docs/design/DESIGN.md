@@ -631,8 +631,9 @@ tool-use smoke set compares this merged set against the split one before it is f
     It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user's yes
     covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): each command the parse asked about, with a hole
     where it expands, and each redirection, by its resolved path. It goes by the statement, never by what a reason says, since two
-    statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`,
-    `trap` and a declaration that expands can cover anything, since they can be anything, and never a command shown in full. Text the
+    statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`
+    and `trap` can cover anything, since their code can be anything, and never a command shown in full. What may set any variable covers
+    variables only. A shell handed code is covered only by a yes that said so. Text the
     parse asked about is covered wherever it runs, since what runs can't say which statement it is. Whatever was approved, a flag that
     makes a program run another (`perms.RunFlag`) must have been shown, in the command that runs.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs

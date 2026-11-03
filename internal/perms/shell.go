@@ -162,13 +162,11 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 		}
 	})
 	always = e.scanAsks(f, scan{dir: e.startDir()})
-	// What an earlier command exported: it reaches every program this one runs. Builtins run none, so unset gets out.
-	if runsProgram(f) {
-		for _, name := range sortedKeys(e.SessionEnv) {
-			if v := e.SessionEnv[name]; v != os.Getenv(name) {
-				if r := HooksOff(name, v); r != "" {
-					always = appendNew(always, r)
-				}
+	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
+	for _, name := range sortedKeys(e.SessionEnv) {
+		if v := e.SessionEnv[name]; v != os.Getenv(name) && runsProgramWith(f, name) {
+			if r := HooksOff(name, v); r != "" {
+				always = appendNew(always, r)
 			}
 		}
 	}
@@ -298,18 +296,42 @@ func (e *Engine) resolve(name string) (string, error) {
 	return real, nil
 }
 
-// runsProgram reports whether code may run a program, resolved or not: any simple command but a builtin that needs no rule.
-func runsProgram(f *syntax.File) bool {
-	runs := false
+// runsProgramWith reports whether code may run a program, resolved or not, with the session's value of a variable: any simple command but
+// a builtin that needs no rule, before an unset of it. If that unset doesn't run after all, the run-time check still holds.
+func runsProgramWith(f *syntax.File, name string) bool {
+	decided, runs := false, false
 	syntax.Walk(f, func(n syntax.Node) bool {
-		if c, ok := n.(*syntax.CallExpr); ok && len(c.Args) > 0 {
-			if name, ok := literal(c.Args[0]); !ok || !safeBuiltins[name] {
-				runs = true
-			}
+		c, ok := n.(*syntax.CallExpr)
+		if decided || !ok || len(c.Args) == 0 {
+			return !decided
 		}
-		return !runs
+		words := c.Args
+		if w, ok := literal(words[0]); ok && w == "builtin" && len(words) > 1 {
+			words = words[1:]
+		}
+		w, ok := literal(words[0])
+		switch {
+		case !ok || !safeBuiltins[w] && w != "unset":
+			decided, runs = true, true
+		case w == "unset" && unsets(words[1:], name):
+			decided = true
+		}
+		return !decided
 	})
 	return runs
+}
+
+// unsets reports whether unset's arguments clear a variable, which unset -f doesn't.
+func unsets(args []*syntax.Word, name string) bool {
+	found := false
+	for _, w := range args {
+		a, ok := literal(w)
+		if ok && a == "-f" {
+			return false
+		}
+		found = found || (ok && a == name)
+	}
+	return found
 }
 
 // resolveFrom is resolve for a command running in dir: a relative path means what it means there.

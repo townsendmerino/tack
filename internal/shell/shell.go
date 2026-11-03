@@ -379,7 +379,9 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
 		if hc.Stdin != nil { // something is fed to it: the parse read the pipe, and this holds if it didn't
 			if r := ck.engine.ShellFed(args, hc.Dir); r != "" {
-				why = append(why, r)
+				if err := ck.everyMode([]string{r}, strings.Join(args, " "), ck.req.Scope.CoversFed(args)); err != nil {
+					return err
+				}
 			}
 		}
 		// Whatever the program, since it may be the one that runs git: env, or a shell.

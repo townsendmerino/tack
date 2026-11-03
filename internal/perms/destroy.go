@@ -49,6 +49,9 @@ const runsTextEnd = " runs code from text"
 // hole stands in Approval for a word that expands: it matches any number of words.
 const hole = "\x00"
 
+// holeOne is a hole that matches at most one word.
+const holeOne = "\x02"
+
 // Approval is what a user's yes to a command covers when the command runs (DESIGN §6.6): each command the parse asked about, for any
 // reason, with a hole where it expands. It doesn't go by what a reason says, since two statements can say the same. A command the
 // parse had nothing to say about is what it is, so no hole covers it, and what only shows when it runs still stops it.
@@ -58,9 +61,11 @@ type Approval struct {
 	Literal  [][]string `json:"literal"`  // the commands it didn't
 	// Redirects are the targets it asked about, absolute where it can tell, or as written after a cd it lost, or hole for one that
 	// expands. LiteralRedirects are those it didn't, absolute.
-	Redirects        []string `json:"redirects"`
-	LiteralRedirects []string `json:"literal_redirects"`
-	Vars             []string `json:"vars"` // the variables it asked about
+	Redirects        []string   `json:"redirects"`
+	LiteralRedirects []string   `json:"literal_redirects"`
+	Vars             []string   `json:"vars"`    // the variables it asked about
+	AnyVar           bool       `json:"any_var"` // it asked about what may set any variable: a word that names it expands
+	Fed              [][]string `json:"fed"`     // the shells it asked about being handed code
 }
 
 // ApprovalFor is what a user's yes to command covers.
@@ -112,12 +117,23 @@ func (a Approval) Saw(args []string) bool {
 }
 
 // CoversVar reports whether a yes covers a variable's value.
-func (a Approval) CoversVar(name string) bool { return a.Anything || slices.Contains(a.Vars, name) }
+func (a Approval) CoversVar(name string) bool {
+	return a.Anything || a.AnyVar || slices.Contains(a.Vars, name)
+}
+
+// CoversFed reports whether a yes covers a shell handed code: only one it asked about for that, so a yes to the same command for another
+// reason doesn't.
+func (a Approval) CoversFed(args []string) bool {
+	return a.Anything || slices.ContainsFunc(a.Fed, func(c []string) bool { return matchHoles(c, args) })
+}
 
 // matchHoles reports whether words match pattern, a hole taking any number of them.
 func matchHoles(pattern, words []string) bool {
 	if len(pattern) == 0 {
 		return len(words) == 0
+	}
+	if pattern[0] == holeOne {
+		return matchHoles(pattern[1:], words) || (len(words) > 0 && matchHoles(pattern[1:], words[1:]))
 	}
 	if pattern[0] == hole {
 		for i := 0; i <= len(words); i++ {
@@ -130,18 +146,21 @@ func matchHoles(pattern, words []string) bool {
 	return len(words) > 0 && pattern[0] == words[0] && matchHoles(pattern[1:], words[1:])
 }
 
-// record notes one simple command and what the parse said about it. The interpreter runs command, builtin and exec itself, so what
-// it hands on is the command under them.
-func (a *Approval) record(words []*syntax.Word, why []string) {
+// template is a simple command as the program it hands on runs: holes where it expands, and without command, builtin and exec, which the
+// interpreter runs itself. whole is true if nothing in it expands. A word that expands right after those is a flag or the program, so it
+// takes at most one word, or it would match any command that ends the same.
+func template(words []*syntax.Word) (argv []string, whole bool) {
 	argv, lit := args(words)
-	whole := !slices.Contains(lit, false)
+	whole = !slices.Contains(lit, false)
 	for i := range argv {
 		if !lit[i] {
 			argv[i] = hole
 		}
 	}
+	prefixed := false
 	for len(argv) > 1 && (argv[0] == "command" || argv[0] == "builtin" || argv[0] == "exec") {
 		isExec := argv[0] == "exec"
+		prefixed = true
 		argv = argv[1:]
 		for len(argv) > 1 && strings.HasPrefix(argv[0], "-") {
 			if isExec && argv[0] == "-a" && len(argv) > 2 {
@@ -150,6 +169,16 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 			argv = argv[1:]
 		}
 	}
+	if prefixed && len(argv) > 1 && argv[0] == hole {
+		argv[0] = holeOne
+	}
+	return argv, whole
+}
+
+// record notes one simple command and what the parse said about it. The interpreter runs command, builtin and exec itself, so what
+// it hands on is the command under them.
+func (a *Approval) record(words []*syntax.Word, why []string) {
+	argv, whole := template(words)
 	switch {
 	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
 		a.Anything = true
@@ -393,7 +422,7 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				if name, _, _ := declared(n); name != "" {
 					sc.rec.Vars = append(sc.rec.Vars, name)
 				} else {
-					sc.rec.Anything = true // it may set anything, so it may turn anything off
+					sc.rec.AnyVar = true
 				}
 			}
 			why = appendNew(why, asks...)
@@ -402,7 +431,7 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 			switch {
 			case dynamic:
 				if sc.rec != nil {
-					sc.rec.Anything = true
+					sc.rec.AnyVar = true
 				}
 				why = appendNew(why, unseen("an expansion sets a variable named when it runs, which may be any"))
 			case isHookVar(name):
@@ -419,10 +448,12 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				why = appendNew(why, unseenIn(n.Name.Value, "a loop sets it to values that can't be read here"))
 			}
 		case *syntax.BinaryCmd, *syntax.Stmt:
-			asks, calls := e.stdinAsks(n, sc.dir)
+			asks, calls := e.stdinAsks(n, sc)
 			if sc.rec != nil {
 				for _, c := range calls {
 					sc.rec.record(c.Args, asks)
+					argv, _ := template(c.Args)
+					sc.rec.Fed = append(sc.rec.Fed, argv)
 				}
 			}
 			why = appendNew(why, asks...)
@@ -442,7 +473,7 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 					sc.rec.record(n.Args, asks)
 					for _, v := range namedVars(n.Args) {
 						if v == unknownWord {
-							sc.rec.Anything = true
+							sc.rec.AnyVar = true
 						} else if isHookVar(v) {
 							sc.rec.Vars = append(sc.rec.Vars, v)
 						}
@@ -500,7 +531,7 @@ func commitValues(args []string) []int {
 	}
 	var out []int
 	for j := i + 1; j+1 < len(args); j++ {
-		if commitTakesNext(args[j]) {
+		if gitValuedFlags["commit"].takesNext(args[j]) {
 			j++
 			out = append(out, j)
 		}
@@ -561,12 +592,15 @@ func namedVars(words []*syntax.Word) []string {
 			out = append(out, v)
 		}
 	case "read":
-		for _, w := range words[1:] {
-			a, lit := literal(w)
-			if !lit {
+		for i := 1; i < len(words); i++ {
+			a, lit := literal(words[i])
+			switch {
+			case !lit:
 				out = append(out, unknownWord)
-			} else if !strings.HasPrefix(a, "-") {
+			case !strings.HasPrefix(a, "-"):
 				out = append(out, a)
+			case len(a) > 1 && strings.IndexByte("pdnNtu", a[len(a)-1]) >= 0: // the next word is its value, not a name
+				i++
 			}
 		}
 	case "export", "declare", "typeset", "local", "readonly":
@@ -715,7 +749,7 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 			}
 			rest = fillIn(rest, mark)
 		}
-		if shell := e.shellUnder(args[i], rest, sc.dir); shell != "" {
+		if shell := e.shellUnder(args[i], rest, sc); shell != "" {
 			return appendNew(why, unseenIn(shell, "it is handed code"))
 		}
 	}
@@ -831,14 +865,14 @@ func scriptIsStdin(script, dir string) bool {
 // ShellFed is the reason a program with these arguments, as it runs with something on its stdin, is a shell handed code, or "". The
 // run-time check has no parse of the pipe, only that there is one.
 func (e *Engine) ShellFed(args []string, dir string) string {
-	if shell := e.shellUnder(args[0], args[1:], dir); shell != "" {
+	if shell := e.shellUnder(args[0], args[1:], scan{dir: dir}); shell != "" {
 		return unseenIn(shell, "it is handed code")
 	}
 	return ""
 }
 
 // feedsShell returns the shell a simple command runs, directly, under a wrapper, or through a symlink, or "".
-func (e *Engine) feedsShell(words []*syntax.Word, dir string) string {
+func (e *Engine) feedsShell(words []*syntax.Word, sc scan) string {
 	if len(words) == 0 {
 		return ""
 	}
@@ -852,15 +886,18 @@ func (e *Engine) feedsShell(words []*syntax.Word, dir string) string {
 			argv[i] = unknownWord
 		}
 	}
-	return e.shellUnder(first, argv, dir)
+	return e.shellUnder(first, argv, sc)
 }
 
 // shellUnder returns the shell a program with these arguments runs, or "". What a wrapper runs is read as the wrapper reads it, so an
-// argument named sh is only an argument.
-func (e *Engine) shellUnder(name string, args []string, dir string) string {
+// argument named sh is only an argument. After a cd it lost, a relative program may be anything, a shell too.
+func (e *Engine) shellUnder(name string, args []string, sc scan) string {
 	for {
 		base := filepath.Base(name)
-		if real, err := e.resolveFrom(name, dir); err == nil {
+		if sc.lost && strings.Contains(name, "/") && !filepath.IsAbs(name) {
+			return base
+		}
+		if real, err := e.resolveFrom(name, sc.dir); err == nil {
 			if r := filepath.Base(real); slices.Contains(shellNames, r) {
 				return r
 			}
@@ -882,7 +919,7 @@ func (e *Engine) shellUnder(name string, args []string, dir string) string {
 
 // stdinAsks asks for what is fed to a shell: a pipe into it, or an input redirection, a here-document or a here-string on it, on a
 // block or subshell around it too. It returns the commands it asks about, since the reason is on the pipe or the redirection.
-func (e *Engine) stdinAsks(n syntax.Node, dir string) ([]string, []*syntax.CallExpr) {
+func (e *Engine) stdinAsks(n syntax.Node, sc scan) ([]string, []*syntax.CallExpr) {
 	fed := func(c syntax.Command) ([]string, []*syntax.CallExpr) {
 		if c == nil {
 			return nil, nil
@@ -891,7 +928,7 @@ func (e *Engine) stdinAsks(n syntax.Node, dir string) ([]string, []*syntax.CallE
 		var calls []*syntax.CallExpr
 		syntax.Walk(c, func(n syntax.Node) bool {
 			if call, ok := n.(*syntax.CallExpr); ok {
-				if shell := e.feedsShell(call.Args, dir); shell != "" {
+				if shell := e.feedsShell(call.Args, sc); shell != "" {
 					why = appendNew(why, unseenIn(shell, "it is handed code"))
 					calls = append(calls, call)
 				}
@@ -941,7 +978,7 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 				why = appendNew(why, unseenIn("find", "what it runs is filled in from what it finds"))
 			default:
 				rest := fillIn(args[i+2:end], "{}") // what find found, which can't be seen
-				if shell := e.shellUnder(args[i+1], rest, sc.dir); shell != "" {
+				if shell := e.shellUnder(args[i+1], rest, sc); shell != "" {
 					why = appendNew(why, unseenIn(shell, "it is handed code"))
 				}
 				why = appendNew(why, e.programAsks(args[i+1], rest, sc.in())...)
@@ -1057,27 +1094,39 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		}
 	case "switch":
 		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
-			return flagIs(a, "--discard-changes") || flagIs(a, "--force") || shortFlag(a, 'f', "cC")
+			return flagIs(a, "--discard-changes") || flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["switch"].letters())
 		}) {
 			discard("switch with --discard-changes or --force")
 		}
 	case "restore":
-		staged := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--staged") || shortFlag(a, 'S', "s") })
-		worktree := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--worktree") || shortFlag(a, 'W', "s") })
+		staged := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+			return flagIs(a, "--staged") || shortFlag(a, 'S', gitValuedFlags["restore"].letters())
+		})
+		worktree := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+			return flagIs(a, "--worktree") || shortFlag(a, 'W', gitValuedFlags["restore"].letters())
+		})
 		if !staged || worktree {
 			discard("restore on the working tree")
 		}
 	case "clean":
 		flags := flagsOf(sub, rest)
-		dry := slices.ContainsFunc(flags, func(a string) bool { return flagIs(a, "--dry-run") || shortFlag(a, 'n', "e") })
-		force := slices.ContainsFunc(flags, func(a string) bool { return flagIs(a, "--force") || shortFlag(a, 'f', "e") })
+		dry := slices.ContainsFunc(flags, func(a string) bool {
+			return flagIs(a, "--dry-run") || shortFlag(a, 'n', gitValuedFlags["clean"].letters())
+		})
+		force := slices.ContainsFunc(flags, func(a string) bool {
+			return flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["clean"].letters())
+		})
 		if force && !dry {
 			discard("clean -f")
 		}
 	case "branch":
-		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--delete") || shortFlag(a, 'd', "") })
-		force := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--force") || shortFlag(a, 'f', "") })
-		if (del && force) || slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'D', "") }) {
+		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+			return flagIs(a, "--delete") || shortFlag(a, 'd', gitValuedFlags["branch"].letters())
+		})
+		force := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+			return flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["branch"].letters())
+		})
+		if (del && force) || slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'D', gitValuedFlags["branch"].letters()) }) {
 			discard("branch -D")
 		}
 	case "stash":
@@ -1085,7 +1134,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			discard("stash " + rest[0])
 		}
 	case "commit":
-		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'n', commitNextLetters+commitAttachedLetters) }) {
+		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'n', gitValuedFlags["commit"].letters()) }) {
 			why = appendNew(why, "git commit --no-verify skips the owner's hooks")
 		}
 	case "config":
@@ -1104,25 +1153,17 @@ func gitWordsMatter(sub string, rest []string) bool {
 	return slices.Contains(rest, unknownWord)
 }
 
-// flagsOf is a subcommand's arguments up to --, after which they are paths, without the flags' values, which could spell a flag: a
-// commit's message, a clean's exclude. A value that expands is kept, since it may split into flags.
+// flagsOf is a subcommand's arguments up to --, after which they are paths, without its flags' values (gitValuedFlags), which could spell
+// a flag. A value that expands is kept, since it may split into flags.
 func flagsOf(sub string, rest []string) []string {
-	takes := func(string) bool { return false }
-	switch sub {
-	case "commit":
-		takes = commitTakesNext
-	case "clean":
-		takes = func(a string) bool {
-			return flagIs(a, "--exclude") || (shortFlag(a, 'e', "") && strings.HasSuffix(a, "e"))
-		}
-	}
+	valued := gitValuedFlags[sub]
 	var out []string
 	for j := 0; j < len(rest); j++ {
 		a := rest[j]
 		if a == "--" {
 			break
 		}
-		if takes(a) && j+1 < len(rest) && rest[j+1] != unknownWord {
+		if valued.takesNext(a) && j+1 < len(rest) && rest[j+1] != unknownWord {
 			out = append(out, a)
 			j++
 			continue
@@ -1132,29 +1173,38 @@ func flagsOf(sub string, rest []string) []string {
 	return out
 }
 
-// git commit's flags that take a value. The long ones and the letters in commitNextLetters take the next word. Those in
-// commitAttachedLetters take one only attached (-uno), so the next word is still a flag, as real git shows: git commit -u --no-verify
-// skips the hooks.
-const (
-	commitNextLetters     = "mFcCt"
-	commitAttachedLetters = "uS"
-)
+// valuedFlags are a git subcommand's flags that take a value. The long ones and the letters in next take the next word. Those in attached
+// take one only attached (-uno), so the next word is still a flag, as real git shows: git commit -u --no-verify skips the hooks.
+type valuedFlags struct {
+	long           []string
+	next, attached string
+}
 
-var commitLongValued = []string{"--message", "--file", "--template", "--reuse-message", "--reedit-message", "--author", "--date", "--trailer", "--fixup", "--squash", "--cleanup", "--pathspec-from-file"}
+var gitValuedFlags = map[string]valuedFlags{
+	"commit":  {long: []string{"--message", "--file", "--template", "--reuse-message", "--reedit-message", "--author", "--date", "--trailer", "--fixup", "--squash", "--cleanup", "--pathspec-from-file"}, next: "mFcCt", attached: "uS"},
+	"clean":   {long: []string{"--exclude"}, next: "e"},
+	"restore": {long: []string{"--source", "--pathspec-from-file"}, next: "s"},
+	"switch":  {long: []string{"--create", "--force-create", "--orphan"}, next: "cC"},
+	"branch":  {long: []string{"--contains", "--no-contains", "--merged", "--no-merged", "--points-at", "--sort", "--format", "--set-upstream-to"}, next: "u"},
+	"reset":   {long: []string{"--pathspec-from-file"}},
+}
 
-// commitTakesNext reports whether the next word is this commit flag's value: a long flag by any prefix, or letters that end in one that takes it.
-func commitTakesNext(a string) bool {
+// letters is every letter that takes a value, which ends a cluster of one-letter flags.
+func (v valuedFlags) letters() string { return v.next + v.attached }
+
+// takesNext reports whether the next word is this flag's value: a long flag by any prefix, or letters that end in one that takes it.
+func (v valuedFlags) takesNext(a string) bool {
 	if strings.HasPrefix(a, "--") {
-		return len(a) > 2 && slices.ContainsFunc(commitLongValued, func(full string) bool { return strings.HasPrefix(full, a) })
+		return len(a) > 2 && slices.ContainsFunc(v.long, func(full string) bool { return strings.HasPrefix(full, a) })
 	}
 	if len(a) < 2 || a[0] != '-' {
 		return false
 	}
 	for i := 1; i < len(a); i++ {
-		if strings.IndexByte(commitAttachedLetters, a[i]) >= 0 {
+		if strings.IndexByte(v.attached, a[i]) >= 0 {
 			return false
 		}
-		if strings.IndexByte(commitNextLetters, a[i]) >= 0 {
+		if strings.IndexByte(v.next, a[i]) >= 0 {
 			return i == len(a)-1
 		}
 	}

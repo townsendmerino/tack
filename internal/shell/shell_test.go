@@ -572,3 +572,60 @@ func TestApprovedRedirectsAndVarsRun(t *testing.T) {
 		}
 	}
 }
+
+// An approval for something else doesn't cover a shell being fed. The parse can't see through a function, and the run-time check holds it.
+func TestApprovalForElseDoesNotCoverAFedShell(t *testing.T) {
+	s := session(t, true)
+	sub := filepath.Join(s.Engine.Root, "sub")
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sh, filepath.Join(sub, "mysh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := `d=sub; cd $d; f() { ./mysh script.sh; }; echo y | f`
+	if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+		t.Fatalf("%s did not ask", cmd)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); !strings.Contains(r.Stopped, "handed code") {
+		t.Fatalf("%+v", r)
+	}
+	// Told about the pipe, the user approved that.
+	s = session(t, true)
+	sub = filepath.Join(s.Engine.Root, "sub")
+	if err := os.Symlink(sh, filepath.Join(sub, "mysh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := runBy(t, s, perms.ByUser, `d=sub; cd $d; echo y | ./mysh script.sh`); r.Stopped != "" {
+		t.Fatalf("approved with the pipe: %+v", r)
+	}
+}
+
+// Unsetting a session's hook variable first clears the ask, however it's spelled.
+func TestUnsetClearsTheSessionAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`unset HUSKY; git status`, `builtin unset HUSKY; git status`, `unset -v HUSKY; git status`, `builtin unset HUSKY`, `builtin echo x`} {
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) != 0 {
+			t.Errorf("%s asks: %v", cmd, asks)
+		}
+	}
+	for _, cmd := range []string{`git status; unset HUSKY`, `unset OTHER; git status`, `unset -f HUSKY; git status`, `builtin git status`} {
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) == 0 {
+			t.Errorf("%s did not ask", cmd)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `unset HUSKY; git status`); r.Stopped != "" {
+		t.Errorf("auto, after unset: %+v", r)
+	}
+}
