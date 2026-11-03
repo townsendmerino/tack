@@ -9,10 +9,12 @@ package snapshot
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -309,7 +311,7 @@ func (s *Shadow) Take(ctx context.Context) (id, why string) {
 	lastPath := filepath.Join(s.Dir, "last")
 	if last, err := os.ReadFile(lastPath); err == nil {
 		if have, lastID, ok := strings.Cut(string(last), " "); ok && have == stamp {
-			return lastID, ""
+			return lastID, s.markUsed(lastID)
 		}
 	}
 	out, err = s.git(ctx, []byte(text+"\n"), nil, "commit-tree", tree)
@@ -324,6 +326,42 @@ func (s *Shadow) Take(ctx context.Context) (id, why string) {
 		return "", err.Error()
 	}
 	return id, ""
+}
+
+// markUsed records now as when a command last relied on a checkpoint it got again, which is what Prune ages it from: the file's
+// time in used/. It returns why it couldn't, since a checkpoint that Prune might take too soon isn't one to rely on.
+func (s *Shadow) markUsed(id string) string {
+	dir := filepath.Join(s.Dir, "used")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err.Error()
+	}
+	p := filepath.Join(dir, id)
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		return err.Error()
+	}
+	if err := os.Chtimes(p, s.Now(), s.Now()); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// lastUsed is when a checkpoint was last relied on, or made, whichever Prune can read: unix is its commit's date.
+func (s *Shadow) lastUsed(ref string, unix int64) time.Time {
+	if st, err := os.Stat(filepath.Join(s.Dir, "used", strings.TrimPrefix(ref, "refs/tack/"))); err == nil {
+		return st.ModTime()
+	}
+	return time.Unix(unix, 0)
+}
+
+// NoUndo says why a rewind right now couldn't be undone, or "" when, as far as a walk of the tree can tell, it could.
+func (s *Shadow) NoUndo(ctx context.Context) string {
+	if !s.isTop() {
+		return "the workspace is not the top of a git repository"
+	}
+	if _, err := s.survey(ctx); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // dropStaleLock removes an index lock older than Timeout, which a git that was killed left behind. A younger one is
@@ -346,92 +384,19 @@ func (s *Shadow) known(ctx context.Context, id string) error {
 	return nil
 }
 
-// diff is what going from the checkpoint from to the checkpoint to changes, sorted by path: a path only in to is Remove,
-// any other difference Bring.
-func (s *Shadow) diff(ctx context.Context, from, to string) ([]Change, error) {
-	out, err := s.git(ctx, nil, nil, "diff-tree", "-r", "-z", "--no-renames", "--name-status", from, to)
-	if err != nil {
-		return nil, err
-	}
-	fields := bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0})
-	var changes []Change
-	for i := 0; i+1 < len(fields); i += 2 {
-		kind := Bring
-		if string(fields[i]) == "A" {
-			kind = Remove
-		}
-		changes = append(changes, Change{string(fields[i+1]), kind})
-	}
-	return changes, nil
-}
-
-// Changes is what a Restore of id would change in the tree as it is now. It takes a snapshot to see that, and changes
-// nothing in the tree.
+// Changes is what a Restore of id would change in the tree as it is now, sorted by path. It compares the tree with the
+// checkpoint directly, so it writes nothing and works on a tree that couldn't be snapshotted.
 func (s *Shadow) Changes(ctx context.Context, id string) ([]Change, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	if err := s.known(ctx, id); err != nil {
 		return nil, err
 	}
-	now, why := s.Take(ctx)
-	if why != "" {
-		return nil, fmt.Errorf("the tree as it is now can't be read: %s", why)
-	}
-	changes, err := s.diff(ctx, id, now)
+	d, err := s.differences(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	then, err := s.manifestOf(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	current, err := s.manifestOf(ctx, now)
-	if err != nil {
-		return nil, err
-	}
-	changes = append(changes, beyondTheTree(then, current, changes)...)
-	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
-	return changes, nil
-}
-
-// beyondTheTree is what a restore changes that git's tree doesn't show, given what it does: empty directories and permissions,
-// from the manifests of the checkpoint and of the tree now.
-func beyondTheTree(then, now manifest, changes []Change) []Change {
-	seen := map[string]bool{}
-	for _, c := range changes {
-		seen[c.Path] = true
-	}
-	holds := func(dir string) bool {
-		return slices.ContainsFunc(changes, func(c Change) bool { return strings.HasPrefix(c.Path, dir+"/") })
-	}
-	var out []Change
-	add := func(p string, k Kind) {
-		if !seen[p] && !holds(p) {
-			seen[p] = true
-			out = append(out, Change{p, k})
-		}
-	}
-	for _, d := range then.dirs {
-		if !slices.Contains(now.dirs, d) {
-			add(d, Bring)
-		}
-	}
-	for _, d := range now.dirs {
-		if !slices.Contains(then.dirs, d) {
-			add(d, Remove)
-		}
-	}
-	for p, perm := range then.modes {
-		if now.modes[p] != perm {
-			add(p, Bring)
-		}
-	}
-	for p := range now.modes {
-		if _, ok := then.modes[p]; !ok {
-			add(p, Bring)
-		}
-	}
-	return out
+	return d.changes, nil
 }
 
 // manifestOf is a checkpoint's manifest.
@@ -444,60 +409,223 @@ func (s *Shadow) manifestOf(ctx context.Context, id string) (manifest, error) {
 	return parseManifest(text)
 }
 
-// Restore puts the working tree back as it was at id, touching only what differs, and returns the checkpoint of the tree
-// it replaced, so the restore can be undone. It refuses when that checkpoint can't be taken. It writes nothing under .git.
-func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error) {
+// difference is what going back to a checkpoint takes: changes as Changes says them, and of those, the paths to remove and the
+// files to write. The rest of the changes are empty directories and modes, which Restore always puts right.
+type difference struct {
+	changes  []Change
+	remove   []string
+	checkout []string
+	manifest manifest
+}
+
+// differences compares the tree with the checkpoint without taking anything from git but the checkpoint. A directory the
+// checkpoint holds nothing under goes as one thing, what it holds not looked at, so a nested repository or an unreadable
+// directory is no obstacle. One that can't be read but must stay reads as changed. Sockets and FIFOs are left alone.
+func (s *Shadow) differences(ctx context.Context, id string) (difference, error) {
+	var d difference
+	var err error
+	if d.manifest, err = s.manifestOf(ctx, id); err != nil {
+		return d, err
+	}
+	out, err := s.git(ctx, nil, nil, "ls-tree", "-r", "-z", id)
+	if err != nil {
+		return d, err
+	}
+	type entry struct{ mode, oid string }
+	files := map[string]entry{}
+	holds := map[string]bool{} // directories with something of the checkpoint's under them, or that it holds empty
+	hold := func(p string) {
+		for dir := filepath.Dir(p); dir != "."; dir = filepath.Dir(dir) {
+			holds[dir] = true
+		}
+	}
+	for _, rec := range bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
+		meta, path, ok := strings.Cut(string(rec), "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			continue
+		}
+		files[path] = entry{fields[0], fields[2]}
+		hold(path)
+	}
+	emptyDirs := map[string]bool{}
+	for _, dir := range d.manifest.dirs {
+		emptyDirs[dir], holds[dir] = true, true
+		hold(dir)
+	}
+	bring := func(p string) { d.changes = append(d.changes, Change{p, Bring}) }
+	drop := func(p string) {
+		d.changes = append(d.changes, Change{p, Remove})
+		d.remove = append(d.remove, p)
+	}
+	permWant := func(p string, mode fs.FileMode) fs.FileMode {
+		if perm, ok := d.manifest.modes[p]; ok {
+			return perm
+		}
+		return defaultPerm(mode)
+	}
+	seen := map[string]bool{}
+	var walk func(dir, rel string) error
+	walk = func(dir, rel string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if rel != "" {
+				bring(rel) // its mode is wrong, or it's gone wrong some other way; setModes puts the mode back
+			}
+			return nil
+		}
+		for _, de := range entries {
+			name := filepath.Join(rel, de.Name())
+			if rel == "" && isDotGit(de.Name()) {
+				continue
+			}
+			info, err := de.Info()
+			if err != nil {
+				return err
+			}
+			switch {
+			case info.IsDir():
+				if !holds[name] {
+					drop(name)
+					continue
+				}
+				seen[name] = true
+				if info.Mode().Perm() != permWant(name, info.Mode()) {
+					bring(name)
+				}
+				if err := walk(filepath.Join(dir, de.Name()), name); err != nil {
+					return err
+				}
+			case info.Mode().IsRegular() || info.Mode()&fs.ModeSymlink != 0:
+				e, ok := files[name]
+				if !ok {
+					drop(name)
+					continue
+				}
+				seen[name] = true
+				switch same, err := s.sameAs(filepath.Join(dir, de.Name()), info, e.mode, e.oid); {
+				case err != nil || !same:
+					bring(name)
+					d.checkout = append(d.checkout, name)
+				case info.Mode().IsRegular() && info.Mode().Perm() != permWant(name, info.Mode()):
+					bring(name)
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(s.Root, ""); err != nil {
+		return d, err
+	}
+	for p := range files {
+		if !seen[p] {
+			bring(p)
+			d.checkout = append(d.checkout, p)
+		}
+	}
+	for p := range emptyDirs {
+		if !seen[p] {
+			bring(p)
+		}
+	}
+	sort.SliceStable(d.changes, func(i, j int) bool {
+		if d.changes[i].Path != d.changes[j].Path {
+			return d.changes[i].Path < d.changes[j].Path
+		}
+		return d.changes[i].Kind < d.changes[j].Kind
+	})
+	return d, nil
+}
+
+// sameAs reports whether a file or link on disk is what git's tree holds for it: the kind, the executable bit, and the blob's
+// hash as git computes it. An unreadable file isn't known to be the same.
+func (s *Shadow) sameAs(p string, info fs.FileInfo, mode, oid string) (bool, error) {
+	h := sha1.New()
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		if mode != "120000" {
+			return false, nil
+		}
+		target, err := os.Readlink(p)
+		if err != nil {
+			return false, err
+		}
+		fmt.Fprintf(h, "blob %d\x00%s", len(target), target)
+	default:
+		want := "100644"
+		if info.Mode().Perm()&0o100 != 0 {
+			want = "100755"
+		}
+		if mode != want {
+			return false, nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return false, err
+		}
+		defer f.Close()
+		fmt.Fprintf(h, "blob %d\x00", info.Size())
+		if _, err := io.Copy(h, f); err != nil {
+			return false, err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)) == oid, nil
+}
+
+// ErrUntouched marks a Restore that failed before changing anything.
+var ErrUntouched = errors.New("nothing was changed")
+
+// Restore puts the working tree back as it was at id, touching only what differs. It returns the checkpoint of the tree it
+// replaced, so the restore can be undone, or "" and why there is none: going back doesn't depend on that. A failure before
+// anything changed is ErrUntouched. It writes nothing under .git.
+func (s *Shadow) Restore(ctx context.Context, id string) (undo, noUndo string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	if err := s.known(ctx, id); err != nil {
-		return "", err
+		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
 	}
-	undo, why := s.Take(ctx)
-	if why != "" {
-		return "", fmt.Errorf("the tree as it is now can't be snapshotted, so a rewind couldn't be undone: %s", why)
-	}
-	changes, err := s.diff(ctx, id, undo)
+	d, err := s.differences(ctx, id)
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
 	}
-	m, err := s.manifestOf(ctx, id)
-	if err != nil {
-		return undo, err
-	}
+	undo, noUndo = s.Take(ctx)
+	m := d.manifest
 	if err := s.unlockDirs(); err != nil {
-		return undo, err
+		return undo, noUndo, err
 	}
 	// What wasn't there goes first, so a file can't stand where a directory must come back, and nothing is written
 	// through a link that wasn't there either.
-	var bring bytes.Buffer
-	for _, c := range changes {
-		if c.Kind == Remove {
-			if err := os.Remove(filepath.Join(s.Root, c.Path)); err != nil && !os.IsNotExist(err) {
-				return undo, err
-			}
-			continue
+	for _, p := range d.remove {
+		if err := os.RemoveAll(filepath.Join(s.Root, p)); err != nil {
+			return undo, noUndo, err
 		}
-		bring.WriteString(c.Path)
+	}
+	var bring bytes.Buffer
+	for _, p := range d.checkout {
+		bring.WriteString(p)
 		bring.WriteByte(0)
 	}
 	if _, err := s.sweep(s.Root); err != nil {
-		return undo, err
+		return undo, noUndo, err
 	}
 	if bring.Len() > 0 {
 		index := "GIT_INDEX_FILE=" + filepath.Join(s.Dir, "restore-index")
 		if _, err := s.git(ctx, nil, []string{index}, "read-tree", id); err != nil {
-			return undo, err
+			return undo, noUndo, err
 		}
 		if _, err := s.git(ctx, bring.Bytes(), []string{index}, "checkout-index", "-f", "-z", "--stdin"); err != nil {
-			return undo, err
+			return undo, noUndo, err
 		}
 	}
-	for _, d := range m.dirs {
-		if err := os.MkdirAll(filepath.Join(s.Root, d), 0o755); err != nil {
-			return undo, err
+	for _, dir := range m.dirs {
+		if err := os.MkdirAll(filepath.Join(s.Root, dir), 0o755); err != nil {
+			return undo, noUndo, err
 		}
 	}
-	return undo, s.setModes(m)
+	return undo, noUndo, s.setModes(m)
 }
 
 // unlockDirs makes every directory one the restore can work in. setModes puts them back at the end.
@@ -584,8 +712,8 @@ func (s *Shadow) setModes(m manifest) error {
 	})
 }
 
-// Prune drops checkpoints older than MaxAge, then the oldest half at a time while the shadow is over twice MaxBytes. The
-// newest checkpoint always stays.
+// Prune drops checkpoints a command last relied on over MaxAge ago, then the least recently used half at a time while the shadow
+// is over twice MaxBytes. The most recently used always stays.
 func (s *Shadow) Prune(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
@@ -596,18 +724,12 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	// Newest by date, but two in one second tie, and Take's memory of its last says which.
-	if last, err := os.ReadFile(filepath.Join(s.Dir, "last")); err == nil {
-		if _, id, ok := strings.Cut(string(last), " "); ok {
-			if i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "refs/tack/"+id+" ") }); i > 0 {
-				lines = append(append([]string{lines[i]}, lines[:i]...), lines[i+1:]...)
-			}
-		}
+	type checkpoint struct {
+		ref  string
+		used time.Time
 	}
-	var refs []string // newest first
-	dropped := false
-	for i, line := range lines {
+	var list []checkpoint
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		ref, when, ok := strings.Cut(line, " ")
 		if !ok {
 			continue
@@ -616,14 +738,28 @@ func (s *Shadow) Prune(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if i > 0 && s.Now().Sub(time.Unix(unix, 0)) > MaxAge {
-			if _, err := s.git(ctx, nil, nil, "update-ref", "-d", ref); err != nil {
+		list = append(list, checkpoint{ref, s.lastUsed(ref, unix)})
+	}
+	// Newest first is most recently used first too, since only the newest can be used again. Two in one second tie, and Take's
+	// memory of its last says which.
+	if last, err := os.ReadFile(filepath.Join(s.Dir, "last")); err == nil {
+		if _, id, ok := strings.Cut(string(last), " "); ok {
+			if i := slices.IndexFunc(list, func(c checkpoint) bool { return c.ref == "refs/tack/"+id }); i > 0 {
+				list = append(append([]checkpoint{list[i]}, list[:i]...), list[i+1:]...)
+			}
+		}
+	}
+	var refs []string // most recently used first
+	dropped := false
+	for i, c := range list {
+		if i > 0 && s.Now().Sub(c.used) > MaxAge {
+			if err := s.dropRef(ctx, c.ref); err != nil {
 				return err
 			}
 			dropped = true
 			continue
 		}
-		refs = append(refs, ref)
+		refs = append(refs, c.ref)
 	}
 	if dropped {
 		if err := s.collect(ctx); err != nil {
@@ -633,7 +769,7 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	for len(refs) > 1 && s.size() > 2*s.MaxBytes {
 		keep := (len(refs) + 1) / 2
 		for _, ref := range refs[keep:] {
-			if _, err := s.git(ctx, nil, nil, "update-ref", "-d", ref); err != nil {
+			if err := s.dropRef(ctx, ref); err != nil {
 				return err
 			}
 		}
@@ -645,11 +781,17 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	return nil
 }
 
-// collect takes what Prune dropped off the disk. Take's memory of the last tree goes too, since it may name one of them.
-func (s *Shadow) collect(ctx context.Context) error {
-	if err := os.Remove(filepath.Join(s.Dir, "last")); err != nil && !os.IsNotExist(err) {
+// dropRef ends a checkpoint.
+func (s *Shadow) dropRef(ctx context.Context, ref string) error {
+	if _, err := s.git(ctx, nil, nil, "update-ref", "-d", ref); err != nil {
 		return err
 	}
+	_ = os.Remove(filepath.Join(s.Dir, "used", strings.TrimPrefix(ref, "refs/tack/")))
+	return nil
+}
+
+// collect takes what Prune dropped off the disk.
+func (s *Shadow) collect(ctx context.Context) error {
 	_, err := s.git(ctx, nil, nil, "gc", "-q", "--prune=now")
 	return err
 }

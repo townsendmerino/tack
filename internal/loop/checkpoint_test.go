@@ -122,7 +122,7 @@ func TestDestroyWithASnapshotRunsAndRewinds(t *testing.T) {
 			if len(cps) != 1 || cps[0].ID != "b1" || cps[0].Workspace != root || cps[0].Snapshot == "" || cps[0].Unavailable != "" {
 				t.Fatalf("checkpoints %+v", cps)
 			}
-			if _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
+			if _, _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
 				t.Fatal(err)
 			}
 			got := tree(t, root)
@@ -222,7 +222,7 @@ func TestAnApprovalTakesTheSnapshotAgain(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "typed-during-the-question.txt")); err == nil {
 		t.Fatal("the command didn't run")
 	}
-	if _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
+	if _, _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "typed-during-the-question.txt")); err != nil {
@@ -323,6 +323,9 @@ func (c *scriptedSnapshots) Take(context.Context) (string, string) {
 	}
 	id := c.ids[0]
 	c.ids = c.ids[1:]
+	if id == "" {
+		return "", "the working tree is over the cap"
+	}
 	return id, ""
 }
 func (c *scriptedSnapshots) Prune(context.Context) error { return nil }
@@ -355,6 +358,7 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 		{"both taken", []string{"a", "b"}, []bool{true}, 1, true, "b"},
 		{"lost, then a no", []string{"a"}, []bool{true, false}, 2, false, ""},
 		{"lost, then a yes", []string{"a"}, []bool{true, true}, 2, true, ""},
+		{"lost, then a yes, and back while it waited", []string{"a", "", "c"}, []bool{true, true}, 2, true, "c"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ap := &answers{yes: c.yes}

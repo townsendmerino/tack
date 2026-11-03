@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -177,7 +178,7 @@ func TestRewindAfterARealDestroy(t *testing.T) {
 				run(t, root, do[0], do[1:]...)
 			}
 			after := capture(t, root)
-			undo, err := s.Restore(context.Background(), id)
+			undo, _, err := s.Restore(context.Background(), id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,7 +188,7 @@ func TestRewindAfterARealDestroy(t *testing.T) {
 			if undo == "" {
 				t.Fatal("no snapshot of the tree it replaced")
 			}
-			if _, err := s.Restore(context.Background(), undo); err != nil {
+			if _, _, err := s.Restore(context.Background(), undo); err != nil {
 				t.Fatal(err)
 			}
 			sameTree(t, capture(t, root), after)
@@ -207,7 +208,7 @@ func TestRestoreLeavesUnchangedFilesAlone(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "untracked.go")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(filepath.Join(root, "run.sh"))
@@ -302,7 +303,7 @@ func TestRestoreThroughReadOnlyDirectories(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, "newlocked"), 0o555); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -321,14 +322,14 @@ func TestAFailedRestoreKeepsItsUndo(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(s.Dir, "restore-index"), 0o755); err != nil { // read-tree can't write its index there
 		t.Fatal(err)
 	}
-	undo, err := s.Restore(context.Background(), id)
+	undo, _, err := s.Restore(context.Background(), id)
 	if err == nil || undo == "" {
 		t.Fatalf("undo %q, err %v", undo, err)
 	}
 	if err := os.Remove(filepath.Join(s.Dir, "restore-index")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(context.Background(), undo); err != nil {
+	if _, _, err := s.Restore(context.Background(), undo); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), after)
@@ -360,7 +361,7 @@ func TestTheUsersGitIsUntouched(t *testing.T) {
 	status := run(t, root, "git", "status", "--porcelain")
 	id := take(t, s)
 	write(t, root, "src/a.go", "changed\n", 0o644)
-	if _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(t, root); got != before {
@@ -401,7 +402,7 @@ func TestNothingInTheWorkspaceRuns(t *testing.T) {
 	before := capture(t, root)
 	id := take(t, s)
 	write(t, root, "ident.txt", "gone\n", 0o644)
-	if _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -545,14 +546,14 @@ func TestPrune(t *testing.T) {
 	if err := s.Prune(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(context.Background(), old); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, _, err := s.Restore(context.Background(), old); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("an old checkpoint: %v", err)
 	}
 	if _, err := s.Changes(context.Background(), old); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("an old checkpoint's changes: %v", err)
 	}
 	write(t, root, "untracked.go", "third\n", 0o644)
-	if _, err := s.Restore(context.Background(), kept); err != nil {
+	if _, _, err := s.Restore(context.Background(), kept); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), want)
@@ -622,8 +623,8 @@ func TestRestoreOfNothing(t *testing.T) {
 	take(t, s)
 	before := capture(t, root)
 	for _, id := range []string{"", "HEAD", "--all", strings.Repeat("0", 40), "../../etc"} {
-		if _, err := s.Restore(context.Background(), id); err == nil {
-			t.Errorf("%q restored", id)
+		if _, _, err := s.Restore(context.Background(), id); !errors.Is(err, ErrUntouched) {
+			t.Errorf("%q: %v", id, err)
 		}
 	}
 	sameTree(t, capture(t, root), before)
@@ -633,7 +634,7 @@ func TestRestoreOfNothing(t *testing.T) {
 	if _, err := s.git(context.Background(), nil, nil, "update-ref", "-d", "refs/tack/"+id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Restore(context.Background(), id); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, _, err := s.Restore(context.Background(), id); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("a dropped checkpoint: %v", err)
 	}
 }
@@ -654,7 +655,7 @@ func TestSymlinksStayLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, root, "out/huge", "inside", 0o644)
-	if _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -695,28 +696,6 @@ func TestATakeThatRanOutOfTimeStaysOff(t *testing.T) {
 	take(t, s)
 }
 
-// Two checkpoints in one second can be dropped either way round; if Prune drops the one Take remembers, Take makes a new one
-// rather than naming one that's gone.
-func TestTakeAfterPruneDroppedItsLast(t *testing.T) {
-	root := repo(t)
-	s := shadow(t, root)
-	when := time.Unix(2_000_000_000, 0)
-	s.Now = func() time.Time { return when }
-	for i := range 12 {
-		write(t, root, "untracked.go", fmt.Sprintf("a %d\n", i), 0o644)
-		take(t, s)
-		write(t, root, "untracked.go", fmt.Sprintf("b %d\n", i), 0o644)
-		take(t, s)
-		when = when.Add(MaxAge + time.Hour)
-		if err := s.Prune(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.Changes(context.Background(), take(t, s)); err != nil {
-			t.Fatalf("round %d: %v", i, err)
-		}
-	}
-}
-
 // Prune keeps the newest checkpoint, which may share its second with another whose id sorts first.
 func TestPruneKeepsTheNewestOfOneSecond(t *testing.T) {
 	root := repo(t)
@@ -753,5 +732,179 @@ func TestSurveyStopsWithItsContext(t *testing.T) {
 	cancel()
 	if _, err := shadow(t, repo(t)).survey(ctx); err == nil {
 		t.Error("it walked on")
+	}
+}
+
+// A checkpoint ages from when a command last relied on it, not from when it was made: a tree unchanged for longer than MaxAge
+// gets its old checkpoint back, and the command after it can still be rewound.
+func TestAReusedCheckpointIsKept(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	when := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { return when }
+	old := take(t, s)
+	before := capture(t, root)
+
+	when = when.Add(MaxAge + time.Hour) // a new session on the unchanged tree
+	if err := s.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if id := take(t, s); id != old {
+		t.Fatalf("unchanged tree: %s, then %s", old, id)
+	}
+	run(t, root, "git", "reset", "--hard", "-q") // the command it was allowed on
+	take(t, s)                                   // and the one after
+
+	when = when.Add(time.Hour) // the next session
+	if err := s.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Restore(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
+
+	// Last used longer than MaxAge ago, it goes as any other does.
+	write(t, root, "untracked.go", "changed\n", 0o644)
+	take(t, s)
+	when = when.Add(MaxAge + time.Hour)
+	if err := s.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.known(context.Background(), old); err == nil {
+		t.Error("an old checkpoint stayed")
+	}
+}
+
+// What stops a new snapshot doesn't stop looking at or going back to an old one. There's just nothing to undo the rewind with.
+func TestRewindAfterWhatStopsASnapshot(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		do   func(t *testing.T, root string, s *Shadow)
+		want Change
+	}{
+		{"over the cap", func(t *testing.T, root string, s *Shadow) {
+			write(t, root, "huge.bin", strings.Repeat("x", 4096), 0o644)
+			s.MaxBytes = 1024
+		}, Change{"huge.bin", Remove}},
+		{"a nested repository", func(t *testing.T, root string, s *Shadow) {
+			if err := os.Mkdir(filepath.Join(root, "clone"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			run(t, filepath.Join(root, "clone"), "git", "init", "-q")
+		}, Change{"clone", Remove}},
+		{"a nested repository in a directory that stays", func(t *testing.T, root string, s *Shadow) {
+			run(t, filepath.Join(root, "src"), "git", "init", "-q")
+		}, Change{"src/.git", Remove}},
+		{".git gone", func(t *testing.T, root string, s *Shadow) {
+			if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			write(t, root, "new.go", "x\n", 0o644)
+		}, Change{"new.go", Remove}},
+		{"a directory no one can read", func(t *testing.T, root string, s *Shadow) {
+			write(t, root, "locked/x", "x\n", 0o644)
+			if err := os.Chmod(filepath.Join(root, "locked"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, Change{"locked", Remove}},
+		{"a directory that stays that no one can read", func(t *testing.T, root string, s *Shadow) {
+			if err := os.Chmod(filepath.Join(root, "src"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, Change{"src", Bring}},
+		{"a file no one can read", func(t *testing.T, root string, s *Shadow) {
+			write(t, root, "untracked.go", "x\n", 0o000)
+		}, Change{"untracked.go", Bring}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads anything")
+			}
+			root := repo(t)
+			t.Cleanup(func() {
+				os.Chmod(filepath.Join(root, "locked"), 0o755)
+				os.Chmod(filepath.Join(root, "src"), 0o755)
+			})
+			s := shadow(t, root)
+			before := capture(t, root)
+			id := take(t, s)
+			c.do(t, root, s)
+			refs, _ := s.git(context.Background(), nil, nil, "for-each-ref", "refs/tack/")
+
+			got, err := s.Changes(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(got, c.want) {
+				t.Errorf("changes %v lack %v", got, c.want)
+			}
+			if after, _ := s.git(context.Background(), nil, nil, "for-each-ref", "refs/tack/"); string(after) != string(refs) {
+				t.Errorf("looking took a snapshot:\n%s\nthen\n%s", refs, after)
+			}
+			if why := s.NoUndo(context.Background()); why == "" && c.name != "a file no one can read" {
+				t.Error("it says the rewind can be undone")
+			}
+
+			undo, why, err := s.Restore(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if undo != "" || why == "" {
+				t.Errorf("undo %q why %q", undo, why)
+			}
+			sameTree(t, capture(t, root), before)
+		})
+	}
+}
+
+// Changes says which way each path goes, whatever git's tree doesn't hold.
+func TestChangesOfWhatTheTreeDoesntHold(t *testing.T) {
+	root := repo(t)
+	write(t, root, "tiny", "t", 0o644)
+	s := shadow(t, root)
+	id := take(t, s)
+	// A new directory with its own mode and nothing in it but another: it goes, as one thing.
+	if err := os.Mkdir(filepath.Join(root, "a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An empty directory replaced by a file: the file goes and the directory comes back.
+	if err := os.Remove(filepath.Join(root, "empty", "inner")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "empty/inner", "file\n", 0o644)
+	// A directory's own mode.
+	if err := os.Chmod(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A link holding what a file held is still a change.
+	if err := os.Remove(filepath.Join(root, "tiny")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("t", filepath.Join(root, "tiny")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Changes(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Change{{"a", Remove}, {"empty/inner", Bring}, {"empty/inner", Remove}, {"src", Bring}, {"tiny", Bring}}
+	if !slices.Equal(got, want) {
+		t.Errorf("changes %v, want %v", got, want)
+	}
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	for p, wantMode := range map[string]os.FileMode{"src": 0o755, "empty/inner": 0o755} {
+		st, err := os.Stat(filepath.Join(root, p))
+		if err != nil || !st.IsDir() || st.Mode().Perm() != wantMode {
+			t.Errorf("%s: %v %v", p, st, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "a")); err == nil {
+		t.Error("a stayed")
 	}
 }

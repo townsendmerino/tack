@@ -441,6 +441,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					checkpoint = s.takeSnapshot(ctx, b)
 					if had && checkpoint.Snapshot == "" {
 						refused, by, err = s.permit(ctx, b, callEv.Seq)
+						if err == nil && refused == nil { // that question waited too
+							checkpoint = s.takeSnapshot(ctx, b)
+						}
 					}
 				}
 				if err != nil {

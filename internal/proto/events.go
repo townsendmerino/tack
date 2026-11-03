@@ -309,12 +309,14 @@ type Checkpoint struct {
 }
 
 // Rewind records files restored from a checkpoint: To is that checkpoint's seq, Snapshot its id, and Undo the snapshot of
-// the tree the rewind replaced, which a later rewind can go back to. Changed is how many paths it touched.
+// the tree the rewind replaced, which a later rewind can go back to, or NoUndo why there is none. Changed is how many paths
+// it touched.
 type Rewind struct {
 	To        int64  `json:"to"`
 	Workspace string `json:"workspace"`
 	Snapshot  string `json:"snapshot"`
-	Undo      string `json:"undo"`
+	Undo      string `json:"undo,omitempty"`
+	NoUndo    string `json:"no_undo,omitempty"`
 	Changed   int    `json:"changed"`
 }
 

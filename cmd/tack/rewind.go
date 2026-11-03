@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -100,6 +101,9 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	if !*yes {
 		if len(changes) > 0 {
+			if why := shadow.NoUndo(ctx); why != "" {
+				fmt.Fprintf(stdout, "this rewind can't be undone: %s\n", why)
+			}
 			fmt.Fprintf(stdout, "this includes anything changed outside tack; run tack rewind -yes %s %d to do it\n", session, seq)
 		}
 		return exitOK
@@ -109,8 +113,8 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	} else if h != nil {
 		return fail(fmt.Sprintf("tack is halted (%s); run tack resume", halt.Path(stateDir)))
 	}
-	undo, restoreErr := shadow.Restore(ctx, point.snapshot)
-	if undo == "" { // it changed nothing
+	undo, noUndo, restoreErr := shadow.Restore(ctx, point.snapshot)
+	if errors.Is(restoreErr, snap.ErrUntouched) {
 		return fail(restoreErr)
 	}
 	log, err := st.OpenLog(session)
@@ -118,15 +122,19 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	defer log.Close()
-	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, Changed: len(changes)})
+	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, NoUndo: noUndo, Changed: len(changes)})
 	if err != nil {
 		return fail(err)
 	}
+	back := fmt.Sprintf("tack rewind -yes %s %d undoes it", session, ev.Seq)
+	if undo == "" {
+		back = "it can't be undone: " + noUndo
+	}
 	if restoreErr != nil {
-		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the tree is part rewound: %v; tack rewind -yes %s %d undoes what it did\n", restoreErr, session, ev.Seq)
+		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the tree is part rewound: %v; %s\n", restoreErr, back)
 		return exitError
 	}
-	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; tack rewind -yes %s %d undoes it\n", len(changes), seq, session, ev.Seq)
+	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; %s\n", len(changes), seq, back)
 	return exitOK
 }
 
@@ -167,7 +175,7 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Snapshot, why: e.Unavailable,
 				what: fmt.Sprintf("before %q", commands[e.ID])})
 		case proto.Rewind:
-			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Undo,
+			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Undo, why: e.NoUndo,
 				what: fmt.Sprintf("before the rewind to seq %d", e.To)})
 		}
 	}

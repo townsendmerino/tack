@@ -193,3 +193,52 @@ func TestRewindThatStopsPartway(t *testing.T) {
 		t.Errorf("last event %+v", v)
 	}
 }
+
+// A tree that can't be snapshotted now can still be looked at and rewound, and it says there's no way back.
+func TestRewindOfATreeThatCantBeSnapshotted(t *testing.T) {
+	cfg, ws, seq := rewindSession(t)
+	if err := os.Mkdir(filepath.Join(ws, "clone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command("git", "init", "-q")
+	c.Dir = filepath.Join(ws, "clone")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git: %v %s", err, out)
+	}
+	s := strconv.FormatInt(seq, 10)
+	code, out, errs := rewind(t, "-config", cfg, "s_rewind", s)
+	if code != exitOK || !strings.Contains(out, `remove  "clone"`) || !strings.Contains(out, "can't be undone") {
+		t.Errorf("preview: %d %q %q", code, out, errs)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clone")); err != nil {
+		t.Error("the preview removed it")
+	}
+	code, out, errs = rewind(t, "-config", cfg, "-yes", "s_rewind", s)
+	if code != exitOK || !strings.Contains(out, "can't be undone") {
+		t.Fatalf("rewind: %d %q %q", code, out, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "keep.txt")); string(b) != "work\n" {
+		t.Errorf("keep.txt: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clone")); err == nil {
+		t.Error("the clone stayed")
+	}
+	state := filepath.Join(filepath.Dir(cfg), "state")
+	st, _ := store.Open(state)
+	events, err := st.Events("s_rewind", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	v, err := last.Decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := v.(proto.Rewind); !ok || r.Undo != "" || !strings.Contains(r.NoUndo, "nested") {
+		t.Errorf("last event %+v", v)
+	}
+	// On the list as something that can't be gone back to, and why.
+	if _, out, _ = rewind(t, "-config", cfg, "s_rewind"); !strings.Contains(out, "can't be rewound (it holds a nested") {
+		t.Errorf("list: %q", out)
+	}
+}

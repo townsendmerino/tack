@@ -302,7 +302,8 @@ public struct Rewind: Codable, Equatable, Sendable {
     public var to: Int64
     public var workspace: String
     public var snapshot: String
-    public var undo: String
+    public var undo: String?
+    public var noUndo: String?
     public var changed: Int
 
     enum CodingKeys: String, CodingKey {
@@ -310,6 +311,7 @@ public struct Rewind: Codable, Equatable, Sendable {
         case workspace = "workspace"
         case snapshot = "snapshot"
         case undo = "undo"
+        case noUndo = "no_undo"
         case changed = "changed"
     }
 }

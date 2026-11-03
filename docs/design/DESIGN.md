@@ -841,14 +841,16 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; any other `git checkout`, since a bare name can be a branch even when a file has it, and real git takes the branch; the
   data-loss flags and migration resets, whose data isn't in the tree; `rm -r` outside the workspace; and everything the parse
   can't see, including a path that expands.
-- **Rewind.** `tack rewind <session> <seq>` lists the files it would change and restores them with `--yes`, first taking a
-  snapshot of the current tree so the rewind can itself be undone. It records a `rewind` event. It restores the working
-  tree only: staged state, refs and stashes stay as they are. Without post-images it can't tell tack's changes from yours,
+- **Rewind.** `tack rewind -yes <session> <seq>` restores the files; without `-yes` it lists what it would change. It compares the
+  tree with the checkpoint directly, so what stops a new snapshot doesn't stop going back. It first takes a snapshot of the
+  current tree so the rewind can be undone, and says so when it can't. It records a `rewind` event. It restores the working tree
+  only: refs, stashes and the index are not brought back, so what was staged and destroyed by a command that asked no question
+  comes back as a file, not as staged. Without post-images it can't tell tack's changes from yours,
   so it lists them all.
 - **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
   guard answers don't change; turning it on there is a decision for the owner.
-- **Keeping the shadow small.** Checkpoints older than 7 days go at the first snapshot of a session, and the oldest go when
-  the shadow passes twice the cap. A rewind to one that's gone says so.
+- **Keeping the shadow small.** A checkpoint a command last relied on over 7 days ago goes at the first snapshot of a session, and the
+  least recently used go when the shadow passes twice the cap, so that second limit can take one sooner. A rewind to one that's gone says so.
 - **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
   byte with modes and symlinks; the size-cap, non-git and nested-repository fallbacks; a workspace `.gitattributes` filter and
   `.git/config` that must not run.
