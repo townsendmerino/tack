@@ -689,7 +689,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	// Then the control characters, before anything measures, compares, cuts or stores the text.
 	r.Text, r.Base, r.Note = escapeControl(r.Text), escapeControl(r.Base), escapeControl(r.Note)
-	if pick != nil { // chooses, on redacted text, what is shown (Config.CompactAtCliff's widening)
+	if pick != nil { // chooses, on redacted and escaped text, what is shown (Config.CompactAtCliff's widening)
 		pick(&r)
 	}
 	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
@@ -702,13 +702,13 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	if len(r.Text) > s.cfg.MaxResultBytes {
 		full = []byte(r.Text)
-		head, tail := s.cfg.MaxResultBytes*3/4, s.cfg.MaxResultBytes/4
+		head, tail := wholeCut(r.Text, s.cfg.MaxResultBytes*3/4, s.cfg.MaxResultBytes/4)
 		handle := store.HandleOf(full)
-		omitted := fmt.Sprintf("\n[… %d bytes omitted …]\n", len(r.Text)-head-tail)
+		omitted := fmt.Sprintf("\n[… %d bytes omitted …]\n", len(r.Text)-len(head)-len(tail))
 		if _, ok := s.cfg.Tools.Get("read_output"); ok {
-			omitted = fmt.Sprintf("\n[… %d bytes omitted; read_output with handle %q pages them …]\n", len(r.Text)-head-tail, handle)
+			omitted = fmt.Sprintf("\n[… %d bytes omitted; read_output with handle %q pages them …]\n", len(r.Text)-len(head)-len(tail), handle)
 		}
-		fin.Result = r.Text[:head] + omitted + r.Text[len(r.Text)-tail:]
+		fin.Result = head + omitted + tail
 		fin.Truncated, fin.Blob = true, handle
 	}
 	return fin, full, r, nil
