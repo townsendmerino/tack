@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -388,9 +389,9 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`msg="wip --no-verify"; git commit -m $msg`, `git commit -m $@`, `git commit -m "$@"`, `git commit -m "$*"`, `git commit --message $msg`, `git commit -F $f`, `xargs git commit -m`,
 	// Declarations that may set any variable.
 	`v="HUSKY=0"; export $v`, `declare -x $v`, `local $v`, `readonly $v`, `typeset $v`, `export "$v"`, `export "HUSKY=0"`, `read HUSKY`, `printf -v HUSKY 0`, `for HUSKY in 0; do git status; done`,
-	`v="CDPATH=.github"; export $v; cd workflows; echo x > ci.yml`, `export "CDPATH=.github"; cd workflows; echo x > ci.yml`, `read CDPATH; cd workflows; echo x > ci.yml`, `for CDPATH in .github; do cd workflows; echo x > ci.yml; done`,
+	`v="CDPATH=.github"; export $v; cd workflows; echo x > ci.yml`, `export "CDPATH=.github"; cd workflows; echo x > ci.yml`, `read CDPATH; cd workflows; echo x > ci.yml`, `for CDPATH in .github; do cd workflows; echo x > ci.yml; done`, `for CDPATH in .github; do true; done; cd workflows; echo x > ci.yml`, `read $x`, `printf -v $x 0`,
 	// What a flag's value hides, and flags that move.
-	`git clean -f -e -n`, `git clean -f --exclude -n`, `git checkout /abs/no/such/path/but/src/*`, `git config core.hooksPath -hooks`,
+	`git clean -f -e -n`, `git clean -f --exclude -n`, `git config core.hooksPath -hooks`,
 	`cd $x; sh ./run.sh`, `sh link/0`, `sh script.sh <&3`, `find . -exec sh script.sh ;`, `find . -exec sh script.sh {} +`, `xargs sh script.sh`,
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
@@ -619,5 +620,22 @@ func TestRedirectReadsFromTheDirectory(t *testing.T) {
 	}
 	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput(`cd src && echo x > ../../out.txt`)); v.Action != Ask {
 		t.Fatalf("a redirect outside the repository, after cd: %s %v", v.Action, v.Reasons)
+	}
+}
+
+// An absolute path is that path, wherever the command runs.
+func TestCheckoutOfAnAbsolutePath(t *testing.T) {
+	e := destroyEngine(t)
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("git checkout "+filepath.Join(e.Root, "src", "api.ts"))); v.Action != Ask {
+		t.Fatalf("%s %v", v.Action, v.Reasons)
+	}
+}
+
+// A declaration that expands may set CDPATH, so paths after it are lost: a yes covers them as they were written.
+func TestDynamicDeclarationLosesTheDirectory(t *testing.T) {
+	e := destroyEngine(t)
+	command := `v=x; export $v; cd src; echo y > out.txt`
+	if a := e.ApprovalFor(command); slices.Contains(a.LiteralRedirects, filepath.Join(e.Root, "src", "out.txt")) {
+		t.Fatalf("the redirect was read as if the directory were known: %+v", a)
 	}
 }

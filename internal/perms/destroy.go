@@ -822,7 +822,6 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		a := args[i]
 		if a == unknownWord {
 			why = appendNew(why, unseenIn("git", "a word before its subcommand expands when it runs"))
-			sc.lost = true
 			continue
 		}
 		if !strings.HasPrefix(a, "-") {
@@ -833,7 +832,6 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		case flag == "--work-tree":
 			// It moves what the path rules below read.
 			why = appendNew(why, unseenIn("git", "--work-tree moves where it works"))
-			sc.lost = true
 			if !hasValue {
 				i++
 			}
@@ -850,7 +848,6 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			}
 			if args[i] == unknownWord {
 				why = appendNew(why, unseenIn("git", "a value of "+a+" expands when it runs"))
-				sc.lost = true
 				continue
 			}
 			if a == "-C" {
@@ -1222,7 +1219,7 @@ func HooksOff(name, value string) string {
 }
 
 // declared reads an assignment or a declaration's argument: the variable it sets, its value if fixed, and dynamic if what it sets
-// expands (export $v, which may set anything). A declaration's flag sets nothing.
+// expands (export $v, which may set anything).
 func declared(a *syntax.Assign) (name, value string, dynamic bool) {
 	if a.Name != nil {
 		if a.Value != nil {
@@ -1239,9 +1236,6 @@ func declared(a *syntax.Assign) (name, value string, dynamic bool) {
 	v, ok := literal(a.Value)
 	if !ok {
 		return "", "", true
-	}
-	if strings.HasPrefix(v, "-") || strings.HasPrefix(v, "+") {
-		return "", "", false
 	}
 	name, value, _ = strings.Cut(v, "=")
 	return name, value, false
