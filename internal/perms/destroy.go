@@ -96,7 +96,7 @@ func (a Approval) CoversRedirect(target, abs string) bool {
 	if slices.Contains(a.LiteralRedirects, abs) {
 		return false
 	}
-	return a.Anything || slices.Contains(a.Redirects, abs) || slices.Contains(a.Redirects, target) || slices.Contains(a.Redirects, hole)
+	return a.Anything || slices.Contains(a.Redirects, abs) || slices.Contains(a.Redirects, filepath.Clean(target)) || slices.Contains(a.Redirects, hole)
 }
 
 // ShowsIn reports whether the user was shown word in the very command that runs as args, as a flag that runs another program must have
@@ -141,8 +141,12 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 		}
 	}
 	for len(argv) > 1 && (argv[0] == "command" || argv[0] == "builtin" || argv[0] == "exec") {
+		isExec := argv[0] == "exec"
 		argv = argv[1:]
 		for len(argv) > 1 && strings.HasPrefix(argv[0], "-") {
+			if isExec && argv[0] == "-a" && len(argv) > 2 {
+				argv = argv[1:] // -a takes the next word
+			}
 			argv = argv[1:]
 		}
 	}
@@ -257,6 +261,9 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 			lost = lost || dynamic || name == "CDPATH"
 		case *syntax.WordIter:
 			lost = lost || (n.Name != nil && n.Name.Value == "CDPATH")
+		case *syntax.ParamExp:
+			name, dynamic := expansionSets(n)
+			lost = lost || dynamic || name == "CDPATH"
 		case *syntax.CallExpr:
 			if len(n.Args) == 0 {
 				return true
@@ -282,18 +289,20 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 // movesDir reports whether a simple command may change the shell's directory: cd, pushd or popd, under builtin or command too, or a
 // program that expands, which may be any of them.
 func movesDir(words []*syntax.Word) bool {
+	prefixed := false
 	for _, w := range words {
 		name, ok := literal(w)
-		if !ok {
+		switch {
+		case !ok:
 			return true
-		}
-		switch name {
-		case "cd", "pushd", "popd":
+		case prefixed && strings.HasPrefix(name, "-"):
+		case name == "builtin" || name == "command":
+			prefixed = true
+		case name == "cd" || name == "pushd" || name == "popd":
 			return true
-		case "builtin", "command":
-			continue
+		default:
+			return false
 		}
-		return false
 	}
 	return false
 }
@@ -354,7 +363,11 @@ func cdTarget(words []*syntax.Word, dir string) (string, bool) {
 		switch {
 		case !ok || t == "-":
 			return dir, false
+		case t == "--":
 		case strings.HasPrefix(t, "-"):
+			if strings.Trim(t[1:], "LPe@") != "" { // a flag cd doesn't know: it fails, and stays
+				return dir, false
+			}
 		case i+2 < len(words): // more than one target: it fails, and stays
 			return dir, false
 		case filepath.IsAbs(t):
@@ -384,6 +397,20 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				}
 			}
 			why = appendNew(why, asks...)
+		case *syntax.ParamExp:
+			name, dynamic := expansionSets(n)
+			switch {
+			case dynamic:
+				if sc.rec != nil {
+					sc.rec.Anything = true
+				}
+				why = appendNew(why, unseen("an expansion sets a variable named when it runs, which may be any"))
+			case isHookVar(name):
+				if sc.rec != nil {
+					sc.rec.Vars = append(sc.rec.Vars, name)
+				}
+				why = appendNew(why, unseenIn(name, "an expansion sets it"))
+			}
 		case *syntax.WordIter:
 			if n.Name != nil && isHookVar(n.Name.Value) {
 				if sc.rec != nil {
@@ -392,7 +419,13 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				why = appendNew(why, unseenIn(n.Name.Value, "a loop sets it to values that can't be read here"))
 			}
 		case *syntax.BinaryCmd, *syntax.Stmt:
-			why = appendNew(why, e.stdinAsks(n, sc.dir)...)
+			asks, calls := e.stdinAsks(n, sc.dir)
+			if sc.rec != nil {
+				for _, c := range calls {
+					sc.rec.record(c.Args, asks)
+				}
+			}
+			why = appendNew(why, asks...)
 		case *syntax.Redirect:
 			if !writes(n) {
 				return
@@ -407,6 +440,13 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				asks := e.callAsks(n.Args, sc)
 				if sc.rec != nil {
 					sc.rec.record(n.Args, asks)
+					for _, v := range namedVars(n.Args) {
+						if v == unknownWord {
+							sc.rec.Anything = true
+						} else if isHookVar(v) {
+							sc.rec.Vars = append(sc.rec.Vars, v)
+						}
+					}
 				}
 				why = appendNew(why, asks...)
 			}
@@ -436,9 +476,6 @@ func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 		}
 	}
 	why := e.programAsks(name, argv, sc)
-	if sc.lost && strings.Contains(name, "/") && !filepath.IsAbs(name) {
-		why = appendNew(why, unseenIn(name, "it follows a cd that can't be read"))
-	}
 	for _, v := range namedVars(words) {
 		if v == unknownWord {
 			why = appendNew(why, unseen(name+" sets a variable named when it runs, which may be any"))
@@ -463,7 +500,7 @@ func commitValues(args []string) []int {
 	}
 	var out []int
 	for j := i + 1; j+1 < len(args); j++ {
-		if slices.Contains(commitValued, args[j]) {
+		if commitTakesNext(args[j]) {
 			j++
 			out = append(out, j)
 		}
@@ -487,8 +524,8 @@ func oneWord(w *syntax.Word) bool {
 	return len(q.Parts) > 0 && !strings.Contains(text, "$@") && !strings.Contains(text, "$*") && !strings.Contains(text, "[@]") && !strings.Contains(text, "{@") && !strings.Contains(text, "{*") && !strings.Contains(text, "[*]")
 }
 
-// namedVars returns the variables a builtin sets by name, under builtin or command too, unknownWord for one it can't read: read's, and
-// printf -v's. printf's first word may be that -v if it expands.
+// namedVars returns the variables a builtin sets by name, under builtin or command too, unknownWord for one it can't read: read's, printf
+// -v's, and a declaration's, which the parser reads as a plain command under those two. printf's first word may be that -v if it expands.
 func namedVars(words []*syntax.Word) []string {
 	for len(words) > 0 {
 		if name, ok := literal(words[0]); !ok || (name != "builtin" && name != "command") {
@@ -532,6 +569,16 @@ func namedVars(words []*syntax.Word) []string {
 				out = append(out, a)
 			}
 		}
+	case "export", "declare", "typeset", "local", "readonly":
+		for _, w := range words[1:] {
+			a, lit := literal(w)
+			if !lit {
+				out = append(out, unknownWord)
+			} else if !strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "+") {
+				v, _, _ := strings.Cut(a, "=")
+				out = append(out, v)
+			}
+		}
 	}
 	return out
 }
@@ -542,6 +589,9 @@ func isHookVar(name string) bool { return name == "HUSKY" || name == "HUSKY_SKIP
 // programAsks reads a program by the name it is written with and what that name resolves to from where it runs.
 func (e *Engine) programAsks(name string, args []string, sc scan) []string {
 	why := e.wordsAsk(filepath.Base(name), args, sc)
+	if sc.lost && strings.Contains(name, "/") && !filepath.IsAbs(name) {
+		why = appendNew(why, unseenIn(name, "it follows a cd that can't be read"))
+	}
 	if real, err := e.resolveFrom(name, sc.dir); err == nil && filepath.Base(real) != filepath.Base(name) {
 		why = appendNew(why, e.wordsAsk(filepath.Base(real), args, sc)...)
 	}
@@ -778,6 +828,15 @@ func scriptIsStdin(script, dir string) bool {
 	return true
 }
 
+// ShellFed is the reason a program with these arguments, as it runs with something on its stdin, is a shell handed code, or "". The
+// run-time check has no parse of the pipe, only that there is one.
+func (e *Engine) ShellFed(args []string, dir string) string {
+	if shell := e.shellUnder(args[0], args[1:], dir); shell != "" {
+		return unseenIn(shell, "it is handed code")
+	}
+	return ""
+}
+
 // feedsShell returns the shell a simple command runs, directly, under a wrapper, or through a symlink, or "".
 func (e *Engine) feedsShell(words []*syntax.Word, dir string) string {
 	if len(words) == 0 {
@@ -822,38 +881,39 @@ func (e *Engine) shellUnder(name string, args []string, dir string) string {
 }
 
 // stdinAsks asks for what is fed to a shell: a pipe into it, or an input redirection, a here-document or a here-string on it, on a
-// block or subshell around it too.
-func (e *Engine) stdinAsks(n syntax.Node, dir string) []string {
-	fed := func(c syntax.Command) string {
-		shell := ""
-		if c != nil {
-			syntax.Walk(c, func(n syntax.Node) bool {
-				if call, ok := n.(*syntax.CallExpr); ok && shell == "" {
-					shell = e.feedsShell(call.Args, dir)
-				}
-				return shell == ""
-			})
+// block or subshell around it too. It returns the commands it asks about, since the reason is on the pipe or the redirection.
+func (e *Engine) stdinAsks(n syntax.Node, dir string) ([]string, []*syntax.CallExpr) {
+	fed := func(c syntax.Command) ([]string, []*syntax.CallExpr) {
+		if c == nil {
+			return nil, nil
 		}
-		return shell
+		var why []string
+		var calls []*syntax.CallExpr
+		syntax.Walk(c, func(n syntax.Node) bool {
+			if call, ok := n.(*syntax.CallExpr); ok {
+				if shell := e.feedsShell(call.Args, dir); shell != "" {
+					why = appendNew(why, unseenIn(shell, "it is handed code"))
+					calls = append(calls, call)
+				}
+			}
+			return true
+		})
+		return why, calls
 	}
 	switch n := n.(type) {
 	case *syntax.BinaryCmd:
 		if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
-			if shell := fed(n.Y.Cmd); shell != "" {
-				return []string{unseenIn(shell, "it is handed code")}
-			}
+			return fed(n.Y.Cmd)
 		}
 	case *syntax.Stmt:
 		for _, r := range n.Redirs {
 			switch r.Op {
 			case syntax.RdrIn, syntax.RdrInOut, syntax.DplIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
-				if shell := fed(n.Cmd); shell != "" {
-					return []string{unseenIn(shell, "it is handed code")}
-				}
+				return fed(n.Cmd)
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // findAsks reads the commands find is told to run.
@@ -977,14 +1037,14 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	if gitWordsMatter(sub, rest) {
 		why = appendNew(why, unseenIn("git", "an argument of "+sub+" expands when it runs"))
 	}
-	if slices.Contains(noVerifySubcommands, sub) && slices.Contains(flagsOf(sub, rest), "--no-verify") {
+	if slices.Contains(noVerifySubcommands, sub) && slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--no-verify") }) {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
 	}
 	discard := func(what string) { why = append(why, "git "+what+" discards work that cannot be recovered") }
 	switch sub {
 	case "reset":
 		for _, f := range []string{"--hard", "--merge", "--keep"} {
-			if slices.Contains(flagsOf(sub, rest), f) {
+			if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, f) }) {
 				discard("reset " + f)
 			}
 		}
@@ -997,26 +1057,26 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		}
 	case "switch":
 		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
-			return a == "--discard-changes" || a == "--force" || shortFlag(a, 'f', "cC")
+			return flagIs(a, "--discard-changes") || flagIs(a, "--force") || shortFlag(a, 'f', "cC")
 		}) {
 			discard("switch with --discard-changes or --force")
 		}
 	case "restore":
-		staged := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return a == "--staged" || shortFlag(a, 'S', "s") })
-		worktree := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return a == "--worktree" || shortFlag(a, 'W', "s") })
+		staged := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--staged") || shortFlag(a, 'S', "s") })
+		worktree := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--worktree") || shortFlag(a, 'W', "s") })
 		if !staged || worktree {
 			discard("restore on the working tree")
 		}
 	case "clean":
 		flags := flagsOf(sub, rest)
-		dry := slices.ContainsFunc(flags, func(a string) bool { return a == "--dry-run" || shortFlag(a, 'n', "e") })
-		force := slices.ContainsFunc(flags, func(a string) bool { return a == "--force" || shortFlag(a, 'f', "e") })
+		dry := slices.ContainsFunc(flags, func(a string) bool { return flagIs(a, "--dry-run") || shortFlag(a, 'n', "e") })
+		force := slices.ContainsFunc(flags, func(a string) bool { return flagIs(a, "--force") || shortFlag(a, 'f', "e") })
 		if force && !dry {
 			discard("clean -f")
 		}
 	case "branch":
-		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return a == "--delete" || shortFlag(a, 'd', "") })
-		force := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return a == "--force" || shortFlag(a, 'f', "") })
+		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--delete") || shortFlag(a, 'd', "") })
+		force := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--force") || shortFlag(a, 'f', "") })
 		if (del && force) || slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'D', "") }) {
 			discard("branch -D")
 		}
@@ -1025,7 +1085,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			discard("stash " + rest[0])
 		}
 	case "commit":
-		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'n', "mFcCtuS") }) {
+		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'n', commitNextLetters+commitAttachedLetters) }) {
 			why = appendNew(why, "git commit --no-verify skips the owner's hooks")
 		}
 	case "config":
@@ -1047,12 +1107,14 @@ func gitWordsMatter(sub string, rest []string) bool {
 // flagsOf is a subcommand's arguments up to --, after which they are paths, without the flags' values, which could spell a flag: a
 // commit's message, a clean's exclude. A value that expands is kept, since it may split into flags.
 func flagsOf(sub string, rest []string) []string {
-	var valued []string
+	takes := func(string) bool { return false }
 	switch sub {
 	case "commit":
-		valued = commitValued
+		takes = commitTakesNext
 	case "clean":
-		valued = []string{"-e", "--exclude"}
+		takes = func(a string) bool {
+			return flagIs(a, "--exclude") || (shortFlag(a, 'e', "") && strings.HasSuffix(a, "e"))
+		}
 	}
 	var out []string
 	for j := 0; j < len(rest); j++ {
@@ -1060,7 +1122,7 @@ func flagsOf(sub string, rest []string) []string {
 		if a == "--" {
 			break
 		}
-		if (slices.Contains(valued, a) || (sub == "clean" && shortFlag(a, 'e', "") && strings.HasSuffix(a, "e"))) && j+1 < len(rest) && rest[j+1] != unknownWord {
+		if takes(a) && j+1 < len(rest) && rest[j+1] != unknownWord {
 			out = append(out, a)
 			j++
 			continue
@@ -1070,8 +1132,39 @@ func flagsOf(sub string, rest []string) []string {
 	return out
 }
 
-// commitValued are git commit's flags whose next word is a value.
-var commitValued = []string{"-m", "-F", "-c", "-C", "-t", "--message", "--file", "--template"}
+// git commit's flags that take a value. The long ones and the letters in commitNextLetters take the next word. Those in
+// commitAttachedLetters take one only attached (-uno), so the next word is still a flag, as real git shows: git commit -u --no-verify
+// skips the hooks.
+const (
+	commitNextLetters     = "mFcCt"
+	commitAttachedLetters = "uS"
+)
+
+var commitLongValued = []string{"--message", "--file", "--template", "--reuse-message", "--reedit-message", "--author", "--date", "--trailer", "--fixup", "--squash", "--cleanup", "--pathspec-from-file"}
+
+// commitTakesNext reports whether the next word is this commit flag's value: a long flag by any prefix, or letters that end in one that takes it.
+func commitTakesNext(a string) bool {
+	if strings.HasPrefix(a, "--") {
+		return len(a) > 2 && slices.ContainsFunc(commitLongValued, func(full string) bool { return strings.HasPrefix(full, a) })
+	}
+	if len(a) < 2 || a[0] != '-' {
+		return false
+	}
+	for i := 1; i < len(a); i++ {
+		if strings.IndexByte(commitAttachedLetters, a[i]) >= 0 {
+			return false
+		}
+		if strings.IndexByte(commitNextLetters, a[i]) >= 0 {
+			return i == len(a)-1
+		}
+	}
+	return false
+}
+
+// flagIs reports whether a is a long flag, spelled in full or by the prefix git accepts for it: git reset --har is --hard.
+func flagIs(a, full string) bool {
+	return a == full || (len(a) > 2 && strings.HasPrefix(a, "--") && strings.HasPrefix(full, a))
+}
 
 // checkoutDiscards reports whether git checkout's arguments overwrite the working tree: paths after --, a path that
 // exists, a pathspec, ".", or -f. A new branch's name is not a path.
@@ -1082,7 +1175,7 @@ func checkoutDiscards(args []string, dir string) bool {
 		switch {
 		case a == "--":
 			return i+1 < len(args)
-		case a == "--force" || shortFlag(a, 'f', "bB") || strings.HasPrefix(a, "--pathspec-from-file"):
+		case flagIs(a, "--force") || shortFlag(a, 'f', "bB") || strings.HasPrefix(a, "--pathspec-from-file"):
 			return true
 		case a == "-b" || a == "-B" || a == "--orphan":
 			creating = true
@@ -1202,7 +1295,7 @@ func (e *Engine) rmFree(t, p, dir string) bool {
 		return false
 	}
 	first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
-	return slices.Contains(rebuilt, first) && real == filepath.Join(resolveExisting(filepath.Clean(dir)), rel)
+	return !within(real, root) && slices.Contains(rebuilt, first) && real == filepath.Join(resolveExisting(filepath.Clean(dir)), rel)
 }
 
 // dataLossReaders only read or print their arguments, so a flag's name in them is a mention.
@@ -1332,6 +1425,9 @@ func HooksOff(name, value string) string {
 // expands (export $v, which may set anything).
 func declared(a *syntax.Assign) (name, value string, dynamic bool) {
 	if a.Name != nil {
+		if a.Array != nil || a.Append { // its value is more than this word says
+			return a.Name.Value, unknownWord, false
+		}
 		if a.Value != nil {
 			if v, ok := literal(a.Value); ok {
 				return a.Name.Value, v, false
@@ -1349,6 +1445,17 @@ func declared(a *syntax.Assign) (name, value string, dynamic bool) {
 	}
 	name, value, _ = strings.Cut(v, "=")
 	return name, value, false
+}
+
+// expansionSets reads an expansion that assigns (${V:=x}, ${V=x}): the variable it sets, and dynamic if that expands (${!v:=x}).
+func expansionSets(p *syntax.ParamExp) (name string, dynamic bool) {
+	if p.Exp == nil || (p.Exp.Op != syntax.AssignUnset && p.Exp.Op != syntax.AssignUnsetOrNull) {
+		return "", false
+	}
+	if p.Excl || p.Param == nil {
+		return "", true
+	}
+	return p.Param.Value, false
 }
 
 // assignAsks is HooksOff for what an assignment sets, and asks if it can't read what that is.

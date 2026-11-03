@@ -377,6 +377,11 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			expanded.Literal[i] = true // expanded already: these are the real arguments
 		}
 		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
+		if hc.Stdin != nil { // something is fed to it: the parse read the pipe, and this holds if it didn't
+			if r := ck.engine.ShellFed(args, hc.Dir); r != "" {
+				why = append(why, r)
+			}
+		}
 		// Whatever the program, since it may be the one that runs git: env, or a shell.
 		ran := strings.Join(args, " ")
 		for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {

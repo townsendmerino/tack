@@ -539,3 +539,36 @@ func TestRuleDoesNotCoverAProgramThatAppears(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// A shell handed code on its stdin stops at run time too, in case the parse didn't see the pipe, and one with nothing fed to it runs.
+func TestShellFedAtRunTime(t *testing.T) {
+	s := session(t, true, "sh", "env")
+	if err := os.WriteFile(filepath.Join(s.Engine.Root, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{`echo x | sh script.sh`, `echo x | env sh script.sh`, `sh script.sh <<< x`} {
+		if r := runBy(t, s, perms.ByMode, cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+			t.Errorf("%s: %+v", cmd, r)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `sh script.sh`); r.Stopped != "" {
+		t.Errorf("a named script with nothing fed to it: %+v", r)
+	}
+	if r := runBy(t, s, perms.ByUser, `echo x | sh script.sh`); r.Stopped != "" {
+		t.Errorf("approved: %+v", r)
+	}
+}
+
+// Approved, it runs: what the parse asked about, however it spelled the path or set the variable.
+func TestApprovedRedirectsAndVarsRun(t *testing.T) {
+	for _, cmd := range []string{`d=sub; cd $d; echo x > ./ci.yml`, `f=./out.txt; echo x > $f`, `printf -v HUSKY 0; export HUSKY; git status`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
