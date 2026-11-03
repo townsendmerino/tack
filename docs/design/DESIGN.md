@@ -622,6 +622,10 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
     such a loss undoable.
+  - **Its cost in E1, accepted without an exception (coordinator, 2026-11-02):** of 1,549 `bash`, `edit` and `write` calls in 360
+    runs (`e1-calibration-preregistration-2026-10-18.md` §15.2, §15.3, §16.1, §16.2), replayed in `auto`, 1 now asks: §15.2
+    task 11 B-1, `rm -f` on a glob in the module cache. With no one attached it is refused, where before it ran and the
+    sandbox refused the delete. A screen on a build with this rule can differ at such a call.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
