@@ -442,10 +442,10 @@ func perRun(w io.Writer, j *jobData) {
 func refusals(w io.Writer, j *jobData) {
 	fmt.Fprintln(w, "## done refusals and how runs ended with done")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| arm | runs with a no-change refusal | runs with a verification refusal | done answers |")
-	fmt.Fprintln(w, "|---|---|---|---|")
+	fmt.Fprintln(w, "| arm | runs with a no-change refusal | runs with a verification refusal | done answers | runs that changed the tests |")
+	fmt.Fprintln(w, "|---|---|---|---|---|")
 	for _, a := range j.armOrder {
-		noChange, verify := 0, 0
+		noChange, verify, changed := 0, 0, 0
 		answers := map[string]int{}
 		for _, r := range j.arms[a] {
 			if r.TackRun == nil {
@@ -457,11 +457,14 @@ func refusals(w io.Writer, j *jobData) {
 			if r.TackRun.VerifyRefused > 0 {
 				verify++
 			}
+			if len(r.TackRun.TestChanges) > 0 {
+				changed++
+			}
 			if r.TackRun.StopReason == "done" {
 				answers[orNone(r.TackRun.Done)]++
 			}
 		}
-		fmt.Fprintf(w, "| %s | %d | %d | %s |\n", a, noChange, verify, countsString(answers))
+		fmt.Fprintf(w, "| %s | %d | %d | %s | %d |\n", a, noChange, verify, countsString(answers), changed)
 	}
 	fmt.Fprintln(w)
 }

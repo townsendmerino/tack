@@ -24,7 +24,8 @@ const VerifyRefusals = 3
 const verifyTailLines = 20
 
 // What done answers when it ends the turn with Config.VerifyDone on and the last change unverified, or verified by a
-// build or test that failed; otherwise it answers "done". The calibration's records read them (pilot.TackSummary).
+// build or test that failed, or by a test run that ran nothing; otherwise it answers "done". A run that ran nothing is
+// reported and not refused (DESIGN §6.3). The calibration's records read them (pilot.TackSummary).
 // VerifyRefusal begins every refusal of done for want of a verification.
 const VerifyRefusal = "done refused: no build or test has run since"
 
@@ -35,23 +36,27 @@ const VerifyAdvice = "Run go build ./..., or go test on the package you changed,
 const (
 	DoneUnverified   = "done (unverified: no build or test ran after the last change)"
 	DoneVerifyFailed = "done (the last build or test after the last change failed)"
+	DoneNoTests      = "done (the last test run after the last change ran no tests)"
 )
 
 // verification is one bash call that ran go build, go vet or go test: the turn's call number, its command line, its
-// exit status (-1 when it was stopped) and the last lines of its output.
+// exit status (-1 when it was stopped), the last lines of its output, and whether all it did was a go test that ran
+// nothing.
 type verification struct {
 	call    int
 	command string
 	exit    int
 	tail    string
+	nothing bool
 }
 
 // verifyState is a turn's record for the rule: the call number of its latest successful edit or write (0 for none),
-// its latest verification, and how many times done has been refused.
+// its latest verification, how many times done has been refused, and what the turn did to the tests.
 type verifyState struct {
 	change   int
 	last     *verification
 	refusals int
+	tests    testChanges
 }
 
 var exitStatusRe = regexp.MustCompile(`\[exit status (\d+)\]\n?$`)
@@ -67,7 +72,11 @@ func (v *verifyState) observe(call int, name string, input json.RawMessage, ran 
 		var in struct {
 			Command string `json:"command"`
 		}
-		if json.Unmarshal(input, &in) != nil || !IsVerification(eng, in.Command) {
+		if json.Unmarshal(input, &in) != nil {
+			return
+		}
+		v.tests.bash(eng, in.Command, ran.IsError)
+		if !IsVerification(eng, in.Command) {
 			return
 		}
 		exit := 0
@@ -81,7 +90,8 @@ func (v *verifyState) observe(call int, name string, input json.RawMessage, ran 
 		if len(lines) > verifyTailLines {
 			lines = lines[len(lines)-verifyTailLines:]
 		}
-		v.last = &verification{call: call, command: in.Command, exit: exit, tail: strings.Join(lines, "\n")}
+		v.last = &verification{call: call, command: in.Command, exit: exit, tail: strings.Join(lines, "\n"),
+			nothing: readableGoTest(eng, in.Command) && ranNothing(ran.Text)}
 	}
 }
 
@@ -115,6 +125,8 @@ func (v *verifyState) finish() string {
 		return DoneUnverified
 	case v.change > 0 && v.last.exit != 0:
 		return DoneVerifyFailed
+	case v.change > 0 && v.last.nothing:
+		return DoneNoTests
 	}
 	return "done"
 }
@@ -126,16 +138,39 @@ func IsVerification(eng *perms.Engine, command string) bool {
 		return false
 	}
 	for _, s := range eng.Analyze(command) {
-		if filepath.Base(s.Program) != "go" {
-			continue
-		}
-		args, lit := s.Args, s.Literal
-		if len(args) >= 2 && args[0] == "-C" { // go -C dir test
-			args, lit = args[2:], lit[2:]
-		}
-		if len(args) > 0 && lit[0] && (args[0] == "build" || args[0] == "vet" || args[0] == "test") {
+		if sub, _ := goSubcommand(s); sub == "build" || sub == "vet" || sub == "test" {
 			return true
 		}
 	}
 	return false
+}
+
+// goSubcommand is the go subcommand s runs and the arguments after it, "" when s is not go or the subcommand expands at
+// run time.
+func goSubcommand(s perms.Simple) (string, []string) {
+	if filepath.Base(s.Program) != "go" {
+		return "", nil
+	}
+	args, lit := s.Args, s.Literal
+	if len(args) >= 2 && args[0] == "-C" { // go -C dir test
+		args, lit = args[2:], lit[2:]
+	}
+	if len(args) == 0 || !lit[0] {
+		return "", nil
+	}
+	return args[0], args[1:]
+}
+
+// readableGoTest reports whether command's output can say go test ran nothing: a build or vet beside it verified
+// something whatever the test run did, and a pipe may have taken away the lines that said a test ran.
+func readableGoTest(eng *perms.Engine, command string) bool {
+	if strings.Contains(command, "|") {
+		return false
+	}
+	for _, s := range eng.Analyze(command) {
+		if sub, _ := goSubcommand(s); sub == "build" || sub == "vet" {
+			return false
+		}
+	}
+	return true
 }

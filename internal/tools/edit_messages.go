@@ -214,3 +214,35 @@ func notFound(ctx context.Context, ws *Workspace, rel, abs, cur, old string) Res
 	return errorf("this text isn't in %q, and no line of it shares a word with old_string; read %q again before editing.",
 		rel, rel)
 }
+
+// FileChange is one file's net change over a stretch of a session: its content before the first successful edit or write
+// of the stretch ("" for a file the stretch created) and after the last.
+type FileChange struct {
+	Path          string // relative to the workspace root
+	Before, After string
+}
+
+// ChangeMark is a position in the session's changes, for ChangesSince.
+func (w *Workspace) ChangeMark() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.changes)
+}
+
+// ChangesSince is each file's net change since mark, in the order the files were first changed.
+func (w *Workspace) ChangesSince(mark int) []FileChange {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []FileChange
+	at := map[string]int{}
+	for _, c := range w.changes[mark:] {
+		i, ok := at[c.abs]
+		if !ok {
+			i = len(out)
+			at[c.abs] = i
+			out = append(out, FileChange{Path: w.Rel(c.abs), Before: c.before})
+		}
+		out[i].After = c.after
+	}
+	return out
+}

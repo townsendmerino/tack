@@ -170,3 +170,21 @@ func TestTackLeftRepo(t *testing.T) {
 		t.Fatalf("left_repo %q, want %q", got, want)
 	}
 }
+
+// TestSummarizeTackReadsTheTestReport: done's answer and its report are separate fields, whichever answer it is, and a
+// refusal is neither.
+func TestSummarizeTackReadsTheTestReport(t *testing.T) {
+	for _, answer := range []string{"done", loop.DoneUnverified, loop.DoneVerifyFailed, loop.DoneNoTests} {
+		result, _ := json.Marshal(answer + "\n\n[tack: what this turn did to the tests:\n- deleted a_test.go\n- added a skip to b_test.go\n]")
+		p := filepath.Join(t.TempDir(), "events.jsonl")
+		lines := []string{
+			`{"seq":3,"time":"2026-10-17T12:00:01Z","type":"tool.call","cause":2,"payload":{"id":"a","name":"done","input":{"reason":"x"}}}`,
+			`{"seq":4,"time":"2026-10-17T12:00:01Z","type":"tool.finished","cause":3,"payload":{"id":"a","outcome":"ok","result":` + string(result) + `,"truncated":false}}`,
+		}
+		os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+		s := SummarizeTack(p)
+		if s.Done != answer || len(s.TestChanges) != 2 || s.TestChanges[1] != "added a skip to b_test.go" {
+			t.Errorf("%q: %q %q", answer, s.Done, s.TestChanges)
+		}
+	}
+}

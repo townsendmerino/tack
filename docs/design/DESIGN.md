@@ -497,7 +497,18 @@ and commands:
   counts as no verification, not a pass.
 
 These are shown, not refused: a task may rightly change a test. In E1 they can't change the grade, because the oracle's
-tests come from the fix commit after the run, so they are mechanism metrics there.
+tests come from the fix commit after the run, so they are mechanism metrics there (`test_changes` in a run's summary, a
+column in `tools/calreport`).
+
+"No verification" here is what `done` answers, `done (the last test run after the last change ran no tests)`, and not a
+refusal: the rule that refuses `done` (`verify_done`) still counts any `go test` as a verification, so a registered
+screen's runs stay what they were. A run counts as having run nothing only when every package says so: `go test ./... -run
+X` reports `[no tests to run]` for the packages without `X` beside the ones that ran it, and a build or vet in the same
+command line is a verification whatever the tests did.
+
+The report reads the turn's commands and each file's net change over the turn, so a test added and removed again, a scratch
+test written and deleted, and a narrower `-run` followed by a full run say nothing. It is a report and not a boundary: what a
+script does when the command only names it, a `find -delete`, or a path a shell variable holds are not in it.
 
 **Message-structure rules the loop enforces** — the Messages API's, which goinfer's `/v1/messages` follows, mapped by
 the OpenAI-compatible adapter — each with a cassette test:
