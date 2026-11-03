@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
@@ -42,8 +45,13 @@ func editCall(id, path, old, new string) goinfertest.Reply {
 type deletingShell struct {
 	root   string
 	output string
+	eng    *perms.Engine
 }
 
+var fakeRedirect = regexp.MustCompile(`(?:^|[^-=<>])>>?\s*['"]?([^\s'";&|<>]+)`)
+
+// Run says every program in the command ran, and every redirection wrote, which is enough for these tests of what a
+// report makes of a record. TestDoneNotesOnlyWhatRan has the real shell, whose record tells them apart.
 func (d *deletingShell) Run(_ context.Context, command string, _ time.Duration) (shell.Result, error) {
 	if rest, ok := strings.CutPrefix(command, "rm "); ok {
 		for _, p := range strings.Fields(rest) {
@@ -52,7 +60,16 @@ func (d *deletingShell) Run(_ context.Context, command string, _ time.Duration) 
 			}
 		}
 	}
-	return shell.Result{Output: d.output}, nil
+	res := shell.Result{Output: d.output}
+	for _, s := range d.eng.Analyze(command) {
+		if s.Builtin == "" {
+			res.Ran = append(res.Ran, shell.Ran{Dir: d.root, Args: append([]string{s.Name}, s.Args...)})
+		}
+	}
+	for _, m := range fakeRedirect.FindAllStringSubmatch(command, -1) {
+		res.Wrote = append(res.Wrote, filepath.Join(d.root, m[1]))
+	}
+	return res, nil
 }
 
 // doneAnswer runs a turn over files, with sh's output for every command, and returns done's answer. verify is Config.VerifyDone.
@@ -61,7 +78,7 @@ func doneAnswer(t *testing.T, verify bool, task string, files map[string]string,
 	replies := append(calls, goinfertest.Calls("", "d1", "done", `{}`), goinfertest.Says("ok"))
 	h := buildHarness(t, proto.ModeAuto, &buildShell{}, replies...)
 	cfg := h.sess.cfg
-	sh := &deletingShell{root: h.ws.Root(), output: output}
+	sh := &deletingShell{root: h.ws.Root(), output: output, eng: &perms.Engine{Root: h.ws.Root(), Path: os.Getenv("PATH")}}
 	cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh, Done: true}), sh
 	cfg.BuildAfterEdit, cfg.EditTask, cfg.VerifyDone = false, true, verify
 	cfg.Approve = &approver{answer: Approval{Allow: true}} // the guard asks about some of these, and the report is of what ran
@@ -82,7 +99,7 @@ func doneAnswer(t *testing.T, verify bool, task string, files map[string]string,
 
 // What a turn did to the tests is in done's answer, from its own edits and commands.
 func TestDoneReportsTestChanges(t *testing.T) {
-	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "h_test.go": "package a\n\nfunc TestLast(t *testing.T) {\n\tt.Log(1)\n}\n\nfunc helper() {}\n", "tests/test_h.py": "def test_a():\n    pass\n\ndef helper():\n    pass\n", "sub/x": "", "tests/h.py": "x = 1\n", "tests/more/y": "", "tests/test_l.py": "def test_l(\n    x,\n):\n    assert x\n", "c.test.js": "it('handles }', () => {\n  expect(1)\n})\n", "d.test.js": "describe('a', () => {\n  it('works', () => { one() })\n})\ndescribe('b', () => {\n  it('works', () => { two() })\n})\n", "e.test.js": "it('works', () => expect(1).toBe(1))\n\nconst h = 1\n", "tests/test_b.py": "def test_b():\n    x = 1\n\n    assert x\n", "two.cfg": "[a]\nfail_under = 50\n[b]\nfail_under = 80\nx = 1\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
+	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "h_test.go": "package a\n\nfunc TestLast(t *testing.T) {\n\tt.Log(1)\n}\n\nfunc helper() {}\n", "tests/test_h.py": "def test_a():\n    pass\n\ndef helper():\n    pass\n", "sub/x": "", "q_test.go": "package a\n\nfunc TestQ(t *testing.T) {\n\tt.Log(\"}\")\n\tt.Log(2)\n}\n\nfunc TestC(t *testing.T) {\n\t// }\n\tt.Log(4)\n}\n", "p.test.js": "it('paren', () => {\n  log(')')\n  expect(1)\n})\n", "u_test.go": "package a\n\nfunc TestU(t *testing.T) {\n\t// t.Skip()\n}\n", "tests/test_u.py": "# @pytest.mark.skip\ndef test_u():\n    pass\n", "tests/h.py": "x = 1\n", "tests/more/y": "", "tests/test_l.py": "def test_l(\n    x,\n):\n    assert x\n", "c.test.js": "it('handles }', () => {\n  expect(1)\n})\n", "d.test.js": "describe('a', () => {\n  it('works', () => { one() })\n})\ndescribe('b', () => {\n  it('works', () => { two() })\n})\n", "e.test.js": "it('works', () => expect(1).toBe(1))\n\nconst h = 1\n", "tests/test_b.py": "def test_b():\n    x = 1\n\n    assert x\n", "two.cfg": "[a]\nfail_under = 50\n[b]\nfail_under = 80\nx = 1\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
 	skip := "func TestA(t *testing.T) { t.Skip() }"
 	for _, c := range []struct {
 		name  string
@@ -102,7 +119,7 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "a test directory deleted", calls: []goinfertest.Reply{bashCall("b", "rm -rf tests")}, want: []string{"deleted tests"}},
 		{name: "a skip through sed", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/{}/{ t.Skip() }/' a_test.go`)}, want: []string{"added a skip through sed"}},
 		{name: "a skip through perl", calls: []goinfertest.Reply{bashCall("b", `perl -pi -e 's/x/t.Skip()/' a_test.go`)}, want: []string{"added a skip through perl"}},
-		{name: "a skip through echo", calls: []goinfertest.Reply{bashCall("b", `echo 't.Skip()' >> a_test.go`)}, want: []string{"added a skip through echo"}},
+		{name: "a skip through echo", calls: []goinfertest.Reply{bashCall("b", `echo 't.Skip()' >> a_test.go`)}, want: []string{"added a skip through a redirection"}},
 		{name: "a narrower -run", calls: []goinfertest.Reply{bashCall("b", "go test ./..."), bashCall("c", "go test -run TestA ./...")}, want: []string{"narrowed the tests with -run"}},
 		{name: "a narrower -run=", calls: []goinfertest.Reply{bashCall("b", "go test ./..."), bashCall("c", "go test -run=TestA ./...")}, want: []string{"narrowed the tests with -run"}},
 		{name: "the first of two coverage keys lowered", calls: []goinfertest.Reply{readCall("r", "two.cfg"), editCall("e", "two.cfg", "fail_under = 50", "fail_under = 40")}, want: []string{"from 50 to 40"}},
@@ -116,7 +133,7 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "unlink", calls: []goinfertest.Reply{bashCall("b", "unlink a_test.go")}, want: []string{"deleted a_test.go"}},
 		{name: "rm by absolute path in the repository is reported", calls: []goinfertest.Reply{bashCall("b", "rm ./a_test.go")}, want: []string{"deleted a_test.go"}},
 		{name: "a skip through tee", calls: []goinfertest.Reply{bashCall("b", `echo 't.Skip()' | tee -a a_test.go`)}, want: []string{"added a skip through tee"}},
-		{name: "a skip through a heredoc", calls: []goinfertest.Reply{bashCall("b", "cat > a_test.go <<X\nt.Skip()\nX")}, want: []string{"added a skip through cat"}},
+		{name: "a skip through a heredoc", calls: []goinfertest.Reply{bashCall("b", "cat > a_test.go <<X\nt.Skip()\nX")}, want: []string{"added a skip through a redirection"}},
 		{name: "a js test removed", calls: []goinfertest.Reply{readCall("r", "b.test.js"), editCall("e", "b.test.js", "it('works', () => {})\n", "")}, want: []string{"removed works from b.test.js"}},
 		{name: "a rust test removed", calls: []goinfertest.Reply{readCall("r", "tests/r.rs"), editCall("e", "tests/r.rs", "#[test]\nfn adds() {}\n", "")}, want: []string{"removed adds from tests/r.rs"}},
 
@@ -139,7 +156,28 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "a named js test with a brace in its title", task: "handles } fails", calls: []goinfertest.Reply{readCall("r", "c.test.js"), editCall("e", "c.test.js", "expect(1)", "expect(2)")}, want: []string{"edited handles } in c.test.js"}},
 		{name: "one of two tests with the same title removed", calls: []goinfertest.Reply{readCall("r", "d.test.js"), editCall("e", "d.test.js", "  it('works', () => { two() })\n", "")}, want: []string{"removed works from d.test.js"}},
 
+		{name: "an address ending in s, then a substitution", calls: []goinfertest.Reply{bashCall("b", `sed -i '/TestPass/s/a/t.Skip()/' a_test.go`)}, want: []string{"added a skip through sed"}},
+		{name: "a line appended after an address ending in s", calls: []goinfertest.Reply{bashCall("b", `sed -i '/tests/a t.Skip()' a_test.go`)}, want: []string{"added a skip through sed"}},
+		{name: "the second of two substitutions", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/a/b/; s/c/t.Skip()/' a_test.go`)}, want: []string{"added a skip through sed"}},
+		{name: "a python script naming the file", calls: []goinfertest.Reply{bashCall("b", `python3 -c 'open("a_test.go","a").write("t.Skip()")'`)}, want: []string{"added a skip through python3"}},
+		{name: "a script that starts with s and punctuation", calls: []goinfertest.Reply{bashCall("b", `python3 -c 'sys.stdout.write("t.Skip()")' > a_test.go`)}, want: []string{"added a skip"}},
+		{name: "a named test edited past a brace in a string", task: "TestQ fails", calls: []goinfertest.Reply{readCall("r", "q_test.go"), editCall("e", "q_test.go", "t.Log(2)", "t.Log(3)")}, want: []string{"edited TestQ in q_test.go"}},
+		{name: "a named test edited past a brace in a comment", task: "TestC fails", calls: []goinfertest.Reply{readCall("r", "q_test.go"), editCall("e", "q_test.go", "t.Log(4)", "t.Log(5)")}, want: []string{"edited TestC in q_test.go"}},
+		{name: "a named js test edited past a paren in a string", task: "paren fails", calls: []goinfertest.Reply{readCall("r", "p.test.js"), editCall("e", "p.test.js", "expect(1)", "expect(2)")}, want: []string{"edited paren in p.test.js"}},
+		{name: "a commented skip uncommented", calls: []goinfertest.Reply{readCall("r", "u_test.go"), editCall("e", "u_test.go", "// t.Skip()", "t.Skip()")}, want: []string{"added a skip to u_test.go"}},
+		{name: "a commented python skip uncommented", calls: []goinfertest.Reply{readCall("r", "tests/test_u.py"), editCall("e", "tests/test_u.py", "# @pytest.mark.skip", "@pytest.mark.skip")}, want: []string{"added a skip to tests/test_u.py"}},
+		{name: "a test directory moved", calls: []goinfertest.Reply{bashCall("b", "mv tests elsewhere")}, want: []string{"moved tests to elsewhere"}},
+
+		{name: "an escaped delimiter in a substitution", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/x\/y/t.Skip()/' a_test.go`)}, want: []string{"added a skip through sed"}},
+
 		// None of these says anything.
+		{name: "tee on another file", calls: []goinfertest.Reply{bashCall("b", `echo 't.Skip()' | tee -a notes.txt`)}},
+		{name: "s in a word isn't a substitution", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/x/y/; /t.Skip()/ s/a/b/' a_test.go`)}},
+		{name: "a comment that mentions a skip", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "package a", "package a // not t.Skip()")}},
+		{name: "a python comment that mentions a skip", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "    pass\n", "    pass  # @pytest.mark.skip\n")}},
+		{name: "a scratch test moved", calls: []goinfertest.Reply{call("w", "write", map[string]any{"path": "n_test.go", "content": twoTests}), bashCall("b", "mv n_test.go n.txt")}},
+		{name: "the first of two same-titled tests removed, the other named", task: "works fails", calls: []goinfertest.Reply{readCall("r", "d.test.js"), editCall("e", "d.test.js", "  it('works', () => { one() })\n", "")}, want: []string{"removed works from d.test.js"}, not: "edited"},
+		{name: "a test edited past a brace in a string, named elsewhere", task: "TestC fails", calls: []goinfertest.Reply{readCall("r", "q_test.go"), editCall("e", "q_test.go", "t.Log(2)", "t.Log(3)")}},
 		{name: "a scratch test with a skip, written and deleted", calls: []goinfertest.Reply{call("w", "write", map[string]any{"path": "n_test.go", "content": skip + "\n"}), bashCall("b", "rm n_test.go")}},
 		{name: "a helper after a one-line js test", task: "works fails", calls: []goinfertest.Reply{readCall("r", "e.test.js"), editCall("e", "e.test.js", "const h = 1", "const h = 2")}},
 		{name: "a skip in a block comment", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "package a", "package a\n/* t.Skip() */")}},
@@ -364,49 +402,97 @@ func TestDoneNotesCoverTheirTurn(t *testing.T) {
 	}
 }
 
-// A command refused, or a lone one that failed, did nothing, so the report doesn't say it did.
-func TestDoneNotesOnlyWhatRan(t *testing.T) {
-	sh := &buildShell{result: shell.Result{Output: "ok\n"}}
-	h := buildHarness(t, proto.ModeAuto, sh, bashCall("b", "rm -rf tests"), goinfertest.Calls("", "d1", "done", `{}`), goinfertest.Says("ok"))
+// childHarness is a turn through the real shell's child, in ask mode with every question answered yes.
+func childHarness(t *testing.T, replies ...goinfertest.Reply) *harness {
+	t.Helper()
+	t.Setenv("TACK_SHELL_CHILD", "1")
+	h := newHarness(t, Budget{}, replies...)
 	cfg := h.sess.cfg
-	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh, Done: true})
-	cfg.BuildAfterEdit, cfg.EditTask = false, true
-	h.sess = New(cfg) // no one to ask, so the guard's question refuses it
+	cfg.Perms = &perms.Engine{Root: h.ws.Root(), Path: os.Getenv("PATH")}
+	cfg.Tools = tools.New(tools.Options{Write: true, Shell: &shell.Session{Exe: os.Args[0], Engine: cfg.Perms}, Done: true})
+	cfg.Mode, cfg.Approve, cfg.EditTask = proto.ModeAsk, &approver{answer: Approval{Allow: true}}, true
+	h.sess = New(cfg)
+	return h
+}
+
+// Through the real shell: only what ran counts, and a command that was refused, skipped by a branch, or that failed did nothing.
+func TestDoneNotesOnlyWhatRan(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		commands []string
+		want     []string
+		gone     bool // a_test.go is gone afterward
+	}{
+		{"skipped by &&", []string{"false && rm a_test.go"}, nil, false},
+		{"skipped by ||", []string{"true || rm a_test.go"}, nil, false},
+		{"skipped by if", []string{"if false; then rm a_test.go; fi"}, nil, false},
+		{"a skipped mv", []string{"false && mv a_test.go x"}, nil, false},
+		{"a skipped sed", []string{`false && sed -i '' 's/a/t.Skip()/' a_test.go`}, nil, false},
+		{"a skipped redirection", []string{`false && echo 't.Skip()' >> a_test.go`}, nil, false},
+		{"a failed rm", []string{"rm no_such_test.go"}, []string{"rm may have deleted no_such_test.go"}, false},
+		{"a failed rm of a file still there", []string{"chmod 500 .; rm a_test.go; chmod 700 ."}, nil, false},
+		{"a failed mv", []string{"mv no_such_test.go x"}, nil, false},
+		{"ran, then the line failed", []string{"rm a_test.go && false"}, []string{"deleted a_test.go"}, true},
+		{"after something failed", []string{"false; rm a_test.go"}, []string{"deleted a_test.go"}, true},
+		{"one of two missing", []string{"rm a_test.go no_such_test.go"}, []string{"rm may have deleted a_test.go", "rm may have deleted no_such_test.go"}, true},
+		{"a path in a variable", []string{"d=a_test.go; rm $d"}, []string{"deleted a_test.go"}, true},
+		{"a glob", []string{"rm a_*.go"}, []string{"deleted a_test.go"}, true},
+		{"from another directory", []string{"mkdir sub; mv a_test.go sub/; cd sub && rm a_test.go"}, []string{"deleted sub/a_test.go"}, true},
+		{"a real redirection", []string{`true && echo 't.Skip()' >> a_test.go`}, []string{"added a skip through a redirection"}, false},
+		{"a skipped go test isn't a wider run", []string{"go test ./... ; go test -run X ./...", "false && go test ./..."}, []string{"narrowed the tests with -run after running them without it"}, false},
+		{"a skipped narrower one isn't narrowing", []string{"go test ./...", "false && go test -run X ./..."}, nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var replies []goinfertest.Reply
+			for i, command := range c.commands {
+				replies = append(replies, bashCall(fmt.Sprintf("b%d", i), command))
+			}
+			h := childHarness(t, append(replies, goinfertest.Calls("", "d1", "done", `{}`))...)
+			file := filepath.Join(h.ws.Root(), "a_test.go")
+			if err := os.WriteFile(file, []byte(twoTests), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.sess.Turn(context.Background(), "fix it"); err != nil {
+				t.Fatal(err)
+			}
+			_, notes := DoneNotes(h.finished("d1").Result)
+			if !slices.Equal(notes, c.want) {
+				t.Errorf("notes %q, want %q", notes, c.want)
+			}
+			if _, err := os.Stat(file); (err != nil) != c.gone {
+				t.Errorf("a_test.go: %v", err)
+			}
+		})
+	}
+	// A command that doesn't delete after all leaves what the turn did to the file in the report.
+	h := childHarness(t, readCall("r", "a_test.go"), editCall("e", "a_test.go", "func TestA(t *testing.T) {}\n\n", ""), bashCall("b", "false && rm a_test.go"), goinfertest.Calls("", "d1", "done", `{}`))
+	if err := os.WriteFile(filepath.Join(h.ws.Root(), "a_test.go"), []byte(twoTests), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := h.sess.Turn(context.Background(), "fix it"); err != nil {
 		t.Fatal(err)
 	}
-	if len(sh.ran) != 0 {
-		t.Fatalf("ran %q", sh.ran)
-	}
-	if _, notes := DoneNotes(h.finished("d1").Result); notes != nil {
-		t.Errorf("refused: %q", notes)
+	if _, notes := DoneNotes(h.finished("d1").Result); len(notes) != 1 || notes[0] != "removed TestA from a_test.go" {
+		t.Errorf("after a skipped rm: %q", notes)
 	}
 
-	sh = &buildShell{result: shell.Result{Exit: 1, Output: "rm: no\n"}}
-	h = buildHarness(t, proto.ModeAuto, sh, bashCall("b", "rm a_test.go"), goinfertest.Calls("", "d1", "done", `{}`), goinfertest.Says("ok"))
-	cfg = h.sess.cfg
-	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh, Done: true})
-	cfg.BuildAfterEdit, cfg.EditTask = false, true
-	h.sess = New(cfg)
-	if _, err := h.sess.Turn(context.Background(), "fix it"); err != nil {
-		t.Fatal(err)
-	}
-	if _, notes := DoneNotes(h.finished("d1").Result); notes != nil {
-		t.Errorf("failed: %q", notes)
-	}
-
-	// In a longer line the failure may be another command's, so what the line says it did is reported.
-	sh = &buildShell{result: shell.Result{Exit: 1, Output: "FAIL\n"}}
-	h = buildHarness(t, proto.ModeAuto, sh, bashCall("b", "rm a_test.go; go test ./..."), goinfertest.Calls("", "d1", "done", `{}`), goinfertest.Says("ok"))
-	cfg = h.sess.cfg
-	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh, Done: true})
-	cfg.BuildAfterEdit, cfg.EditTask = false, true
-	h.sess = New(cfg)
-	if _, err := h.sess.Turn(context.Background(), "fix it"); err != nil {
-		t.Fatal(err)
-	}
-	if _, notes := DoneNotes(h.finished("d1").Result); len(notes) != 1 || notes[0] != "deleted a_test.go" {
-		t.Errorf("a longer line: %q", notes)
+	// Refused by the guard, with no one to ask: nothing ran, in a line of one command or of several.
+	for _, command := range []string{"rm -rf tests", "rm -rf tests && go test -run X ./..."} {
+		sh := &buildShell{result: shell.Result{Output: "ok\n"}}
+		h := buildHarness(t, proto.ModeAuto, sh, bashCall("b", command), goinfertest.Calls("", "d1", "done", `{}`))
+		cfg := h.sess.cfg
+		cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh, Done: true})
+		cfg.BuildAfterEdit, cfg.EditTask = false, true
+		h.sess = New(cfg)
+		if _, err := h.sess.Turn(context.Background(), "fix it"); err != nil {
+			t.Fatal(err)
+		}
+		if len(sh.ran) != 0 {
+			t.Fatalf("ran %q", sh.ran)
+		}
+		if _, notes := DoneNotes(h.finished("d1").Result); notes != nil {
+			t.Errorf("%s: %q", command, notes)
+		}
 	}
 }
 

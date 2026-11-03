@@ -506,9 +506,9 @@ screen's runs stay what they were. A run counts as having run nothing only when 
 X` reports `[no tests to run]` for the packages without `X` beside the ones that ran it, and a build or vet in the same
 command line is a verification whatever the tests did.
 
-The report reads the turn's commands and each file's net change over the turn, so a test added and removed again, a scratch
+The report reads the shell's own record of what ran and each file's net change over the turn, so a test added and removed again, a scratch
 test written and deleted, and a narrower `-run` followed by a full run say nothing. It is a report and not a boundary: what a
-script does when the command only names it, a `find -delete`, or a path a shell variable holds are not in it.
+script does when the command only names it, a `find -delete`, or a program under a wrapper (`env rm`) are not in it.
 
 **Message-structure rules the loop enforces** — the Messages API's, which goinfer's `/v1/messages` follows, mapped by
 the OpenAI-compatible adapter — each with a cassette test:

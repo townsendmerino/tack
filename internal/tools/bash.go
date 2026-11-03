@@ -51,11 +51,12 @@ func (t bashTool) Run(ctx context.Context, _ *Workspace, input json.RawMessage) 
 	if out == "" {
 		out = "(no output)\n"
 	}
+	res := Result{Text: out, Ran: r.Ran, Wrote: r.Wrote}
 	switch {
 	case r.Stopped != "":
-		return Result{Text: out + "error: stopped: " + r.Stopped + "\n", IsError: true}, nil
+		res.Text, res.IsError = out+"error: stopped: "+r.Stopped+"\n", true
 	case r.Exit != 0:
-		return Result{Text: out + fmt.Sprintf("[exit status %d]\n", r.Exit), IsError: true}, nil
+		res.Text, res.IsError = out+fmt.Sprintf("[exit status %d]\n", r.Exit), true
 	}
-	return Result{Text: out}, nil
+	return res, nil
 }

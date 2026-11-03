@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/perms"
@@ -14,8 +15,8 @@ import (
 // What a turn did to the tests (DESIGN §6.3): done's answer ends with a report of the test files it deleted, the test
 // functions it removed, the skips it added, its edits to tests the task names, the settings it loosened and a last test
 // run that ran nothing. The report shows and never refuses: a task may rightly change a test. It reads the turn's own
-// edits and commands, so it is a report of what they say and not a boundary: a script that the command only names, a
-// find -delete, a change a shell variable hides, are not in it.
+// edits and the shell's record of what ran, so it is a report and not a boundary: what a script does when the command only
+// names it, a find -delete, and a program under a wrapper (env rm) are not in it.
 
 // maxTestNotes is how many notes a report lists before it says how many more there were.
 const maxTestNotes = 8
@@ -59,46 +60,51 @@ func newTestChanges(task string, ws *tools.Workspace) testChanges {
 	return c
 }
 
-// bash records what one command line, as eng parses it, did to the tests. failed says the line exited non-zero; a line of
-// one command then did nothing, and a longer one may have done any part of it.
-func (c *testChanges) bash(eng *perms.Engine, command string, failed bool) {
+// commands records what one bash call did to the tests, from the shell's record of what ran.
+func (c *testChanges) commands(eng *perms.Engine, command string, r tools.Result) {
 	if eng == nil {
 		return
 	}
-	cmds := eng.Analyze(command)
-	for _, s := range cmds {
-		args, name := s.Args, commandName(s)
-		if name == "go" {
+	for _, ran := range r.Ran {
+		s := perms.Simple{Program: ran.Args[0], Name: ran.Args[0], Args: ran.Args[1:], Literal: make([]bool, len(ran.Args)-1)}
+		for i := range s.Literal {
+			s.Literal[i] = true
+		}
+		name, args, failed := commandName(s), s.Args, ran.Exit != 0
+		if name == "go" { // a test run that failed still ran
 			if sub, rest := goSubcommand(s); sub == "test" {
 				c.goTest(rest)
 			}
-			continue
-		}
-		if failed && len(cmds) == 1 {
 			continue
 		}
 		if name == "git" {
 			name, args = gitSubcommand(args)
 			name = "git " + name
 		}
-		switch name {
-		case "rm", "unlink", "git rm":
-			c.deletes(eng.Root, args)
-		case "mv", "git mv":
-			c.moves(eng.Root, args)
-		case "sed", "perl", "awk", "gawk", "ruby", "python", "python3", "ed":
-			if namesTestFile(args, command) && scriptAddsSkip(args) {
+		switch {
+		case name == "rm" || name == "unlink" || name == "git rm":
+			c.deletes(eng.Root, ran.Dir, args, failed)
+		case failed:
+		case name == "mv" || name == "git mv":
+			c.moves(eng.Root, ran.Dir, args)
+		case slices.Contains(scriptEditors, name):
+			if namesTestFile(args) && scriptAddsSkip(args) {
 				c.note("added a skip through " + name)
 			}
-		case "echo", "printf", "cat", "tee":
-			if (name == "tee" && namesTestFile(args, "")) || redirectsToTestFile(command) {
-				if skipRe.MatchString(command) {
-					c.note("added a skip through " + name)
-				}
+		case name == "tee":
+			if namesTestFile(args) && skipRe.MatchString(command) {
+				c.note("added a skip through tee")
 			}
 		}
 	}
+	for _, p := range r.Wrote {
+		if rel, ok := inRepo(eng.Root, p); ok && isTestFile(rel) && skipRe.MatchString(command) {
+			c.note("added a skip through a redirection")
+		}
+	}
 }
+
+var scriptEditors = []string{"sed", "perl", "awk", "gawk", "ruby", "python", "python3", "ed"}
 
 func (c *testChanges) note(s string) {
 	for _, n := range c.notes {
@@ -130,7 +136,9 @@ func (c *testChanges) goTest(args []string) {
 	}
 }
 
-func (c *testChanges) deletes(root string, args []string) {
+// deletes records rm's paths, written relative to dir. A failed rm may have deleted some of them, and what's gone now may
+// never have been there, so for those it says only that it may have.
+func (c *testChanges) deletes(root, dir string, args []string, failed bool) {
 	recursive := false
 	for _, a := range args {
 		if a == "--recursive" || (strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, "rR")) {
@@ -141,19 +149,26 @@ func (c *testChanges) deletes(root string, args []string) {
 		if strings.HasPrefix(a, "-") {
 			continue
 		}
-		p, ok := inRepo(root, a)
-		if ok && (isTestFile(p) || (recursive && isTestDir(p))) {
-			if c.deleted == nil {
-				c.deleted = map[string]int{}
+		p, ok := inRepo(root, resolved(dir, a))
+		if !ok || !(isTestFile(p) || (recursive && isTestDir(p))) {
+			continue
+		}
+		if failed {
+			if _, err := os.Lstat(filepath.Join(root, p)); err != nil {
+				c.note("rm may have deleted " + p)
 			}
-			if c.ws != nil {
-				c.deleted[p] = c.ws.ChangeMark()
-			} else {
-				c.deleted[p] = c.mark
-			}
-			if !c.scratch(p) {
-				c.note("deleted " + p)
-			}
+			continue
+		}
+		if c.deleted == nil {
+			c.deleted = map[string]int{}
+		}
+		if c.ws != nil {
+			c.deleted[p] = c.ws.ChangeMark()
+		} else {
+			c.deleted[p] = c.mark
+		}
+		if !c.scratch(p) {
+			c.note("deleted " + p)
 		}
 	}
 }
@@ -187,7 +202,7 @@ func (c *testChanges) deletedAt(p string) (int, bool) {
 
 // moves notes a test file moved to a name that is not one: out of the repository under any name, or inside it to a path
 // that is not a test's. Into a directory that exists, the file keeps its own name there.
-func (c *testChanges) moves(root string, args []string) {
+func (c *testChanges) moves(root, dir string, args []string) {
 	var paths []string
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {
@@ -198,19 +213,19 @@ func (c *testChanges) moves(root string, args []string) {
 		return
 	}
 	dest := paths[len(paths)-1]
-	to, inside := inRepo(root, dest)
+	to, inside := inRepo(root, resolved(dir, dest))
 	st, err := os.Stat(filepath.Join(root, to))
 	intoDir := inside && err == nil && st.IsDir()
 	for _, a := range paths[:len(paths)-1] {
-		p, ok := inRepo(root, a)
-		if !ok || !isTestFile(p) {
+		p, ok := inRepo(root, resolved(dir, a))
+		if !ok || !isTestDir(p) || c.scratch(p) { // isTestDir holds for a test file too
 			continue
 		}
 		target := to
 		if intoDir {
 			target = filepath.Join(to, filepath.Base(p))
 		}
-		if !isTestFile(target) { // out of the repository, target is ""
+		if !isTestDir(target) { // out of the repository, target is ""
 			c.note("moved " + p + " to " + dest)
 		}
 	}
@@ -273,9 +288,9 @@ func (c *testChanges) fileNotes(f tools.FileChange) {
 	f.Before, f.After = liveCode(f.Path, f.Before), liveCode(f.Path, f.After)
 	before, order := testBodies(f.Before)
 	after, _ := testBodies(f.After)
-	for _, key := range order {
-		if _, ok := after[key]; !ok {
-			c.note("removed " + testName(key) + " from " + f.Path)
+	for _, name := range order {
+		if len(after[name]) < len(before[name]) {
+			c.note("removed " + name + " from " + f.Path)
 		}
 	}
 	if len(skipRe.FindAllString(f.After, -1)) > len(skipRe.FindAllString(f.Before, -1)) {
@@ -287,9 +302,10 @@ func (c *testChanges) fileNotes(f tools.FileChange) {
 	if strings.Contains(c.task, filepath.Base(f.Path)) {
 		c.note("edited " + f.Path + ", a test file the task names")
 	}
-	for _, key := range order {
-		if body, ok := after[key]; ok && body != before[key] && taskNames(c.task, testName(key)) {
-			c.note("edited " + testName(key) + " in " + f.Path + ", a test the task names")
+	for _, name := range order {
+		edited := slices.ContainsFunc(after[name], func(body string) bool { return !slices.Contains(before[name], body) })
+		if edited && taskNames(c.task, name) {
+			c.note("edited " + name + " in " + f.Path + ", a test the task names")
 		}
 	}
 }
@@ -305,28 +321,35 @@ func taskNames(task, name string) bool {
 
 var wordEnds = regexp.MustCompile(`^\w(.*\w)?$`)
 
-// Block comments and Python's triple-quoted strings, which hold no live test: commenting one out this way removes it.
+// Comments and Python's triple-quoted strings, which hold no live test or skip.
 var (
 	blockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	slashComment = regexp.MustCompile(`(?m)//.*$`)
 	tripleQuoted = regexp.MustCompile(`(?s)""".*?"""|'''.*?'''`)
+	hashComment  = regexp.MustCompile(`(?m)#.*$`)
 )
 
-// liveCode is src without what can't run, by the file's language.
+// liveCode is src without what can't run, by the file's language. A build constraint is a comment that counts.
 func liveCode(path, src string) string {
 	if strings.HasSuffix(path, ".py") {
-		return tripleQuoted.ReplaceAllString(src, "")
+		return hashComment.ReplaceAllString(tripleQuoted.ReplaceAllString(src, ""), "")
 	}
-	return blockComment.ReplaceAllString(src, "")
+	return slashComment.ReplaceAllStringFunc(blockComment.ReplaceAllString(src, ""), func(c string) string {
+		if strings.HasPrefix(c, "//go:build") {
+			return c
+		}
+		return ""
+	})
 }
 
 // testFuncRe matches the start of a test function in Go, Python, JavaScript and TypeScript, or Rust; a commented-out one
 // does not match, so commenting a test out removes it.
 var testFuncRe = regexp.MustCompile("(?m)^(?:func ((?:Test|Fuzz)\\w*)\\(|\\s*(?:async\\s+)?def (test\\w*)\\(|\\s*(?:it|test)\\(\\s*['\"`]([^'\"`\\n]+)|\\s*#\\[test\\](?:\\s*#\\[[^\\]\\n]*\\])*\\s*(?:pub\\s+)?(?:async\\s+)?fn (\\w+))")
 
-// testBodies is the file's test functions by key, each with its text (testEnd), and the keys in file order. A key is the
-// test's name (testName), with its count when an earlier test has the same name, as JavaScript's in two describes can.
-func testBodies(src string) (map[string]string, []string) {
-	bodies, seen := map[string]string{}, map[string]int{}
+// testBodies is the text of each test (testEnd) by name, and the names in file order. A name can have more than one, as
+// JavaScript's in two describes can.
+func testBodies(src string) (map[string][]string, []string) {
+	bodies := map[string][]string{}
 	var order []string
 	ms := testFuncRe.FindAllStringSubmatchIndex(src, -1)
 	for i, m := range ms {
@@ -341,21 +364,12 @@ func testBodies(src string) (map[string]string, []string) {
 			limit = ms[i+1][0]
 		}
 		end := testEnd(src[:limit], at, group)
-		key := name
-		if n := seen[name]; n > 0 {
-			key = fmt.Sprintf("%s\x00%d", name, n)
+		if len(bodies[name]) == 0 {
+			order = append(order, name)
 		}
-		seen[name]++
-		order = append(order, key)
-		bodies[key] = src[m[0]:end]
+		bodies[name] = append(bodies[name], src[m[0]:end])
 	}
 	return bodies, order
-}
-
-// testName is the name in a key of testBodies.
-func testName(key string) string {
-	name, _, _ := strings.Cut(key, "\x00")
-	return name
 }
 
 // testEnd is where a test ends in src, given the end of its name and which group of testFuncRe matched it: in Python at the
@@ -382,18 +396,25 @@ func testEnd(src string, at, group int) int {
 			}
 		}
 	case 3:
-		return closes(src, at, '(', ')', 1)
+		return closes(src, at+1, '(', ')', 1) // past the title's closing quote
 	}
 	return closes(src, at, '{', '}', 0)
 }
 
-// closes is just past where the bracket closes, counting from at with depth already open, or the end of src.
+// closes is just past where the bracket closes, counting from at with depth already open, or the end of src. It skips
+// strings (liveCode has taken the comments out). A ' or " string ends at the line's end at the latest, since an apostrophe can be Rust's lifetime.
 func closes(src string, at int, open, shut byte, depth int) int {
 	for i := at; i < len(src); i++ {
-		switch src[i] {
-		case open:
+		switch c := src[i]; {
+		case c == '"' || c == '\'' || c == '`':
+			for i++; i < len(src) && src[i] != c && (c == '`' || src[i] != '\n'); i++ {
+				if src[i] == '\\' && c != '`' {
+					i++
+				}
+			}
+		case c == open:
 			depth++
-		case shut:
+		case c == shut:
 			if depth--; depth <= 0 {
 				return i + 1
 			}
@@ -406,53 +427,86 @@ func closes(src string, at int, open, shut byte, depth int) int {
 // test file.
 var skipRe = regexp.MustCompile(`\b[tbf]\.Skip(?:Now|f)?\(|@pytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.skip\(|@unittest\.skip|\.skipTest\(|\.skip\(|\bx(?:it|describe|test)\(|#\[ignore\b|//go:build ignore\b`)
 
-// scriptAddsSkip reports whether one of an editor's arguments puts a skip into what it edits: a substitution with more
-// skips on its right than its left, or a script that is no substitution and no line address alone.
+// scriptAddsSkip reports whether one of a script editor's arguments puts a skip into what it edits: a substitution with more
+// skips on its right than its left, or a script with no substitution that is more than a line address.
 func scriptAddsSkip(args []string) bool {
 	for _, a := range args {
 		if !skipRe.MatchString(a) {
 			continue
 		}
-		if m := substRe.FindStringSubmatch(a); m != nil {
-			parts := strings.Split(m[2], m[1])
-			if len(parts) >= 2 && len(skipRe.FindAllString(parts[1], -1)) > len(skipRe.FindAllString(parts[0], -1)) {
+		subs := substitutions(a)
+		if subs == nil && !addressRe.MatchString(a) {
+			return true
+		}
+		for _, s := range subs {
+			if len(skipRe.FindAllString(s[1], -1)) > len(skipRe.FindAllString(s[0], -1)) {
 				return true
 			}
-			continue
-		}
-		if !addressRe.MatchString(a) {
-			return true
 		}
 	}
 	return false
 }
 
 var (
-	substRe   = regexp.MustCompile(`^\s*\S*?s([^\w\s])(.*)$`)
-	addressRe = regexp.MustCompile(`^\s*/.*/\s*[dp]\s*$`)
+	substStart = regexp.MustCompile(`(?:^|[;\s}/])s([/|#,@!:])`)
+	addressRe  = regexp.MustCompile(`^\s*/.*/\s*[dp]\s*$`)
 )
 
-// redirectRe matches a shell redirection's target as the command line writes it.
-var redirectRe = regexp.MustCompile(`(?:^|[^-=<>])>>?\s*['"]?([^\s'";&|<>]+)`)
+// substitutions is each s command's two sides in a sed or perl script, after any address.
+func substitutions(script string) [][2]string {
+	var out [][2]string
+	for {
+		m := substStart.FindStringSubmatchIndex(script)
+		if m == nil {
+			return out
+		}
+		delim := script[m[2]]
+		rest := script[m[3]:]
+		left, n := upTo(rest, delim)
+		if n < 0 {
+			return out
+		}
+		right, k := upTo(rest[n+1:], delim)
+		if k < 0 {
+			right, k = rest[n+1:], len(rest)-n-2
+		}
+		out = append(out, [2]string{left, right})
+		if n+k+2 >= len(rest) {
+			return out
+		}
+		script = rest[n+k+2:]
+	}
+}
 
-func redirectsToTestFile(command string) bool {
-	for _, m := range redirectRe.FindAllStringSubmatch(command, -1) {
-		if isTestFile(filepath.Clean(m[1])) {
+// upTo is s before the first unescaped delim and its index, or -1 for none.
+func upTo(s string, delim byte) (string, int) {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case delim:
+			return s[:i], i
+		}
+	}
+	return s, -1
+}
+
+// namesTestFile reports whether an argument is, or a script holds, the name of a test file.
+func namesTestFile(args []string) bool {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") && isTestFile(filepath.Clean(a)) {
 			return true
+		}
+		for _, word := range pathWord.FindAllString(a, -1) {
+			if isTestFile(filepath.Clean(word)) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// namesTestFile reports whether args name a test file, or command redirects to one.
-func namesTestFile(args []string, command string) bool {
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") && isTestFile(filepath.Clean(a)) {
-			return true
-		}
-	}
-	return redirectsToTestFile(command)
-}
+var pathWord = regexp.MustCompile(`[\w./15978]+`)
 
 // isTestFile reports whether the path, relative to the repository, is a test by its name or by a directory it is in.
 func isTestFile(p string) bool {
@@ -478,6 +532,14 @@ func isTestDir(p string) bool {
 
 func isTestDirName(s string) bool {
 	return s == "tests" || s == "test" || s == "__tests__"
+}
+
+// resolved is p as a command in dir means it.
+func resolved(dir, p string) string {
+	if filepath.IsAbs(p) || dir == "" {
+		return p
+	}
+	return filepath.Join(dir, p)
 }
 
 // inRepo is the path as written made relative to root, and whether it is inside it.

@@ -75,7 +75,7 @@ func (v *verifyState) observe(call int, name string, input json.RawMessage, ran 
 		if json.Unmarshal(input, &in) != nil {
 			return
 		}
-		v.tests.bash(eng, in.Command, ran.IsError)
+		v.tests.commands(eng, in.Command, ran)
 		if !IsVerification(eng, in.Command) {
 			return
 		}
