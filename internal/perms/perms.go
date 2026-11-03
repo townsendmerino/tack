@@ -87,6 +87,8 @@ type Engine struct {
 	// the engine fails closed: auto mode refuses shell commands, and no rule allows one without asking, because the
 	// sandbox, not the rules, is the boundary.
 	Sandboxed bool
+	// SessionDir is where this session's next command starts (internal/shell.Session keeps it current), or "" for Root.
+	SessionDir string
 	// SessionEnv is the exported variables earlier commands set in this session (internal/shell.Session keeps it
 	// current). One that changes what programs run makes every command ask.
 	SessionEnv map[string]string
@@ -111,6 +113,8 @@ func (e *Engine) root() string {
 //     writes outside the workspace, and otherwise it asks. The redirection check is the only check of where a command
 //     writes: what the programs themselves write is enforced by the sandbox, not by the engine.
 //   - Any other tool that changes something asks, except in plan, where it is refused.
+//   - Outside plan, what AlwaysAsks and PathAsks name asks in every mode, whatever a rule or the session allowed: a
+//     command that destroys work, or a change to a CI definition or an instruction file.
 func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.RawMessage) Verdict {
 	if readOnly {
 		return Verdict{Action: Allow, By: ByReadOnly}
@@ -118,6 +122,16 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 	if mode == proto.ModePlan {
 		return Verdict{Action: Deny, By: ByMode, Reasons: []string{"plan mode is read-only: propose the plan, and the " +
 			"user switches the mode to carry it out"}}
+	}
+	if tool != "bash" {
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) == nil && in.Path != "" {
+			if why := e.PathAsks(in.Path); len(why) > 0 {
+				return Verdict{Action: Ask, By: ByRule, Reasons: why}
+			}
+		}
 	}
 	if e.tools[tool] {
 		return Verdict{Action: Allow, By: ByUser}
@@ -135,13 +149,16 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 		if err := json.Unmarshal(input, &in); err != nil || in.Command == "" {
 			return Verdict{Action: Deny, By: ByMode, Reasons: []string{"bash needs a command"}}
 		}
-		cmds, why := e.checkShell(in.Command)
+		cmds, why, always := e.checkShell(in.Command)
 		if !e.Sandboxed {
 			if mode == proto.ModeAuto {
 				return Verdict{Action: Deny, By: ByMode, Parsed: cmds, Reasons: []string{noSandbox +
 					", so auto mode runs no shell commands; switch to ask mode to approve them one by one"}}
 			}
-			return Verdict{Action: Ask, By: ByMode, Parsed: cmds, Reasons: append(why, noSandbox+", so every command asks")}
+			return Verdict{Action: Ask, By: ByMode, Parsed: cmds, Reasons: append(append(always, why...), noSandbox+", so every command asks")}
+		}
+		if len(always) > 0 {
+			return Verdict{Action: Ask, By: ByRule, Reasons: append(always, why...), Parsed: cmds}
 		}
 		if mode == proto.ModeAuto {
 			return Verdict{Action: Allow, By: ByMode, Parsed: cmds}

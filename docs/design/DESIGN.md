@@ -600,6 +600,61 @@ tool-use smoke set compares this merged set against the split one before it is f
     `grep` that mentions `git reset --hard` doesn't match.
   - The library's tested examples, the commands each rule must catch and the near-misses it must leave alone, become
     the Go tests for tack's port.
+  - **As built** (`internal/perms/destroy.go:AlwaysAsks`; the tests are `internal/perms/destroy_test.go`):
+    - `rm -r` leaves alone what the library's near-misses do: a rebuilt directory directly where the command runs
+      (`node_modules`, `dist`, `build` and the like, not through a symlink), and a path under the temp directory. Anything
+      else asks, inside the workspace or out.
+    - The parse looks through what runs another program (`env`, `nice`, `timeout`, `xargs`, `sudo`, `find -exec`, `npx`), and
+      reads paths after a `cd` with a fixed target.
+  - **The rule (2026-11-02): when the parse cannot see exactly what will run, it asks, in every mode.** It does not read
+    code inside text, or guess. These all ask:
+    - `eval`, `trap`, `source` and `.`, and a program name that expands;
+    - a shell handed code in any way, under any wrapper or flags, on a block or subshell around it too: `-c`, `-s`, a script that is stdin (`/dev/stdin`, `/dev/fd/N`,
+      `/proc/…/fd/N`, or a symlink to one), and anything fed to it: a pipe (`curl … | sh` too), `<`, a here-document or a
+      here-string, even with a named script;
+    - what takes its arguments from stdin or a search, where a rule would read them: `xargs rm`, `find -exec git checkout {} +`, and
+      `parallel`, which also runs them through a shell;
+    - a wrapper it can't fully read: an argument that expands, a flag it doesn't know, code as text (`env -S`, `npx -c`), or
+      another directory (`env -C`, `sudo -D`);
+    - config on `git`'s command line in any form (`-c`, `--config-env`), since an alias runs inside git and `--config-env` names
+      an environment variable; any other global flag form it doesn't read (`-Cdir`), one that expands, `--work-tree`, or `--exec-path=<dir>`;
+    - a word that expands where a rule would read it: an argument of `rm`, `find`, a `git` subcommand on the list, a program
+      the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value; a value that may split (`git commit -m $msg`, not `"$msg"`); a declaration or
+      an expansion that may set any variable (`export $v`, `${!v:=x}`). Hook variables and `CDPATH` are read however they are set: under
+      `builtin`, `read`, `printf -v`, `for`, `${V:=x}`, or an array;
+    - a flag by any prefix `git` accepts for it: `git reset --har` is `--hard`. The last of a flag and its `--no-` form wins. A flag cut short that
+      may take a value asks, since its next word can't be read either way;
+    - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. A yes covers a redirection
+      there only under a name it showed as protected, so `ci.yml` that turns out to be the workflow stops when it runs. Such a `cd`
+      expands, is `pushd` or `popd`, is under a wrapper, or may not run in order (in a function, branch, loop, pipeline or process
+      substitution, negated, in the background, after `||`, with more than one target, or with a redirection or assignment on
+      it); setting `CDPATH` counts too. The `cd` itself doesn't ask: `cd "$d" && go test` runs;
+  - **The run-time check is a second layer, and nothing depends on it alone** (`internal/shell`, the exec and open checks).
+    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user's yes
+    covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): each command the parse asked about, with a hole
+    where it expands, and each redirection, by its resolved path. It goes by the statement, never by what a reason says, since two
+    statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`
+    and `trap` can cover anything, since their code can be anything, and never a command shown in full. What may set any variable covers
+    variables only. A shell handed code is covered only by a yes that said so. What runs
+    can't say which statement it is, so the n-th run of a text is taken to be its n-th statement. Whatever was approved, a flag that
+    makes a program run another (`perms.RunFlag`) must have been shown, in the command that runs.
+  - **Its cost in E1, accepted without an exception (coordinator, 2026-11-02):** of 1,549 `bash`, `edit` and `write` calls in 360
+    runs (`e1-calibration-preregistration-2026-10-18.md` §15.2, §15.3, §16.1, §16.2), replayed in `auto`, 1 now asks: §15.2
+    task 11 B-1, `rm -f` on a glob in the module cache. With no one attached it is refused, where before it ran and the
+    sandbox refused the delete. A screen on a build with this rule can differ at such a call.
+  - **What this guard is (Francis, 2026-11-02): it makes the model ask, and it is not a security boundary. The sandbox is.** It reads
+    shell text to decide when to ask, and shell can't be read completely: ten rounds of review each found more forms. A command that gets
+    past it is a question that wasn't asked, not an escape, and nothing may rely on it to contain a command. Known limits, by class, of
+    which more forms may remain:
+    - **Code it can't read:** a named script with no flags and nothing fed to it, and a program that runs code (`make`, `python -c`).
+    - **Programs not on the list:** anything that deletes or overwrites on its own (`mv`, `cp`, `dd`, `truncate`), or that writes a CI
+      definition or an instruction file (`tee`, `sed -i`).
+    - **Shell forms:** other ways to set a variable or change directory. A `cd` that fails isn't modeled, so what follows is read from the
+      wrong directory. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
+    - **Flag forms:** what `git` and the wrappers it reads accept beyond what it knows, which differ by version and between BSD and GNU.
+    - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
+    - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
+      inside `eval` and out goes by the written-out statement.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
@@ -609,6 +664,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     otherwise rewrite to change its own standing orders (§6.7);
   - `git --no-verify`, `git -c core.hooksPath=…` and `git config core.hooksPath`, which skip the owner's hooks;
   - starting another agent from `bash` (`claude`, `codex`, `gemini`, `tack` and the like).
+  - These are `internal/perms/destroy.go:AlwaysAsks` and `PathAsks`. A shell redirection to a CI definition or an instruction
+    file asks too; another program writing one (`tee`, `sed -i`) is not visible to the parse.
   - **Never, from the file tools:** a write inside `.git/`. Git's own commands still write there.
   - **Already covered, by the sandbox profile:** secrets, shell history and logs outside the workspace, host-key
     checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, `.git/hooks`, `.git/config` and

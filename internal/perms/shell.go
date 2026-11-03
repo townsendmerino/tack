@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 // path, and its arguments. Args holds an argument's literal text, or ok=false in Literal where it expands at run time.
 type Simple struct {
 	Program string   // absolute, symlinks resolved; "" for a builtin
+	Name    string   // the program as written, which a multi-call binary goes by
 	Builtin string   // the builtin's name, for a builtin
 	Args    []string // the arguments after the program, as written
 	Literal []bool   // Literal[i] is false when Args[i] expands at run time
@@ -125,20 +127,21 @@ var wrappers = map[string]bool{"exec": true, "command": true, "builtin": true, "
 //
 // The only check here of where a command writes is its redirections. What the programs themselves write (go build
 // -o, a test writing a file) is not checked here; the sandbox enforces it.
-func (e *Engine) checkShell(command string) ([]Simple, []string) {
+//
+// always is what asks in every mode (AlwaysAsks, PathAsks), whatever the rules say.
+func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string) {
 	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
-		return nil, []string{"the command does not parse: " + err.Error()}
+		reason := []string{"the command does not parse: " + err.Error()}
+		return nil, reason, reason
 	}
-	var cmds []Simple
-	var why []string
 	for _, name := range sortedKeys(e.SessionEnv) {
 		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != os.Getenv(name) {
 			why = append(why, fmt.Sprintf("%s=%s was set by an earlier command in this session and changes what programs "+
 				"run, which no rule covers", name, v))
 		}
 	}
-	syntax.Walk(f, func(n syntax.Node) bool {
+	walkDirs(f, e.startDir(), func(n syntax.Node, dir string, _ bool) {
 		switch n := n.(type) {
 		case *syntax.Assign:
 			why = append(why, assignment(n)...)
@@ -148,23 +151,32 @@ func (e *Engine) checkShell(command string) ([]Simple, []string) {
 			}
 		case *syntax.CallExpr:
 			if len(n.Args) == 0 { // assignments only
-				return true
+				return
 			}
-			s, reasons := e.simple(n.Args)
+			s, reasons := e.simple(n.Args, dir)
 			if s != nil {
 				cmds = append(cmds, *s)
 			}
 			why = append(why, reasons...)
 		case *syntax.Redirect:
-			why = append(why, e.redirect(n)...)
+			why = append(why, e.redirect(n, dir)...)
 		}
-		return true
 	})
-	return cmds, why
+	always = e.scanAsks(f, scan{dir: e.startDir()})
+	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
+	for _, name := range sortedKeys(e.SessionEnv) {
+		if v := e.SessionEnv[name]; v != os.Getenv(name) && runsProgramWith(f, name) {
+			if r := HooksOff(name, v); r != "" {
+				always = appendNew(always, r)
+			}
+		}
+	}
+	return cmds, why, always
 }
 
-// simple resolves one simple command's program, looking through wrappers, and checks it against the rules.
-func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
+// simple resolves one simple command's program from dir, where it runs, looking through wrappers, and checks it against
+// the rules.
+func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 	for len(words) > 0 {
 		name, ok := literal(words[0])
 		if !ok {
@@ -188,11 +200,11 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 			}
 			continue
 		}
-		prog, err := e.resolve(name)
+		prog, err := e.resolveFrom(name, dir)
 		if err != nil {
 			return nil, []string{err.Error()}
 		}
-		s := Simple{Program: prog}
+		s := Simple{Program: prog, Name: name}
 		s.Args, s.Literal = args(words[1:])
 		if filepath.Base(prog) == "env" {
 			for i, a := range s.Args {
@@ -231,9 +243,9 @@ func (e *Engine) simple(words []*syntax.Word) (*Simple, []string) {
 	return nil, nil
 }
 
-// redirect checks an output redirection's target: it must be literal and inside the workspace, or /dev/null. It sees
-// the shell's own redirections only; where the programs write is the sandbox's to enforce.
-func (e *Engine) redirect(r *syntax.Redirect) []string {
+// redirect checks an output redirection's target, read from dir: it must be literal and inside the workspace, or /dev/null. It
+// sees the shell's own redirections only; where the programs write is the sandbox's to enforce.
+func (e *Engine) redirect(r *syntax.Redirect, dir string) []string {
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll:
 	default:
@@ -251,7 +263,7 @@ func (e *Engine) redirect(r *syntax.Redirect) []string {
 	}
 	p := target
 	if !filepath.IsAbs(p) {
-		p = filepath.Join(e.Root, p)
+		p = filepath.Join(dir, p)
 	}
 	if !within(e.root(), resolveExisting(filepath.Clean(p))) {
 		return []string{"a redirection writes outside the repository: " + target + " (this checks the shell's " +
@@ -283,6 +295,81 @@ func (e *Engine) resolve(name string) (string, error) {
 		return "", fmt.Errorf("%s is not a program tack can find", name)
 	}
 	return real, nil
+}
+
+// runsProgramWith reports whether code may run a program, resolved or not, with the session's value of a variable: any simple command but
+// a builtin that needs no rule, before an unset of it that runs in order in this shell.
+func runsProgramWith(f *syntax.File, name string) bool {
+	decided, runs := false, false
+	var path []syntax.Node
+	syntax.Walk(f, func(n syntax.Node) bool {
+		if n == nil {
+			path = path[:len(path)-1]
+			return true
+		}
+		if _, ok := n.(*syntax.FuncDecl); ok {
+			return false // its body runs where it's called, and calling it counts
+		}
+		if c, ok := n.(*syntax.CallExpr); ok && !decided && len(c.Args) > 0 {
+			words := c.Args
+			lookup := false // command -v looks a program up, and runs nothing
+			for len(words) > 1 {
+				w, ok := literal(words[0])
+				if !ok || (w != "builtin" && w != "command" && !strings.HasPrefix(w, "-")) {
+					break
+				}
+				lookup = lookup || w == "-v" || w == "-V"
+				words = words[1:]
+			}
+			w, ok := literal(words[0])
+			switch {
+			case lookup:
+			case !ok || !safeBuiltins[w] && w != "unset":
+				decided, runs = true, true
+			case w == "unset" && unsets(words[1:], name) && inThisShell(path, c):
+				decided = true
+			}
+		}
+		path = append(path, n)
+		return true
+	})
+	return runs
+}
+
+// inThisShell reports whether a command runs in order, and in this shell rather than a copy of it.
+func inThisShell(path []syntax.Node, c *syntax.CallExpr) bool {
+	if !cdPlaced(path, c) {
+		return false
+	}
+	return !slices.ContainsFunc(path, func(n syntax.Node) bool {
+		switch n.(type) {
+		case *syntax.Subshell, *syntax.CmdSubst:
+			return true
+		}
+		return false
+	})
+}
+
+// unsets reports whether unset's arguments plainly clear a variable. An argument that expands may be -f, which clears a function instead, and a
+// flag other than -v may make it fail.
+func unsets(args []*syntax.Word, name string) bool {
+	found := false
+	for _, w := range args {
+		a, ok := literal(w)
+		if !ok || (strings.HasPrefix(a, "-") && a != "-v") {
+			return false
+		}
+		found = found || a == name
+	}
+	return found
+}
+
+// resolveFrom is resolve for a command running in dir: a relative path means what it means there.
+func (e *Engine) resolveFrom(name, dir string) (string, error) {
+	if strings.Contains(name, "/") && !filepath.IsAbs(name) && !strings.HasPrefix(name, "~") {
+		name = filepath.Join(dir, name)
+	}
+	return e.resolve(name)
 }
 
 // allowed reports whether a rule covers s: the same resolved program, and s's first arguments equal to the rule's,
@@ -390,7 +477,7 @@ func within(root, p string) bool {
 
 // Analyze returns a command line's simple commands as approval sees them, without judging them.
 func (e *Engine) Analyze(command string) []Simple {
-	cmds, _ := e.checkShell(command)
+	cmds, _, _ := e.checkShell(command)
 	return cmds
 }
 

@@ -44,15 +44,16 @@ type State struct {
 
 // request is what the session sends the child on stdin.
 type request struct {
-	Command    string   `json:"command"`
-	State      State    `json:"state"`
-	Root       string   `json:"root"`
-	Approved   []string `json:"approved"`    // programs approval saw, absolute and resolved
-	RunFlags   []string `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
-	Rules      []string `json:"rules"`       // the engine's rules, as written
-	Path       string   `json:"path"`        // the PATH the engine resolves rules on
-	Sandboxed  bool     `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
-	ApprovedBy string   `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
+	Command    string         `json:"command"`
+	State      State          `json:"state"`
+	Root       string         `json:"root"`
+	Approved   []string       `json:"approved"`    // programs approval saw, absolute and resolved
+	RunFlags   []string       `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
+	Scope      perms.Approval `json:"scope"`       // what a user's yes to this command covers
+	Rules      []string       `json:"rules"`       // the engine's rules, as written
+	Path       string         `json:"path"`        // the PATH the engine resolves rules on
+	Sandboxed  bool           `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
+	ApprovedBy string         `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
 }
 
 // reply is what the child writes to fd 3 when the command ends.
@@ -124,6 +125,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 			}
 		}
 	}
+	req.Scope = s.Engine.ApprovalFor(command)
 	for _, r := range s.Engine.Rules {
 		req.Rules = append(req.Rules, r.String())
 	}
@@ -198,6 +200,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	}
 	s.state = rep.State
 	s.Engine.SessionEnv = maps.Clone(rep.State.Env) // approval sees what later commands inherit
+	s.Engine.SessionDir = rep.State.Dir             // and where they start
 	res.Exit, res.Stopped = rep.Exit, rep.Stopped
 	if out.dropped > 0 {
 		res.Output += fmt.Sprintf("\n[… %d more bytes of output were not kept …]\n", out.dropped)
@@ -297,7 +300,10 @@ func run(req request, out io.Writer) reply {
 	}
 	sort.Strings(names)
 	for _, k := range names {
-		if v := r.Vars[k]; v.Exported && v.Kind == expand.String {
+		switch v := r.Vars[k]; {
+		case !v.IsSet(): // unset carries too, or an export could never be undone
+			delete(rep.State.Env, k)
+		case v.Exported && v.Kind == expand.String:
 			rep.State.Env[k] = v.Str
 		}
 	}
@@ -310,12 +316,13 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
+	runs     map[string]int // how many times each text has run (perms.Approval.CoversAt)
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
-	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
+	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{}, runs: map[string]int{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
@@ -340,12 +347,24 @@ func (ck *checker) stop(format string, args ...any) error {
 	return interp.ExitStatus(126)
 }
 
+// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer, behind
+// the parse. A user's yes covers what it asked about (covered, perms.Approval), and nothing else. It returns the stop's error, or
+// nil.
+func (ck *checker) everyMode(why []string, ran string, covered bool) error {
+	for _, w := range why {
+		if ck.byUser() && covered {
+			continue
+		}
+		return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", w, ran)
+	}
+	return nil
+}
+
+func (ck *checker) byUser() bool { return ck.req.ApprovedBy == perms.ByUser }
+
 // exec checks a program as the interpreter is about to run it, after expansion.
 func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
-		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
-			return next(ctx, args)
-		}
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
@@ -354,18 +373,51 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		if real, err := filepath.EvalSymlinks(path); err == nil {
 			path = real
 		}
+		expanded := perms.Simple{Program: path, Name: args[0], Args: args[1:], Literal: make([]bool, len(args)-1)}
+		for i := range expanded.Literal {
+			expanded.Literal[i] = true // expanded already: these are the real arguments
+		}
+		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
+		if hc.Stdin != nil { // something is fed to it: the parse read the pipe, and this holds if it didn't
+			if r := ck.engine.ShellFed(args, hc.Dir); r != "" {
+				if err := ck.everyMode([]string{r}, strings.Join(args, " "), ck.req.Scope.CoversFed(args)); err != nil {
+					return err
+				}
+			}
+		}
+		// Whatever the program, since it may be the one that runs git: env, or a shell.
+		ran := strings.Join(args, " ")
+		for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
+			if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
+				if r := perms.HooksOff(name, v); r != "" {
+					if err := ck.everyMode([]string{r}, ran, ck.req.Scope.CoversVar(name)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		text := strings.Join(args, "\x00")
+		covered := ck.byUser() && ck.req.Scope.CoversAt(args, ck.runs[text])
+		ck.runs[text]++
+		if err := ck.everyMode(why, ran, covered); err != nil {
+			return err
+		}
+		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
+			return next(ctx, args)
+		}
 		for _, a := range args[1:] {
-			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] {
+			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] && !(ck.byUser() && ck.req.Scope.ShowsIn(args, a)) {
 				return ck.stop("%s %s runs another program, and approval did not see it (the command expanded to: %s)",
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
 		}
-		if !ck.approved[path] {
-			s := perms.Simple{Program: path, Args: args[1:], Literal: make([]bool, len(args)-1)}
-			for i := range s.Literal {
-				s.Literal[i] = true // expanded already: these are the real arguments
-			}
-			if !ck.engine.Covers(s) {
+		// The parse told the user it couldn't see what this runs, and they approved it: what it became is what they approved, so the
+		// checks below, of what approval saw, don't apply. The check above does, whatever they approved.
+		if covered {
+			return next(ctx, args)
+		}
+		if !ck.approved[path] && !(ck.byUser() && ck.req.Scope.Saw(args)) { // a program that didn't exist yet when the parse read it
+			if !ck.engine.Covers(expanded) {
 				return ck.stop("%s was not approved: it appeared only when the command ran (%s)",
 					path, strings.Join(args, " "))
 			}
@@ -391,6 +443,11 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 		p = filepath.Join(hc.Dir, p)
 	}
 	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0
+	if write && p != "/dev/null" {
+		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, ck.req.Scope.CoversRedirect(path, filepath.Clean(p))); err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case p == "/dev/null":
 	case write && perms.Outside(ck.req.Root, p):

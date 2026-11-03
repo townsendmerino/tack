@@ -214,3 +214,514 @@ func TestEngineAndSandboxMustAgree(t *testing.T) {
 		t.Fatalf("a sandboxed shell with no session group ran: %v", err)
 	}
 }
+
+// destroyRepo is session's workspace as a git repository with one committed file, changed since, so a discard shows.
+func destroyRepo(t *testing.T, s *Session) (file string) {
+	t.Helper()
+	root := s.Engine.Root
+	file = filepath.Join(root, "work.txt")
+	os.WriteFile(file, []byte("committed\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "work.txt"}, {"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "x"}} {
+		c := exec.Command("git", args...)
+		c.Dir = root
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	os.WriteFile(file, []byte("a day's work\n"), 0o644)
+	return file
+}
+
+func runBy(t *testing.T, s *Session, by, cmd string) Result {
+	t.Helper()
+	r, err := s.Run(WithApproval(context.Background(), by), cmd, 30*time.Second)
+	if err != nil {
+		t.Fatalf("%q: %v", cmd, err)
+	}
+	return r
+}
+
+// What the parse can't see is stopped when it runs (DESIGN §6.6, "Checked again as it runs"), in auto too, where the
+// sandbox would let it through: a day's work survives, and a directory.
+func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
+	for _, by := range []string{perms.ByMode, perms.ByRule} {
+		t.Run(by, func(t *testing.T) {
+			s := session(t, true, "git", "rm", "env", "sh") // so only everyMode can stop these
+			file := destroyRepo(t, s)
+			os.MkdirAll(filepath.Join(s.Engine.Root, "src", "deep"), 0o755)
+			os.WriteFile(filepath.Join(s.Engine.Root, "CLAUDE.md"), []byte("orders\n"), 0o644)
+			for _, cmd := range []string{
+				`how=--hard; git reset $how`,
+				`set -- reset --hard; git "$@"`,
+				`d=.; git -C $d reset --hard`,
+				`eval "git reset --hard"`,
+				`d=src; rm -rf $d`,
+				`rm -rf s*`,
+				`p=git; $p clean -fd`,
+				`x=rm; env $x -rf src`,
+				`how="-c 'git reset --hard'"; eval sh $how`,
+				`f=CLAUDE.md; echo overwritten > $f`,
+				`x=0; HUSKY=$x git status`,
+			} {
+				r := runBy(t, s, by, cmd)
+				if !strings.Contains(r.Stopped, "asks in every mode") || r.Exit == 0 {
+					t.Errorf("%s: not stopped by the rule: %+v", cmd, r)
+				}
+			}
+			if b, _ := os.ReadFile(file); string(b) != "a day's work\n" {
+				t.Errorf("the work is gone: %q", b)
+			}
+			if _, err := os.Stat(filepath.Join(s.Engine.Root, "src", "deep")); err != nil {
+				t.Errorf("the directory is gone: %v", err)
+			}
+			if b, _ := os.ReadFile(filepath.Join(s.Engine.Root, "CLAUDE.md")); string(b) != "orders\n" {
+				t.Errorf("the instruction file changed: %q", b)
+			}
+			// What isn't on the list runs. Expanded or not, ordinary git and a temp directory go through.
+			tmp, err := os.MkdirTemp("", "tack-destroy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(tmp) })
+			for _, cmd := range []string{`how=--soft; git reset $how HEAD`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
+				if r := runBy(t, s, by, cmd); r.Stopped != "" {
+					t.Errorf("%s: stopped: %s", cmd, r.Stopped)
+				}
+			}
+			if _, err := os.Stat(tmp); err == nil {
+				t.Errorf("rm -rf of the temp directory did not run")
+			}
+		})
+	}
+}
+
+// A user who was asked approved that command, and it runs, whatever it expands to: they were told it could not be seen.
+// Nothing the parse asks about is rejected once approved.
+func TestApprovedCommandsRun(t *testing.T) {
+	for _, cmd := range []string{
+		`git reset --hard`,
+		`git status; how=--hard; git reset $how`,
+		`eval "git reset --hard"`,
+		`p=git; $p reset --hard`,
+		`set -- reset --hard; git "$@"`,
+	} {
+		s := session(t, true) // no rule covers git, or the check of what approval saw would pass on the rule
+		file := destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Fatalf("%s, approved, did not run: %+v", cmd, r)
+		}
+		if b, _ := os.ReadFile(file); string(b) != "committed\n" {
+			t.Fatalf("%s, approved, did not happen: %q", cmd, b)
+		}
+	}
+	s := session(t, true)
+	protected := filepath.Join(s.Engine.Root, "CLAUDE.md")
+	if err := os.WriteFile(protected, []byte("orders\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := runBy(t, s, perms.ByUser, `echo new 1<>CLAUDE.md`); r.Stopped != "" {
+		t.Fatalf("an approved <> redirect: %+v", r)
+	}
+}
+
+// A user's approval covers what they were asked about. A command the parse saw nothing wrong with was approved for another
+// reason, so what only shows when it runs still stops it: here a path that exists by then.
+func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
+	s := session(t, true, "git")
+	destroyRepo(t, s)
+	cmd := `echo x > new.txt; git add new.txt; git checkout new.txt`
+	if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) != 0 {
+		t.Fatalf("it asked: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+		t.Fatalf("approved for another reason, it ran: %+v", r)
+	}
+}
+
+// A reason saying something can't be seen covers that thing when it shows: a redirection's target, a variable's value.
+func TestApprovalCoversWhatItSaidItCouldNotSee(t *testing.T) {
+	for _, cmd := range []string{`f=CLAUDE.md; echo new > $f`, `x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`,
+		`how=--soft; env git reset $how`, `d=sub; env rm -rf $d`, `t=5; timeout $t git status`, `how=--hard; command git reset $how`, `d=sub; for x in a; do rm -rf $d; done`,
+		`d=sub; cd $d; echo y > y.txt`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// An approval covers the reasons it showed, and no others. Approved for HUSKY=0 in the session, or for one --no-verify, a command
+// that only shows it destroys work when it runs is still stopped, and the checks of what approval saw stay on.
+func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
+	for _, c := range []struct{ setup, cmd, want string }{
+		{`export HUSKY=0`, `echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `git commit --no-verify -qm x --allow-empty; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `git reset --hard; ln -s src build; rm -rf build`, "asks in every mode"},
+		{``, `git commit --no-verify -qm x --allow-empty; F=--upload-pack; git fetch $F x y`, "runs another program"},
+		{``, `rm -rf $d; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
+		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
+		{``, `F=-exec; find . $F /bin/echo {} +`, "runs another program"},
+		{``, `git commit --no-verify -qm "avoid -exec" --allow-empty; F=-exec; find . $F /bin/echo {} +`, "runs another program"},
+		{``, `d=sub; (cd $d && rm -rf build); ln -s src build; rm -rf build`, "asks in every mode"},
+		// The same reason, or the same file name, from another statement.
+		{``, `git checkout -- work.txt; echo x > b.txt; git add b.txt; git checkout b.txt`, "asks in every mode"},
+		{``, `echo a >> .github/workflows/ci.yml; ln -s .github/workflows/ci.yml ci.yml; echo bad > ci.yml`, "asks in every mode"},
+		{``, `d=sub; (cd $d && echo a > out.txt); ln -s CLAUDE.md out.txt; echo b > out.txt`, "asks in every mode"},
+	} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		os.MkdirAll(filepath.Join(s.Engine.Root, ".github", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(s.Engine.Root, "CLAUDE.md"), []byte("orders\n"), 0o644)
+		os.MkdirAll(filepath.Join(s.Engine.Root, "src"), 0o755)
+		if c.setup != "" {
+			if r := runBy(t, s, perms.ByUser, c.setup); r.Stopped != "" {
+				t.Fatalf("%s: %+v", c.setup, r)
+			}
+		}
+		if len(s.Engine.AlwaysAsksIn(c.cmd)) == 0 {
+			t.Fatalf("%s did not ask", c.cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, c.cmd); !strings.Contains(r.Stopped, c.want) {
+			t.Errorf("%s: %+v, want it stopped: %s", c.cmd, r, c.want)
+		}
+	}
+}
+
+// An approved export that turns hooks off does not wedge the session: each later command that runs a program asks, an
+// approved one runs, and unset, which runs none, gets out in any mode.
+func TestSessionHooksOffAsksWithoutWedging(t *testing.T) {
+	s := session(t, true, "git")
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	if len(s.Engine.AlwaysAsksIn(`git status`)) == 0 {
+		t.Fatal("git status did not ask with HUSKY=0 in the session")
+	}
+	if r := runBy(t, s, perms.ByMode, `git status`); r.Stopped == "" {
+		t.Fatal("auto ran git with HUSKY=0 in the session")
+	}
+	if r := runBy(t, s, perms.ByUser, `git status`); r.Stopped != "" || r.Exit != 0 {
+		t.Fatalf("approved, it did not run: %+v", r)
+	}
+	if asks := s.Engine.AlwaysAsksIn(`unset HUSKY`); len(asks) != 0 {
+		t.Fatalf("unset HUSKY asks: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByMode, `unset HUSKY`); r.Stopped != "" {
+		t.Fatalf("unset: %+v", r)
+	}
+	if asks := s.Engine.AlwaysAsksIn(`git status`); len(asks) != 0 {
+		t.Fatalf("after unset, git status asks: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByMode, `git status`); r.Stopped != "" {
+		t.Fatalf("after unset, auto stopped: %+v", r)
+	}
+}
+
+// The library's pair for rm: $HOME stops and $TMPDIR runs, which only the expanded path can tell. The home path does not
+// exist, so a failure here costs nothing.
+func TestRmByExpandedPathAtRunTime(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	s := session(t, true, "rm")
+	if r := runBy(t, s, perms.ByMode, `rm -rf $HOME/tack-destroy-test-no-such-dir`); r.Stopped == "" {
+		t.Fatalf("$HOME was not stopped: %+v", r)
+	}
+	if r := runBy(t, s, perms.ByMode, `rm -rf $TMPDIR/tack-destroy-test-no-such-dir`); r.Stopped != "" {
+		t.Fatalf("$TMPDIR was stopped: %s", r.Stopped)
+	}
+}
+
+// A hook-disabling value that only shows at run time stops whatever program it is handed to, not only git.
+func TestHooksOffStopsAnyProgramAtRunTime(t *testing.T) {
+	s := session(t, true, "git", "env", "sh")
+	destroyRepo(t, s)
+	for _, cmd := range []string{`x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`, `x=0; HUSKY=$x sh -c "git status"`,
+		`x=1; HUSKY_SKIP_HOOKS=$x env git status`} {
+		if r := runBy(t, s, perms.ByMode, cmd); r.Stopped == "" {
+			t.Errorf("%s: not stopped: %+v", cmd, r)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `x=1; HUSKY=$x env git status`); r.Stopped != "" {
+		t.Errorf("HUSKY=1 was stopped: %s", r.Stopped)
+	}
+}
+
+// A user who approved a command that changes directory first approved what they were shown: it runs, in that directory,
+// and from the directory an earlier command left the session in.
+func TestApprovalHoldsAfterCd(t *testing.T) {
+	s := session(t, true)
+	root := s.Engine.Root
+	script := "#!/bin/sh\necho flushed\n"
+	if err := os.WriteFile(filepath.Join(root, "sub", "manage.py"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{`cd sub && ./manage.py flush`, `./manage.py flush`} { // the first leaves the session in sub
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Fatalf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+	os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("orders\n"), 0o644)
+	if r := runBy(t, s, perms.ByUser, `cd .. && echo new > CLAUDE.md`); r.Stopped != "" {
+		t.Fatalf("an approved redirect after cd: %+v", r)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md")); string(b) != "new\n" {
+		t.Fatalf("the approved redirect did not happen: %q", b)
+	}
+}
+
+// What a flag that runs another program needs: to have been shown, in the command the user approved or in code they were shown.
+// Only a flag that appears when it runs stops.
+func TestApprovedRunFlagShown(t *testing.T) {
+	for _, cmd := range []string{`p=find; $p . -maxdepth 0 -exec /bin/echo {} +`, `eval "find . -maxdepth 0 -exec /bin/echo {} +"`} {
+		s := session(t, true)
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// HUSKY=0 in the session asks for every command that runs a program, seen or not, so an approved one runs.
+func TestSessionHooksReachUnresolvedPrograms(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`p=git; $p status`, `git status`} {
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Errorf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+	// A program that doesn't resolve from where the parse stands: it's in sub, where cd $d goes.
+	if err := os.WriteFile(filepath.Join(s.Engine.Root, "sub", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := `d=sub; cd $d && ./run.sh`
+	if got := s.Engine.AlwaysAsksIn(cmd); !strings.Contains(strings.Join(got, ";"), "HUSKY=0") {
+		t.Errorf("a program it can't resolve: %v", got)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+		t.Errorf("%s, approved, did not run: %+v", cmd, r)
+	}
+}
+
+// A program that doesn't exist yet when the parse reads it runs if the user approved that command, as shown.
+func TestApprovedProgramThatAppearsWhenItRuns(t *testing.T) {
+	for _, cmd := range []string{`d=sub; cd $d && ./run.sh`, `mkdir -p made; printf '#!/bin/sh\n' > made/run; chmod +x made/run; made/run`} {
+		s := session(t, true)
+		if err := os.WriteFile(filepath.Join(s.Engine.Root, "sub", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// That pass is the user's, for what they were shown. A rule doesn't see a program that wasn't there, and it stops.
+func TestRuleDoesNotCoverAProgramThatAppears(t *testing.T) {
+	s := session(t, true, "mkdir", "chmod")
+	cmd := `mkdir -p made; printf '#!/bin/sh\n' > made/run; chmod +x made/run; made/run`
+	if r := runBy(t, s, perms.ByRule, cmd); !strings.Contains(r.Stopped, "was not approved") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A shell handed code on its stdin stops at run time too, in case the parse didn't see the pipe, and one with nothing fed to it runs.
+func TestShellFedAtRunTime(t *testing.T) {
+	s := session(t, true, "sh", "env")
+	if err := os.WriteFile(filepath.Join(s.Engine.Root, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{`echo x | sh script.sh`, `echo x | env sh script.sh`, `sh script.sh <<< x`} {
+		if r := runBy(t, s, perms.ByMode, cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+			t.Errorf("%s: %+v", cmd, r)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `sh script.sh`); r.Stopped != "" {
+		t.Errorf("a named script with nothing fed to it: %+v", r)
+	}
+	if r := runBy(t, s, perms.ByUser, `echo x | sh script.sh`); r.Stopped != "" {
+		t.Errorf("approved: %+v", r)
+	}
+}
+
+// Approved, it runs: what the parse asked about, however it spelled the path or set the variable.
+func TestApprovedRedirectsAndVarsRun(t *testing.T) {
+	for _, cmd := range []string{`d=sub; cd $d; echo x > ./ci.yml`, `f=./out.txt; echo x > $f`, `printf -v HUSKY 0; export HUSKY; git status`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// An approval for something else doesn't cover a shell being fed. The parse can't see through a function, and the run-time check holds it.
+func TestApprovalForElseDoesNotCoverAFedShell(t *testing.T) {
+	s := session(t, true)
+	sub := filepath.Join(s.Engine.Root, "sub")
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sh, filepath.Join(sub, "mysh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := `d=sub; cd $d; f() { ./mysh script.sh; }; echo y | f`
+	if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+		t.Fatalf("%s did not ask", cmd)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); !strings.Contains(r.Stopped, "handed code") {
+		t.Fatalf("%+v", r)
+	}
+	// Told about the pipe, the user approved that.
+	s = session(t, true)
+	sub = filepath.Join(s.Engine.Root, "sub")
+	if err := os.Symlink(sh, filepath.Join(sub, "mysh")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "script.sh"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := runBy(t, s, perms.ByUser, `d=sub; cd $d; echo y | ./mysh script.sh`); r.Stopped != "" {
+		t.Fatalf("approved with the pipe: %+v", r)
+	}
+}
+
+// Unsetting a session's hook variable first clears the ask, however it's spelled.
+func TestUnsetClearsTheSessionAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`unset HUSKY; git status`, `builtin unset HUSKY; git status`, `unset -v HUSKY; git status`, `builtin unset HUSKY`, `builtin echo x`} {
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) != 0 {
+			t.Errorf("%s asks: %v", cmd, asks)
+		}
+	}
+	for _, cmd := range []string{`git status; unset HUSKY`, `unset OTHER; git status`, `unset -f HUSKY; git status`, `builtin git status`} {
+		if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) == 0 {
+			t.Errorf("%s did not ask", cmd)
+		}
+	}
+	if r := runBy(t, s, perms.ByMode, `unset HUSKY; git status`); r.Stopped != "" {
+		t.Errorf("auto, after unset: %+v", r)
+	}
+}
+
+// An unset clears the session's ask only if it runs, in order, in this shell.
+func TestUnsetThatMayNotRunKeepsTheAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`(unset HUSKY); git status`, `if false; then unset HUSKY; fi; git status`, `false && unset HUSKY; git status`, `true | unset HUSKY; git status`,
+		`f() { unset HUSKY; }; git status`, `x=$(unset HUSKY); git status`, `unset HUSKY & git status`} {
+		if !strings.Contains(strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"), "HUSKY=0") {
+			t.Errorf("%s did not ask about HUSKY", cmd)
+		}
+		if !s.Engine.ApprovalFor(cmd).CoversVar("HUSKY") {
+			t.Errorf("%s: asked, but a yes doesn't cover it", cmd)
+		}
+	}
+	// A yes to something else doesn't cover what it never asked about.
+	if a := s.Engine.ApprovalFor(`unset HUSKY; echo x > CLAUDE.md; git status`); a.CoversVar("HUSKY") {
+		t.Errorf("unset first: it covers HUSKY: %+v", a)
+	}
+}
+
+// An eval whose text expands shows the rest of its text, so an approved one runs.
+func TestApprovedEvalWithAnExpansion(t *testing.T) {
+	s := session(t, true)
+	if r := runBy(t, s, perms.ByUser, `d=.; eval "find $d -maxdepth 0 -exec /bin/echo {} +"`); r.Stopped != "" || r.Exit != 0 {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// A yes after a cd it lost covers only the name it showed as protected. A file that turns out to be protected under another name stops, and
+// is left as it was.
+func TestApprovalAfterALostCdOnlyCoversWhatItNamed(t *testing.T) {
+	stopped := []struct{ cmd, file string }{
+		{`d=.github/workflows; cd $d; echo x > ci.yml`, ".github/workflows/ci.yml"},
+		{`d=sub; cd $d; ln -s ../CLAUDE.md out.txt; echo x > out.txt`, "CLAUDE.md"},
+	}
+	for _, c := range stopped {
+		s := session(t, true)
+		os.MkdirAll(filepath.Join(s.Engine.Root, ".github", "workflows"), 0o755)
+		path := filepath.Join(s.Engine.Root, c.file)
+		if err := os.WriteFile(path, []byte("orders\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if r := runBy(t, s, perms.ByUser, c.cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+			t.Errorf("%s: %+v", c.cmd, r)
+		}
+		if b, _ := os.ReadFile(path); string(b) != "orders\n" {
+			t.Errorf("%s changed %s: %q", c.cmd, c.file, b)
+		}
+	}
+	for _, cmd := range []string{`d=sub; cd $d; echo x > out.txt`, `d=sub; cd $d; echo x > CLAUDE.md`} {
+		s := session(t, true)
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// Only a plain unset clears the session's ask: an argument that expands may be -f, and a flag it doesn't know may fail. A function isn't run
+// where it's written, and command is as plain as builtin.
+func TestWhichUnsetClearsTheSessionAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`x=-f; unset $x HUSKY; git status`, `unset "$x" HUSKY; git status`, `unset -fv HUSKY; git status`, `unset -vf HUSKY; git status`, `unset -f HUSKY; git status`, `unset --nope HUSKY; git status`,
+		`command -v unset HUSKY; git status`, `command -V unset HUSKY; git status`,
+		`f() { git status; }; f; unset HUSKY`} {
+		if !strings.Contains(strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"), "HUSKY=0") {
+			t.Errorf("%s did not ask about HUSKY", cmd)
+		}
+	}
+	for _, cmd := range []string{`unset HUSKY; git status`, `unset -v HUSKY; git status`, `unset FOO HUSKY; git status`, `command unset HUSKY; git status`, `command -p unset HUSKY; git status`, `f() { git status; }; unset HUSKY; f`, `f() { git status; }`} {
+		if got := strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"); strings.Contains(got, "HUSKY=0") {
+			t.Errorf("%s asked about HUSKY: %s", cmd, got)
+		}
+	}
+}
+
+// A shell the user was told would be handed code, by an expanding name or a -c, runs once approved.
+func TestApprovedFedShellsRun(t *testing.T) {
+	for _, cmd := range []string{`s=sh; echo "git status" | $s`, `s=sh; echo "git status" | env $s`, `f() { sh -c "git status"; }; echo x | f`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
