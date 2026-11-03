@@ -783,41 +783,42 @@ func TestRewindAfterWhatStopsASnapshot(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		do   func(t *testing.T, root string, s *Shadow)
-		want Change
+		want []Change
 	}{
 		{"over the cap", func(t *testing.T, root string, s *Shadow) {
 			write(t, root, "huge.bin", strings.Repeat("x", 4096), 0o644)
 			s.MaxBytes = 1024
-		}, Change{"huge.bin", Remove}},
+		}, []Change{{"huge.bin", Remove}}},
 		{"a nested repository", func(t *testing.T, root string, s *Shadow) {
 			if err := os.Mkdir(filepath.Join(root, "clone"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			run(t, filepath.Join(root, "clone"), "git", "init", "-q")
-		}, Change{"clone", Remove}},
+		}, []Change{{"clone", Remove}}},
 		{"a nested repository in a directory that stays", func(t *testing.T, root string, s *Shadow) {
 			run(t, filepath.Join(root, "src"), "git", "init", "-q")
-		}, Change{"src/.git", Remove}},
+		}, []Change{{"src/.git", Remove}}},
 		{".git gone", func(t *testing.T, root string, s *Shadow) {
 			if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
 				t.Fatal(err)
 			}
 			write(t, root, "new.go", "x\n", 0o644)
-		}, Change{"new.go", Remove}},
+		}, []Change{{"new.go", Remove}}},
 		{"a directory no one can read", func(t *testing.T, root string, s *Shadow) {
 			write(t, root, "locked/x", "x\n", 0o644)
 			if err := os.Chmod(filepath.Join(root, "locked"), 0o000); err != nil {
 				t.Fatal(err)
 			}
-		}, Change{"locked", Remove}},
+		}, []Change{{"locked", Remove}}},
 		{"a directory that stays that no one can read", func(t *testing.T, root string, s *Shadow) {
+			write(t, root, "src/later.go", "x\n", 0o644)
 			if err := os.Chmod(filepath.Join(root, "src"), 0o000); err != nil {
 				t.Fatal(err)
 			}
-		}, Change{"src", Bring}},
+		}, []Change{{"src", Bring}, {"src/later.go", Remove}}},
 		{"a file no one can read", func(t *testing.T, root string, s *Shadow) {
 			write(t, root, "untracked.go", "x\n", 0o000)
-		}, Change{"untracked.go", Bring}},
+		}, []Change{{"untracked.go", Bring}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if os.Geteuid() == 0 {
@@ -838,11 +839,14 @@ func TestRewindAfterWhatStopsASnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Contains(got, c.want) {
-				t.Errorf("changes %v lack %v", got, c.want)
+			if !slices.Equal(got, c.want) {
+				t.Errorf("changes %v, want %v", got, c.want)
 			}
 			if after, _ := s.git(context.Background(), nil, nil, "for-each-ref", "refs/tack/"); string(after) != string(refs) {
 				t.Errorf("looking took a snapshot:\n%s\nthen\n%s", refs, after)
+			}
+			if st, err := os.Lstat(filepath.Join(root, "src")); c.name == "a directory that stays that no one can read" && (err != nil || st.Mode().Perm() != 0) {
+				t.Errorf("looking left src as %v %v", st, err)
 			}
 			if why := s.NoUndo(context.Background()); why == "" && c.name != "a file no one can read" {
 				t.Error("it says the rewind can be undone")
@@ -951,4 +955,159 @@ func TestStaged(t *testing.T) {
 	if shadow(t, clean).Staged(ctx) {
 		t.Error("it read another index")
 	}
+}
+
+// A file or directory no one can read, with what it holds unchanged, isn't rewritten: only its mode goes back.
+func TestUnreadableButUnchanged(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads anything")
+	}
+	root := repo(t)
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	old := time.Unix(1_000_000_000, 0)
+	for _, p := range []string{"day.log", "src/a.go"} {
+		if err := os.Chtimes(filepath.Join(root, p), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(root, "day.log"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "src"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, "src"), 0o755) })
+	got, err := s.Changes(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Change{{"day.log", Bring}, {"src", Bring}}; !slices.Equal(got, want) {
+		t.Errorf("changes %v, want %v", got, want)
+	}
+	if st, err := os.Lstat(filepath.Join(root, "day.log")); err != nil || st.Mode().Perm() != 0 {
+		t.Errorf("looking left day.log as %v %v", st, err)
+	}
+	if _, _, err := s.Restore(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
+	for _, p := range []string{"day.log", "src/a.go"} {
+		if st, err := os.Stat(filepath.Join(root, p)); err != nil || !st.ModTime().Equal(old) {
+			t.Errorf("%s was rewritten: %v %v", p, st, err)
+		}
+	}
+}
+
+// Going back without a way to undo it is a choice when a rule stops the undo snapshot. Running out of time isn't: it refuses, with
+// the tree untouched.
+func TestRestoreRefusesWhenTheUndoRanOutOfTime(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	after := capture(t, root)
+	s.gaveUp = "a snapshot took longer than 1m0s"
+	if _, _, err := s.Restore(context.Background(), id); !errors.Is(err, ErrUntouched) {
+		t.Errorf("err %v", err)
+	}
+	sameTree(t, capture(t, root), after)
+}
+
+// Each stage has its own time: a restore whose comparison and undo took all but the limit still finishes the rewrite. The caller's
+// cancel stops it before anything changes.
+func TestRestoreStopsWithItsCaller(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	after := capture(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := s.Restore(ctx, id); !errors.Is(err, ErrUntouched) || strings.Contains(err.Error(), "gone") {
+		t.Errorf("err %v", err)
+	}
+	sameTree(t, capture(t, root), after)
+}
+
+// A checkpoint that can't be marked used isn't one to rely on: Take says there's none rather than handing it back.
+func TestATakeThatCantMarkItsCheckpoint(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	take(t, s)
+	write(t, s.Dir, "used", "in the way", 0o644) // used/ can't be made
+	if id, why := s.Take(context.Background()); id != "" || why == "" {
+		t.Errorf("id %q why %q", id, why)
+	}
+}
+
+// Two sessions on one workspace: while one is in the shadow, the other goes without a snapshot and doesn't prune under it.
+func TestOneSessionInTheShadowAtATime(t *testing.T) {
+	ctx := context.Background()
+	root := repo(t)
+	state := t.TempDir()
+	a, b := New(state, root, 1<<30), New(state, root, 1<<30)
+	id := take(t, a)
+	release, why := a.lock()
+	if why != "" {
+		t.Fatal(why)
+	}
+	got, why := b.Take(ctx)
+	if got != "" || !strings.Contains(why, "another") {
+		t.Errorf("Take: %q %q", got, why)
+	}
+	future := time.Now().Add(2 * MaxAge)
+	write(t, root, "untracked.go", "second\n", 0o644)
+	release()
+	second := take(t, a)
+	if release, why = a.lock(); why != "" {
+		t.Fatal(why)
+	}
+	b.Now = func() time.Time { return future }
+	if err := b.Prune(ctx); err != nil {
+		t.Errorf("Prune: %v", err)
+	}
+	if err := b.known(ctx, id); err != nil {
+		t.Errorf("it pruned under the holder: %v", err)
+	}
+	if _, _, err := b.Restore(ctx, id); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), "another") {
+		t.Errorf("Restore: %v", err)
+	}
+	release()
+	if got, why := b.Take(ctx); got != second {
+		t.Errorf("after: %q %q", got, why)
+	}
+}
+
+// A workspace that isn't a repository gets no shadow at all, not an empty one per directory it's run in.
+func TestNoShadowForNoRepository(t *testing.T) {
+	s := shadow(t, t.TempDir())
+	if id, _ := s.Take(context.Background()); id != "" {
+		t.Fatalf("id %q", id)
+	}
+	if _, err := os.Stat(s.Dir); err == nil {
+		t.Error("it made a shadow")
+	}
+}
+
+// The caller going away during the undo snapshot stops the restore before it touches anything.
+func TestRestoreStopsWhenTheCallerGoesDuringTheUndo(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	after := capture(t, root)
+	slow := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\ncase \" $* \" in *\" add \"*) sleep 5 ;; esac\nexec " + s.Git + " \"$@\"\n"
+	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.Git = slow
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, _, err := s.Restore(ctx, id); !errors.Is(err, ErrUntouched) {
+		t.Errorf("err %v", err)
+	}
+	sameTree(t, capture(t, root), after)
 }

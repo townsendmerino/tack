@@ -126,9 +126,16 @@ func TestRewind(t *testing.T) {
 		t.Errorf("the later file: %q", b)
 	}
 
-	// Going to where the tree already is says so.
+	// Going to where the tree already is says so, and with -yes does nothing, on the log either.
 	if _, out, _ = rewind(t, "-config", cfg, "s_rewind", strconv.FormatInt(last.Seq, 10)); !strings.Contains(out, "already matches") {
 		t.Errorf("no change: %q", out)
+	}
+	before, _ := st.Events("s_rewind", 0)
+	if code, out, _ = rewind(t, "-config", cfg, "-yes", "s_rewind", strconv.FormatInt(last.Seq, 10)); code != exitOK || !strings.Contains(out, "already matches") {
+		t.Errorf("no change with -yes: %d %q", code, out)
+	}
+	if after, _ := st.Events("s_rewind", 0); len(after) != len(before) {
+		t.Errorf("a rewind that changed nothing is on the log: %d, then %d events", len(before), len(after))
 	}
 }
 

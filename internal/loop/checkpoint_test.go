@@ -311,8 +311,9 @@ func TestPlanModeTakesNoSnapshot(t *testing.T) {
 
 // scriptedSnapshots answers each Take from a list, and after the last says there is none. after runs inside each Take.
 type scriptedSnapshots struct {
-	ids   []string
-	after func()
+	ids    []string
+	after  func()
+	staged []bool // each Staged's answer, in turn; false after the last
 }
 
 func (c *scriptedSnapshots) Take(context.Context) (string, string) {
@@ -330,7 +331,14 @@ func (c *scriptedSnapshots) Take(context.Context) (string, string) {
 	return id, ""
 }
 func (c *scriptedSnapshots) Prune(context.Context) error { return nil }
-func (c *scriptedSnapshots) Staged(context.Context) bool { return false }
+func (c *scriptedSnapshots) Staged(context.Context) bool {
+	if len(c.staged) == 0 {
+		return false
+	}
+	s := c.staged[0]
+	c.staged = c.staged[1:]
+	return s
+}
 
 // answers says yes, then no.
 type answers struct {
@@ -352,15 +360,17 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		ids      []string
+		staged   []bool
 		yes      []bool
 		asks     int
 		ran      bool
 		snapshot string
 	}{
-		{"both taken", []string{"a", "b"}, []bool{true}, 1, true, "b"},
-		{"lost, then a no", []string{"a"}, []bool{true, false}, 2, false, ""},
-		{"lost, then a yes", []string{"a"}, []bool{true, true}, 2, true, ""},
-		{"lost, then a yes, and back while it waited", []string{"a", "", "c"}, []bool{true, true}, 2, true, "c"},
+		{"both taken", []string{"a", "b"}, nil, []bool{true}, 1, true, "b"},
+		{"staged while it waited, then a no", []string{"a", "b"}, []bool{false, true}, []bool{true, false}, 2, false, ""},
+		{"lost, then a no", []string{"a"}, nil, []bool{true, false}, 2, false, ""},
+		{"lost, then a yes", []string{"a"}, nil, []bool{true, true}, 2, true, ""},
+		{"lost, then a yes, and back while it waited", []string{"a", "", "c"}, nil, []bool{true, true}, 2, true, "c"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ap := &answers{yes: c.yes}
@@ -368,7 +378,7 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 			sh := &buildShell{}
 			cfg := h.sess.cfg
 			cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh}), sh
-			cfg.Snapshots = &scriptedSnapshots{ids: c.ids}
+			cfg.Snapshots = &scriptedSnapshots{ids: c.ids, staged: c.staged}
 			h.sess = New(cfg)
 			if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
 				t.Fatal(err)
@@ -403,15 +413,36 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 // A turn that ends on an error leaves no snapshot behind on the engine: one that fails while permit records, and one while the
 // checkpoint is recorded.
 func TestAnErrorLeavesNoSnapshot(t *testing.T) {
-	h, _ := checkpointHarness(t, nil, false, bashCall("b1", "echo hi"), goinfertest.Says("done"))
-	cfg := h.sess.cfg
-	cfg.Snapshots = &scriptedSnapshots{ids: []string{"a"}, after: func() { h.log.Close() }}
-	h.sess = New(cfg)
-	if _, err := h.sess.Turn(context.Background(), "go"); err == nil {
-		t.Fatal("the turn went on with its log closed")
+	for name, command := range map[string]string{"recording the checkpoint": "echo hi", "recording the question": "git branch -D x"} {
+		t.Run(name, func(t *testing.T) {
+			h, _ := checkpointHarness(t, &approver{answer: Approval{Allow: true}}, false, bashCall("b1", command), goinfertest.Says("done"))
+			cfg := h.sess.cfg
+			cfg.Snapshots = &scriptedSnapshots{ids: []string{"a"}, staged: []bool{true}, after: func() { h.log.Close() }}
+			h.sess = New(cfg)
+			if _, err := h.sess.Turn(context.Background(), "go"); err == nil {
+				t.Fatal("the turn went on with its log closed")
+			}
+			if cfg.Perms.Snapshotted || cfg.Perms.Staged {
+				t.Error("the engine still says there is a snapshot")
+			}
+		})
 	}
-	if cfg.Perms.Snapshotted {
-		t.Error("the engine still says there is a snapshot")
+}
+
+// A lost snapshot asks again only if the snapshot was answering part of the question.
+func TestASnapshotLostOverNothingDoesntAskAgain(t *testing.T) {
+	ap := &answers{yes: []bool{true}}
+	h, _ := checkpointHarness(t, ap, false, bashCall("b1", "git branch -D x"), goinfertest.Says("done"))
+	sh := &buildShell{}
+	cfg := h.sess.cfg
+	cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh}), sh
+	cfg.Snapshots = &scriptedSnapshots{ids: []string{"a"}}
+	h.sess = New(cfg)
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ap.asked) != 1 || len(sh.ran) != 1 {
+		t.Errorf("asked %d, ran %q", len(ap.asked), sh.ran)
 	}
 }
 

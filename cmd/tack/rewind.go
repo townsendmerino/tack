@@ -91,6 +91,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(changes) == 0 {
 		fmt.Fprintln(stdout, "the working tree already matches it")
+		return exitOK
 	}
 	for _, c := range changes {
 		verb := "restore"
@@ -100,12 +101,10 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s %q\n", verb, c.Path)
 	}
 	if !*yes {
-		if len(changes) > 0 {
-			if why := shadow.NoUndo(ctx); why != "" {
-				fmt.Fprintf(stdout, "this rewind can't be undone: %s\n", why)
-			}
-			fmt.Fprintf(stdout, "this includes anything changed outside tack; run tack rewind -yes %s %d to do it\n", session, seq)
+		if why := shadow.NoUndo(ctx); why != "" {
+			fmt.Fprintf(stdout, "this rewind can't be undone: %s\n", why)
 		}
+		fmt.Fprintf(stdout, "this includes anything changed outside tack; run tack rewind -yes %s %d to do it\n", session, seq)
 		return exitOK
 	}
 	if h, err := halt.Check(stateDir); err != nil {

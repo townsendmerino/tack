@@ -435,11 +435,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				checkpoint := s.takeSnapshot(ctx, b)
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
 				if err == nil && refused == nil && checkpoint != nil && by == proto.DecidedByUser {
-					// Files can change while a question waits, so the snapshot is taken again. If it fails now, the yes was to a
-					// question that left out what the snapshot was going to answer: ask the whole of it.
-					had := checkpoint.Snapshot != ""
+					// Files can change while a question waits, so the snapshot is taken again. If what it answers has changed, the
+					// yes was to a question that left that out: ask the whole of it.
+					command := bashCommand(b)
+					asked := s.cfg.Perms.AlwaysAsksIn(command)
 					checkpoint = s.takeSnapshot(ctx, b)
-					if had && checkpoint.Snapshot == "" {
+					if !subset(s.cfg.Perms.AlwaysAsksIn(command), asked) {
 						refused, by, err = s.permit(ctx, b, callEv.Seq)
 						if err == nil && refused == nil { // that question waited too
 							checkpoint = s.takeSnapshot(ctx, b)
@@ -814,6 +815,20 @@ func (s *Session) takeSnapshot(ctx context.Context, b proto.ModelBlock) *proto.C
 	s.cfg.Perms.Snapshotted = id != ""
 	s.cfg.Perms.Staged = id != "" && s.cfg.Snapshots.Staged(ctx)
 	return &proto.Checkpoint{ID: b.ID, Workspace: s.cfg.WS.Root(), Snapshot: id, Unavailable: why}
+}
+
+// bashCommand is a bash call's command line.
+func bashCommand(b proto.ModelBlock) string {
+	var in struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(b.Input, &in)
+	return in.Command
+}
+
+// subset reports whether every string in a is in b.
+func subset(a, b []string) bool {
+	return !slices.ContainsFunc(a, func(s string) bool { return !slices.Contains(b, s) })
 }
 
 // endSnapshot ends what a snapshot answers: it was of the tree before that one command.

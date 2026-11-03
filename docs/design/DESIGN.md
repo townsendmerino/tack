@@ -848,7 +848,8 @@ tool-use smoke set compares this merged set against the split one before it is f
   can't see, including a path that expands.
 - **Rewind.** `tack rewind -yes <session> <seq>` restores the files; without `-yes` it lists what it would change. It compares the
   tree with the checkpoint directly, so what stops a new snapshot doesn't stop going back. It first takes a snapshot of the
-  current tree so the rewind can be undone, and says so when it can't. It records a `rewind` event. It restores the working tree
+  current tree so the rewind can be undone. If a rule keeps the tree out of a snapshot, it says the rewind can't be undone and
+  goes on with `-yes`. If that snapshot runs out of time, or another session holds the shadow, it refuses and changes nothing. It records a `rewind` event. It restores the working tree
   only: refs, stashes and the index are not brought back. A staged file a command removed from the index comes back as a file, not
   as staged; that command asked no question only because the index matched HEAD. Without post-images it can't tell tack's changes from yours,
   so it lists them all.

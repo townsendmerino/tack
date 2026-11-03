@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -73,8 +74,8 @@ type Change struct {
 	Kind Kind
 }
 
-// Shadow is one workspace's shadow repository. Its methods aren't safe to call concurrently: the loop runs one command
-// at a time, and a second process finds the lock and goes without a snapshot.
+// Shadow is one workspace's shadow repository. Its methods aren't safe to call concurrently from one process: the loop runs one
+// command at a time. Between processes, Take, Restore and Prune hold a lock on the shadow (lock), and a second one goes without.
 type Shadow struct {
 	Root     string // the workspace
 	Dir      string // the shadow repository
@@ -269,9 +270,42 @@ func (s *Shadow) isTop() bool {
 	return err == nil
 }
 
+// lock takes the shadow for this process, without waiting, and returns how to let it go, or why it can't. A flock goes with its
+// holder, so it can't go stale.
+func (s *Shadow) lock() (release func(), why string) {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
+		return nil, err.Error()
+	}
+	f, err := os.OpenFile(filepath.Join(s.Dir, "tack.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err.Error()
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, "another session is using this workspace's snapshots"
+	}
+	return func() { f.Close() }, ""
+}
+
 // Take snapshots the working tree and returns the checkpoint's id, or "" and why there is none. A tree that hasn't
 // changed since the last Take returns the same id.
 func (s *Shadow) Take(ctx context.Context) (id, why string) {
+	if s.gaveUp != "" {
+		return "", s.gaveUp
+	}
+	if !s.isTop() {
+		return "", "the workspace is not the top of a git repository"
+	}
+	release, why := s.lock()
+	if why != "" {
+		return "", why
+	}
+	defer release()
+	return s.take(ctx)
+}
+
+// take is Take with the shadow already locked.
+func (s *Shadow) take(ctx context.Context) (id, why string) {
 	if s.gaveUp != "" {
 		return "", s.gaveUp
 	}
@@ -311,7 +345,10 @@ func (s *Shadow) Take(ctx context.Context) (id, why string) {
 	lastPath := filepath.Join(s.Dir, "last")
 	if last, err := os.ReadFile(lastPath); err == nil {
 		if have, lastID, ok := strings.Cut(string(last), " "); ok && have == stamp {
-			return lastID, s.markUsed(lastID)
+			if why := s.markUsed(lastID); why != "" {
+				return "", why
+			}
+			return lastID, ""
 		}
 	}
 	out, err = s.git(ctx, []byte(text+"\n"), nil, "commit-tree", tree)
@@ -357,9 +394,6 @@ func (s *Shadow) lastUsed(ref string, unix int64) time.Time {
 // hold, or whether it can't tell, which counts as yes. It reads the user's repository, so it turns off what its config could run,
 // takes no optional lock, and compares only the index with the tree: nothing runs and nothing under .git is written.
 func (s *Shadow) Staged(ctx context.Context) bool {
-	if s.Git == "" {
-		return true
-	}
 	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	c := exec.CommandContext(ctx, s.Git, "-C", s.Root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
@@ -395,6 +429,9 @@ func (s *Shadow) known(ctx context.Context, id string) error {
 		return errors.New("git isn't installed")
 	}
 	if _, err := s.git(ctx, nil, nil, "rev-parse", "-q", "--verify", "refs/tack/"+id+"^{commit}"); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("checkpoint %s is gone", id)
 	}
 	return nil
@@ -436,7 +473,8 @@ type difference struct {
 
 // differences compares the tree with the checkpoint without taking anything from git but the checkpoint. A directory the
 // checkpoint holds nothing under goes as one thing, what it holds not looked at, so a nested repository or an unreadable
-// directory is no obstacle. One that can't be read but must stay reads as changed. Sockets and FIFOs are left alone.
+// directory is no obstacle. One it does hold that can't be read is opened for the length of the look and put back as it was.
+// Sockets and FIFOs are left alone.
 func (s *Shadow) differences(ctx context.Context, id string) (difference, error) {
 	var d difference
 	var err error
@@ -488,10 +526,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			if rel != "" {
-				bring(rel) // its mode is wrong, or it's gone wrong some other way; setModes puts the mode back
-			}
-			return nil
+			return nil // what the checkpoint holds under it reads as missing, and is written back
 		}
 		for _, de := range entries {
 			name := filepath.Join(rel, de.Name())
@@ -512,7 +547,14 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 				if info.Mode().Perm() != permWant(name, info.Mode()) {
 					bring(name)
 				}
-				if err := walk(filepath.Join(dir, de.Name()), name); err != nil {
+				sub := filepath.Join(dir, de.Name())
+				perm := info.Mode().Perm()
+				if perm&0o500 != 0o500 {
+					if err := os.Chmod(sub, perm|0o700); err == nil {
+						defer os.Chmod(sub, perm)
+					}
+				}
+				if err := walk(sub, name); err != nil {
 					return err
 				}
 			case info.Mode().IsRegular() || info.Mode()&fs.ModeSymlink != 0:
@@ -579,6 +621,12 @@ func (s *Shadow) sameAs(p string, info fs.FileInfo, mode, oid string) (bool, err
 			return false, nil
 		}
 		f, err := os.Open(p)
+		if os.IsPermission(err) { // opened for the length of the look, and put back as it was
+			if os.Chmod(p, info.Mode().Perm()|0o400) == nil {
+				defer os.Chmod(p, info.Mode().Perm())
+				f, err = os.Open(p)
+			}
+		}
 		if err != nil {
 			return false, err
 		}
@@ -595,19 +643,35 @@ func (s *Shadow) sameAs(p string, info fs.FileInfo, mode, oid string) (bool, err
 var ErrUntouched = errors.New("nothing was changed")
 
 // Restore puts the working tree back as it was at id, touching only what differs. It returns the checkpoint of the tree it
-// replaced, so the restore can be undone, or "" and why there is none: going back doesn't depend on that. A failure before
-// anything changed is ErrUntouched. It writes nothing under .git.
-func (s *Shadow) Restore(ctx context.Context, id string) (undo, noUndo string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, s.Limit)
-	defer cancel()
-	if err := s.known(ctx, id); err != nil {
-		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
+// replaced, so the restore can be undone, or "" and why there is none: a tree a rule keeps out of a snapshot can still go back.
+// Running out of time is another matter, and it refuses rather than go on with no way back. A failure before anything changed
+// is ErrUntouched. The look, the undo snapshot and the rewrite each have s.Limit. It writes nothing under .git.
+func (s *Shadow) Restore(parent context.Context, id string) (undo, noUndo string, err error) {
+	release, why := s.lock()
+	if why != "" {
+		return "", "", fmt.Errorf("%w: %s", ErrUntouched, why)
 	}
-	d, err := s.differences(ctx, id)
+	defer release()
+	d, err := func() (difference, error) {
+		ctx, cancel := context.WithTimeout(parent, s.Limit)
+		defer cancel()
+		if err := s.known(ctx, id); err != nil {
+			return difference{}, err
+		}
+		return s.differences(ctx, id)
+	}()
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
 	}
-	undo, noUndo = s.Take(ctx)
+	undo, noUndo = s.take(parent)
+	if err := parent.Err(); err != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
+	}
+	if undo == "" && s.gaveUp != "" {
+		return "", "", fmt.Errorf("%w: the snapshot that would undo this ran out of time: %s", ErrUntouched, noUndo)
+	}
+	ctx, cancel := context.WithTimeout(parent, s.Limit)
+	defer cancel()
 	m := d.manifest
 	if err := s.unlockDirs(); err != nil {
 		return undo, noUndo, err
@@ -615,6 +679,9 @@ func (s *Shadow) Restore(ctx context.Context, id string) (undo, noUndo string, e
 	// What wasn't there goes first, so a file can't stand where a directory must come back, and nothing is written
 	// through a link that wasn't there either.
 	for _, p := range d.remove {
+		if err := ctx.Err(); err != nil {
+			return undo, noUndo, err
+		}
 		if err := os.RemoveAll(filepath.Join(s.Root, p)); err != nil {
 			return undo, noUndo, err
 		}
@@ -736,6 +803,11 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	if _, err := os.Stat(filepath.Join(s.Dir, "info", "attributes")); err != nil {
 		return nil // nothing taken yet
 	}
+	release, why := s.lock()
+	if why != "" {
+		return nil // another session is in there, and the next one prunes
+	}
+	defer release()
 	out, err := s.git(ctx, nil, nil, "for-each-ref", "--sort=-committerdate", "--format=%(refname) %(committerdate:unix)", "refs/tack/")
 	if err != nil {
 		return err
