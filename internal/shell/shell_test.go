@@ -660,3 +660,53 @@ func TestApprovedEvalWithAnExpansion(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// A yes after a cd it lost covers only the name it showed as protected. A file that turns out to be protected under another name stops, and
+// is left as it was.
+func TestApprovalAfterALostCdOnlyCoversWhatItNamed(t *testing.T) {
+	stopped := []struct{ cmd, file string }{
+		{`d=.github/workflows; cd $d; echo x > ci.yml`, ".github/workflows/ci.yml"},
+		{`d=sub; cd $d; ln -s ../CLAUDE.md out.txt; echo x > out.txt`, "CLAUDE.md"},
+	}
+	for _, c := range stopped {
+		s := session(t, true)
+		os.MkdirAll(filepath.Join(s.Engine.Root, ".github", "workflows"), 0o755)
+		path := filepath.Join(s.Engine.Root, c.file)
+		if err := os.WriteFile(path, []byte("orders\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if r := runBy(t, s, perms.ByUser, c.cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+			t.Errorf("%s: %+v", c.cmd, r)
+		}
+		if b, _ := os.ReadFile(path); string(b) != "orders\n" {
+			t.Errorf("%s changed %s: %q", c.cmd, c.file, b)
+		}
+	}
+	for _, cmd := range []string{`d=sub; cd $d; echo x > out.txt`, `d=sub; cd $d; echo x > CLAUDE.md`} {
+		s := session(t, true)
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// Only a plain unset clears the session's ask: an argument that expands may be -f, and a flag it doesn't know may fail. A function isn't run
+// where it's written, and command is as plain as builtin.
+func TestWhichUnsetClearsTheSessionAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`x=-f; unset $x HUSKY; git status`, `unset "$x" HUSKY; git status`, `unset -fv HUSKY; git status`, `unset -vf HUSKY; git status`, `unset -f HUSKY; git status`, `unset --nope HUSKY; git status`,
+		`f() { git status; }; f; unset HUSKY`} {
+		if !strings.Contains(strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"), "HUSKY=0") {
+			t.Errorf("%s did not ask about HUSKY", cmd)
+		}
+	}
+	for _, cmd := range []string{`unset HUSKY; git status`, `unset -v HUSKY; git status`, `unset FOO HUSKY; git status`, `command unset HUSKY; git status`, `command -p unset HUSKY; git status`, `f() { git status; }; unset HUSKY; f`, `f() { git status; }`} {
+		if got := strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"); strings.Contains(got, "HUSKY=0") {
+			t.Errorf("%s asked about HUSKY: %s", cmd, got)
+		}
+	}
+}

@@ -624,7 +624,8 @@ tool-use smoke set compares this merged set against the split one before it is f
       `builtin`, `read`, `printf -v`, `for`, `${V:=x}`, or an array;
     - a flag by any prefix `git` accepts for it: `git reset --har` is `--hard`. The last of a flag and its `--no-` form wins. A flag cut short that
       may take a value asks, since its next word can't be read either way;
-    - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. Such a `cd`
+    - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. A yes covers a redirection
+      there only under a name it showed as protected, so `ci.yml` that turns out to be the workflow stops when it runs. Such a `cd`
       expands, is `pushd` or `popd`, is under a wrapper, or may not run in order (in a function, branch, loop, pipeline or process
       substitution, negated, in the background, after `||`, with more than one target, or with a redirection or assignment on
       it); setting `CDPATH` counts too. The `cd` itself doesn't ask: `cd "$d" && go test` runs;

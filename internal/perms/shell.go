@@ -307,9 +307,16 @@ func runsProgramWith(f *syntax.File, name string) bool {
 			path = path[:len(path)-1]
 			return true
 		}
+		if _, ok := n.(*syntax.FuncDecl); ok {
+			return false // its body runs where it's called, and calling it counts
+		}
 		if c, ok := n.(*syntax.CallExpr); ok && !decided && len(c.Args) > 0 {
 			words := c.Args
-			if w, ok := literal(words[0]); ok && w == "builtin" && len(words) > 1 {
+			for len(words) > 1 {
+				w, ok := literal(words[0])
+				if !ok || (w != "builtin" && w != "command" && !strings.HasPrefix(w, "-")) {
+					break
+				}
 				words = words[1:]
 			}
 			w, ok := literal(words[0])
@@ -340,15 +347,16 @@ func inThisShell(path []syntax.Node, c *syntax.CallExpr) bool {
 	})
 }
 
-// unsets reports whether unset's arguments clear a variable, which unset -f doesn't.
+// unsets reports whether unset's arguments plainly clear a variable. An argument that expands may be -f, which clears a function instead, and a
+// flag other than -v may make it fail.
 func unsets(args []*syntax.Word, name string) bool {
 	found := false
 	for _, w := range args {
 		a, ok := literal(w)
-		if ok && a == "-f" {
+		if !ok || (strings.HasPrefix(a, "-") && a != "-v") {
 			return false
 		}
-		found = found || (ok && a == name)
+		found = found || a == name
 	}
 	return found
 }

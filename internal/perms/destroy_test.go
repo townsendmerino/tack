@@ -623,6 +623,13 @@ func TestApprovalCovers(t *testing.T) {
 			}
 		}
 	}
+	// A command inside eval isn't a statement of the order: it may not run, or not first. eval itself covers what isn't written out.
+	if a := e.ApprovalFor(`eval "rm -rf build"; rm -rf build`); a.Covers(strings.Fields("rm -rf build")) {
+		t.Errorf("eval's text counted as the statement: %+v", a)
+	}
+	if a := e.ApprovalFor(`eval "git reset --hard"`); !a.Covers(strings.Fields("git reset --hard")) {
+		t.Errorf("eval: %+v", a)
+	}
 	// The same text twice: its runs, in order, are those statements, and past the last it stays the last.
 	for _, c := range []struct {
 		command string
@@ -667,11 +674,13 @@ func TestApprovalCovers(t *testing.T) {
 	}{
 		{`echo x > $f`, []string{"CLAUDE.md", "any"}, nil},
 		{`echo x > $f; echo y > out.txt`, []string{"CLAUDE.md"}, []string{"out.txt"}},
-		{`cd $x; echo y > out.txt`, []string{"out.txt"}, []string{"CLAUDE.md"}},
+		// After a cd it lost, a yes covers a name only if it was shown as protected: what the name turns out to be is not what they saw.
+		{`cd $x; echo y > out.txt`, nil, []string{"out.txt", "CLAUDE.md"}},
+		{`cd $x; echo y > CLAUDE.md`, []string{"CLAUDE.md", "./CLAUDE.md"}, []string{"AGENTS.md", "out.txt"}},
 		{`echo y > out.txt`, nil, []string{"out.txt", "CLAUDE.md"}},
 		{`rm -rf $d`, nil, []string{"CLAUDE.md"}},
 		{`echo x > CLAUDE.md`, []string{"CLAUDE.md", "./CLAUDE.md", "./a/../CLAUDE.md"}, []string{"sub/CLAUDE.md", "AGENTS.md"}},
-		{`cd $d; echo x > ./ci.yml`, []string{"ci.yml", "./ci.yml"}, []string{"other.yml"}},
+		{`cd $d; echo x > ./ci.yml`, nil, []string{"ci.yml", "./ci.yml", "other.yml"}},
 		{`(cd $d && echo a > out.txt); echo b > out.txt`, nil, []string{"out.txt"}}, // the literal one, checked first
 	} {
 		a := e.ApprovalFor(c.command)
@@ -800,5 +809,20 @@ func TestRmOfARebuiltNameAroundTheWorkspace(t *testing.T) {
 		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("rm -rf "+name)); v.Action != Allow {
 			t.Errorf("rm -rf %s, inside the workspace: %s %v", name, v.Action, v.Reasons)
 		}
+	}
+}
+
+// After a cd it lost, the reason says what a relative target may be, and any protected name is named.
+func TestRedirectAfterALostCdSaysWhatItMayBe(t *testing.T) {
+	e := destroyEngine(t)
+	if got := strings.Join(e.AlwaysAsksIn(`cd $d; echo x > ci.yml`), ";"); !strings.Contains(got, "may be a CI definition") {
+		t.Errorf("%q", got)
+	}
+	if got := strings.Join(e.AlwaysAsksIn(`cd $d; echo x > CLAUDE.md`), ";"); !strings.Contains(got, "CLAUDE.md is an instruction file") {
+		t.Errorf("%q", got)
+	}
+	// After -- it's a path, so -b there doesn't make a new branch of it.
+	if got := e.AlwaysAsksIn(`cd $d; git checkout -- -b`); len(got) == 0 {
+		t.Error("git checkout -- -b after a lost cd did not ask")
 	}
 }

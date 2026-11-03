@@ -67,8 +67,8 @@ type Approval struct {
 	// Order is the commands with nothing that expands, in order. What runs can't say which statement it is, so the n-th run of a text is taken
 	// to be its n-th statement here, and the last for any more.
 	Order []Statement `json:"order"`
-	// Redirects are the targets it asked about, absolute where it can tell, or as written after a cd it lost, or hole for one that
-	// expands. LiteralRedirects are those it didn't, absolute.
+	// Redirects are the targets it asked about, absolute where it can tell, as written for a name it showed as protected after a cd it lost, or
+	// hole for one that expands. LiteralRedirects are those it didn't, absolute.
 	Redirects        []string   `json:"redirects"`
 	LiteralRedirects []string   `json:"literal_redirects"`
 	Vars             []string   `json:"vars"`    // the variables it asked about
@@ -225,7 +225,8 @@ func evalText(words []*syntax.Word) string {
 	return strings.Join(code, " ")
 }
 
-// recordText notes the commands in code from text that the user was shown, as commands the parse asked about.
+// recordText notes the commands in code from text that the user was shown, for the flags they show (ShowsIn). They aren't statements of Order:
+// they may not run, or not first.
 func (a *Approval) recordText(code string) {
 	f, err := syntax.NewParser().Parse(strings.NewReader(code), "")
 	if err != nil {
@@ -233,20 +234,28 @@ func (a *Approval) recordText(code string) {
 	}
 	syntax.Walk(f, func(n syntax.Node) bool {
 		if c, ok := n.(*syntax.CallExpr); ok && len(c.Args) > 0 {
-			a.record(c.Args, []string{"it runs from text"})
+			argv, _ := template(c.Args)
+			a.Commands = append(a.Commands, argv)
 		}
 		return true
 	})
 }
 
-// recordRedirect notes one output redirection and what the parse said about it.
-func (a *Approval) recordRedirect(r *syntax.Redirect, why []string, sc scan) {
+// recordRedirect notes one output redirection and what the parse said about it. After a cd it lost, a target is noted only if its name was shown
+// as protected (named): if it turns out to be a protected file under another name, the user wasn't told that, so a yes doesn't cover it.
+func (a *Approval) recordRedirect(r *syntax.Redirect, why []string, sc scan, named bool) {
 	target, ok := literal(r.Word)
 	if !ok {
 		a.Redirects = append(a.Redirects, hole)
 		return
 	}
-	if !filepath.IsAbs(target) && !sc.lost {
+	if !filepath.IsAbs(target) {
+		if sc.lost {
+			if named {
+				a.Redirects = append(a.Redirects, filepath.Clean(target))
+			}
+			return
+		}
 		target = filepath.Join(sc.dir, target)
 	}
 	if len(why) > 0 {
@@ -496,7 +505,8 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 			}
 			asks := e.redirectAsks(n, sc)
 			if sc.rec != nil {
-				sc.rec.recordRedirect(n, asks, sc)
+				target, _ := literal(n.Word)
+				sc.rec.recordRedirect(n, asks, sc, len(e.PathAsks(target)) > 0)
 			}
 			why = appendNew(why, asks...)
 		case *syntax.CallExpr:
@@ -683,7 +693,7 @@ func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
 	}
 	if !filepath.IsAbs(target) {
 		if sc.lost {
-			return []string{unseenIn("redirect", "a redirection to "+target+" follows a cd that can't be read")}
+			return appendNew(e.PathAsks(target), unseenIn("redirect", "a redirection to "+target+" follows a cd that can't be read, and may be a CI definition or an instruction file"))
 		}
 		target = filepath.Join(sc.dir, target)
 	}
@@ -1151,7 +1161,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			}
 		}
 	case "checkout":
-		if sc.lost && !slices.ContainsFunc(rest, func(a string) bool { return a == "-b" || a == "-B" || a == "--orphan" }) {
+		if sc.lost && !slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return a == "-b" || a == "-B" || a == "--orphan" }) {
 			why = appendNew(why, unseenIn("git", "checkout follows a cd that can't be read"))
 		}
 		if checkoutDiscards(rest, dir) {
