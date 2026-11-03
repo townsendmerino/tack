@@ -613,12 +613,17 @@ tool-use smoke set compares this merged set against the split one before it is f
       pipe into it (`curl … | sh` too);
     - a wrapper it can't fully read: an argument that expands, a flag it doesn't know, code as text (`env -S`, `npx -c`), or
       another directory (`env -C`, `sudo -D`);
-    - a `git` global flag form it doesn't read (`-cname=value`, `-Cdir`), one that expands, or an alias starting with `!`;
-    - a word that expands where a rule would read it: an argument of `rm`, or of a `git` subcommand on the list; an
-      output redirection's target; a `cd` target; `HUSKY`'s value.
+    - config on `git`'s command line in any form (`-c`, `--config-env`), since an alias runs inside git and `--config-env` names
+      an environment variable; any other global flag form it doesn't read (`-Cdir`), or one that expands;
+    - a word that expands where a rule would read it: an argument of `rm`, `find`, a `git` subcommand on the list, a program
+      the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value;
+    - a `cd` it can't place: one that expands, `pushd` or `popd`, one under a wrapper, or one that may not run in order (in a
+      function, branch, loop or pipeline, in the background, after `||`, or with a redirection or assignment on it); and setting
+      `CDPATH`.
   - **The run-time check is a second layer, and nothing depends on it alone** (`internal/shell`, the exec and open checks).
-    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user who
-    was asked approved that command, and it runs whatever it expands to.
+    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user the
+    parse asked approved that command, and it runs whatever it expands to. An approval given for another reason doesn't
+    cover what only shows when it runs.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
     such a loss undoable.

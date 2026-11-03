@@ -246,7 +246,7 @@ func runBy(t *testing.T, s *Session, by, cmd string) Result {
 func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 	for _, by := range []string{perms.ByMode, perms.ByRule} {
 		t.Run(by, func(t *testing.T) {
-			s := session(t, true, "git", "rm")
+			s := session(t, true, "git", "rm", "env", "sh") // so only everyMode can stop these
 			file := destroyRepo(t, s)
 			os.MkdirAll(filepath.Join(s.Engine.Root, "src", "deep"), 0o755)
 			os.WriteFile(filepath.Join(s.Engine.Root, "CLAUDE.md"), []byte("orders\n"), 0o644)
@@ -263,8 +263,8 @@ func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 				`x=0; HUSKY=$x git status`,
 			} {
 				r := runBy(t, s, by, cmd)
-				if r.Stopped == "" || r.Exit == 0 {
-					t.Errorf("%s: not stopped: %+v", cmd, r)
+				if !strings.Contains(r.Stopped, "asks in every mode") || r.Exit == 0 {
+					t.Errorf("%s: not stopped by the rule: %+v", cmd, r)
 				}
 			}
 			if b, _ := os.ReadFile(file); string(b) != "a day's work\n" {
@@ -323,6 +323,20 @@ func TestApprovedCommandsRun(t *testing.T) {
 	}
 	if r := runBy(t, s, perms.ByUser, `echo new 1<>CLAUDE.md`); r.Stopped != "" {
 		t.Fatalf("an approved <> redirect: %+v", r)
+	}
+}
+
+// A user's approval covers what they were asked about. A command the parse saw nothing wrong with was approved for another
+// reason, so what only shows when it runs still stops it: here a path that exists by then.
+func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
+	s := session(t, true, "git")
+	destroyRepo(t, s)
+	cmd := `echo x > new.txt; git add new.txt; git checkout new.txt`
+	if asks := s.Engine.AlwaysAsksIn(cmd); len(asks) != 0 {
+		t.Fatalf("it asked: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); !strings.Contains(r.Stopped, "asks in every mode") {
+		t.Fatalf("approved for another reason, it ran: %+v", r)
 	}
 }
 

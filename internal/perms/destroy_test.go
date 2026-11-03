@@ -129,7 +129,7 @@ var destroyCases = []commandCases{
 		"git config --unset core.hooksPath", "git config set core.hooksPath /dev/null", "env HUSKY=0 git commit -m x", "export HUSKY=0",
 	}, append(mentions("git config core.hooksPath /dev/null"),
 		"git config user.email dev@example.com", "git config --list", "pnpm husky install", "git config core.hooksPath",
-		"git config --get core.hooksPath", "git -c core.pager=cat log")},
+		"git config --get core.hooksPath")},
 	{"another agent", []string{
 		`claude -p "summarize the failing tests"`, `npx @anthropic-ai/claude-code --print "fix the lint errors"`,
 		`claude --model sonnet -p "write the changelog"`, `codex exec "add unit tests for the parser"`,
@@ -350,13 +350,31 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`cd $x && go test`, `cd - && go test`, `cd && go test`,
 	// A command it can't parse.
 	`echo "`,
+	// Git's config on the command line, whatever it sets: an alias runs inside git, and --config-env's value is an
+	// environment variable's.
+	`git -c alias.x='reset --hard' x`, `git -c alias.x='clean -fdx' x`, `git -c alias.x=status x`, `git -c core.pager=cat log`, `git -c user.name=me status`,
+	`E='!git reset --hard'; git --config-env=alias.x=E x`, `git --config-env=core.pager=E log`, `git --config-env core.pager=E log`,
+	// command -v only as command's first word.
+	`command rm -rf -v src`, `command sh -v -c "git reset --hard"`, `command env -v git reset --hard`,
+	// What runs under builtin and command, and through a name that resolves to it.
+	`builtin eval 'export HUSKY=0'`, `command . x.sh`, `command source x.sh`, `builtin trap "x" EXIT`, `builtin cd $x`, `command eval "x"`, `env eval "x"`,
+	// A cd it can't place: paths after it would be read from the wrong directory.
+	`cd .github/workflows; f() { cd ../..; }; echo x > ci.yml`, `cd .github/workflows && true | cd ../..; echo x > ci.yml`,
+	`cd .github/workflows && cd ../.. > ci.yml`, `cd ~ && echo x > ci.yml`, `cd ~/x`, `builtin cd .github/workflows; echo x > ci.yml`, `command cd .github/workflows; echo x > ci.yml`,
+	`cd .github/workflows; false && cd ../..; echo x > ci.yml`, `cd .github/workflows; true || cd ../..; echo x > ci.yml`,
+	`if true; then cd .github/workflows; fi; echo x > ci.yml`, `for d in a; do cd .github/workflows; done; echo x > ci.yml`, `cd .github/workflows & echo x > ci.yml`,
+	`pushd .github/workflows; echo x > ci.yml`, `popd`, `CDPATH=.github cd workflows`, `export CDPATH=.github`,
+	// Words that expand, for the rules that read them.
+	`find . $x`, `find . -name "$x"`, `prisma migrate $x`, `npx prisma $x`, `alembic downgrade $x`, `rails $task`, `python manage.py $cmd`, `knex $x`,
+	`claude $x`, `codex $x`, `aider $x`, `tack $x`,
 }, []string{
 	"sh script.sh", "bash ./run.sh", "go test ./...", `go test $pkg`, `git log $x`, `git commit -m "$msg"`, `git commit -F "$f"`, `git show $rev`, `git status`,
-	`git -C src status`, `git -c core.pager=cat log`, `git --no-pager log`, `git -p log`, `git --git-dir=.git status`, `git --version`,
+	`git -C src status`, `git --no-pager log`, `git -p log`, `git --git-dir=.git status`, `git --version`,
 	`echo $HOME`, `x=1; echo $x`, `echo x > /dev/null`, `echo x 2>&1`, `grep x < $f`, `printf '%s\n' x`, `printf 'hello\n' | grep h`, `echo "$x" | grep h`,
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
-	`cd src && go test`, `cd src; go test`, `git -c alias.x=status x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
+	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
+	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
 // cdCases are commands whose paths mean what they mean after an earlier cd.
@@ -376,9 +394,13 @@ func TestUnseenAndCdAskInEveryMode(t *testing.T) {
 			os.MkdirAll(filepath.Join(e.Root, ".github", "workflows"), 0o755)
 			os.MkdirAll(filepath.Join(e.Root, "backend"), 0o755)
 			os.WriteFile(filepath.Join(e.Root, "backend", "manage.py"), []byte("#!/bin/sh\n"), 0o755)
+			// A rule that would cover each program: asking has to come from the rule of §6.6, not from the mode.
+			e.Rules = []Rule{{Program: "git"}, {Program: "rm"}, {Program: "go"}, {Program: "sh"}, {Program: "env"}, {Program: "sudo"}, {Program: "timeout"}, {Program: "npx"}, {Program: "find"}}
 			for _, command := range c.catch {
-				if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask || len(v.Reasons) == 0 {
-					t.Errorf("%s in auto: %s %v, want it to ask", command, v.Action, v.Reasons)
+				for _, mode := range []proto.Mode{proto.ModeAuto, proto.ModeEdits, proto.ModeAsk} {
+					if v := e.Decide(mode, "bash", false, bashInput(command)); v.Action != Ask || len(v.Reasons) == 0 {
+						t.Errorf("%s in %s: %s %v, want it to ask", command, mode, v.Action, v.Reasons)
+					}
 				}
 				if len(e.AlwaysAsksIn(command)) == 0 {
 					t.Errorf("%s: the reason did not reach approval", command)
@@ -410,5 +432,18 @@ func TestSessionDirectoryAndApprovalAgree(t *testing.T) {
 	e.SessionDir = ""
 	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("./nowhere/manage.py flush")); v.Action != Ask {
 		t.Fatalf("a program that doesn't resolve: %s", v.Action)
+	}
+}
+
+// A name that resolves to a program on the list is that program, written plainly or under what runs it.
+func TestNamesResolveUnderWrappers(t *testing.T) {
+	e := destroyEngine(t)
+	if err := os.Symlink(filepath.Join(e.Path, "rm"), filepath.Join(e.Path, "rr")); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"rr -rf src", "env rr -rf src", "timeout 5 rr -rf src", "command rr -rf src", "find . -exec rr -rf {} +", "xargs rr -rf"} {
+		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask {
+			t.Errorf("%s in auto: %s %v, want it to ask", command, v.Action, v.Reasons)
+		}
 	}
 }

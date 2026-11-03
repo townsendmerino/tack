@@ -49,7 +49,7 @@ type request struct {
 	Root       string   `json:"root"`
 	Approved   []string `json:"approved"`    // programs approval saw, absolute and resolved
 	RunFlags   []string `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
-	Asked      []string `json:"asked"`       // why it asks in every mode, as approval read it (perms.AlwaysAsksIn)
+	Asked      []string `json:"asked"`       // why the parse asked in every mode (perms.AlwaysAsksIn): the user who approved saw these
 	Rules      []string `json:"rules"`       // the engine's rules, as written
 	Path       string   `json:"path"`        // the PATH the engine resolves rules on
 	Sandboxed  bool     `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
@@ -347,9 +347,10 @@ func (ck *checker) stop(format string, args ...any) error {
 }
 
 // everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer,
-// behind the parse: a user who was asked approved this command, and it runs. It returns the stop's error, or nil.
+// behind the parse: a user the parse asked approved this command, and it runs, but an approval given for another reason
+// doesn't cover what only shows now. It returns the stop's error, or nil.
 func (ck *checker) everyMode(why []string, ran string) error {
-	if ck.req.ApprovedBy == perms.ByUser || len(why) == 0 {
+	if len(why) == 0 || (ck.req.ApprovedBy == perms.ByUser && len(ck.req.Asked) > 0) {
 		return nil
 	}
 	return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", why[0], ran)

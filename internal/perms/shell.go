@@ -141,7 +141,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 				"run, which no rule covers", name, v))
 		}
 	}
-	walkDirs(f, e.startDir(), func(n syntax.Node, dir string) {
+	walkDirs(f, e.startDir(), func(n syntax.Node, dir string, _ bool) {
 		switch n := n.(type) {
 		case *syntax.Assign:
 			why = append(why, assignment(n)...)
