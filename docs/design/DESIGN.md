@@ -630,8 +630,9 @@ tool-use smoke set compares this merged set against the split one before it is f
     covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): each command the parse asked about, with a hole
     where it expands, and each redirection, by its resolved path. It goes by the statement, never by what a reason says, since two
     statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`,
-    `trap` and a declaration that expands can cover anything, since they can be anything, and never a command shown in full. Whatever
-    was approved, a flag that makes a program run another (`perms.RunFlag`) must have been shown.
+    `trap` and a declaration that expands can cover anything, since they can be anything, and never a command shown in full. Text the
+    parse asked about is covered wherever it runs, since what runs can't say which statement it is. Whatever was approved, a flag that
+    makes a program run another (`perms.RunFlag`) must have been shown, in the command that runs.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
     such a loss undoable.

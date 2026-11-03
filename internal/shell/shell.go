@@ -396,7 +396,7 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			return next(ctx, args)
 		}
 		for _, a := range args[1:] {
-			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] && !(ck.byUser() && ck.req.Scope.Shows(a)) {
+			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] && !(ck.byUser() && ck.req.Scope.ShowsIn(args, a)) {
 				return ck.stop("%s %s runs another program, and approval did not see it (the command expanded to: %s)",
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
@@ -406,7 +406,7 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		if covered {
 			return next(ctx, args)
 		}
-		if !ck.approved[path] {
+		if !ck.approved[path] && !(ck.byUser() && ck.req.Scope.Saw(args)) { // a program that didn't exist yet when the parse read it
 			if !ck.engine.Covers(expanded) {
 				return ck.stop("%s was not approved: it appeared only when the command ran (%s)",
 					path, strings.Join(args, " "))

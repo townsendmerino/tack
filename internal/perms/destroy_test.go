@@ -393,6 +393,16 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	// What a flag's value hides, and flags that move.
 	`git clean -f -e -n`, `git clean -f --exclude -n`, `git config core.hooksPath -hooks`,
 	`cd $x; sh ./run.sh`, `sh link/0`, `sh script.sh <&3`, `find . -exec sh script.sh ;`, `find . -exec sh script.sh {} +`, `xargs sh script.sh`,
+	// What runs is a placeholder.
+	`find . -exec {} ;`, `find . -exec ./{} ;`, `find . -exec {}.sh ;`, `xargs -I {} {} -c x`, `xargs -I{} {} x`, `xargs -I % env % -rf src`, `xargs -I {} ./{}`,
+	// A shell under what feeds it, read past a wrapper and through a symlink.
+	`xargs env sh script.sh`, `xargs timeout 5 sh script.sh`, `find . -exec env sh script.sh {} +`, `xargs ./mysh script.sh`, `find . -exec ./mysh script.sh ;`, `echo x | ./mysh script.sh`, `./mysh script.sh < in.txt`,
+	// Flags end at --, so what follows it is a path.
+	`git clean -f -- -n .`, `git clean -fdx -- --dry-run .`, `git restore -- -S src/api.ts`, `git restore -- --staged src/api.ts`,
+	// A value counts only as a value of git commit's own flag.
+	`p=.; git checkout commit -m "$p"`, `x=--no-verify; git commit -m -m "$x"`, `x=--no-verify; git -c commit -m "$x" reset`,
+	// What sets a variable by name, under any prefix or flag that expands.
+	`builtin printf -v CDPATH .github; cd workflows; echo x > ci.yml`, `builtin read HUSKY`, `command read HUSKY`, `command -p read HUSKY`, `f=-v; printf $f HUSKY 0`, `printf "$f" HUSKY 0`, `builtin printf -v HUSKY 0`,
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
 	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
@@ -409,7 +419,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
-	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
+	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `git reset -- --hard`, `git clean -n -- x`, `git clean -n -- -f`, `git restore --staged -- src/api.ts`, `git commit --allow-empty -m "$msg"`, `git commit -q -F "$f"`, `xargs -I {} grep {} file`, `find . -exec grep x {}.txt ;`, `printf '%s\n' "$x"`, `builtin read x`, `command -v read`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -432,6 +442,7 @@ func TestUnseenAndCdAskInEveryMode(t *testing.T) {
 			os.WriteFile(filepath.Join(e.Root, "backend", "manage.py"), []byte("#!/bin/sh\n"), 0o755)
 			os.Symlink("/dev/stdin", filepath.Join(e.Root, "stdin-link"))
 			os.Symlink("/dev/fd", filepath.Join(e.Root, "link"))
+			os.Symlink(filepath.Join(e.Path, "sh"), filepath.Join(e.Root, "mysh"))
 			// A rule that would cover each program: asking has to come from the rule of §6.6, not from the mode.
 			e.Rules = []Rule{{Program: "git"}, {Program: "rm"}, {Program: "go"}, {Program: "sh"}, {Program: "env"}, {Program: "sudo"}, {Program: "timeout"}, {Program: "npx"}, {Program: "find"}}
 			for _, command := range c.catch {
@@ -532,6 +543,9 @@ func TestApprovalCovers(t *testing.T) {
 	}{
 		{`rm -rf $d`, []string{"rm -rf src", "rm -rf a b", "rm -rf"}, []string{"rm -f src", "git status", "rm src"}},
 		{`d=x; rm -rf $d; rm -rf build`, []string{"rm -rf src"}, []string{"rm -rf build"}},
+		// The same text twice: the user was asked about exactly this, and what runs can't say which it is.
+		{`rm -rf build; cd $d && rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}},
+		{`d=sub; cd $d && ./run.sh`, []string{"./run.sh"}, nil},
 		{`env git reset $how`, []string{"env git reset --hard"}, []string{"git reset --hard", "env git clean -f"}},
 		{`timeout $t git reset --hard`, []string{"timeout 5 git reset --hard"}, []string{"timeout 5 git clean -f"}},
 		{`sudo rm -rf $d`, []string{"sudo rm -rf src"}, []string{"rm -rf src"}},
@@ -558,6 +572,22 @@ func TestApprovalCovers(t *testing.T) {
 			if a.Covers(strings.Fields(ran)) {
 				t.Errorf("%s covered %s: %+v", c.command, ran, a)
 			}
+		}
+	}
+	// A flag is shown by the statement that runs: a word of the template that matches it, never a word of another statement.
+	for _, c := range []struct {
+		command, ran, word string
+		shown              bool
+	}{
+		{`$p . -exec x {} +`, "find . -exec x {} +", "-exec", true},
+		{`eval "find . -exec x {} +"`, "find . -exec x {} +", "-exec", true},
+		{`git commit --no-verify -m "avoid -exec"; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
+		{`git commit --no-verify -m -exec; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
+		{`eval "avoid -exec"; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
+		{`find . $F x {} +`, "find . -exec x {} +", "-exec", false},
+	} {
+		if got := e.ApprovalFor(c.command).ShowsIn(strings.Fields(c.ran), c.word); got != c.shown {
+			t.Errorf("%s: ShowsIn(%s, %s) = %v, want %v", c.command, c.ran, c.word, got, c.shown)
 		}
 	}
 	for _, c := range []struct {
@@ -637,5 +667,24 @@ func TestDynamicDeclarationLosesTheDirectory(t *testing.T) {
 	command := `v=x; export $v; cd src; echo y > out.txt`
 	if a := e.ApprovalFor(command); slices.Contains(a.LiteralRedirects, filepath.Join(e.Root, "src", "out.txt")) {
 		t.Fatalf("the redirect was read as if the directory were known: %+v", a)
+	}
+}
+
+// Deleting what the workspace is inside deletes the workspace, even under the temp directory.
+func TestRmOfAnAncestorOfTheWorkspace(t *testing.T) {
+	e := destroyEngine(t)
+	root := filepath.Join(t.TempDir(), "a", "repo")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.Root = root
+	for _, command := range []string{"rm -rf ..", "rm -rf ../..", "rm -rf " + filepath.Dir(root), "rm -rf " + filepath.Dir(filepath.Dir(root))} {
+		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask {
+			t.Errorf("%s: %s %v", command, v.Action, v.Reasons)
+		}
+	}
+	sibling := filepath.Join(filepath.Dir(root), "other")
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("rm -rf "+sibling)); v.Action != Allow {
+		t.Errorf("a sibling under the temp directory: %s %v", v.Action, v.Reasons)
 	}
 }

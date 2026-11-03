@@ -369,6 +369,7 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
 		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
 		{``, `F=-exec; find . $F /bin/echo {} +`, "runs another program"},
+		{``, `git commit --no-verify -qm "avoid -exec" --allow-empty; F=-exec; find . $F /bin/echo {} +`, "runs another program"},
 		// The same reason, or the same file name, from another statement.
 		{``, `git checkout -- work.txt; echo x > b.txt; git add b.txt; git checkout b.txt`, "asks in every mode"},
 		{``, `echo a >> .github/workflows/ci.yml; ln -s .github/workflows/ci.yml ci.yml; echo bad > ci.yml`, "asks in every mode"},
@@ -504,10 +505,28 @@ func TestSessionHooksReachUnresolvedPrograms(t *testing.T) {
 			t.Errorf("%s, approved, did not run: %+v", cmd, r)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(s.Engine.Root, "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	// A program that doesn't resolve from where the parse stands: it's in sub, where cd $d goes.
+	if err := os.WriteFile(filepath.Join(s.Engine.Root, "sub", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Engine.AlwaysAsksIn(`d=.; cd $d && ./run.sh`); !strings.Contains(strings.Join(got, ";"), "HUSKY=0") {
+	cmd := `d=sub; cd $d && ./run.sh`
+	if got := s.Engine.AlwaysAsksIn(cmd); !strings.Contains(strings.Join(got, ";"), "HUSKY=0") {
 		t.Errorf("a program it can't resolve: %v", got)
+	}
+	if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+		t.Errorf("%s, approved, did not run: %+v", cmd, r)
+	}
+}
+
+// A program that doesn't exist yet when the parse reads it runs if the user approved that command, as shown.
+func TestApprovedProgramThatAppearsWhenItRuns(t *testing.T) {
+	for _, cmd := range []string{`d=sub; cd $d && ./run.sh`, `mkdir -p made; printf '#!/bin/sh\n' > made/run; chmod +x made/run; made/run`} {
+		s := session(t, true)
+		if err := os.WriteFile(filepath.Join(s.Engine.Root, "sub", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
 	}
 }
