@@ -178,7 +178,7 @@ func TestRewindAfterARealDestroy(t *testing.T) {
 				run(t, root, do[0], do[1:]...)
 			}
 			after := capture(t, root)
-			undo, _, err := s.Restore(context.Background(), id)
+			undo, _, err := s.Restore(context.Background(), id, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -188,7 +188,7 @@ func TestRewindAfterARealDestroy(t *testing.T) {
 			if undo == "" {
 				t.Fatal("no snapshot of the tree it replaced")
 			}
-			if _, _, err := s.Restore(context.Background(), undo); err != nil {
+			if _, _, err := s.Restore(context.Background(), undo, false); err != nil {
 				t.Fatal(err)
 			}
 			sameTree(t, capture(t, root), after)
@@ -208,7 +208,7 @@ func TestRestoreLeavesUnchangedFilesAlone(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "untracked.go")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(filepath.Join(root, "run.sh"))
@@ -303,7 +303,7 @@ func TestRestoreThroughReadOnlyDirectories(t *testing.T) {
 	if err := os.Chmod(filepath.Join(root, "newlocked"), 0o555); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -319,17 +319,19 @@ func TestAFailedRestoreKeepsItsUndo(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := capture(t, root)
-	if err := os.Mkdir(filepath.Join(s.Dir, "restore-index"), 0o755); err != nil { // read-tree can't write its index there
+	realGit := s.Git
+	failing := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\ncase \" $* \" in *\" checkout-index \"*) exit 1 ;; esac\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(failing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	undo, _, err := s.Restore(context.Background(), id)
-	if err == nil || undo == "" {
+	s.Git = failing
+	undo, _, err := s.Restore(context.Background(), id, false)
+	if err == nil || errors.Is(err, ErrUntouched) || undo == "" {
 		t.Fatalf("undo %q, err %v", undo, err)
 	}
-	if err := os.Remove(filepath.Join(s.Dir, "restore-index")); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.Restore(context.Background(), undo); err != nil {
+	s.Git = realGit
+	if _, _, err := s.Restore(context.Background(), undo, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), after)
@@ -362,7 +364,7 @@ func TestTheUsersGitIsUntouched(t *testing.T) {
 	id := take(t, s)
 	s.Staged(context.Background())
 	write(t, root, "src/a.go", "changed\n", 0o644)
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := digest(t, root); got != before {
@@ -404,7 +406,7 @@ func TestNothingInTheWorkspaceRuns(t *testing.T) {
 	id := take(t, s)
 	s.Staged(context.Background())
 	write(t, root, "ident.txt", "gone\n", 0o644)
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -548,14 +550,14 @@ func TestPrune(t *testing.T) {
 	if err := s.Prune(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Restore(context.Background(), old); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, _, err := s.Restore(context.Background(), old, false); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("an old checkpoint: %v", err)
 	}
 	if _, err := s.Changes(context.Background(), old); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("an old checkpoint's changes: %v", err)
 	}
 	write(t, root, "untracked.go", "third\n", 0o644)
-	if _, _, err := s.Restore(context.Background(), kept); err != nil {
+	if _, _, err := s.Restore(context.Background(), kept, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), want)
@@ -625,7 +627,7 @@ func TestRestoreOfNothing(t *testing.T) {
 	take(t, s)
 	before := capture(t, root)
 	for _, id := range []string{"", "HEAD", "--all", strings.Repeat("0", 40), "../../etc"} {
-		if _, _, err := s.Restore(context.Background(), id); !errors.Is(err, ErrUntouched) {
+		if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) {
 			t.Errorf("%q: %v", id, err)
 		}
 	}
@@ -636,7 +638,7 @@ func TestRestoreOfNothing(t *testing.T) {
 	if _, err := s.git(context.Background(), nil, nil, "update-ref", "-d", "refs/tack/"+id); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Restore(context.Background(), id); err == nil || !strings.Contains(err.Error(), "gone") {
+	if _, _, err := s.Restore(context.Background(), id, false); err == nil || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("a dropped checkpoint: %v", err)
 	}
 }
@@ -657,7 +659,7 @@ func TestSymlinksStayLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, root, "out/huge", "inside", 0o644)
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -761,7 +763,7 @@ func TestAReusedCheckpointIsKept(t *testing.T) {
 	if err := s.Prune(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Restore(context.Background(), old); err != nil {
+	if _, _, err := s.Restore(context.Background(), old, false); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -848,11 +850,20 @@ func TestRewindAfterWhatStopsASnapshot(t *testing.T) {
 			if st, err := os.Lstat(filepath.Join(root, "src")); c.name == "a directory that stays that no one can read" && (err != nil || st.Mode().Perm() != 0) {
 				t.Errorf("looking left src as %v %v", st, err)
 			}
-			if why := s.NoUndo(context.Background()); why == "" && c.name != "a file no one can read" {
+			if why := s.NoUndo(context.Background()); why == "" {
 				t.Error("it says the rewind can be undone")
 			}
 
-			undo, why, err := s.Restore(context.Background(), id)
+			// Without being told it's on purpose, it refuses and changes nothing.
+			if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) || !errors.Is(err, ErrNoUndo) {
+				t.Errorf("no undo: %v", err)
+			}
+			again, err := s.Changes(context.Background(), id)
+			if err != nil || !slices.Equal(again, got) {
+				t.Errorf("after the refusal: %v %v, want %v", again, err, got)
+			}
+
+			undo, why, err := s.Restore(context.Background(), id, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -901,7 +912,7 @@ func TestChangesOfWhatTheTreeDoesntHold(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("changes %v, want %v", got, want)
 	}
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
 	}
 	for p, wantMode := range map[string]os.FileMode{"src": 0o755, "empty/inner": 0o755} {
@@ -989,7 +1000,7 @@ func TestUnreadableButUnchanged(t *testing.T) {
 	if st, err := os.Lstat(filepath.Join(root, "day.log")); err != nil || st.Mode().Perm() != 0 {
 		t.Errorf("looking left day.log as %v %v", st, err)
 	}
-	if _, _, err := s.Restore(context.Background(), id); err != nil {
+	if _, _, err := s.Restore(context.Background(), id, true); err != nil {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
@@ -1009,7 +1020,111 @@ func TestRestoreRefusesWhenTheUndoRanOutOfTime(t *testing.T) {
 	write(t, root, "untracked.go", "later\n", 0o644)
 	after := capture(t, root)
 	s.gaveUp = "a snapshot took longer than 1m0s"
-	if _, _, err := s.Restore(context.Background(), id); !errors.Is(err, ErrUntouched) {
+	if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) || !errors.Is(err, ErrNoUndo) {
+		t.Errorf("err %v", err)
+	}
+	sameTree(t, capture(t, root), after)
+	// On purpose, a tree too big to snapshot can still go back.
+	if undo, why, err := s.Restore(context.Background(), id, true); err != nil || undo != "" || why == "" {
+		t.Errorf("on purpose: %q %q %v", undo, why, err)
+	}
+}
+
+// git failing on the undo snapshot is no different from a rule stopping it.
+func TestRestoreRefusesWhenGitFailsTheUndo(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	after := capture(t, root)
+	write(t, s.Dir, "index.lock", "", 0o644) // a fresh lock, so git add fails
+	if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) || !errors.Is(err, ErrNoUndo) {
+		t.Errorf("err %v", err)
+	}
+	sameTree(t, capture(t, root), after)
+}
+
+// Going back leaves the restored checkpoint as the one Take remembers: an unchanged tree gets it again and it counts as used.
+func TestRestoreRemembersItsCheckpoint(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	now := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { now = now.Add(time.Second); return now }
+	a := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	take(t, s)
+	if _, _, err := s.Restore(context.Background(), a, false); err != nil {
+		t.Fatal(err)
+	}
+	refs, _ := s.git(context.Background(), nil, nil, "for-each-ref", "refs/tack/")
+	if id := take(t, s); id != a {
+		t.Errorf("the restored tree: %s, want %s", id, a)
+	}
+	if after, _ := s.git(context.Background(), nil, nil, "for-each-ref", "refs/tack/"); string(after) != string(refs) {
+		t.Errorf("a duplicate checkpoint:\n%s\nthen\n%s", refs, after)
+	}
+}
+
+// Least recently used goes first, whatever the order they were made in.
+func TestPruneOrdersByLastUse(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	now := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { now = now.Add(time.Second); return now }
+	var ids []string
+	for _, v := range []string{"a", "b", "c", "d"} {
+		write(t, root, "untracked.go", v+"\n", 0o644)
+		ids = append(ids, take(t, s))
+	}
+	if _, _, err := s.Restore(context.Background(), ids[0], false); err != nil { // uses a, and d as its undo
+		t.Fatal(err)
+	}
+	write(t, root, "untracked.go", "e\n", 0o644)
+	e := take(t, s)
+	got, err := s.byLastUse(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{e, ids[0], ids[3], ids[2], ids[1]}
+	for i := range want {
+		want[i] = "refs/tack/" + want[i]
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("order %q, want %q", got, want)
+	}
+	// Past the size limit, what's left is what was used last.
+	s.MaxBytes = 1
+	if err := s.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.MaxBytes = 1 << 30
+	if err := s.known(context.Background(), e); err != nil {
+		t.Errorf("the last used went: %v", err)
+	}
+	if err := s.known(context.Background(), ids[1]); err == nil {
+		t.Error("the least recently used stayed")
+	}
+}
+
+// A failure the tree isn't ready for shows up before anything is touched: not a read-only directory opened, not an empty one gone.
+func TestRestoreIndexFailsBeforeTouchingAnything(t *testing.T) {
+	root := repo(t)
+	write(t, root, "locked/kept.txt", "kept\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "locked"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, "locked"), 0o755) })
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	if err := os.Remove(filepath.Join(root, "day.log")); err != nil {
+		t.Fatal(err)
+	}
+	after := capture(t, root)
+	if err := os.Mkdir(filepath.Join(s.Dir, "restore-index"), 0o755); err != nil { // read-tree can't write its index there
+		t.Fatal(err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) {
 		t.Errorf("err %v", err)
 	}
 	sameTree(t, capture(t, root), after)
@@ -1025,7 +1140,7 @@ func TestRestoreStopsWithItsCaller(t *testing.T) {
 	after := capture(t, root)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := s.Restore(ctx, id); !errors.Is(err, ErrUntouched) || strings.Contains(err.Error(), "gone") {
+	if _, _, err := s.Restore(ctx, id, true); !errors.Is(err, ErrUntouched) || strings.Contains(err.Error(), "gone") {
 		t.Errorf("err %v", err)
 	}
 	sameTree(t, capture(t, root), after)
@@ -1036,6 +1151,9 @@ func TestATakeThatCantMarkItsCheckpoint(t *testing.T) {
 	root := repo(t)
 	s := shadow(t, root)
 	take(t, s)
+	if err := os.RemoveAll(filepath.Join(s.Dir, "used")); err != nil {
+		t.Fatal(err)
+	}
 	write(t, s.Dir, "used", "in the way", 0o644) // used/ can't be made
 	if id, why := s.Take(context.Background()); id != "" || why == "" {
 		t.Errorf("id %q why %q", id, why)
@@ -1071,7 +1189,7 @@ func TestOneSessionInTheShadowAtATime(t *testing.T) {
 	if err := b.known(ctx, id); err != nil {
 		t.Errorf("it pruned under the holder: %v", err)
 	}
-	if _, _, err := b.Restore(ctx, id); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), "another") {
+	if _, _, err := b.Restore(ctx, id, true); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), "another") {
 		t.Errorf("Restore: %v", err)
 	}
 	release()
@@ -1106,8 +1224,34 @@ func TestRestoreStopsWhenTheCallerGoesDuringTheUndo(t *testing.T) {
 	s.Git = slow
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, _, err := s.Restore(ctx, id); !errors.Is(err, ErrUntouched) {
+	if _, _, err := s.Restore(ctx, id, true); !errors.Is(err, ErrUntouched) {
 		t.Errorf("err %v", err)
 	}
 	sameTree(t, capture(t, root), after)
+
+	// With nothing to write back, only something to remove, the same: no read-tree is there to stop it.
+	root = repo(t)
+	s = shadow(t, root)
+	id = take(t, s)
+	write(t, root, "new.go", "later\n", 0o644)
+	after = capture(t, root)
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\ncase \" $* \" in *\" add \"*) sleep 5 ;; esac\nexec "+New(t.TempDir(), root, 1).Git+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.Git = slow
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, _, err := s.Restore(ctx, id, true); !errors.Is(err, ErrUntouched) {
+		t.Errorf("only removals: %v", err)
+	}
+	sameTree(t, capture(t, root), after)
+}
+
+// With no git there's no undo snapshot, and the preview says so.
+func TestNoUndoWithoutGit(t *testing.T) {
+	s := shadow(t, repo(t))
+	s.Git = ""
+	if why := s.NoUndo(context.Background()); !strings.Contains(why, "git") {
+		t.Errorf("why %q", why)
+	}
 }

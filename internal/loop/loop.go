@@ -434,17 +434,17 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				s.calls++
 				checkpoint := s.takeSnapshot(ctx, b)
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
-				if err == nil && refused == nil && checkpoint != nil && by == proto.DecidedByUser {
-					// Files can change while a question waits, so the snapshot is taken again. If what it answers has changed, the
-					// yes was to a question that left that out: ask the whole of it.
+				if checkpoint != nil {
+					// Files can change while a question waits, so the snapshot is taken again after each one. If what it answers has
+					// changed, the yes was to a question that left that out: ask the whole of it, until an answer holds.
 					command := bashCommand(b)
-					asked := s.cfg.Perms.AlwaysAsksIn(command)
-					checkpoint = s.takeSnapshot(ctx, b)
-					if !subset(s.cfg.Perms.AlwaysAsksIn(command), asked) {
-						refused, by, err = s.permit(ctx, b, callEv.Seq)
-						if err == nil && refused == nil { // that question waited too
-							checkpoint = s.takeSnapshot(ctx, b)
+					for err == nil && refused == nil && by == proto.DecidedByUser {
+						asked := s.cfg.Perms.AlwaysAsksIn(command)
+						checkpoint = s.takeSnapshot(ctx, b)
+						if subset(s.cfg.Perms.AlwaysAsksIn(command), asked) {
+							break
 						}
+						refused, by, err = s.permit(ctx, b, callEv.Seq)
 					}
 				}
 				if err != nil {

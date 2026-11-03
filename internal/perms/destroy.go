@@ -298,20 +298,33 @@ func (e *Engine) AlwaysAsks(s Simple, dir string) []string {
 }
 
 // undoableEnd ends a reason that a snapshot of the working tree answers (DESIGN §6.8), and cleanIndexEnd one it answers only when
-// nothing is staged, since the command overwrites the index and a snapshot doesn't hold that.
+// nothing is staged, since the command overwrites the index and a snapshot doesn't hold that. stagedEnd replaces cleanIndexEnd
+// when there is a snapshot and something staged, so a reason always says which it is and losing the snapshot changes the question.
 const (
 	undoableEnd   = "cannot be recovered without a snapshot"
 	cleanIndexEnd = "cannot be recovered without a snapshot and a clean index"
+	stagedEnd     = "a snapshot can't bring back, since it overwrites what's staged"
 )
 
-// afterSnapshot is why without the reasons the command's snapshot answers, or why itself if it has none.
+// afterSnapshot is why as the command's snapshot leaves it: what the snapshot answers is gone, and what it can't is said so. With no
+// snapshot it is why itself.
 func (e *Engine) afterSnapshot(why []string) []string {
 	if !e.Snapshotted {
 		return why
 	}
-	return slices.DeleteFunc(why, func(r string) bool {
-		return strings.HasSuffix(r, undoableEnd) || (!e.Staged && strings.HasSuffix(r, cleanIndexEnd))
-	})
+	var left []string
+	for _, r := range why {
+		switch {
+		case strings.HasSuffix(r, undoableEnd):
+		case strings.HasSuffix(r, cleanIndexEnd):
+			if e.Staged {
+				left = append(left, strings.TrimSuffix(r, cleanIndexEnd)+stagedEnd)
+			}
+		default:
+			left = append(left, r)
+		}
+	}
+	return left
 }
 
 // AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs.

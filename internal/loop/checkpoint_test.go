@@ -12,6 +12,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/snapshot"
@@ -122,7 +123,7 @@ func TestDestroyWithASnapshotRunsAndRewinds(t *testing.T) {
 			if len(cps) != 1 || cps[0].ID != "b1" || cps[0].Workspace != root || cps[0].Snapshot == "" || cps[0].Unavailable != "" {
 				t.Fatalf("checkpoints %+v", cps)
 			}
-			if _, _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
+			if _, _, err := s.Restore(context.Background(), cps[0].Snapshot, false); err != nil {
 				t.Fatal(err)
 			}
 			got := tree(t, root)
@@ -222,7 +223,7 @@ func TestAnApprovalTakesTheSnapshotAgain(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "typed-during-the-question.txt")); err == nil {
 		t.Fatal("the command didn't run")
 	}
-	if _, _, err := s.Restore(context.Background(), cps[0].Snapshot); err != nil {
+	if _, _, err := s.Restore(context.Background(), cps[0].Snapshot, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "typed-during-the-question.txt")); err != nil {
@@ -367,6 +368,7 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 		snapshot string
 	}{
 		{"both taken", []string{"a", "b"}, nil, []bool{true}, 1, true, "b"},
+		{"lost with something staged, then a no", []string{"a"}, []bool{true}, []bool{true, false}, 2, false, ""},
 		{"staged while it waited, then a no", []string{"a", "b"}, []bool{false, true}, []bool{true, false}, 2, false, ""},
 		{"lost, then a no", []string{"a"}, nil, []bool{true, false}, 2, false, ""},
 		{"lost, then a yes", []string{"a"}, nil, []bool{true, true}, 2, true, ""},
@@ -389,7 +391,7 @@ func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
 			if strings.Contains(strings.Join(ap.asked[0].Reasons, " "), "without a snapshot") {
 				t.Errorf("the first question held what the snapshot answers: %q", ap.asked[0].Reasons)
 			}
-			if c.asks == 2 && !strings.Contains(strings.Join(ap.asked[1].Reasons, " "), "without a snapshot") {
+			if c.asks == 2 && !strings.Contains(strings.Join(ap.asked[1].Reasons, " "), "snapshot") {
 				t.Errorf("the second question lacks what the snapshot no longer answers: %q", ap.asked[1].Reasons)
 			}
 			if (len(sh.ran) == 1) != c.ran {
@@ -474,7 +476,7 @@ func TestStagedWorkKeepsAsking(t *testing.T) {
 	if len(ap.asked) != 1 {
 		t.Fatalf("asked %+v", ap.asked)
 	}
-	if !strings.Contains(strings.Join(ap.asked[0].Reasons, " "), "without a snapshot") {
+	if !strings.Contains(strings.Join(ap.asked[0].Reasons, " "), "what's staged") {
 		t.Errorf("reasons %q", ap.asked[0].Reasons)
 	}
 	if b, _ := os.ReadFile(file); string(b) != "package mcp // edited further\n" {
@@ -499,5 +501,71 @@ func TestStagedWorkKeepsAsking(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(file); string(b) == "package mcp // not staged\n" {
 		t.Error("it didn't run")
+	}
+}
+
+// realShellHarness is a real git workspace on the real shell child, with its run-time check, in auto mode with a pretend sandbox,
+// and with the snapshots and answers given.
+func realShellHarness(t *testing.T, snaps Snapshotter, ap Approver, replies ...goinfertest.Reply) *harness {
+	t.Helper()
+	t.Setenv("TACK_SHELL_CHILD", "1")
+	h, _ := checkpointHarness(t, ap, false, replies...)
+	cfg := h.sess.cfg
+	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms, Group: sandbox.Target{Mark: "s-test", Since: time.Now()},
+		Wrap:  func(c *exec.Cmd, _, _ string) *exec.Cmd { return c },
+		Sweep: func(sandbox.Target) (sandbox.Report, error) { return sandbox.Report{}, nil }}
+	cfg.Tools, cfg.Shell, cfg.Snapshots = tools.New(tools.Options{Write: true, Shell: sh}), nil, snaps
+	h.sess = New(cfg)
+	return h
+}
+
+// The whole way, with the real run-time check: a clean snapshot, then something staged while the first question waited, then the
+// snapshot lost while the second did. Each change asks again, the last question holds all of it, and a no stops all of it.
+func TestThreeSnapshotsWithTheRealShell(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		yes  []bool
+		ran  bool
+	}{
+		{"three yeses", []bool{true, true, true}, true},
+		{"a no at the third", []bool{true, true, false}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ap := &answers{yes: c.yes}
+			snaps := &scriptedSnapshots{ids: []string{"a", "b"}, staged: []bool{false, true}}
+			h := realShellHarness(t, snaps, ap, bashCall("b1", "git branch -D x; git reset --hard; rm -r mcp"), goinfertest.Says("done"))
+			root := h.ws.Root()
+			gitBranch := exec.Command("git", "branch", "x")
+			gitBranch.Dir = root
+			if out, err := gitBranch.CombinedOutput(); err != nil {
+				t.Fatalf("git branch: %v %s", err, out)
+			}
+			if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+			if len(ap.asked) != 3 {
+				t.Fatalf("asked %d times: %+v", len(ap.asked), ap.asked)
+			}
+			first, second, third := strings.Join(ap.asked[0].Reasons, " "), strings.Join(ap.asked[1].Reasons, " "), strings.Join(ap.asked[2].Reasons, " ")
+			if strings.Contains(first, "reset --hard discards") || strings.Contains(first, "rm -r mcp deletes") {
+				t.Errorf("the first question held what the snapshot answered: %q", first)
+			}
+			if !strings.Contains(second, "what's staged") || strings.Contains(second, "rm -r mcp deletes") {
+				t.Errorf("the second question: %q", second)
+			}
+			if !strings.Contains(third, "without a snapshot and a clean index") || !strings.Contains(third, "rm -r mcp deletes") {
+				t.Errorf("the third question: %q", third)
+			}
+			_, err := os.Stat(filepath.Join(root, "mcp"))
+			if gone := err != nil; gone != c.ran {
+				t.Errorf("mcp gone %v, want %v; finished %+v", gone, c.ran, h.finished("b1"))
+			}
+			if c.ran && h.finished("b1").Outcome != proto.OutcomeOK {
+				t.Errorf("the real check stopped it: %+v", h.finished("b1"))
+			}
+			if !c.ran && h.finished("b1").Outcome != proto.OutcomeDenied {
+				t.Errorf("finished %+v", h.finished("b1"))
+			}
+		})
 	}
 }

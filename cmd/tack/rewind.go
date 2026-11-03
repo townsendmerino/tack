@@ -16,15 +16,16 @@ import (
 )
 
 // rewindCmd is `tack rewind` (DESIGN §6.8). With a session alone it lists what can be rewound to. With a seq it says what a
-// rewind would change, and with -yes it does it. It restores the working tree only, and records a rewind event; the
+// rewind would change, and with -yes it does it, unless the rewind couldn't be undone, which takes -no-undo too. It restores the working tree only, and records a rewind event; the
 // conversation fork waits for session/fork. Paths are printed quoted, since a file name can hold anything.
 func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("rewind", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "config file (default ~/.config/tack/config.toml)")
 	yes := fs.Bool("yes", false, "restore the files; without it, say what would change")
+	noUndo := fs.Bool("no-undo", false, "with -yes, restore the files even if the rewind can't be undone")
 	if err := fs.Parse(args); err != nil || fs.NArg() < 1 || fs.NArg() > 2 {
-		fmt.Fprintln(stderr, "usage: tack rewind [-yes] <session> [seq]")
+		fmt.Fprintln(stderr, "usage: tack rewind [-yes [-no-undo]] <session> [seq]")
 		return exitUsage
 	}
 	fail := func(err any) int {
@@ -101,10 +102,12 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s %q\n", verb, c.Path)
 	}
 	if !*yes {
+		how := "-yes"
 		if why := shadow.NoUndo(ctx); why != "" {
 			fmt.Fprintf(stdout, "this rewind can't be undone: %s\n", why)
+			how = "-yes -no-undo"
 		}
-		fmt.Fprintf(stdout, "this includes anything changed outside tack; run tack rewind -yes %s %d to do it\n", session, seq)
+		fmt.Fprintf(stdout, "this includes anything changed outside tack; run tack rewind %s %s %d to do it\n", how, session, seq)
 		return exitOK
 	}
 	if h, err := halt.Check(stateDir); err != nil {
@@ -112,7 +115,10 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	} else if h != nil {
 		return fail(fmt.Sprintf("tack is halted (%s); run tack resume", halt.Path(stateDir)))
 	}
-	undo, noUndo, restoreErr := shadow.Restore(ctx, point.snapshot)
+	undo, why, restoreErr := shadow.Restore(ctx, point.snapshot, *noUndo)
+	if errors.Is(restoreErr, snap.ErrNoUndo) {
+		return fail(fmt.Sprintf("%v; tack rewind -yes -no-undo %s %d does it anyway", restoreErr, session, seq))
+	}
 	if errors.Is(restoreErr, snap.ErrUntouched) {
 		return fail(restoreErr)
 	}
@@ -121,13 +127,13 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	defer log.Close()
-	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, NoUndo: noUndo, Changed: len(changes)})
+	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, NoUndo: why, Changed: len(changes)})
 	if err != nil {
 		return fail(err)
 	}
 	back := fmt.Sprintf("tack rewind -yes %s %d undoes it", session, ev.Seq)
 	if undo == "" {
-		back = "it can't be undone: " + noUndo
+		back = "it can't be undone: " + why
 	}
 	if restoreErr != nil {
 		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the tree is part rewound: %v; %s\n", restoreErr, back)
@@ -179,4 +185,13 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 		}
 	}
 	return points
+}
+
+// warnNoRewind says, once per reason in a run, why its commands can't be rewound.
+func warnNoRewind(w io.Writer, seen map[string]bool, why string) {
+	if why == "" || seen[why] {
+		return
+	}
+	seen[why] = true
+	fmt.Fprintf(w, "tack: this session's commands can't be rewound: %s\n", why)
 }

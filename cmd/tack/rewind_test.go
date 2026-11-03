@@ -180,9 +180,17 @@ func TestRewindThatStopsPartway(t *testing.T) {
 	cfg, ws, seq := rewindSession(t)
 	state := filepath.Join(filepath.Dir(cfg), "state")
 	shadow := snap.New(state, ws, 1<<30)
-	if err := os.Mkdir(filepath.Join(shadow.Dir, "restore-index"), 0o755); err != nil { // git can't write its index there
+	realGit, err := exec.LookPath("git")
+	if err != nil {
 		t.Fatal(err)
 	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in *\" checkout-index \"*) exit 1 ;; esac\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	_ = shadow
 	code, _, errs := rewind(t, "-config", cfg, "-yes", "s_rewind", strconv.FormatInt(seq, 10))
 	if code != exitError || !strings.Contains(errs, "partway") || !strings.Contains(errs, "undoes") {
 		t.Errorf("%d %q", code, errs)
@@ -220,7 +228,25 @@ func TestRewindOfATreeThatCantBeSnapshotted(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(ws, "clone")); err != nil {
 		t.Error("the preview removed it")
 	}
-	code, out, errs = rewind(t, "-config", cfg, "-yes", "s_rewind", s)
+	if !strings.Contains(out, "-no-undo") {
+		t.Errorf("the preview doesn't say how: %q", out)
+	}
+	// -yes alone refuses, and says how to go on.
+	code, _, errs = rewind(t, "-config", cfg, "-yes", "s_rewind", s)
+	if code != exitError || !strings.Contains(errs, "can't be undone") || !strings.Contains(errs, "-no-undo") {
+		t.Errorf("-yes alone: %d %q", code, errs)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clone")); err != nil {
+		t.Error("-yes alone removed it")
+	}
+	// -no-undo alone is still a preview.
+	if code, out, _ = rewind(t, "-config", cfg, "-no-undo", "s_rewind", s); code != exitOK || !strings.Contains(out, "can't be undone") {
+		t.Errorf("-no-undo alone: %d %q", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "clone")); err != nil {
+		t.Error("-no-undo alone removed it")
+	}
+	code, out, errs = rewind(t, "-config", cfg, "-yes", "-no-undo", "s_rewind", s)
 	if code != exitOK || !strings.Contains(out, "can't be undone") {
 		t.Fatalf("rewind: %d %q %q", code, out, errs)
 	}
@@ -247,5 +273,17 @@ func TestRewindOfATreeThatCantBeSnapshotted(t *testing.T) {
 	// On the list as something that can't be gone back to, and why.
 	if _, out, _ = rewind(t, "-config", cfg, "s_rewind"); !strings.Contains(out, "can't be rewound (it holds a nested") {
 		t.Errorf("list: %q", out)
+	}
+}
+
+// One warning per reason, however they come round.
+func TestNoRewindWarnsOncePerReason(t *testing.T) {
+	var out bytes.Buffer
+	seen := map[string]bool{}
+	for _, why := range []string{"", "over the cap", "nested", "over the cap", "", "nested"} {
+		warnNoRewind(&out, seen, why)
+	}
+	if got := strings.Count(out.String(), "\n"); got != 2 {
+		t.Errorf("%d warnings: %q", got, out.String())
 	}
 }

@@ -848,15 +848,16 @@ tool-use smoke set compares this merged set against the split one before it is f
   can't see, including a path that expands.
 - **Rewind.** `tack rewind -yes <session> <seq>` restores the files; without `-yes` it lists what it would change. It compares the
   tree with the checkpoint directly, so what stops a new snapshot doesn't stop going back. It first takes a snapshot of the
-  current tree so the rewind can be undone. If a rule keeps the tree out of a snapshot, it says the rewind can't be undone and
-  goes on with `-yes`. If that snapshot runs out of time, or another session holds the shadow, it refuses and changes nothing. It records a `rewind` event. It restores the working tree
+  current tree so the rewind can be undone, and it never destroys the tree without that. If the snapshot fails for any reason (a
+  rule, git, an unreadable file, time), it refuses and changes nothing, unless `-no-undo` says that's on purpose after a preview
+  that warned about it, so a tree too big to snapshot can still go back. If another session holds the shadow, it refuses either way. It records a `rewind` event. It restores the working tree
   only: refs, stashes and the index are not brought back. A staged file a command removed from the index comes back as a file, not
   as staged; that command asked no question only because the index matched HEAD. Without post-images it can't tell tack's changes from yours,
   so it lists them all.
 - **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
   guard answers don't change; turning it on there is a decision for the owner.
-- **Keeping the shadow small.** A checkpoint a command last relied on over 7 days ago goes at the first snapshot of a session, and the
-  least recently used go when the shadow passes twice the cap, so that second limit can take one sooner. A rewind to one that's gone says so.
+- **Keeping the shadow small.** A checkpoint a command or a rewind last relied on over 7 days ago goes at the first snapshot of a session, and
+  the least recently used go when the shadow passes twice the cap, so that second limit can take one sooner. A rewind to one that's gone says so.
 - **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
   byte with modes and symlinks; the size-cap, non-git and nested-repository fallbacks; a workspace `.gitattributes` filter and
   `.git/config` that must not run.

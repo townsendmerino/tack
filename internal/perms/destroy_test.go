@@ -1024,3 +1024,17 @@ func TestStagedKeepsAskingWhatOverwritesTheIndex(t *testing.T) {
 		t.Errorf("reasons %q", why)
 	}
 }
+
+// The reason says whether a snapshot exists, so losing one changes the question.
+func TestReasonSaysWhetherThereIsASnapshot(t *testing.T) {
+	root := t.TempDir()
+	with := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true, Staged: true}
+	without := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Staged: true}
+	a, b := with.AlwaysAsksIn("git reset --hard"), without.AlwaysAsksIn("git reset --hard")
+	if len(a) != 1 || len(b) != 1 || a[0] == b[0] {
+		t.Fatalf("with %q, without %q", a, b)
+	}
+	if !strings.Contains(a[0], "what's staged") || !strings.Contains(b[0], "without a snapshot") {
+		t.Errorf("with %q, without %q", a, b)
+	}
+}

@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -340,8 +339,7 @@ func (s *Shadow) take(ctx context.Context) (id, why string) {
 		return "", err.Error()
 	}
 	tree, text := strings.TrimSpace(string(out)), m.String()
-	sum := sha256.Sum256([]byte(tree + "\x00" + text))
-	stamp := hex.EncodeToString(sum[:])
+	stamp := treeStamp(tree, m)
 	lastPath := filepath.Join(s.Dir, "last")
 	if last, err := os.ReadFile(lastPath); err == nil {
 		if have, lastID, ok := strings.Cut(string(last), " "); ok && have == stamp {
@@ -362,11 +360,14 @@ func (s *Shadow) take(ctx context.Context) (id, why string) {
 	if err := os.WriteFile(lastPath, []byte(stamp+" "+id), 0o600); err != nil {
 		return "", err.Error()
 	}
+	if why := s.markUsed(id); why != "" {
+		return "", why
+	}
 	return id, ""
 }
 
-// markUsed records now as when a command last relied on a checkpoint it got again, which is what Prune ages it from: the file's
-// time in used/. It returns why it couldn't, since a checkpoint that Prune might take too soon isn't one to rely on.
+// markUsed records now as when a command last relied on a checkpoint, which is what Prune ages it from: the file's time in
+// used/. It returns why it couldn't, since a checkpoint that Prune might take too soon isn't one to rely on.
 func (s *Shadow) markUsed(id string) string {
 	dir := filepath.Join(s.Dir, "used")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -382,12 +383,35 @@ func (s *Shadow) markUsed(id string) string {
 	return ""
 }
 
-// lastUsed is when a checkpoint was last relied on, or made, whichever Prune can read: unix is its commit's date.
-func (s *Shadow) lastUsed(ref string, unix int64) time.Time {
+// used is when a checkpoint was last relied on. One with no mark reads as used long ago, and goes first.
+func (s *Shadow) used(_ context.Context, ref string) time.Time {
 	if st, err := os.Stat(filepath.Join(s.Dir, "used", strings.TrimPrefix(ref, "refs/tack/"))); err == nil {
 		return st.ModTime()
 	}
-	return time.Unix(unix, 0)
+	return time.Time{}
+}
+
+// byLastUse is the checkpoints' refs, most recently used first. Two used in one tick tie, and Take's memory of its last says which.
+func (s *Shadow) byLastUse(ctx context.Context) ([]string, error) {
+	out, err := s.git(ctx, nil, nil, "for-each-ref", "--format=%(refname)", "refs/tack/")
+	if err != nil {
+		return nil, err
+	}
+	refs := strings.Fields(string(out))
+	last := ""
+	if b, err := os.ReadFile(filepath.Join(s.Dir, "last")); err == nil {
+		if _, id, ok := strings.Cut(string(b), " "); ok {
+			last = "refs/tack/" + id
+		}
+	}
+	sort.SliceStable(refs, func(i, j int) bool {
+		a, b := s.used(ctx, refs[i]), s.used(ctx, refs[j])
+		if a.Equal(b) {
+			return refs[i] == last
+		}
+		return a.After(b)
+	})
+	return refs, nil
 }
 
 // Staged reports whether the user's index differs from HEAD, so a command that overwrites it would lose content a snapshot doesn't
@@ -403,12 +427,34 @@ func (s *Shadow) Staged(ctx context.Context) bool {
 	return c.Run() != nil
 }
 
-// NoUndo says why a rewind right now couldn't be undone, or "" when, as far as a walk of the tree can tell, it could.
+// NoUndo says why a rewind right now couldn't be undone, or "" when, as far as looking can tell, it could: what the undo snapshot
+// would stop on, opening each file as git add would. It writes nothing.
 func (s *Shadow) NoUndo(ctx context.Context) string {
 	if !s.isTop() {
 		return "the workspace is not the top of a git repository"
 	}
+	if s.Git == "" {
+		return "git isn't installed"
+	}
 	if _, err := s.survey(ctx); err != nil {
+		return err.Error()
+	}
+	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case p != s.Root && d.IsDir() && isDotGit(d.Name()):
+			return fs.SkipDir
+		case !d.Type().IsRegular():
+			return nil
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	})
+	if err != nil {
 		return err.Error()
 	}
 	return ""
@@ -639,14 +685,18 @@ func (s *Shadow) sameAs(p string, info fs.FileInfo, mode, oid string) (bool, err
 	return hex.EncodeToString(h.Sum(nil)) == oid, nil
 }
 
-// ErrUntouched marks a Restore that failed before changing anything.
-var ErrUntouched = errors.New("nothing was changed")
+// ErrUntouched marks a Restore that failed before changing anything, and ErrNoUndo one that did so because the tree it would
+// replace couldn't be snapshotted.
+var (
+	ErrUntouched = errors.New("nothing was changed")
+	ErrNoUndo    = errors.New("this rewind can't be undone")
+)
 
 // Restore puts the working tree back as it was at id, touching only what differs. It returns the checkpoint of the tree it
-// replaced, so the restore can be undone, or "" and why there is none: a tree a rule keeps out of a snapshot can still go back.
-// Running out of time is another matter, and it refuses rather than go on with no way back. A failure before anything changed
-// is ErrUntouched. The look, the undo snapshot and the rewrite each have s.Limit. It writes nothing under .git.
-func (s *Shadow) Restore(parent context.Context, id string) (undo, noUndo string, err error) {
+// replaced, so the restore can be undone. If that checkpoint can't be taken, for any reason, it refuses with ErrNoUndo, unless
+// withoutUndo says that's on purpose: then it goes on, and returns "" and why. A failure before anything changed is ErrUntouched.
+// The look, the undo snapshot and the rewrite each have s.Limit. It writes nothing under .git.
+func (s *Shadow) Restore(parent context.Context, id string, withoutUndo bool) (undo, noUndo string, err error) {
 	release, why := s.lock()
 	if why != "" {
 		return "", "", fmt.Errorf("%w: %s", ErrUntouched, why)
@@ -667,12 +717,19 @@ func (s *Shadow) Restore(parent context.Context, id string) (undo, noUndo string
 	if err := parent.Err(); err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrUntouched, err)
 	}
-	if undo == "" && s.gaveUp != "" {
-		return "", "", fmt.Errorf("%w: the snapshot that would undo this ran out of time: %s", ErrUntouched, noUndo)
+	if undo == "" && !withoutUndo {
+		return "", "", fmt.Errorf("%w: %w: %s", ErrUntouched, ErrNoUndo, noUndo)
 	}
 	ctx, cancel := context.WithTimeout(parent, s.Limit)
 	defer cancel()
 	m := d.manifest
+	// The index for what's to be written comes first: it needs nothing from the tree, and it's the step most likely to fail.
+	index := "GIT_INDEX_FILE=" + filepath.Join(s.Dir, "restore-index")
+	if len(d.checkout) > 0 {
+		if _, err := s.git(ctx, nil, []string{index}, "read-tree", id); err != nil {
+			return undo, noUndo, fmt.Errorf("%w: %w", ErrUntouched, err)
+		}
+	}
 	if err := s.unlockDirs(); err != nil {
 		return undo, noUndo, err
 	}
@@ -695,10 +752,6 @@ func (s *Shadow) Restore(parent context.Context, id string) (undo, noUndo string
 		return undo, noUndo, err
 	}
 	if bring.Len() > 0 {
-		index := "GIT_INDEX_FILE=" + filepath.Join(s.Dir, "restore-index")
-		if _, err := s.git(ctx, nil, []string{index}, "read-tree", id); err != nil {
-			return undo, noUndo, err
-		}
 		if _, err := s.git(ctx, bring.Bytes(), []string{index}, "checkout-index", "-f", "-z", "--stdin"); err != nil {
 			return undo, noUndo, err
 		}
@@ -708,7 +761,28 @@ func (s *Shadow) Restore(parent context.Context, id string) (undo, noUndo string
 			return undo, noUndo, err
 		}
 	}
-	return undo, noUndo, s.setModes(m)
+	if err := s.setModes(m); err != nil {
+		return undo, noUndo, err
+	}
+	s.remember(ctx, id, m)
+	return undo, noUndo, nil
+}
+
+// remember makes the checkpoint the tree was just put back to the one Take knows, and marks it used. Failing costs a duplicate
+// checkpoint or an earlier prune, not the restore, so it says nothing.
+func (s *Shadow) remember(ctx context.Context, id string, m manifest) {
+	out, err := s.git(ctx, nil, nil, "rev-parse", id+"^{tree}")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(s.Dir, "last"), []byte(treeStamp(strings.TrimSpace(string(out)), m)+" "+id), 0o600)
+	_ = s.markUsed(id)
+}
+
+// treeStamp is what makes two trees the same checkpoint: git's tree and the manifest.
+func treeStamp(tree string, m manifest) string {
+	sum := sha256.Sum256([]byte(tree + "\x00" + m.String()))
+	return hex.EncodeToString(sum[:])
 }
 
 // unlockDirs makes every directory one the restore can work in. setModes puts them back at the end.
@@ -808,47 +882,23 @@ func (s *Shadow) Prune(ctx context.Context) error {
 		return nil // another session is in there, and the next one prunes
 	}
 	defer release()
-	out, err := s.git(ctx, nil, nil, "for-each-ref", "--sort=-committerdate", "--format=%(refname) %(committerdate:unix)", "refs/tack/")
+	refs, err := s.byLastUse(ctx)
 	if err != nil {
 		return err
 	}
-	type checkpoint struct {
-		ref  string
-		used time.Time
-	}
-	var list []checkpoint
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		ref, when, ok := strings.Cut(line, " ")
-		if !ok {
-			continue
-		}
-		unix, err := strconv.ParseInt(when, 10, 64)
-		if err != nil {
-			return err
-		}
-		list = append(list, checkpoint{ref, s.lastUsed(ref, unix)})
-	}
-	// Newest first is most recently used first too, since only the newest can be used again. Two in one second tie, and Take's
-	// memory of its last says which.
-	if last, err := os.ReadFile(filepath.Join(s.Dir, "last")); err == nil {
-		if _, id, ok := strings.Cut(string(last), " "); ok {
-			if i := slices.IndexFunc(list, func(c checkpoint) bool { return c.ref == "refs/tack/"+id }); i > 0 {
-				list = append(append([]checkpoint{list[i]}, list[:i]...), list[i+1:]...)
-			}
-		}
-	}
-	var refs []string // most recently used first
+	kept := refs[:0:0]
 	dropped := false
-	for i, c := range list {
-		if i > 0 && s.Now().Sub(c.used) > MaxAge {
-			if err := s.dropRef(ctx, c.ref); err != nil {
+	for i, ref := range refs {
+		if i > 0 && s.Now().Sub(s.used(ctx, ref)) > MaxAge {
+			if err := s.dropRef(ctx, ref); err != nil {
 				return err
 			}
 			dropped = true
 			continue
 		}
-		refs = append(refs, c.ref)
+		kept = append(kept, ref)
 	}
+	refs = kept
 	if dropped {
 		if err := s.collect(ctx); err != nil {
 			return err
