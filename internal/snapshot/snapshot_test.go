@@ -592,3 +592,25 @@ func TestATakeThatRanOutOfTimeStaysOff(t *testing.T) {
 	}
 	take(t, s)
 }
+
+// Two checkpoints in one second can be dropped either way round; if Prune drops the one Take remembers, Take makes a new one
+// rather than naming one that's gone.
+func TestTakeAfterPruneDroppedItsLast(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	when := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { return when }
+	for i := range 12 {
+		write(t, root, "untracked.go", fmt.Sprintf("a %d\n", i), 0o644)
+		take(t, s)
+		write(t, root, "untracked.go", fmt.Sprintf("b %d\n", i), 0o644)
+		take(t, s)
+		when = when.Add(MaxAge + time.Hour)
+		if err := s.Prune(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Changes(context.Background(), take(t, s)); err != nil {
+			t.Fatalf("round %d: %v", i, err)
+		}
+	}
+}

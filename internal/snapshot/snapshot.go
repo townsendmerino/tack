@@ -409,11 +409,7 @@ func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error
 		bring.WriteString(c.Path)
 		bring.WriteByte(0)
 	}
-	empty := map[string]bool{}
-	for _, d := range m.dirs {
-		empty[d] = true
-	}
-	if _, err := s.sweep(s.Root, empty); err != nil {
+	if _, err := s.sweep(s.Root); err != nil {
 		return undo, err
 	}
 	if bring.Len() > 0 {
@@ -433,9 +429,9 @@ func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error
 	return undo, s.setModes(m)
 }
 
-// sweep removes the empty directories under dir that the checkpoint doesn't hold as empty, deepest first, and reports
-// whether dir is empty after it.
-func (s *Shadow) sweep(dir string, keep map[string]bool) (bool, error) {
+// sweep removes the empty directories under dir, deepest first, and reports whether dir is empty after it. Restore makes
+// the ones the checkpoint holds again.
+func (s *Shadow) sweep(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false, err
@@ -446,15 +442,11 @@ func (s *Shadow) sweep(dir string, keep map[string]bool) (bool, error) {
 		if !e.IsDir() || p == filepath.Join(s.Root, ".git") {
 			continue
 		}
-		isEmpty, err := s.sweep(p, keep)
+		isEmpty, err := s.sweep(p)
 		if err != nil {
 			return false, err
 		}
-		rel, err := filepath.Rel(s.Root, p)
-		if err != nil {
-			return false, err
-		}
-		if isEmpty && !keep[rel] {
+		if isEmpty {
 			if err := os.Remove(p); err != nil {
 				return false, err
 			}
@@ -550,7 +542,11 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	return nil
 }
 
+// collect takes what Prune dropped off the disk. Take's memory of the last tree goes too, since it may name one of them.
 func (s *Shadow) collect(ctx context.Context) error {
+	if err := os.Remove(filepath.Join(s.Dir, "last")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	_, err := s.git(ctx, nil, nil, "gc", "-q", "--prune=now")
 	return err
 }
