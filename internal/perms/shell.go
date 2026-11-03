@@ -481,6 +481,22 @@ func (e *Engine) Analyze(command string) []Simple {
 	return cmds
 }
 
+// HasPipe reports whether command, as it parses, has a pipe in it, or doesn't parse. A | in a quoted word or a || is none.
+func HasPipe(command string) bool {
+	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return true
+	}
+	found := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		if b, ok := n.(*syntax.BinaryCmd); ok && (b.Op == syntax.Pipe || b.Op == syntax.PipeAll) {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 // Covers reports whether a rule allows s without asking: the engine must run its commands inside the sandbox, a rule
 // must match, and no argument may be, or expand into, a flag that runs another program.
 func (e *Engine) Covers(s Simple) bool {

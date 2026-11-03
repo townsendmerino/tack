@@ -222,9 +222,11 @@ type TackSummary struct {
 	StopReason  string         `json:"stop_reason"`
 	DoneRefused int            `json:"done_refused"`
 	// VerifyRefused counts done refused for want of a verification (loop.VerifyRefusal), and Done is the answer of the done
-	// that ended the run: "done", loop.DoneUnverified or loop.DoneVerifyFailed; "" when no done ended it.
+	// that ended the run: "done", loop.DoneUnverified, loop.DoneVerifyFailed or loop.DoneNoTests; "" when no done ended
+	// it. TestChanges is that done's report of what the run did to the tests (loop.DoneNotes).
 	VerifyRefused int      `json:"verify_refused,omitempty"`
 	Done          string   `json:"done,omitempty"`
+	TestChanges   []string `json:"test_changes,omitempty"`
 	Resends       int      `json:"resends"`          // requests sent again after the server refused one for carrying no tool call
 	Budget        string   `json:"budget,omitempty"` // the budget that tripped, if any
 	Errors        []string `json:"errors,omitempty"`
@@ -263,8 +265,9 @@ func SummarizeTack(path string) TackSummary {
 			if strings.HasPrefix(p.Result, loop.VerifyRefusal) {
 				s.VerifyRefused++
 			}
-			if names[p.ID] == "done" && (p.Result == "done" || p.Result == loop.DoneUnverified || p.Result == loop.DoneVerifyFailed) {
-				s.Done = p.Result
+			if answer, notes := loop.DoneNotes(p.Result); names[p.ID] == "done" &&
+				(answer == "done" || answer == loop.DoneUnverified || answer == loop.DoneVerifyFailed || answer == loop.DoneNoTests) {
+				s.Done, s.TestChanges = answer, notes
 			}
 			if p.Outcome != proto.OutcomeOK {
 				s.Failed[names[p.ID]]++

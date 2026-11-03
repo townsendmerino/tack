@@ -58,16 +58,35 @@ type request struct {
 
 // reply is what the child writes to fd 3 when the command ends.
 type reply struct {
-	State   State  `json:"state"`
-	Exit    int    `json:"exit"`
-	Stopped string `json:"stopped,omitempty"`
+	State   State    `json:"state"`
+	Exit    int      `json:"exit"`
+	Stopped string   `json:"stopped,omitempty"`
+	Ran     []Ran    `json:"ran,omitempty"`
+	Wrote   []string `json:"wrote,omitempty"`
 }
+
+// Ran is one program a command line actually ran: where, with what it expanded to, and how it ended (-1 for no exit
+// status). Builtins aren't in it, since they run in the shell. What a branch skipped or the run-time check stopped isn't
+// either. Only the first maxRan are kept, each argument to maxRanArg bytes, since a record is for reading what ran, not a
+// transcript of it.
+type Ran struct {
+	Dir  string   `json:"dir"`
+	Args []string `json:"args"`
+	Exit int      `json:"exit"`
+}
+
+const (
+	maxRan    = 256
+	maxRanArg = 4096
+)
 
 // Result is one command's outcome. Stopped says why the run-time check stopped it, or is empty.
 type Result struct {
 	Output  string
 	Exit    int
 	Stopped string
+	Ran     []Ran    // the programs that ran
+	Wrote   []string // the files the shell's redirections opened for writing, absolute; the first maxRan
 }
 
 // maxOutput caps what a command's output keeps in memory; the loop truncates further for the model and stores the
@@ -201,7 +220,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	s.state = rep.State
 	s.Engine.SessionEnv = maps.Clone(rep.State.Env) // approval sees what later commands inherit
 	s.Engine.SessionDir = rep.State.Dir             // and where they start
-	res.Exit, res.Stopped = rep.Exit, rep.Stopped
+	res.Exit, res.Stopped, res.Ran, res.Wrote = rep.Exit, rep.Stopped, rep.Ran, rep.Wrote
 	if out.dropped > 0 {
 		res.Output += fmt.Sprintf("\n[… %d more bytes of output were not kept …]\n", out.dropped)
 	}
@@ -266,7 +285,7 @@ func run(req request, out io.Writer) reply {
 		interp.Dir(req.State.Dir),
 		interp.Env(expand.ListEnviron(env...)),
 		interp.StdIO(nil, out, out),
-		interp.ExecHandlers(ck.exec),
+		interp.ExecHandlers(ck.exec, ck.record),
 		interp.OpenHandler(ck.open),
 	)
 	if err != nil {
@@ -275,6 +294,9 @@ func run(req request, out io.Writer) reply {
 		return rep
 	}
 	err = r.Run(ctx, file)
+	ck.mu.Lock()
+	rep.Ran, rep.Wrote = ck.ran, ck.wrote
+	ck.mu.Unlock()
 	var st interp.ExitStatus
 	switch {
 	case ck.stopped != "":
@@ -319,6 +341,10 @@ type checker struct {
 	runs     map[string]int // how many times each text has run (perms.Approval.CoversAt)
 	cancel   func()
 	stopped  string
+
+	mu    sync.Mutex // a pipeline's stages run concurrently
+	ran   []Ran
+	wrote []string
 }
 
 func newChecker(req request) *checker {
@@ -361,6 +387,31 @@ func (ck *checker) everyMode(why []string, ran string, covered bool) error {
 }
 
 func (ck *checker) byUser() bool { return ck.req.ApprovedBy == perms.ByUser }
+
+// record notes a program that ck.exec let through, once it has ended.
+func (ck *checker) record(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+	return func(ctx context.Context, args []string) error {
+		err := next(ctx, args)
+		exit := 0
+		var st interp.ExitStatus
+		switch {
+		case errors.As(err, &st):
+			exit = int(st)
+		case err != nil:
+			exit = -1
+		}
+		ck.mu.Lock()
+		defer ck.mu.Unlock()
+		if len(ck.ran) < maxRan {
+			kept := make([]string, len(args))
+			for i, a := range args {
+				kept[i] = a[:min(len(a), maxRanArg)]
+			}
+			ck.ran = append(ck.ran, Ran{Dir: interp.HandlerCtx(ctx).Dir, Args: kept, Exit: exit})
+		}
+		return err
+	}
+}
 
 // exec checks a program as the interpreter is about to run it, after expansion.
 func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
@@ -456,7 +507,15 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 	case perms.IsSecret(p):
 		return nil, ck.stop("a redirection opens %s, which is on the secrets deny-list", path)
 	}
-	return interp.DefaultOpenHandler()(ctx, path, flag, perm)
+	f, err := interp.DefaultOpenHandler()(ctx, path, flag, perm)
+	if err == nil && write && p != "/dev/null" {
+		ck.mu.Lock()
+		if len(ck.wrote) < maxRan {
+			ck.wrote = append(ck.wrote, p)
+		}
+		ck.mu.Unlock()
+	}
+	return f, err
 }
 
 // changedEnv returns, as NAME=value, the first exported variable that changes what programs run and differs from

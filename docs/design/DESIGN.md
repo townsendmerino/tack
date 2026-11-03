@@ -497,7 +497,33 @@ and commands:
   counts as no verification, not a pass.
 
 These are shown, not refused: a task may rightly change a test. In E1 they can't change the grade, because the oracle's
-tests come from the fix commit after the run, so they are mechanism metrics there.
+tests come from the fix commit after the run, so they are mechanism metrics there (`test_changes` in a run's summary, a
+column in `tools/calreport`).
+
+"No verification" here is what `done` answers, `done (the last test run after the last change ran no tests)`, and not a
+refusal: the rule that refuses `done` (`verify_done`) still counts any `go test` as a verification, so a registered
+screen's runs stay what they were. A run counts as having run nothing only when every package says so: `go test ./... -run
+X` reports `[no tests to run]` for the packages without `X` beside the ones that ran it, and a build or vet in the same
+command line is a verification whatever the tests did.
+
+The report reads the shell's own record of what ran and each file's net change over the turn, so a test added and removed again, a scratch
+test written and deleted, and a narrower `-run` followed by a full run say nothing. It is a report and not a boundary: what a
+script does when the command only names it, a `find -delete`, or a program under a wrapper (`env rm`) are not in it.
+
+**Known misses, left as they are because the report only shows and can't change a grade (2026-11-03):**
+- **Moves:** `mv tests elsewhere` says nothing, because `elsewhere` exists by the time the report looks and reads as a directory the
+  test directory kept its name in.
+- **Test bodies:** the parse of a test's text is a heuristic, so an edit to a test the task names can be missed. A `//` or `/*` inside a
+  string counts as a comment (`"http://…"`), an apostrophe in a double-quoted JavaScript title cuts the title short, and a Rust
+  lifetime on a test's signature hides its opening brace. A `#` inside a Python string counts as a comment too.
+- **Skips and tests:**
+  - Changing `it(` to `it.skip(` or `xit(` reports a removed test beside the added skip.
+  - Rust unit tests in `src/*.rs` aren't read, since only a test directory marks a Rust file as a test.
+- **`rm`:** `rm -f` on a test file that was never there reports it deleted. When `rm` deletes one path and fails on another, the
+  deleted file's earlier notes stay in the report, and a scratch file reads "may have deleted".
+- **Test runs:** whether a run ran nothing is read from the command line, not the record, so `go test -run X || go build` counts the
+  build that never ran and reports nothing. Narrowing is only measured against a run with no narrowing flag, so `-short` followed by
+  `-short -run X` says nothing.
 
 **Message-structure rules the loop enforces** — the Messages API's, which goinfer's `/v1/messages` follows, mapped by
 the OpenAI-compatible adapter — each with a cassette test:
@@ -1617,7 +1643,7 @@ run faster; the app's review loop is the part more agent throughput does not com
 | **P2** context engine | ken K3–K8 (in ken); the ledger; staleness; `symbol`; auto-context; prefix-aware assembly measured; TUI inspector; transcripts corpus | 4–6 wk | the P2 rule: ship, park or fail | a fail parks features, not the product |
 | **P3** fast turns, no swap | reuse tuning and residency; the small jobs with their gates; admission and the memory guard on the Mac; the nobara server hardened | 3–4 wk | the P3 rule plus E2 | yes |
 | **P4** macOS app | §11.1–§11.7, the notifications of §11.8, §11.9, §11.10; signed and notarized from the first build | 6–8 wk | the owner uses the app as primary for a week; §11.9 budgets met | — |
-| **P5** polish and distribution | `web_fetch` and the per-domain network proxy (§6.6); the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
+| **P5** polish and distribution | `web_fetch` and the per-domain network proxy (§6.6); one-spawn sandbox grants for approvals (§6.6); the menu bar extra and quick prompt (§11.8); Sparkle, DMG and the cask (§11.11); worktree-parallel sessions; MCP client and hooks, behind the repo trust step; ACP adapter | 3–4 wk | a clean-machine install run with nothing else installed, through first-run model download to a first turn (a cold-user protocol like goinfer's); the update path exercised | parts |
 | **P6** research | exact-prefix measurements on goinfer's KV tiers; approximate span reuse behind fidelity gates | open | its own pre-registration | yes |
 
 Through P5 that is roughly 23–32 weeks. **Worktree-parallel sessions** — each session in its own `git worktree`, merged
