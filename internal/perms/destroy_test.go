@@ -437,6 +437,14 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`git config --unset-al core.hooksPath`, `git config --ad core.hooksPath x`, `git config --replace core.hooksPath x`,
 	// A wrapper's flag it can't read may take the next word, so what it runs may be any word after it.
 	`env -iu FOO git reset --hard`, `sudo -nu root git reset --hard`, `sudo -C 3 git reset --hard`, `echo x | env -iu FOO sh script.sh`, `echo x | sudo -C 3 sh script.sh`,
+	// + ends find's -exec only right after {}, so before that it's an argument, as real find shows.
+	`find . -maxdepth 0 -exec git clean -e + -fd ;`, `find . -exec git commit -m + --no-verify ;`, `find . -exec env -u + git reset --hard ;`, `find . -exec rm + -rf src ;`,
+	// Every mark xargs may fill in.
+	`xargs -I A -I B B -rf src`, `xargs -I A -I B git B --hard`, `xargs -J A -J B B -rf src`, `xargs -I A -J B git B --hard`, `xargs -I B -I A git B --hard`,
+	// Variables a builtin sets, in forms with an attached value.
+	`read -dd HUSKY`, `read -dp CDPATH; cd workflows; echo x > ci.yml`, `printf -vHUSKY 0`, `printf -vCDPATH .github; cd workflows; echo x > ci.yml`,
+	// exec with an input redirection feeds whatever comes after it.
+	`exec <<< "git reset --hard"; sh script.sh`, `exec < in.txt; sh script.sh`, `exec <&3; sh script.sh`, "exec <<EOF\ngit reset --hard\nEOF\nsh script.sh",
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
 	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
@@ -453,7 +461,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
-	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `git reset -- --hard`, `git clean -n -- x`, `git clean -n -- -f`, `git restore --staged -- src/api.ts`, `git -C src commit -m "$msg"`, `git --no-pager commit -m "$msg"`, `git commit --allow-empty -m "$msg"`, `git commit -q -F "$f"`, `xargs -I {} grep {} file`, `find . -exec grep x {}.txt ;`, `printf '%s\n' "$x"`, `builtin read x`, `command -v read`, `git commit -am "$msg"`, `git commit -am --no-verify`, `git commit --author "a <a@b>" -m "$msg"`, `git commit --author --no-verify`, `git commit --trailer --no-verify`, `git commit --date=now -m "$msg"`, `git reset --soft`, `git reset --mixed`, `git restore --stag src/api.ts`, `git clean --dry -f`, `git commit --no-edit`, `builtin export FOO=1`, `command export FOO`, `builtin typeset -r FOO=1`, `: "${X:=0}"`, `: "${FOO:-0}"`, `echo "${HUSKY:-0}"`, `Y=(0)`, `cd -P src && go test`, `cd -P src; echo x > out.txt`, `cd -- src; echo x > out.txt`, `cd -L src; echo x > /dev/null`, `cd ; env grep y`, `git restore --source=HEAD --staged src/api.ts`, `git restore -s HEAD --staged src/api.ts`, `git restore -sHEAD -S src/api.ts`, `git switch -c -f`, `git switch --create --force`, `git branch --contains -D`, `git branch --merged --force`, `git branch --sort -D`, `read -p "$prompt" var`, `read -t "$t" var`, `read -n "$n" -d "$d" -u 3 var`, `read -rp "$prompt" var`, `read -r var`, `sudo FOO=1 go test`, `xargs -J % grep x %`, `git restore -S --no-staged --staged src/api.ts`, `git clean -f -n`, `git clean --no-dry-run -n -f`, `git config --get core.hooksPath`, `git commit --message x`, `git commit --all -m x`, `git commit --amend --no-edit`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
+	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `git reset -- --hard`, `git clean -n -- x`, `git clean -n -- -f`, `git restore --staged -- src/api.ts`, `git -C src commit -m "$msg"`, `git --no-pager commit -m "$msg"`, `git commit --allow-empty -m "$msg"`, `git commit -q -F "$f"`, `xargs -I {} grep {} file`, `find . -exec grep x {}.txt ;`, `printf '%s\n' "$x"`, `builtin read x`, `command -v read`, `git commit -am "$msg"`, `git commit -am --no-verify`, `git commit --author "a <a@b>" -m "$msg"`, `git commit --author --no-verify`, `git commit --trailer --no-verify`, `git commit --date=now -m "$msg"`, `git reset --soft`, `git reset --mixed`, `git restore --stag src/api.ts`, `git clean --dry -f`, `git commit --no-edit`, `builtin export FOO=1`, `command export FOO`, `builtin typeset -r FOO=1`, `: "${X:=0}"`, `: "${FOO:-0}"`, `echo "${HUSKY:-0}"`, `Y=(0)`, `cd -P src && go test`, `cd -P src; echo x > out.txt`, `cd -- src; echo x > out.txt`, `cd -L src; echo x > /dev/null`, `cd ; env grep y`, `git restore --source=HEAD --staged src/api.ts`, `git restore -s HEAD --staged src/api.ts`, `git restore -sHEAD -S src/api.ts`, `git switch -c -f`, `git switch --create --force`, `git branch --contains -D`, `git branch --merged --force`, `git branch --sort -D`, `read -p "$prompt" var`, `read -t "$t" var`, `read -n "$n" -d "$d" -u 3 var`, `read -rp "$prompt" var`, `read -r var`, `sudo FOO=1 go test`, `xargs -J % grep x %`, `git restore -S --no-staged --staged src/api.ts`, `git clean -f -n`, `git clean --no-dry-run -n -f`, `git config --get core.hooksPath`, `git commit --message x`, `git commit --all -m x`, `git commit --amend --no-edit`, `find . -exec grep + file ;`, `find . -exec grep x {} +`, `find . -exec grep -c {} + -name x`, `xargs -I A -I B grep x A B`, `read -dd x`, `read -rp x y`, `printf -vx 0`, `exec 2>&1`, `exec > /dev/null`, `exec go test`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -682,6 +690,9 @@ func TestApprovalCovers(t *testing.T) {
 		{`echo x > CLAUDE.md`, []string{"CLAUDE.md", "./CLAUDE.md", "./a/../CLAUDE.md"}, []string{"sub/CLAUDE.md", "AGENTS.md"}},
 		{`cd $d; echo x > ./ci.yml`, nil, []string{"ci.yml", "./ci.yml", "other.yml"}},
 		{`(cd $d && echo a > out.txt); echo b > out.txt`, nil, []string{"out.txt"}}, // the literal one, checked first
+		// A name after a lost cd isn't covered by a hole elsewhere in the command, or eval.
+		{`echo ok > $f; cd $x; echo y > ci.yml`, []string{"other.yml"}, []string{"ci.yml", "./ci.yml"}},
+		{`eval "x"; cd $x; echo y > ci.yml`, []string{"other.yml"}, []string{"ci.yml"}},
 	} {
 		a := e.ApprovalFor(c.command)
 		for _, p := range c.covered {
@@ -712,6 +723,20 @@ func TestApprovalCovers(t *testing.T) {
 	}
 	if a := e.ApprovalFor(`exec -a name git reset $how`); !a.Covers(strings.Fields("git reset --hard")) {
 		t.Errorf("exec -a: %+v", a)
+	}
+	// One it couldn't read, or was told is handed code, is covered too: the user approved that.
+	for _, c := range []struct {
+		command string
+		args    []string
+	}{
+		{`s=sh; echo y | $s`, []string{"sh"}},
+		{`s=sh; echo y | env $s`, []string{"env", "sh"}},
+		{`f() { sh -c "git status"; }; echo y | f`, []string{"sh", "-c", "git status"}},
+		{`exec <<< y; sh script.sh`, []string{"sh", "script.sh"}},
+	} {
+		if a := e.ApprovalFor(c.command); !a.CoversFed(c.args) {
+			t.Errorf("%s did not cover %v being fed: %+v", c.command, c.args, a)
+		}
 	}
 	// A yes about a fed shell covers that shell.
 	if a := e.ApprovalFor(`echo y | sh a.sh`); !a.CoversFed([]string{"sh", "a.sh"}) || a.CoversFed([]string{"sh", "b.sh"}) {

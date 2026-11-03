@@ -699,6 +699,7 @@ func TestWhichUnsetClearsTheSessionAsk(t *testing.T) {
 		t.Fatalf("export: %+v", r)
 	}
 	for _, cmd := range []string{`x=-f; unset $x HUSKY; git status`, `unset "$x" HUSKY; git status`, `unset -fv HUSKY; git status`, `unset -vf HUSKY; git status`, `unset -f HUSKY; git status`, `unset --nope HUSKY; git status`,
+		`command -v unset HUSKY; git status`, `command -V unset HUSKY; git status`,
 		`f() { git status; }; f; unset HUSKY`} {
 		if !strings.Contains(strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"), "HUSKY=0") {
 			t.Errorf("%s did not ask about HUSKY", cmd)
@@ -707,6 +708,20 @@ func TestWhichUnsetClearsTheSessionAsk(t *testing.T) {
 	for _, cmd := range []string{`unset HUSKY; git status`, `unset -v HUSKY; git status`, `unset FOO HUSKY; git status`, `command unset HUSKY; git status`, `command -p unset HUSKY; git status`, `f() { git status; }; unset HUSKY; f`, `f() { git status; }`} {
 		if got := strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"); strings.Contains(got, "HUSKY=0") {
 			t.Errorf("%s asked about HUSKY: %s", cmd, got)
+		}
+	}
+}
+
+// A shell the user was told would be handed code, by an expanding name or a -c, runs once approved.
+func TestApprovedFedShellsRun(t *testing.T) {
+	for _, cmd := range []string{`s=sh; echo "git status" | $s`, `s=sh; echo "git status" | env $s`, `f() { sh -c "git status"; }; echo x | f`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
 		}
 	}
 }

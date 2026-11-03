@@ -43,6 +43,9 @@ func unseen(what string) string { return what + unseenEnd }
 // unseenIn is the reason for a part it can't read: what a program gets, a redirection's target, a variable's value.
 func unseenIn(scope, what string) string { return scope + ": " + what + unseenEnd }
 
+// handedCode is what a reason says of a shell handed code. A yes to it covers that shell being fed.
+const handedCode = "it is handed code"
+
 // runsTextEnd ends what a reason says of code run from text, which may be anything.
 const runsTextEnd = " runs code from text"
 
@@ -69,11 +72,14 @@ type Approval struct {
 	Order []Statement `json:"order"`
 	// Redirects are the targets it asked about, absolute where it can tell, as written for a name it showed as protected after a cd it lost, or
 	// hole for one that expands. LiteralRedirects are those it didn't, absolute.
-	Redirects        []string   `json:"redirects"`
-	LiteralRedirects []string   `json:"literal_redirects"`
-	Vars             []string   `json:"vars"`    // the variables it asked about
-	AnyVar           bool       `json:"any_var"` // it asked about what may set any variable: a word that names it expands
-	Fed              [][]string `json:"fed"`     // the shells it asked about being handed code
+	Redirects        []string `json:"redirects"`
+	LiteralRedirects []string `json:"literal_redirects"`
+	// LostRedirects are targets after a cd it lost, as written, under a name it didn't show as protected: nothing covers those, since what they turn
+	// out to be isn't what the user saw.
+	LostRedirects []string   `json:"lost_redirects"`
+	Vars          []string   `json:"vars"`    // the variables it asked about
+	AnyVar        bool       `json:"any_var"` // it asked about what may set any variable: a word that names it expands
+	Fed           [][]string `json:"fed"`     // the shells it asked about being handed code
 }
 
 // ApprovalFor is what a user's yes to command covers.
@@ -113,7 +119,7 @@ func (a Approval) CoversAt(args []string, n int) bool {
 
 // CoversRedirect reports whether a yes covers a redirection to target, as it expanded, whose absolute path is abs.
 func (a Approval) CoversRedirect(target, abs string) bool {
-	if slices.Contains(a.LiteralRedirects, abs) {
+	if slices.Contains(a.LiteralRedirects, abs) || slices.Contains(a.LostRedirects, filepath.Clean(target)) {
 		return false
 	}
 	return a.Anything || slices.Contains(a.Redirects, abs) || slices.Contains(a.Redirects, filepath.Clean(target)) || slices.Contains(a.Redirects, hole)
@@ -193,6 +199,9 @@ func template(words []*syntax.Word) (argv []string, whole bool) {
 // it hands on is the command under them.
 func (a *Approval) record(words []*syntax.Word, why []string) {
 	argv, whole := template(words)
+	if slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, handedCode+unseenEnd) }) {
+		a.Fed = append(a.Fed, argv)
+	}
 	switch {
 	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
 		a.Anything = true
@@ -253,6 +262,8 @@ func (a *Approval) recordRedirect(r *syntax.Redirect, why []string, sc scan, nam
 		if sc.lost {
 			if named {
 				a.Redirects = append(a.Redirects, filepath.Clean(target))
+			} else {
+				a.LostRedirects = append(a.LostRedirects, filepath.Clean(target))
 			}
 			return
 		}
@@ -490,10 +501,18 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 				why = appendNew(why, unseenIn(n.Name.Value, "a loop sets it to values that can't be read here"))
 			}
 		case *syntax.BinaryCmd, *syntax.Stmt:
-			asks, calls := e.stdinAsks(n, sc)
+			asks, calls, open := e.stdinAsks(n, sc)
+			if st, ok := n.(*syntax.Stmt); ok && execFeeds(st) {
+				asks = appendNew(asks, unseen("exec gives what follows this stdin, and a shell after it would be handed code"))
+				if sc.rec != nil {
+					sc.rec.Fed = append(sc.rec.Fed, []string{hole})
+				}
+			}
 			if sc.rec != nil {
 				for _, c := range calls {
 					sc.rec.record(c.Args, asks)
+				}
+				for _, c := range open {
 					argv, _ := template(c.Args)
 					sc.rec.Fed = append(sc.rec.Fed, argv)
 				}
@@ -598,6 +617,9 @@ func oneWord(w *syntax.Word) bool {
 	return len(q.Parts) > 0 && !strings.Contains(text, "$@") && !strings.Contains(text, "$*") && !strings.Contains(text, "[@]") && !strings.Contains(text, "{@") && !strings.Contains(text, "{*") && !strings.Contains(text, "[*]")
 }
 
+// readValued are read's flags that take a value.
+var readValued = valuedFlags{next: "pdnNtu"}
+
 // namedVars returns the variables a builtin sets by name, under builtin or command too, unknownWord for one it can't read: read's, printf
 // -v's, and a declaration's, which the parser reads as a plain command under those two. printf's first word may be that -v if it expands.
 func namedVars(words []*syntax.Word) []string {
@@ -627,6 +649,8 @@ func namedVars(words []*syntax.Word) []string {
 		switch {
 		case !lit:
 			out = append(out, unknownWord)
+		case strings.HasPrefix(first, "-v") && len(first) > 2:
+			out = append(out, first[2:])
 		case first == "-v" && len(words) > 2:
 			v, ok := literal(words[2])
 			if !ok {
@@ -642,7 +666,7 @@ func namedVars(words []*syntax.Word) []string {
 				out = append(out, unknownWord)
 			case !strings.HasPrefix(a, "-"):
 				out = append(out, a)
-			case len(a) > 1 && strings.IndexByte("pdnNtu", a[len(a)-1]) >= 0: // the next word is its value, not a name
+			case readValued.takesNext(a): // the next word is its value, not a name
 				i++
 			}
 		}
@@ -785,15 +809,16 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 		rest := args[i+1:]
 		if name == "xargs" { // it adds words from stdin, which can't be seen
 			rest = append(slices.Clone(rest), unknownWord)
-			if mark := xargsMark(args[:i]); mark != "" {
-				if strings.Contains(args[i], mark) {
-					why = appendNew(why, unseenIn(name, "what it runs is filled in from stdin"))
-					continue
-				}
+			marks := xargsMarks(args[:i])
+			if slices.ContainsFunc(marks, func(m string) bool { return strings.Contains(args[i], m) }) {
+				why = appendNew(why, unseenIn(name, "what it runs is filled in from stdin"))
+				continue
+			}
+			for _, mark := range marks {
 				rest = fillIn(rest, mark)
 			}
 			if shell := e.shellUnder(args[i], rest, sc); shell != "" {
-				why = appendNew(why, unseenIn(shell, "it is handed code"))
+				why = appendNew(why, unseenIn(shell, handedCode))
 				continue
 			}
 		}
@@ -802,17 +827,19 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 	return why
 }
 
-// xargsMark returns the word -I or -J says xargs replaces with what it reads, or "".
-func xargsMark(flags []string) string {
+// xargsMarks returns the words -I or -J say xargs replaces with what it reads. It uses the last, but any of them may be what a command
+// was written around, so all count as filled in.
+func xargsMarks(flags []string) []string {
+	var marks []string
 	for i, a := range flags {
-		if (a == "-I" || a == "-J") && i+1 < len(flags) {
-			return flags[i+1]
-		}
-		if (strings.HasPrefix(a, "-I") || strings.HasPrefix(a, "-J")) && len(a) > 2 {
-			return a[2:]
+		switch {
+		case (a == "-I" || a == "-J") && i+1 < len(flags):
+			marks = append(marks, flags[i+1])
+		case (strings.HasPrefix(a, "-I") || strings.HasPrefix(a, "-J")) && len(a) > 2:
+			marks = append(marks, a[2:])
 		}
 	}
-	return ""
+	return marks
 }
 
 // fillIn is words with each holding mark, which a program replaces with what it finds, as a word that can't be seen.
@@ -898,7 +925,7 @@ func shellAsks(name string, args []string, sc scan) []string {
 			return nil
 		}
 	}
-	return []string{unseenIn(name, "it is handed code")}
+	return []string{unseenIn(name, handedCode)}
 }
 
 // scriptIsStdin reports whether a shell's script argument is a device rather than a file (/dev/stdin, /dev/fd/N,
@@ -932,7 +959,7 @@ func scriptIsStdin(script, dir string) bool {
 // run-time check has no parse of the pipe, only that there is one.
 func (e *Engine) ShellFed(args []string, dir string) string {
 	if shell := e.shellUnder(args[0], args[1:], scan{dir: dir}); shell != "" {
-		return unseenIn(shell, "it is handed code")
+		return unseenIn(shell, handedCode)
 	}
 	return ""
 }
@@ -990,24 +1017,27 @@ func (e *Engine) shellUnder(name string, args []string, sc scan) string {
 }
 
 // stdinAsks asks for what is fed to a shell: a pipe into it, or an input redirection, a here-document or a here-string on it, on a
-// block or subshell around it too. It returns the commands it asks about, since the reason is on the pipe or the redirection.
-func (e *Engine) stdinAsks(n syntax.Node, sc scan) ([]string, []*syntax.CallExpr) {
-	fed := func(c syntax.Command) ([]string, []*syntax.CallExpr) {
+// block or subshell around it too. It returns the commands it asks about, since the reason is on the pipe or the redirection, and those fed that
+// expand, which may turn out to be a shell.
+func (e *Engine) stdinAsks(n syntax.Node, sc scan) (why []string, calls, open []*syntax.CallExpr) {
+	fed := func(c syntax.Command) ([]string, []*syntax.CallExpr, []*syntax.CallExpr) {
 		if c == nil {
-			return nil, nil
+			return nil, nil, nil
 		}
-		var why []string
-		var calls []*syntax.CallExpr
 		syntax.Walk(c, func(n syntax.Node) bool {
-			if call, ok := n.(*syntax.CallExpr); ok {
-				if shell := e.feedsShell(call.Args, sc); shell != "" {
-					why = appendNew(why, unseenIn(shell, "it is handed code"))
-					calls = append(calls, call)
-				}
+			call, ok := n.(*syntax.CallExpr)
+			if !ok {
+				return true
+			}
+			if shell := e.feedsShell(call.Args, sc); shell != "" {
+				why = appendNew(why, unseenIn(shell, handedCode))
+				calls = append(calls, call)
+			} else if _, whole := template(call.Args); !whole {
+				open = append(open, call)
 			}
 			return true
 		})
-		return why, calls
+		return why, calls, open
 	}
 	switch n := n.(type) {
 	case *syntax.BinaryCmd:
@@ -1022,7 +1052,25 @@ func (e *Engine) stdinAsks(n syntax.Node, sc scan) ([]string, []*syntax.CallExpr
 			}
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
+}
+
+// execFeeds reports whether a statement is exec with no program, redirecting stdin for all that follows, which may be a shell.
+func execFeeds(s *syntax.Stmt) bool {
+	call, ok := s.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	if name, ok := literal(call.Args[0]); !ok || name != "exec" {
+		return false
+	}
+	return slices.ContainsFunc(s.Redirs, func(r *syntax.Redirect) bool {
+		switch r.Op {
+		case syntax.RdrIn, syntax.RdrInOut, syntax.DplIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+			return r.N == nil || r.N.Value == "0"
+		}
+		return false
+	})
 }
 
 // findAsks reads the commands find is told to run.
@@ -1039,7 +1087,8 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 			i = len(args)
 		case "-exec", "-ok":
 			end := i + 1
-			for end < len(args) && args[end] != ";" && args[end] != "+" {
+			// + ends it only right after {}: anywhere else it's an argument.
+			for end < len(args) && args[end] != ";" && !(args[end] == "+" && end > i+1 && args[end-1] == "{}") {
 				end++
 			}
 			switch {
@@ -1051,7 +1100,7 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 			default:
 				rest := fillIn(args[i+2:end], "{}") // what find found, which can't be seen
 				if shell := e.shellUnder(args[i+1], rest, sc); shell != "" {
-					why = appendNew(why, unseenIn(shell, "it is handed code"))
+					why = appendNew(why, unseenIn(shell, handedCode))
 				}
 				why = appendNew(why, e.programAsks(args[i+1], rest, sc.in())...)
 			}

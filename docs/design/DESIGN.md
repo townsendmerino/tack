@@ -638,13 +638,23 @@ tool-use smoke set compares this merged set against the split one before it is f
     variables only. A shell handed code is covered only by a yes that said so. What runs
     can't say which statement it is, so the n-th run of a text is taken to be its n-th statement. Whatever was approved, a flag that
     makes a program run another (`perms.RunFlag`) must have been shown, in the command that runs.
-  - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
-    code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
-    such a loss undoable.
   - **Its cost in E1, accepted without an exception (coordinator, 2026-11-02):** of 1,549 `bash`, `edit` and `write` calls in 360
     runs (`e1-calibration-preregistration-2026-10-18.md` §15.2, §15.3, §16.1, §16.2), replayed in `auto`, 1 now asks: §15.2
     task 11 B-1, `rm -f` on a glob in the module cache. With no one attached it is refused, where before it ran and the
     sandbox refused the delete. A screen on a build with this rule can differ at such a call.
+  - **What this guard is (Francis, 2026-11-02): it makes the model ask, and it is not a security boundary. The sandbox is.** It reads
+    shell text to decide when to ask, and shell can't be read completely: ten rounds of review each found more forms. A command that gets
+    past it is a question that wasn't asked, not an escape, and nothing may rely on it to contain a command. Known limits, by class, of
+    which more forms may remain:
+    - **Code it can't read:** a named script with no flags and nothing fed to it, and a program that runs code (`make`, `python -c`).
+    - **Programs not on the list:** anything that deletes or overwrites on its own (`mv`, `cp`, `dd`, `truncate`), or that writes a CI
+      definition or an instruction file (`tee`, `sed -i`).
+    - **Shell forms:** other ways to set a variable or change directory. A `cd` that fails isn't modeled, so what follows is read from the
+      wrong directory. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
+    - **Flag forms:** what `git` and the wrappers it reads accept beyond what it knows, which differ by version and between BSD and GNU.
+    - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
+    - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
+      inside `eval` and out goes by the written-out statement.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,

@@ -312,15 +312,18 @@ func runsProgramWith(f *syntax.File, name string) bool {
 		}
 		if c, ok := n.(*syntax.CallExpr); ok && !decided && len(c.Args) > 0 {
 			words := c.Args
+			lookup := false // command -v looks a program up, and runs nothing
 			for len(words) > 1 {
 				w, ok := literal(words[0])
 				if !ok || (w != "builtin" && w != "command" && !strings.HasPrefix(w, "-")) {
 					break
 				}
+				lookup = lookup || w == "-v" || w == "-V"
 				words = words[1:]
 			}
 			w, ok := literal(words[0])
 			switch {
+			case lookup:
 			case !ok || !safeBuiltins[w] && w != "unset":
 				decided, runs = true, true
 			case w == "unset" && unsets(words[1:], name) && inThisShell(path, c):
