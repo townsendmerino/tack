@@ -193,6 +193,14 @@ func TestSnapshotOnlyAnswersItsOwnCommand(t *testing.T) {
 	if h.sess.cfg.Perms.Snapshotted {
 		t.Error("the engine still says there is a snapshot")
 	}
+	// A refused command ends it too.
+	h, _ = checkpointHarness(t, ap, true, bashCall("b1", "git branch -D x"), goinfertest.Says("done"))
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if h.sess.cfg.Perms.Snapshotted {
+		t.Error("after a refusal, the engine still says there is a snapshot")
+	}
 }
 
 // When the owner is asked, files can change while the question waits: the checkpoint is of the tree the command ran on.

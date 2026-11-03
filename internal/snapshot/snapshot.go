@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -327,13 +326,8 @@ func (s *Shadow) dropStaleLock() {
 	}
 }
 
-var idRe = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
-
 // known checks id names a checkpoint that's still kept.
 func (s *Shadow) known(ctx context.Context, id string) error {
-	if !idRe.MatchString(id) {
-		return fmt.Errorf("%q is not a checkpoint", id)
-	}
 	if s.Git == "" {
 		return errors.New("git isn't installed")
 	}

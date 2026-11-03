@@ -391,6 +391,8 @@ func TestCapIsInclusive(t *testing.T) {
 func TestSnapshotIdentity(t *testing.T) {
 	root := repo(t)
 	s := shadow(t, root)
+	now := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { now = now.Add(time.Minute); return now } // or an unchanged tree's commit would be the same anyway
 	a := take(t, s)
 	if b := take(t, s); b != a {
 		t.Errorf("unchanged tree: %s, then %s", a, b)
@@ -481,6 +483,43 @@ func TestPrune(t *testing.T) {
 	if _, err := s.Changes(context.Background(), second); err != nil {
 		t.Errorf("the newest went: %v", err)
 	}
+	// What was dropped is off the disk, not just out of the list.
+	if _, err := s.git(context.Background(), nil, nil, "cat-file", "-e", first); err == nil {
+		t.Error("the dropped checkpoint's commit is still there")
+	}
+
+	// Newest means by date, not by where its id sorts.
+	s = shadow(t, root)
+	var ids []string
+	when := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { return when }
+	for i := range 8 {
+		write(t, root, "untracked.go", fmt.Sprintf("version %d\n", i), 0o644)
+		when = when.Add(time.Minute)
+		ids = append(ids, take(t, s))
+	}
+	when = when.Add(MaxAge + time.Hour)
+	if err := s.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range ids {
+		if _, err := s.Changes(context.Background(), id); (err == nil) != (i == len(ids)-1) {
+			t.Errorf("checkpoint %d of %d: %v", i, len(ids), err)
+		}
+	}
+}
+
+// The owner's global config doesn't reach the shadow: not as a filter only, but at all.
+func TestTheOwnersConfigStaysOut(t *testing.T) {
+	root := repo(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	write(t, home, ".gitconfig", "[tack]\n\tmarker = 1\n", 0o644)
+	s := shadow(t, root)
+	take(t, s)
+	if out, err := s.git(context.Background(), nil, nil, "config", "tack.marker"); err == nil {
+		t.Errorf("the shadow read the owner's config: %s", out)
+	}
 }
 
 // A commit that isn't a checkpoint, and a name that isn't one, are refused without touching the tree.
@@ -495,6 +534,15 @@ func TestRestoreOfNothing(t *testing.T) {
 		}
 	}
 	sameTree(t, capture(t, root), before)
+
+	// A commit still in the shadow whose checkpoint was dropped is gone too.
+	id := take(t, s)
+	if _, err := s.git(context.Background(), nil, nil, "update-ref", "-d", "refs/tack/"+id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(context.Background(), id); err == nil || !strings.Contains(err.Error(), "gone") {
+		t.Errorf("a dropped checkpoint: %v", err)
+	}
 }
 
 // A symlink in the tree is a link: the walk doesn't follow it out of the workspace, for the cap or for a restore.

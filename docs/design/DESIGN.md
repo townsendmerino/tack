@@ -586,9 +586,9 @@ tool-use smoke set compares this merged set against the split one before it is f
   approval time, and a rule matches the resolved path and its flags. An allow rule for `go test` therefore does not cover
   `go test ./... && curl … | sh`: every simple command in a pipeline, list, subshell or substitution must be allowed on
   its own, and a redirect to a path outside the workspace asks.
-- **Commands that destroy work inside the workspace ask, in every mode, until §6.8's snapshots exist.** The sandbox
-  keeps a command inside the workspace; it does not stop the command from wiping it. In `auto`, `git reset --hard`
-  over a day's uncommitted work runs without a question and cannot be rewound.
+- **Commands that destroy work inside the workspace ask, in every mode, unless §6.8's snapshot can undo them.** The sandbox
+  keeps a command inside the workspace; it does not stop the command from wiping it. Without a snapshot, `git reset --hard`
+  over a day's uncommitted work could run in `auto` and not be rewound.
   - The list, from the working-tree and destructive-data groups of AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02):
     - `git reset --hard`, `--merge` and `--keep`;
     - `git checkout` or `git restore` used to discard changes;
@@ -655,8 +655,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
     - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
       inside `eval` and out goes by the written-out statement.
-  - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
-    snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
+  - **With a snapshot taken for that command,** one it can undo stops asking (§6.8 lists both sides). The ones it can't undo keep
+    asking: the snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
   agent-context and safety-bypass groups:
   - edits to CI definitions (`.github/workflows/`, `.gitlab-ci.yml` and the like);
@@ -792,8 +792,8 @@ tool-use smoke set compares this merged set against the split one before it is f
 - Rewinding to seq *N* restores files (pre-images in reverse order, or the snapshot) and forks the conversation at *N*. If
   a file changed outside tack since the checkpoint, rewind asks about that file.
 
-**The plan for snapshots (2026-11-03).** Edit pre-images and the conversation fork wait for `session/fork`; this builds
-the snapshot and a rewind of the files.
+**Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** Edit pre-images and the conversation fork wait for
+`session/fork`; this is the snapshot and a rewind of the files.
 
 - **What a snapshot is.** `internal/snapshot` keeps one shadow repository per workspace in tack's state directory, which
   the sandbox denies to commands. The daemon runs `git` on it, outside the sandbox, with `GIT_DIR` and its own index
@@ -822,7 +822,20 @@ the snapshot and a rewind of the files.
   the shadow passes twice the cap. A rewind to one that's gone says so.
 - **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
   byte with modes and symlinks; the size-cap, non-git and nested-repository fallbacks; a workspace `.gitattributes` filter and
-  `.git/config` that must not run. The cost per command is measured on a realistic repository and stated here.
+  `.git/config` that must not run.
+- **What it costs,** on an M-series Mac, a one-off measurement, not a benchmark with a gate:
+
+  | workspace | files | MiB | first snapshot | each command, nothing changed | one small file changed |
+  |---|---|---|---|---|---|
+  | tack | 354 | 46 | 1.5 s | 41 ms | not measured |
+  | postgres | 7,216 | 134 | 6.4 s | 100 ms | 142 ms |
+  | kubernetes | 26,667 | 364 | 23 s | 412 ms | not measured |
+
+  A tree over the cap costs about 93 ms before it says so (ken, 4.7 GB, at the 512 MiB default). On postgres, restoring one file
+  took 0.4 s and restoring after `rm -r src` took 1.3 s; the shadow held 38 MiB after the first snapshot. A build output is
+  stored again each time it changes, because ignored files count, which is why old checkpoints go.
+- **Not covered:** sockets and FIFOs aren't kept, and a restore leaves them alone. A first snapshot over a minute turns snapshots off
+  for that session, and the guard keeps asking. The workspace must be the top of its repository.
 
 ---
 
