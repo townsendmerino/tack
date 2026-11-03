@@ -164,7 +164,7 @@ func goSubcommand(s perms.Simple) (string, []string) {
 // readableGoTest reports whether command's output can say go test ran nothing: a build or vet beside it verified
 // something whatever the test run did, and a pipe may have taken away the lines that said a test ran.
 func readableGoTest(eng *perms.Engine, command string) bool {
-	if strings.Contains(command, "|") {
+	if perms.HasPipe(command) {
 		return false
 	}
 	for _, s := range eng.Analyze(command) {

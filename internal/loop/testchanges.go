@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/perms"
@@ -43,12 +42,21 @@ func DoneNotes(result string) (string, []string) {
 // testChanges is a turn's record for the report. Edits and writes are read from the workspace at the end, as each file's
 // net change, so a test the turn added and removed again is no change; commands are read as they run.
 type testChanges struct {
-	mark    int    // the workspace's changes when the turn began
-	task    string // the turn's text
+	ws      *tools.Workspace // nil for a session with none
+	mark    int              // the workspace's changes when the turn began
+	task    string           // the turn's text
 	notes   []string
-	deleted map[string]bool // paths the turn's commands deleted
-	wide    bool            // a go test has run with nothing narrowing it
-	narrow  string          // the flag narrowing the latest go test, when an earlier one was wide
+	deleted map[string]int // paths the turn's commands deleted, with the workspace's changes at that moment
+	wide    bool           // a go test has run with nothing narrowing it
+	narrow  string         // the flag narrowing the latest go test, when an earlier one was wide
+}
+
+func newTestChanges(task string, ws *tools.Workspace) testChanges {
+	c := testChanges{ws: ws, task: task}
+	if ws != nil {
+		c.mark = ws.ChangeMark()
+	}
+	return c
 }
 
 // bash records what one command line, as eng parses it, did to the tests. failed says the line exited non-zero; a line of
@@ -135,16 +143,37 @@ func (c *testChanges) deletes(root string, args []string) {
 		}
 		p, ok := inRepo(root, a)
 		if ok && (isTestFile(p) || (recursive && isTestDir(p))) {
-			if c.deleted == nil {
-				c.deleted = map[string]bool{}
+			if c.scratch(p) {
+				continue
 			}
-			c.deleted[p] = true
+			if c.deleted == nil {
+				c.deleted = map[string]int{}
+			}
+			if c.ws != nil {
+				c.deleted[p] = c.ws.ChangeMark()
+			} else {
+				c.deleted[p] = c.mark
+			}
 			c.note("deleted " + p)
 		}
 	}
 }
 
-// moves notes a test file moved to a name that is not one.
+// scratch reports whether the turn itself created the file at p: deleting it again is no change to the tests.
+func (c *testChanges) scratch(p string) bool {
+	if c.ws == nil {
+		return false
+	}
+	for _, f := range c.ws.ChangesSince(c.mark) {
+		if filepath.Clean(f.Path) == p {
+			return f.Before == ""
+		}
+	}
+	return false
+}
+
+// moves notes a test file moved to a name that is not one: out of the repository under any name, or inside it to a name
+// that is not a test's. A directory in the repository that exists keeps the file's name.
 func (c *testChanges) moves(root string, args []string) {
 	var paths []string
 	for _, a := range args {
@@ -156,8 +185,11 @@ func (c *testChanges) moves(root string, args []string) {
 		return
 	}
 	dest := paths[len(paths)-1]
-	if strings.HasSuffix(dest, "/") || isTestFile(filepath.Clean(dest)) {
-		return
+	if p, ok := inRepo(root, dest); ok {
+		st, err := os.Stat(filepath.Join(root, p))
+		if isTestFile(p) || (err == nil && st.IsDir()) {
+			return
+		}
 	}
 	for _, a := range paths[:len(paths)-1] {
 		if p, ok := inRepo(root, a); ok && isTestFile(p) {
@@ -166,15 +198,22 @@ func (c *testChanges) moves(root string, args []string) {
 	}
 }
 
-// report is the text done's answer ends with, "" when there is nothing to say. last is the turn's latest verification.
-func (c *testChanges) report(ws *tools.Workspace, last *verification) string {
-	if ws != nil {
-		for _, f := range ws.ChangesSince(c.mark) {
-			switch p := filepath.Clean(f.Path); {
-			case !c.deleted[p]:
+// report is the text done's answer ends with, "" when there is nothing to say. last is the turn's latest verification and
+// change the call number of its latest change: a run that ran nothing before that change is not what done is claiming from.
+func (c *testChanges) report(last *verification, change int) string {
+	if c.ws != nil {
+		for _, f := range c.ws.ChangesSince(c.mark) {
+			p := filepath.Clean(f.Path)
+			at, deleted := c.deleted[p]
+			if !deleted {
 				c.fileNotes(f)
-			case f.Before == "": // the turn's own scratch file
-				c.notes = slices.DeleteFunc(c.notes, func(n string) bool { return n == "deleted "+p })
+				continue
+			}
+			// Only what the turn wrote after deleting it: the deletion already says what went before.
+			for _, g := range c.ws.ChangesSince(at) {
+				if filepath.Clean(g.Path) == p {
+					c.fileNotes(g)
+				}
 			}
 		}
 	}
@@ -182,7 +221,7 @@ func (c *testChanges) report(ws *tools.Workspace, last *verification) string {
 	if c.narrow != "" {
 		notes = append(notes, "narrowed the tests with "+c.narrow+" after running them without it")
 	}
-	if last != nil && last.nothing {
+	if last != nil && last.nothing && last.call > change {
 		notes = append(notes, "`"+last.command+"` ran nothing, so it verified nothing")
 	}
 	if len(notes) == 0 {
@@ -242,30 +281,67 @@ func taskNames(task, name string) bool {
 
 // testFuncRe matches the start of a test function in Go, Python, JavaScript and TypeScript, or Rust; a commented-out one
 // does not match, so commenting a test out removes it.
-var testFuncRe = regexp.MustCompile("(?m)^(?:func ((?:Test|Fuzz)\\w*)\\(|\\s*(?:async\\s+)?def (test\\w*)\\(|\\s*(?:it|test)\\(\\s*['\"`]([^'\"`\\n]+)|\\s*#\\[test\\]\\s*(?:pub\\s+)?(?:async\\s+)?fn (\\w+))")
+var testFuncRe = regexp.MustCompile("(?m)^(?:func ((?:Test|Fuzz)\\w*)\\(|\\s*(?:async\\s+)?def (test\\w*)\\(|\\s*(?:it|test)\\(\\s*['\"`]([^'\"`\\n]+)|\\s*#\\[test\\](?:\\s*#\\[[^\\]\\n]*\\])*\\s*(?:pub\\s+)?(?:async\\s+)?fn (\\w+))")
 
-// testBodies is the file's test functions by name, each with the text up to the next one, and the names in file order.
+// testBodies is the file's test functions by name, each with its text (testEnd), and the names in file order.
 func testBodies(src string) (map[string]string, []string) {
 	bodies := map[string]string{}
 	var order []string
 	ms := testFuncRe.FindAllStringSubmatchIndex(src, -1)
 	for i, m := range ms {
-		name := ""
+		name, at, python := "", 0, false
 		for g := 1; g < len(m)/2; g++ {
 			if m[2*g] >= 0 {
-				name = src[m[2*g]:m[2*g+1]]
+				name, at, python = src[m[2*g]:m[2*g+1]], m[2*g], g == 2
 			}
 		}
-		end := len(src)
+		limit := len(src)
 		if i+1 < len(ms) {
-			end = ms[i+1][0]
+			limit = ms[i+1][0]
 		}
+		end := testEnd(src[:limit], at, python)
 		if _, dup := bodies[name]; !dup {
 			order = append(order, name)
 		}
 		bodies[name] = src[m[0]:end]
 	}
 	return bodies, order
+}
+
+// testEnd is where the test whose name is at at ends in src: in Python at the next line indented no more than its def, and
+// elsewhere where the braces opened after its name close. A brace in a string can throw the count off, so a caller's src
+// stops at the next test.
+func testEnd(src string, at int, python bool) int {
+	if python {
+		start := strings.LastIndexByte(src[:at], '\n') + 1
+		indent := len(src[start:]) - len(strings.TrimLeft(src[start:], " \t"))
+		for i := at; ; {
+			nl := strings.IndexByte(src[i:], '\n')
+			if nl < 0 {
+				return len(src)
+			}
+			i += nl + 1
+			line := src[i:]
+			if eol := strings.IndexByte(line, '\n'); eol >= 0 {
+				line = line[:eol]
+			}
+			if trimmed := strings.TrimLeft(line, " \t"); trimmed != "" && len(line)-len(trimmed) <= indent {
+				return i
+			}
+		}
+	}
+	depth := 0
+	for i := at; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			if depth--; depth <= 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(src)
 }
 
 // skipRe matches a skip in a test file: Go's, Python's, JavaScript's and Rust's, and a build constraint that drops a Go
@@ -372,18 +448,21 @@ func loweredCoverage(f tools.FileChange) []string {
 	case ".go", ".py", ".rs", ".ts", ".tsx", ".jsx", ".c", ".h", ".md":
 		return nil
 	}
-	before := map[string]string{}
+	before := map[string][]string{} // a key's values in file order: sections can each have their own
 	for _, m := range settingRe.FindAllStringSubmatch(f.Before, -1) {
 		if isCoverageKey(m[1]) {
-			before[m[1]] = m[2]
+			before[m[1]] = append(before[m[1]], m[2])
 		}
 	}
+	seen := map[string]int{}
 	var notes []string
 	for _, m := range settingRe.FindAllStringSubmatch(f.After, -1) {
-		old, ok := before[m[1]]
-		if !ok {
+		i := seen[m[1]]
+		seen[m[1]]++
+		if i >= len(before[m[1]]) {
 			continue
 		}
+		old := before[m[1]][i]
 		var o, n float64
 		fmt.Sscan(old, &o)
 		fmt.Sscan(m[2], &n)

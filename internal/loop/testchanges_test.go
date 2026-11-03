@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
@@ -37,14 +38,31 @@ func editCall(id, path, old, new string) goinfertest.Reply {
 	return call(id, "edit", map[string]any{"path": path, "old_string": old, "new_string": new})
 }
 
+// deletingShell answers every command with output and carries out a plain rm of files in root, so a write after it sees the file gone.
+type deletingShell struct {
+	root   string
+	output string
+}
+
+func (d *deletingShell) Run(_ context.Context, command string, _ time.Duration) (shell.Result, error) {
+	if rest, ok := strings.CutPrefix(command, "rm "); ok {
+		for _, p := range strings.Fields(rest) {
+			if !strings.HasPrefix(p, "-") && !filepath.IsAbs(p) {
+				os.Remove(filepath.Join(d.root, p))
+			}
+		}
+	}
+	return shell.Result{Output: d.output}, nil
+}
+
 // doneAnswer runs a turn over files, with sh's output for every command, and returns done's answer. verify is Config.VerifyDone.
 func doneAnswer(t *testing.T, verify bool, task string, files map[string]string, output string, calls ...goinfertest.Reply) string {
 	t.Helper()
-	sh := &buildShell{result: shell.Result{Output: output}}
 	replies := append(calls, goinfertest.Calls("", "d1", "done", `{}`), goinfertest.Says("ok"))
-	h := buildHarness(t, proto.ModeAuto, sh, replies...)
+	h := buildHarness(t, proto.ModeAuto, &buildShell{}, replies...)
 	cfg := h.sess.cfg
-	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh, Done: true})
+	sh := &deletingShell{root: h.ws.Root(), output: output}
+	cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh, Done: true}), sh
 	cfg.BuildAfterEdit, cfg.EditTask, cfg.VerifyDone = false, true, verify
 	cfg.Approve = &approver{answer: Approval{Allow: true}} // the guard asks about some of these, and the report is of what ran
 	h.sess = New(cfg)
@@ -64,13 +82,14 @@ func doneAnswer(t *testing.T, verify bool, task string, files map[string]string,
 
 // What a turn did to the tests is in done's answer, from its own edits and commands.
 func TestDoneReportsTestChanges(t *testing.T) {
-	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
+	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "h_test.go": "package a\n\nfunc TestLast(t *testing.T) {\n\tt.Log(1)\n}\n\nfunc helper() {}\n", "tests/test_h.py": "def test_a():\n    pass\n\ndef helper():\n    pass\n", "sub/x": "", "tests/test_b.py": "def test_b():\n    x = 1\n\n    assert x\n", "two.cfg": "[a]\nfail_under = 50\n[b]\nfail_under = 80\nx = 1\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
 	skip := "func TestA(t *testing.T) { t.Skip() }"
 	for _, c := range []struct {
 		name  string
 		task  string
 		calls []goinfertest.Reply
 		want  []string // each in the notes; none means no notes at all
+		not   string   // in no note
 	}{
 		{name: "a test function removed", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "func TestA(t *testing.T) {}\n\n", "")}, want: []string{"removed TestA from a_test.go"}},
 		{name: "a python test removed", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "def test_a():\n    pass\n", "x = 1\n")}, want: []string{"removed test_a from tests/test_x.py"}},
@@ -86,6 +105,7 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "a skip through echo", calls: []goinfertest.Reply{bashCall("b", `echo 't.Skip()' >> a_test.go`)}, want: []string{"added a skip through echo"}},
 		{name: "a narrower -run", calls: []goinfertest.Reply{bashCall("b", "go test ./..."), bashCall("c", "go test -run TestA ./...")}, want: []string{"narrowed the tests with -run"}},
 		{name: "a narrower -run=", calls: []goinfertest.Reply{bashCall("b", "go test ./..."), bashCall("c", "go test -run=TestA ./...")}, want: []string{"narrowed the tests with -run"}},
+		{name: "the first of two coverage keys lowered", calls: []goinfertest.Reply{readCall("r", "two.cfg"), editCall("e", "two.cfg", "fail_under = 50", "fail_under = 40")}, want: []string{"from 50 to 40"}},
 		{name: "a lower coverage gate", calls: []goinfertest.Reply{readCall("r", ".coveragerc"), editCall("e", ".coveragerc", "fail_under = 80", "fail_under = 60")}, want: []string{"lowered the coverage gate in .coveragerc from 80 to 60"}},
 		{name: "a test commented out", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "func TestA(t *testing.T) {}", "// func TestA(t *testing.T) {}")}, want: []string{"removed TestA from a_test.go"}},
 		{name: "a named test edited", task: "TestA fails", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "func TestA(t *testing.T) {}", "func TestA(t *testing.T) { t.Log(1) }")}, want: []string{"edited TestA in a_test.go, a test the task names"}},
@@ -103,7 +123,23 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "a narrower -skip", calls: []goinfertest.Reply{bashCall("b", "go test ./..."), bashCall("c", "go test -skip TestA ./...")}, want: []string{"narrowed the tests with -skip"}},
 		{name: "a line that failed later still ran", calls: []goinfertest.Reply{bashCall("b", "rm a_test.go; false")}, want: []string{"deleted a_test.go"}},
 
+		{name: "deleted and written again", calls: []goinfertest.Reply{bashCall("b", "rm a_test.go"), call("w", "write", map[string]any{"path": "a_test.go", "content": "package a\n"})}, want: []string{"deleted a_test.go"}},
+		{name: "deleted and written again with a skip", calls: []goinfertest.Reply{bashCall("b", "rm a_test.go"), call("w", "write", map[string]any{"path": "a_test.go", "content": skip + "\n"})}, want: []string{"deleted a_test.go", "added a skip to a_test.go"}},
+		{name: "a rust test given #[ignore]", calls: []goinfertest.Reply{readCall("r", "tests/r.rs"), editCall("e", "tests/r.rs", "#[test]\nfn adds", "#[test]\n#[ignore]\nfn adds")}, want: []string{"added a skip to tests/r.rs"}, not: "removed"},
+		{name: "moved out of the repository", calls: []goinfertest.Reply{bashCall("b", "mv a_test.go /tmp/a_test.go")}, want: []string{"moved a_test.go to /tmp/a_test.go"}},
+		{name: "moved out to a directory", calls: []goinfertest.Reply{bashCall("b", "mv a_test.go /tmp/")}, want: []string{"moved a_test.go to /tmp/"}},
+		{name: "a named test edited at its end", task: "TestLast fails", calls: []goinfertest.Reply{readCall("r", "h_test.go"), editCall("e", "h_test.go", "t.Log(1)\n}", "t.Log(2)\n}")}, want: []string{"edited TestLast in h_test.go"}},
+		{name: "a named python test edited past a blank line", task: "test_b fails", calls: []goinfertest.Reply{readCall("r", "tests/test_b.py"), editCall("e", "tests/test_b.py", "    assert x\n", "    assert not x\n")}, want: []string{"edited test_b in tests/test_b.py"}},
+		{name: "a named python test edited", task: "test_a fails", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "    pass\n", "    assert 1\n")}, want: []string{"edited test_a in tests/test_x.py"}},
+
 		// None of these says anything.
+		{name: "a helper after the named test", task: "TestLast fails", calls: []goinfertest.Reply{readCall("r", "h_test.go"), editCall("e", "h_test.go", "func helper() {}", "func helper() { _ = 1 }")}},
+		{name: "a helper after a named python test", task: "test_a fails", calls: []goinfertest.Reply{readCall("r", "tests/test_h.py"), editCall("e", "tests/test_h.py", "def helper():\n    pass\n", "def helper():\n    return 1\n")}},
+		{name: "a helper's text in a named one's file, with a brace in a string", task: "TestB fails", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "package a", "package a // {")}},
+		{name: "moved into a test directory", calls: []goinfertest.Reply{bashCall("b", "mv tests/test_x.py tests")}},
+		{name: "moved to a directory that exists", calls: []goinfertest.Reply{bashCall("b", "mv a_test.go sub")}},
+		{name: "the same coverage key twice, one edit elsewhere", calls: []goinfertest.Reply{readCall("r", "two.cfg"), editCall("e", "two.cfg", "x = 1", "x = 2")}},
+		{name: "the second of two coverage keys raised", calls: []goinfertest.Reply{readCall("r", "two.cfg"), editCall("e", "two.cfg", "fail_under = 80", "fail_under = 90")}},
 		{name: "a sed that keeps the skips even", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/t.Skip()/t.Skipf("x")/' s_test.go`)}},
 		{name: "an echo with no skip", calls: []goinfertest.Reply{bashCall("b", `echo '// note' >> a_test.go`)}},
 		{name: "a sed on another file", calls: []goinfertest.Reply{bashCall("b", `sed -i 's/a/t.Skip()/' notes.txt`)}},
@@ -152,6 +188,9 @@ func TestDoneReportsTestChanges(t *testing.T) {
 			}
 			if len(c.want) == 0 && len(notes) != 0 {
 				t.Errorf("notes: %q", notes)
+			}
+			if c.not != "" && strings.Contains(strings.Join(notes, "\n"), c.not) {
+				t.Errorf("notes %q hold %q", notes, c.not)
 			}
 			for _, w := range c.want {
 				if !strings.Contains(strings.Join(notes, "\n"), w) {
@@ -377,8 +416,20 @@ func TestRanNothingBesideABuild(t *testing.T) {
 		t.Errorf("through a pipe: %q %q", answer, notes)
 	}
 	// Changed after the empty run: unverified is what done says.
-	answer, _ = DoneNotes(doneAnswer(t, true, "fix it", files, nothing, readCall("r", "a.go"), bashCall("b", "go test -run NoSuch ./..."), editCall("e", "a.go", "// x", "// y"), bashCall("c", "echo hi"), goinfertest.Calls("", "d0", "done", `{}`), goinfertest.Calls("", "d9", "done", `{}`), goinfertest.Calls("", "d8", "done", `{}`)))
-	if answer != DoneUnverified {
-		t.Errorf("changed after: %q", answer)
+	answer, notes = DoneNotes(doneAnswer(t, true, "fix it", files, nothing, readCall("r", "a.go"), bashCall("b", "go test -run NoSuch ./..."), editCall("e", "a.go", "// x", "// y"), bashCall("c", "echo hi"), goinfertest.Calls("", "d0", "done", `{}`), goinfertest.Calls("", "d9", "done", `{}`), goinfertest.Calls("", "d8", "done", `{}`)))
+	if answer != DoneUnverified || notes != nil {
+		t.Errorf("changed after: %q %q", answer, notes)
+	}
+	// A | that isn't a pipe doesn't get in the way.
+	for _, command := range []string{"go test -run 'TestA|TestB' ./...", "go test -run NoSuch ./... || true"} {
+		answer, notes = DoneNotes(doneAnswer(t, true, "fix it", files, nothing, append(edit[:2:2], bashCall("b", command))...))
+		if answer != DoneNoTests || len(notes) != 1 {
+			t.Errorf("%s: %q %q", command, answer, notes)
+		}
+	}
+	// |& is a pipe too.
+	answer, notes = DoneNotes(doneAnswer(t, true, "fix it", files, nothing, append(edit[:2:2], bashCall("b", "go test ./... |& tail -1"))...))
+	if answer != "done" || notes != nil {
+		t.Errorf("through |&: %q %q", answer, notes)
 	}
 }
