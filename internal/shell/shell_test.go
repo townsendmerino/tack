@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -739,7 +740,12 @@ func TestResultSaysWhatRan(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s %d", filepath.Base(c.Dir), strings.Join(c.Args, " "), c.Exit))
 	}
 	base := filepath.Base(s.Engine.Root)
-	want := []string{base + " /usr/bin/false 1", base + " /usr/bin/true 0", base + " /bin/echo one two 0", "sub /usr/bin/false 1", base + " /bin/ls /no/such 1"}
+	lsExit := 0 // what this system's ls says for a missing file: 1 on BSD, 2 on GNU
+	var exitErr *exec.ExitError
+	if err := exec.Command("/bin/ls", "/no/such").Run(); errors.As(err, &exitErr) {
+		lsExit = exitErr.ExitCode()
+	}
+	want := []string{base + " /usr/bin/false 1", base + " /usr/bin/true 0", base + " /bin/echo one two 0", "sub /usr/bin/false 1", fmt.Sprintf("%s /bin/ls /no/such %d", base, lsExit)}
 	if !slices.Equal(got, want) {
 		t.Errorf("ran %q, want %q", got, want)
 	}
