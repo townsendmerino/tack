@@ -667,6 +667,10 @@ func TestApprovalCovers(t *testing.T) {
 	if a := e.ApprovalFor(`exec -a name git reset $how`); !a.Covers(strings.Fields("git reset --hard")) {
 		t.Errorf("exec -a: %+v", a)
 	}
+	// A yes about a fed shell covers that shell.
+	if a := e.ApprovalFor(`echo y | sh a.sh`); !a.CoversFed([]string{"sh", "a.sh"}) || a.CoversFed([]string{"sh", "b.sh"}) {
+		t.Errorf("fed: %+v", a)
+	}
 	if a := e.ApprovalFor(`git status`); a.CoversVar("HUSKY") {
 		t.Errorf("vars: %+v", a)
 	}
