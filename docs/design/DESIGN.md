@@ -510,6 +510,21 @@ The report reads the shell's own record of what ran and each file's net change o
 test written and deleted, and a narrower `-run` followed by a full run say nothing. It is a report and not a boundary: what a
 script does when the command only names it, a `find -delete`, or a program under a wrapper (`env rm`) are not in it.
 
+**Known misses, left as they are because the report only shows and can't change a grade (2026-11-03):**
+- **Moves:** `mv tests elsewhere` says nothing, because `elsewhere` exists by the time the report looks and reads as a directory the
+  test directory kept its name in.
+- **Test bodies:** the parse of a test's text is a heuristic, so an edit to a test the task names can be missed. A `//` or `/*` inside a
+  string counts as a comment (`"http://…"`), an apostrophe in a double-quoted JavaScript title cuts the title short, and a Rust
+  lifetime on a test's signature hides its opening brace. A `#` inside a Python string counts as a comment too.
+- **Skips and tests:**
+  - Changing `it(` to `it.skip(` or `xit(` reports a removed test beside the added skip.
+  - Rust unit tests in `src/*.rs` aren't read, since only a test directory marks a Rust file as a test.
+- **`rm`:** `rm -f` on a test file that was never there reports it deleted. When `rm` deletes one path and fails on another, the
+  deleted file's earlier notes stay in the report, and a scratch file reads "may have deleted".
+- **Test runs:** whether a run ran nothing is read from the command line, not the record, so `go test -run X || go build` counts the
+  build that never ran and reports nothing. Narrowing is only measured against a run with no narrowing flag, so `-short` followed by
+  `-short -run X` says nothing.
+
 **Message-structure rules the loop enforces** — the Messages API's, which goinfer's `/v1/messages` follows, mapped by
 the OpenAI-compatible adapter — each with a cassette test:
 
