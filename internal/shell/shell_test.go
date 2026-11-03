@@ -304,7 +304,7 @@ func TestApprovedCommandsRun(t *testing.T) {
 		`p=git; $p reset --hard`,
 		`set -- reset --hard; git "$@"`,
 	} {
-		s := session(t, true, "git")
+		s := session(t, true) // no rule covers git, or the check of what approval saw would pass on the rule
 		file := destroyRepo(t, s)
 		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
 			t.Fatalf("%s did not ask", cmd)
