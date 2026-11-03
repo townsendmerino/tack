@@ -87,6 +87,9 @@ type Engine struct {
 	// the engine fails closed: auto mode refuses shell commands, and no rule allows one without asking, because the
 	// sandbox, not the rules, is the boundary.
 	Sandboxed bool
+	// Snapshotted says a snapshot of the working tree was taken for the next command (DESIGN §6.8), so what it can undo needs
+	// no question.
+	Snapshotted bool
 	// SessionDir is where this session's next command starts (internal/shell.Session keeps it current), or "" for Root.
 	SessionDir string
 	// SessionEnv is the exported variables earlier commands set in this session (internal/shell.Session keeps it
@@ -150,6 +153,7 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 			return Verdict{Action: Deny, By: ByMode, Reasons: []string{"bash needs a command"}}
 		}
 		cmds, why, always := e.checkShell(in.Command)
+		always = e.afterSnapshot(always)
 		if !e.Sandboxed {
 			if mode == proto.ModeAuto {
 				return Verdict{Action: Deny, By: ByMode, Parsed: cmds, Reasons: []string{noSandbox +
