@@ -316,12 +316,13 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
+	runs     map[string]int // how many times each text has run (perms.Approval.CoversAt)
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
-	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
+	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{}, runs: map[string]int{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
@@ -395,7 +396,9 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 				}
 			}
 		}
-		covered := ck.byUser() && ck.req.Scope.Covers(args)
+		text := strings.Join(args, "\x00")
+		covered := ck.byUser() && ck.req.Scope.CoversAt(args, ck.runs[text])
+		ck.runs[text]++
 		if err := ck.everyMode(why, ran, covered); err != nil {
 			return err
 		}

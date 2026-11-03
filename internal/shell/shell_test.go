@@ -370,6 +370,7 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
 		{``, `F=-exec; find . $F /bin/echo {} +`, "runs another program"},
 		{``, `git commit --no-verify -qm "avoid -exec" --allow-empty; F=-exec; find . $F /bin/echo {} +`, "runs another program"},
+		{``, `d=sub; (cd $d && rm -rf build); ln -s src build; rm -rf build`, "asks in every mode"},
 		// The same reason, or the same file name, from another statement.
 		{``, `git checkout -- work.txt; echo x > b.txt; git add b.txt; git checkout b.txt`, "asks in every mode"},
 		{``, `echo a >> .github/workflows/ci.yml; ln -s .github/workflows/ci.yml ci.yml; echo bad > ci.yml`, "asks in every mode"},
@@ -627,5 +628,35 @@ func TestUnsetClearsTheSessionAsk(t *testing.T) {
 	}
 	if r := runBy(t, s, perms.ByMode, `unset HUSKY; git status`); r.Stopped != "" {
 		t.Errorf("auto, after unset: %+v", r)
+	}
+}
+
+// An unset clears the session's ask only if it runs, in order, in this shell.
+func TestUnsetThatMayNotRunKeepsTheAsk(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`(unset HUSKY); git status`, `if false; then unset HUSKY; fi; git status`, `false && unset HUSKY; git status`, `true | unset HUSKY; git status`,
+		`f() { unset HUSKY; }; git status`, `x=$(unset HUSKY); git status`, `unset HUSKY & git status`} {
+		if !strings.Contains(strings.Join(s.Engine.AlwaysAsksIn(cmd), ";"), "HUSKY=0") {
+			t.Errorf("%s did not ask about HUSKY", cmd)
+		}
+		if !s.Engine.ApprovalFor(cmd).CoversVar("HUSKY") {
+			t.Errorf("%s: asked, but a yes doesn't cover it", cmd)
+		}
+	}
+	// A yes to something else doesn't cover what it never asked about.
+	if a := s.Engine.ApprovalFor(`unset HUSKY; echo x > CLAUDE.md; git status`); a.CoversVar("HUSKY") {
+		t.Errorf("unset first: it covers HUSKY: %+v", a)
+	}
+}
+
+// An eval whose text expands shows the rest of its text, so an approved one runs.
+func TestApprovedEvalWithAnExpansion(t *testing.T) {
+	s := session(t, true)
+	if r := runBy(t, s, perms.ByUser, `d=.; eval "find $d -maxdepth 0 -exec /bin/echo {} +"`); r.Stopped != "" || r.Exit != 0 {
+		t.Fatalf("%+v", r)
 	}
 }

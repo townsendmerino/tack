@@ -425,6 +425,18 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`git restore -s -S src/api.ts`, `git restore --source --staged src/api.ts`, `git restore --source --stage src/api.ts`, `git restore --sou -S src/api.ts`,
 	// A relative program after a lost cd may be a shell, fed by a pipe or redirection.
 	`d=sub; cd $d; echo "git reset --hard" | ./mysh script.sh`,
+	// sudo takes assignments before the program, as env does.
+	`sudo FOO=1 git reset --hard`, `sudo HUSKY=0 git status`, `echo x | sudo FOO=1 sh`, `sudo FOO=1 rm -rf src`,
+	// xargs -J fills in the command position too, as real xargs on macOS shows.
+	`xargs -J % % reset --hard`, `xargs -J % git % --hard`, `xargs -J% git % --hard`,
+	// The last of a flag and its --no- wins, as real git shows: clean -n -f --no-dry-run removes files.
+	`git clean -n -f --no-dry-run`, `git clean -nf --no-dry`, `git restore -S --no-staged src/api.ts`, `git restore -SW --no-staged src/api.ts`,
+	// An abbreviated flag that may take a value: its next word can't be read either way.
+	`git branch --for -d topic`, `git commit --auth -m --no-verify`, `git commit --mess x`, `git restore --sou HEAD --staged src/api.ts`,
+	// git config's flags by prefix.
+	`git config --unset-al core.hooksPath`, `git config --ad core.hooksPath x`, `git config --replace core.hooksPath x`,
+	// A wrapper's flag it can't read may take the next word, so what it runs may be any word after it.
+	`env -iu FOO git reset --hard`, `sudo -nu root git reset --hard`, `sudo -C 3 git reset --hard`, `echo x | env -iu FOO sh script.sh`, `echo x | sudo -C 3 sh script.sh`,
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
 	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
@@ -441,7 +453,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
-	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `git reset -- --hard`, `git clean -n -- x`, `git clean -n -- -f`, `git restore --staged -- src/api.ts`, `git -C src commit -m "$msg"`, `git --no-pager commit -m "$msg"`, `git commit --allow-empty -m "$msg"`, `git commit -q -F "$f"`, `xargs -I {} grep {} file`, `find . -exec grep x {}.txt ;`, `printf '%s\n' "$x"`, `builtin read x`, `command -v read`, `git commit -am "$msg"`, `git commit -am --no-verify`, `git commit --author "a <a@b>" -m "$msg"`, `git commit --author --no-verify`, `git commit --trailer --no-verify`, `git commit --date=now -m "$msg"`, `git reset --soft`, `git reset --mixed`, `git restore --stag src/api.ts`, `git clean --dry -f`, `git commit --no-edit`, `builtin export FOO=1`, `command export FOO`, `builtin typeset -r FOO=1`, `: "${X:=0}"`, `: "${FOO:-0}"`, `echo "${HUSKY:-0}"`, `Y=(0)`, `cd -P src && go test`, `cd -P src; echo x > out.txt`, `cd -- src; echo x > out.txt`, `cd -L src; echo x > /dev/null`, `cd ; env grep y`, `git restore --source=HEAD --staged src/api.ts`, `git restore -s HEAD --staged src/api.ts`, `git restore -sHEAD -S src/api.ts`, `git switch -c -f`, `git switch --create --force`, `git branch --contains -D`, `git branch --merged --force`, `git branch --sort -D`, `read -p "$prompt" var`, `read -t "$t" var`, `read -n "$n" -d "$d" -u 3 var`, `read -rp "$prompt" var`, `read -r var`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
+	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `git reset -- --hard`, `git clean -n -- x`, `git clean -n -- -f`, `git restore --staged -- src/api.ts`, `git -C src commit -m "$msg"`, `git --no-pager commit -m "$msg"`, `git commit --allow-empty -m "$msg"`, `git commit -q -F "$f"`, `xargs -I {} grep {} file`, `find . -exec grep x {}.txt ;`, `printf '%s\n' "$x"`, `builtin read x`, `command -v read`, `git commit -am "$msg"`, `git commit -am --no-verify`, `git commit --author "a <a@b>" -m "$msg"`, `git commit --author --no-verify`, `git commit --trailer --no-verify`, `git commit --date=now -m "$msg"`, `git reset --soft`, `git reset --mixed`, `git restore --stag src/api.ts`, `git clean --dry -f`, `git commit --no-edit`, `builtin export FOO=1`, `command export FOO`, `builtin typeset -r FOO=1`, `: "${X:=0}"`, `: "${FOO:-0}"`, `echo "${HUSKY:-0}"`, `Y=(0)`, `cd -P src && go test`, `cd -P src; echo x > out.txt`, `cd -- src; echo x > out.txt`, `cd -L src; echo x > /dev/null`, `cd ; env grep y`, `git restore --source=HEAD --staged src/api.ts`, `git restore -s HEAD --staged src/api.ts`, `git restore -sHEAD -S src/api.ts`, `git switch -c -f`, `git switch --create --force`, `git branch --contains -D`, `git branch --merged --force`, `git branch --sort -D`, `read -p "$prompt" var`, `read -t "$t" var`, `read -n "$n" -d "$d" -u 3 var`, `read -rp "$prompt" var`, `read -r var`, `sudo FOO=1 go test`, `xargs -J % grep x %`, `git restore -S --no-staged --staged src/api.ts`, `git clean -f -n`, `git clean --no-dry-run -n -f`, `git config --get core.hooksPath`, `git commit --message x`, `git commit --all -m x`, `git commit --amend --no-edit`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -541,6 +553,10 @@ func TestInnerReasonShows(t *testing.T) {
 		{`nice -n $n rm -rf src`, "rm -r src"},
 		{`env $v git reset --hard`, "reset --hard"},
 		{`sudo --no-such-flag git clean -f`, "clean -f"},
+		{`env -iu FOO git reset --hard`, "reset --hard"},
+		{`sudo -nu root git reset --hard`, "reset --hard"},
+		{`sudo -C 3 git clean -f`, "clean -f"},
+		{`sudo FOO=1 git reset --hard`, "reset --hard"},
 		{`git -C $d reset --hard`, "reset --hard"},
 		{`git $x reset --hard`, "reset --hard"},
 		{`git -c a=b reset --hard`, "reset --hard"},
@@ -565,8 +581,6 @@ func TestApprovalCovers(t *testing.T) {
 	}{
 		{`rm -rf $d`, []string{"rm -rf src", "rm -rf a b", "rm -rf"}, []string{"rm -f src", "git status", "rm src"}},
 		{`d=x; rm -rf $d; rm -rf build`, []string{"rm -rf src"}, []string{"rm -rf build"}},
-		// The same text twice: the user was asked about exactly this, and what runs can't say which it is.
-		{`rm -rf build; cd $d && rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}},
 		{`d=sub; cd $d && ./run.sh`, []string{"./run.sh"}, nil},
 		{`env git reset $how`, []string{"env git reset --hard"}, []string{"git reset --hard", "env git clean -f"}},
 		{`timeout $t git reset --hard`, []string{"timeout 5 git reset --hard"}, []string{"timeout 5 git clean -f"}},
@@ -607,6 +621,26 @@ func TestApprovalCovers(t *testing.T) {
 			}
 		}
 	}
+	// The same text twice: its runs, in order, are those statements, and past the last it stays the last.
+	for _, c := range []struct {
+		command string
+		at      []bool
+	}{
+		{`rm -rf build; cd $d && rm -rf build`, []bool{false, true, true}},
+		{`(cd $d && rm -rf build); rm -rf build`, []bool{true, false, false}},
+		{`git reset --hard`, []bool{true, true}},
+		{`rm -rf build`, []bool{false, false}},
+	} {
+		a := e.ApprovalFor(c.command)
+		for n, want := range c.at {
+			if got := a.CoversAt(strings.Fields("rm -rf build"), n); c.command != `git reset --hard` && got != want {
+				t.Errorf("%s: run %d of rm -rf build: %v, want %v", c.command, n, got, want)
+			}
+			if got := a.CoversAt(strings.Fields("git reset --hard"), n); c.command == `git reset --hard` && got != want {
+				t.Errorf("%s: run %d: %v, want %v", c.command, n, got, want)
+			}
+		}
+	}
 	// A flag is shown by the statement that runs: a word of the template that matches it, never a word of another statement.
 	for _, c := range []struct {
 		command, ran, word string
@@ -617,6 +651,7 @@ func TestApprovalCovers(t *testing.T) {
 		{`git commit --no-verify -m "avoid -exec"; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
 		{`git commit --no-verify -m -exec; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
 		{`eval "avoid -exec"; find . $F x {} +`, "find . -exec x {} +", "-exec", false},
+		{`d=.; eval "find $d -exec x {} +"`, "find . -exec x {} +", "-exec", true},
 		{`find . $F x {} +`, "find . -exec x {} +", "-exec", false},
 	} {
 		if got := e.ApprovalFor(c.command).ShowsIn(strings.Fields(c.ran), c.word); got != c.shown {

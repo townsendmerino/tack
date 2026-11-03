@@ -52,13 +52,21 @@ const hole = "\x00"
 // holeOne is a hole that matches at most one word.
 const holeOne = "\x02"
 
+// Statement is a command whose text is all there, and whether the parse asked about it.
+type Statement struct {
+	Text  []string `json:"text"`
+	Asked bool     `json:"asked"`
+}
+
 // Approval is what a user's yes to a command covers when the command runs (DESIGN §6.6): each command the parse asked about, for any
 // reason, with a hole where it expands. It doesn't go by what a reason says, since two statements can say the same. A command the
 // parse had nothing to say about is what it is, so no hole covers it, and what only shows when it runs still stops it.
 type Approval struct {
 	Anything bool       `json:"anything"` // it runs code from text, so anything may run: eval, source, trap
 	Commands [][]string `json:"commands"` // the commands it asked about, with holes
-	Literal  [][]string `json:"literal"`  // the commands it didn't
+	// Order is the commands with nothing that expands, in order. What runs can't say which statement it is, so the n-th run of a text is taken
+	// to be its n-th statement here, and the last for any more.
+	Order []Statement `json:"order"`
 	// Redirects are the targets it asked about, absolute where it can tell, or as written after a cd it lost, or hole for one that
 	// expands. LiteralRedirects are those it didn't, absolute.
 	Redirects        []string   `json:"redirects"`
@@ -71,27 +79,34 @@ type Approval struct {
 // ApprovalFor is what a user's yes to command covers.
 func (e *Engine) ApprovalFor(command string) Approval {
 	var a Approval
-	if f, err := syntax.NewParser().Parse(strings.NewReader(command), ""); err == nil {
-		e.scanAsks(f, scan{dir: e.startDir(), rec: &a})
+	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return a
 	}
+	e.scanAsks(f, scan{dir: e.startDir(), rec: &a})
 	for _, name := range sortedKeys(e.SessionEnv) {
-		if v := e.SessionEnv[name]; v != os.Getenv(name) && HooksOff(name, v) != "" {
+		if v := e.SessionEnv[name]; v != os.Getenv(name) && HooksOff(name, v) != "" && runsProgramWith(f, name) {
 			a.Vars = append(a.Vars, name)
 		}
 	}
 	return a
 }
 
-// Covers reports whether a yes covers a program run with args, as it runs: args[0] as written, and its arguments expanded. What runs
-// can't say which statement it is, so a text the parse asked about is covered wherever it runs: the user was asked about exactly
-// that. A text it had nothing to say about is what it is, and no hole covers it.
-func (a Approval) Covers(args []string) bool {
-	isArgs := func(c []string) bool { return slices.Equal(c, args) }
-	if slices.ContainsFunc(a.Commands, isArgs) {
-		return true
+// Covers is CoversAt for a text's first run.
+func (a Approval) Covers(args []string) bool { return a.CoversAt(args, 0) }
+
+// CoversAt reports whether a yes covers the n-th run (from 0) of a program with args, as it runs: args[0] as written, and its arguments
+// expanded. A text written out in the command goes by its statement: covered if the parse asked about it, and otherwise what it is, so no hole
+// covers it. Anything else may be what a hole became.
+func (a Approval) CoversAt(args []string, n int) bool {
+	var same []Statement
+	for _, s := range a.Order {
+		if slices.Equal(s.Text, args) {
+			same = append(same, s)
+		}
 	}
-	if slices.ContainsFunc(a.Literal, isArgs) {
-		return false
+	if len(same) > 0 {
+		return same[min(n, len(same)-1)].Asked
 	}
 	return a.Anything || slices.ContainsFunc(a.Commands, func(c []string) bool { return matchHoles(c, args) })
 }
@@ -112,8 +127,7 @@ func (a Approval) ShowsIn(args []string, word string) bool {
 
 // Saw reports whether the user was shown exactly this command, whatever the parse had to say about it.
 func (a Approval) Saw(args []string) bool {
-	isArgs := func(c []string) bool { return slices.Equal(c, args) }
-	return slices.ContainsFunc(a.Commands, isArgs) || slices.ContainsFunc(a.Literal, isArgs)
+	return slices.ContainsFunc(a.Order, func(s Statement) bool { return slices.Equal(s.Text, args) })
 }
 
 // CoversVar reports whether a yes covers a variable's value.
@@ -183,13 +197,32 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
 		a.Anything = true
 		if argv[0] == "eval" {
-			a.recordText(strings.Join(argv[1:], " "))
+			a.recordText(evalText(words))
 		}
 	case len(why) > 0:
 		a.Commands = append(a.Commands, argv)
-	case whole:
-		a.Literal = append(a.Literal, argv)
 	}
+	if whole {
+		a.Order = append(a.Order, Statement{argv, len(why) > 0})
+	}
+}
+
+// evalText is the code an eval runs as the user was shown it, expansions and all, so the rest of it counts as shown.
+func evalText(words []*syntax.Word) string {
+	var code []string
+	seen := false
+	for _, w := range words {
+		a, ok := literal(w)
+		switch {
+		case !seen:
+			seen = ok && a == "eval"
+		case ok:
+			code = append(code, a)
+		default:
+			code = append(code, strings.Trim(source(w), `"`))
+		}
+	}
+	return strings.Join(code, " ")
 }
 
 // recordText notes the commands in code from text that the user was shown, as commands the parse asked about.
@@ -706,20 +739,21 @@ func appendNew(to []string, more ...string) []string {
 // runner is a program that runs the program named in its arguments. A flag not listed here asks: it might take a value,
 // or run something itself.
 type runner struct {
-	valued string // the flags that take a value
-	plain  string // the flags that don't
-	unseen string // those it can't follow: code as text, or another directory
-	skip   int    // how many positional arguments come before the program
+	valued  string // the flags that take a value
+	plain   string // the flags that don't
+	unseen  string // those it can't follow: code as text, or another directory
+	skip    int    // how many positional arguments come before the program
+	assigns bool   // it takes NAME=value words before the program
 }
 
 var runners = map[string]runner{
-	"env":        {valued: "-u --unset", plain: "-i --ignore-environment -0 --null -v --debug", unseen: "-S --split-string -C --chdir"},
+	"env":        {valued: "-u --unset", plain: "-i --ignore-environment -0 --null -v --debug", unseen: "-S --split-string -C --chdir", assigns: true},
 	"nice":       {valued: "-n --adjustment"},
 	"nohup":      {},
 	"time":       {valued: "-f --format -o --output", plain: "-p -v --verbose -a --append"},
 	"timeout":    {valued: "-k --kill-after -s --signal", plain: "--preserve-status --foreground -v --verbose", skip: 1},
 	"stdbuf":     {valued: "-i --input -o --output -e --error"},
-	"sudo":       {valued: "-u --user -g --group -h --host -p --prompt -r --role -t --type -T --command-timeout -U --other-user", plain: "-n --non-interactive -E --preserve-env -H --set-home -b --background -k --reset-timestamp -S --stdin", unseen: "-D --chdir -R --chroot"},
+	"sudo":       {valued: "-u --user -g --group -h --host -p --prompt -r --role -t --type -T --command-timeout -U --other-user", plain: "-n --non-interactive -E --preserve-env -H --set-home -b --background -k --reset-timestamp -S --stdin", unseen: "-D --chdir -R --chroot", assigns: true},
 	"doas":       {valued: "-u", plain: "-n"},
 	"xargs":      {valued: "-I -n --max-args -L --max-lines -P --max-procs -d --delimiter -E -s --max-chars -a --arg-file -J -R -S", plain: "-0 --null -r --no-run-if-empty -t --verbose -x --exit -o"},
 	"caffeinate": {valued: "-t -w", plain: "-d -i -m -s -u"},
@@ -736,33 +770,35 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 	if name == "command" && len(args) > 0 && (args[0] == "-v" || args[0] == "-V") {
 		return nil // it looks a program up, and runs nothing
 	}
-	why, i := runnerRead(name, r, args)
-	if i < 0 {
-		return why
-	}
-	rest := args[i+1:]
-	if name == "xargs" { // it adds words from stdin, which can't be seen
-		rest = append(slices.Clone(rest), unknownWord)
-		if mark := xargsMark(args[:i]); mark != "" {
-			if strings.Contains(args[i], mark) {
-				return appendNew(why, unseenIn(name, "what it runs is filled in from stdin"))
+	why, first, unsure := runnerRead(name, r, args)
+	for _, i := range programsFrom(args, first, unsure) {
+		rest := args[i+1:]
+		if name == "xargs" { // it adds words from stdin, which can't be seen
+			rest = append(slices.Clone(rest), unknownWord)
+			if mark := xargsMark(args[:i]); mark != "" {
+				if strings.Contains(args[i], mark) {
+					why = appendNew(why, unseenIn(name, "what it runs is filled in from stdin"))
+					continue
+				}
+				rest = fillIn(rest, mark)
 			}
-			rest = fillIn(rest, mark)
+			if shell := e.shellUnder(args[i], rest, sc); shell != "" {
+				why = appendNew(why, unseenIn(shell, "it is handed code"))
+				continue
+			}
 		}
-		if shell := e.shellUnder(args[i], rest, sc); shell != "" {
-			return appendNew(why, unseenIn(shell, "it is handed code"))
-		}
+		why = appendNew(why, e.programAsks(args[i], rest, sc.in())...)
 	}
-	return appendNew(why, e.programAsks(args[i], rest, sc.in())...)
+	return why
 }
 
-// xargsMark returns the word -I says xargs replaces with what it reads, or "".
+// xargsMark returns the word -I or -J says xargs replaces with what it reads, or "".
 func xargsMark(flags []string) string {
 	for i, a := range flags {
-		if a == "-I" && i+1 < len(flags) {
+		if (a == "-I" || a == "-J") && i+1 < len(flags) {
 			return flags[i+1]
 		}
-		if strings.HasPrefix(a, "-I") && len(a) > 2 {
+		if (strings.HasPrefix(a, "-I") || strings.HasPrefix(a, "-J")) && len(a) > 2 {
 			return a[2:]
 		}
 	}
@@ -780,9 +816,10 @@ func fillIn(words []string, mark string) []string {
 	return out
 }
 
-// runnerRead reads a runner's own words, and returns why they ask and the index of the program it runs, or -1. A word it can't read
-// doesn't stop it, so what the runner runs is still shown. A flag it can't follow does.
-func runnerRead(name string, r runner, args []string) (why []string, prog int) {
+// runnerRead reads a runner's own words, and returns why they ask, the index of the program it runs or -1, and unsure if a flag it doesn't
+// know may have taken that word (programsFrom). A word it can't read doesn't stop it, so what the runner runs is still shown. A flag it can't
+// follow does.
+func runnerRead(name string, r runner, args []string) (why []string, prog int, unsure bool) {
 	valued, plain, hidden := strings.Fields(r.valued), strings.Fields(r.plain), strings.Fields(r.unseen)
 	skip := r.skip
 	for i := 0; i < len(args); i++ {
@@ -796,7 +833,7 @@ func runnerRead(name string, r runner, args []string) (why []string, prog int) {
 			}
 		case a == "--":
 		case slices.Contains(hidden, flag) || (len(a) > 2 && slices.Contains(hidden, a[:2])):
-			return appendNew(why, unseenIn(name, flag+" can't be followed")), -1
+			return appendNew(why, unseenIn(name, flag+" can't be followed")), -1, false
 		case slices.Contains(valued, a):
 			i++
 			if i < len(args) && args[i] == unknownWord {
@@ -807,17 +844,36 @@ func runnerRead(name string, r runner, args []string) (why []string, prog int) {
 		case slices.Contains(plain, a):
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			why = appendNew(why, unseenIn(name, "the flag "+a+" isn't one it knows"))
-		case name == "env" && hasValue:
+			unsure = true
+		case r.assigns && hasValue:
 			if r := HooksOff(flag, value); r != "" {
 				why = appendNew(why, r)
 			}
 		case skip > 0:
 			skip--
 		default:
-			return why, i
+			return why, i, unsure
 		}
 	}
-	return why, -1
+	return why, -1, false
+}
+
+// programsFrom returns where the program may be in a runner's words: at i, or, after a flag it can't read, which may take the next word, at any
+// word from there that isn't a flag.
+func programsFrom(args []string, i int, unsure bool) []int {
+	if i < 0 {
+		return nil
+	}
+	if !unsure {
+		return []int{i}
+	}
+	var out []int
+	for j := i; j < len(args); j++ {
+		if args[j] != unknownWord && !strings.HasPrefix(args[j], "-") {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // shellAsks asks for a shell handed code in any way: -c, stdin, a script that is stdin, or a flag it can't read. A script named
@@ -909,11 +965,17 @@ func (e *Engine) shellUnder(name string, args []string, sc scan) string {
 		if !ok {
 			return ""
 		}
-		_, i := runnerRead(base, r, args)
-		if i < 0 {
+		_, first, unsure := runnerRead(base, r, args)
+		programs := programsFrom(args, first, unsure)
+		if len(programs) == 0 {
 			return ""
 		}
-		name, args = args[i], args[i+1:]
+		for _, i := range programs[1:] {
+			if shell := e.shellUnder(args[i], args[i+1:], sc); shell != "" {
+				return shell
+			}
+		}
+		name, args = args[programs[0]], args[programs[0]+1:]
 	}
 }
 
@@ -1071,6 +1133,9 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		return why
 	}
 	sub, rest := args[i], args[i+1:]
+	if slices.ContainsFunc(flagsOf(sub, rest), gitValuedFlags[sub].abbreviated) {
+		why = appendNew(why, unseenIn("git", "a flag of "+sub+" is cut short, and its value can't be read"))
+	}
 	if gitWordsMatter(sub, rest) {
 		why = appendNew(why, unseenIn("git", "an argument of "+sub+" expands when it runs"))
 	}
@@ -1099,20 +1164,20 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			discard("switch with --discard-changes or --force")
 		}
 	case "restore":
-		staged := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+		staged := lastWins(flagsOf(sub, rest), func(a string) bool {
 			return flagIs(a, "--staged") || shortFlag(a, 'S', gitValuedFlags["restore"].letters())
-		})
-		worktree := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
+		}, "staged")
+		worktree := lastWins(flagsOf(sub, rest), func(a string) bool {
 			return flagIs(a, "--worktree") || shortFlag(a, 'W', gitValuedFlags["restore"].letters())
-		})
+		}, "worktree")
 		if !staged || worktree {
 			discard("restore on the working tree")
 		}
 	case "clean":
 		flags := flagsOf(sub, rest)
-		dry := slices.ContainsFunc(flags, func(a string) bool {
+		dry := lastWins(flags, func(a string) bool {
 			return flagIs(a, "--dry-run") || shortFlag(a, 'n', gitValuedFlags["clean"].letters())
-		})
+		}, "dry-run")
 		force := slices.ContainsFunc(flags, func(a string) bool {
 			return flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["clean"].letters())
 		})
@@ -1192,10 +1257,16 @@ var gitValuedFlags = map[string]valuedFlags{
 // letters is every letter that takes a value, which ends a cluster of one-letter flags.
 func (v valuedFlags) letters() string { return v.next + v.attached }
 
-// takesNext reports whether the next word is this flag's value: a long flag by any prefix, or letters that end in one that takes it.
+// abbreviated reports whether a may be one of these long flags cut short. Then it can't be said if the next word is its value, so it asks.
+func (v valuedFlags) abbreviated(a string) bool {
+	return len(a) > 2 && strings.HasPrefix(a, "--") && !slices.Contains(v.long, a) &&
+		slices.ContainsFunc(v.long, func(full string) bool { return strings.HasPrefix(full, a) })
+}
+
+// takesNext reports whether the next word is this flag's value: a long flag in full, or letters that end in one that takes it.
 func (v valuedFlags) takesNext(a string) bool {
 	if strings.HasPrefix(a, "--") {
-		return len(a) > 2 && slices.ContainsFunc(v.long, func(full string) bool { return strings.HasPrefix(full, a) })
+		return slices.Contains(v.long, a)
 	}
 	if len(a) < 2 || a[0] != '-' {
 		return false
@@ -1209,6 +1280,20 @@ func (v valuedFlags) takesNext(a string) bool {
 		}
 	}
 	return false
+}
+
+// lastWins reports whether a flag is on after all of flags, the last of it and its --no- form winning, as in git.
+func lastWins(flags []string, on func(string) bool, name string) bool {
+	state := false
+	for _, a := range flags {
+		switch {
+		case on(a):
+			state = true
+		case flagIs(a, "--no-"+name):
+			state = false
+		}
+	}
+	return state
 }
 
 // flagIs reports whether a is a long flag, spelled in full or by the prefix git accepts for it: git reset --har is --hard.
@@ -1259,7 +1344,7 @@ func configSetsHooksPath(args []string) bool {
 			return changes || i+1 < len(args)
 		case a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--list" || a == "-l" || a == "get" || a == "list":
 			return false
-		case a == "--unset" || a == "--unset-all" || a == "--add" || a == "--replace-all" || a == "set" || a == "unset":
+		case flagIs(a, "--unset") || flagIs(a, "--unset-all") || flagIs(a, "--add") || flagIs(a, "--replace-all") || a == "set" || a == "unset":
 			changes = true
 		}
 	}

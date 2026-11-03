@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -297,28 +298,46 @@ func (e *Engine) resolve(name string) (string, error) {
 }
 
 // runsProgramWith reports whether code may run a program, resolved or not, with the session's value of a variable: any simple command but
-// a builtin that needs no rule, before an unset of it. If that unset doesn't run after all, the run-time check still holds.
+// a builtin that needs no rule, before an unset of it that runs in order in this shell.
 func runsProgramWith(f *syntax.File, name string) bool {
 	decided, runs := false, false
+	var path []syntax.Node
 	syntax.Walk(f, func(n syntax.Node) bool {
-		c, ok := n.(*syntax.CallExpr)
-		if decided || !ok || len(c.Args) == 0 {
-			return !decided
+		if n == nil {
+			path = path[:len(path)-1]
+			return true
 		}
-		words := c.Args
-		if w, ok := literal(words[0]); ok && w == "builtin" && len(words) > 1 {
-			words = words[1:]
+		if c, ok := n.(*syntax.CallExpr); ok && !decided && len(c.Args) > 0 {
+			words := c.Args
+			if w, ok := literal(words[0]); ok && w == "builtin" && len(words) > 1 {
+				words = words[1:]
+			}
+			w, ok := literal(words[0])
+			switch {
+			case !ok || !safeBuiltins[w] && w != "unset":
+				decided, runs = true, true
+			case w == "unset" && unsets(words[1:], name) && inThisShell(path, c):
+				decided = true
+			}
 		}
-		w, ok := literal(words[0])
-		switch {
-		case !ok || !safeBuiltins[w] && w != "unset":
-			decided, runs = true, true
-		case w == "unset" && unsets(words[1:], name):
-			decided = true
-		}
-		return !decided
+		path = append(path, n)
+		return true
 	})
 	return runs
+}
+
+// inThisShell reports whether a command runs in order, and in this shell rather than a copy of it.
+func inThisShell(path []syntax.Node, c *syntax.CallExpr) bool {
+	if !cdPlaced(path, c) {
+		return false
+	}
+	return !slices.ContainsFunc(path, func(n syntax.Node) bool {
+		switch n.(type) {
+		case *syntax.Subshell, *syntax.CmdSubst:
+			return true
+		}
+		return false
+	})
 }
 
 // unsets reports whether unset's arguments clear a variable, which unset -f doesn't.

@@ -622,7 +622,8 @@ tool-use smoke set compares this merged set against the split one before it is f
       the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value; a value that may split (`git commit -m $msg`, not `"$msg"`); a declaration or
       an expansion that may set any variable (`export $v`, `${!v:=x}`). Hook variables and `CDPATH` are read however they are set: under
       `builtin`, `read`, `printf -v`, `for`, `${V:=x}`, or an array;
-    - a flag by any prefix `git` accepts for it: `git reset --har` is `--hard`;
+    - a flag by any prefix `git` accepts for it: `git reset --har` is `--hard`. The last of a flag and its `--no-` form wins. A flag cut short that
+      may take a value asks, since its next word can't be read either way;
     - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. Such a `cd`
       expands, is `pushd` or `popd`, is under a wrapper, or may not run in order (in a function, branch, loop, pipeline or process
       substitution, negated, in the background, after `||`, with more than one target, or with a redirection or assignment on
@@ -633,8 +634,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     where it expands, and each redirection, by its resolved path. It goes by the statement, never by what a reason says, since two
     statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`
     and `trap` can cover anything, since their code can be anything, and never a command shown in full. What may set any variable covers
-    variables only. A shell handed code is covered only by a yes that said so. Text the
-    parse asked about is covered wherever it runs, since what runs can't say which statement it is. Whatever was approved, a flag that
+    variables only. A shell handed code is covered only by a yes that said so. What runs
+    can't say which statement it is, so the n-th run of a text is taken to be its n-th statement. Whatever was approved, a flag that
     makes a program run another (`perms.RunFlag`) must have been shown, in the command that runs.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
