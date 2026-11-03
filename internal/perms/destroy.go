@@ -43,35 +43,37 @@ func unseen(what string) string { return what + unseenEnd }
 // unseenIn is the reason for a part it can't read: what a program gets, a redirection's target, a variable's value.
 func unseenIn(scope, what string) string { return scope + ": " + what + unseenEnd }
 
-// isUnseen reports whether a reason says something can't be seen.
-func isUnseen(reason string) bool { return strings.HasSuffix(reason, unseenEnd) }
-
 // runsTextEnd ends what a reason says of code run from text, which may be anything.
 const runsTextEnd = " runs code from text"
 
 // hole stands in Approval for a word that expands: it matches any number of words.
 const hole = "\x00"
 
-// Approval is what a user's yes to a command covers when the command runs (DESIGN §6.6). A reason it gave covers itself, by its
-// text. A command it showed as something it couldn't see covers what it turns out to be: its words, with a hole where they
-// expand. Nothing else is covered, and a command it showed in full, with nothing to say about it, is what it is: no hole
-// covers it, so what only shows when it runs still stops it.
+// Approval is what a user's yes to a command covers when the command runs (DESIGN §6.6): each command the parse asked about, for any
+// reason, with a hole where it expands. It doesn't go by what a reason says, since two statements can say the same. A command the
+// parse had nothing to say about is what it is, so no hole covers it, and what only shows when it runs still stops it.
 type Approval struct {
-	Reasons  []string   `json:"reasons"`  // every reason the parse asked
 	Anything bool       `json:"anything"` // it runs code from text, so anything may run: eval, source, trap
-	Commands [][]string `json:"commands"` // the commands it couldn't see, with holes
-	Literal  [][]string `json:"literal"`  // the commands it could
-	// Redirects are the targets it couldn't see, hole for one that expands; LiteralRedirects are those it could.
+	Commands [][]string `json:"commands"` // the commands it asked about, with holes
+	Literal  [][]string `json:"literal"`  // the commands it didn't
+	// Redirects are the targets it asked about, absolute where it can tell, or as written after a cd it lost, or hole for one that
+	// expands. LiteralRedirects are those it didn't, absolute.
 	Redirects        []string `json:"redirects"`
 	LiteralRedirects []string `json:"literal_redirects"`
-	Vars             []string `json:"vars"` // the variables whose value it couldn't see
+	Vars             []string `json:"vars"`  // the variables it asked about
+	Shown            []string `json:"shown"` // every word the user was shown, of what it asked about or of code from text
 }
 
 // ApprovalFor is what a user's yes to command covers.
 func (e *Engine) ApprovalFor(command string) Approval {
-	a := Approval{Reasons: e.AlwaysAsksIn(command)}
+	var a Approval
 	if f, err := syntax.NewParser().Parse(strings.NewReader(command), ""); err == nil {
 		e.scanAsks(f, scan{dir: e.startDir(), rec: &a})
+	}
+	for _, name := range sortedKeys(e.SessionEnv) {
+		if v := e.SessionEnv[name]; v != os.Getenv(name) && HooksOff(name, v) != "" {
+			a.Vars = append(a.Vars, name)
+		}
 	}
 	return a
 }
@@ -85,16 +87,16 @@ func (a Approval) Covers(args []string) bool {
 	return a.Anything || slices.ContainsFunc(a.Commands, func(c []string) bool { return matchHoles(c, args) })
 }
 
-// CoversRedirect reports whether a yes covers a redirection to target, as it expanded.
-func (a Approval) CoversRedirect(target string) bool {
-	switch {
-	case slices.Contains(a.Redirects, target):
-		return true
-	case slices.Contains(a.LiteralRedirects, target):
+// CoversRedirect reports whether a yes covers a redirection to target, as it expanded, whose absolute path is abs.
+func (a Approval) CoversRedirect(target, abs string) bool {
+	if slices.Contains(a.LiteralRedirects, abs) {
 		return false
 	}
-	return a.Anything || slices.Contains(a.Redirects, hole)
+	return a.Anything || slices.Contains(a.Redirects, abs) || slices.Contains(a.Redirects, target) || slices.Contains(a.Redirects, hole)
 }
+
+// Shows reports whether the user was shown a word, as a flag that runs another program must have been.
+func (a Approval) Shows(word string) bool { return slices.Contains(a.Shown, word) }
 
 // CoversVar reports whether a yes covers a variable's value.
 func (a Approval) CoversVar(name string) bool { return a.Anything || slices.Contains(a.Vars, name) }
@@ -131,11 +133,17 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 			argv = argv[1:]
 		}
 	}
-	saw := slices.ContainsFunc(why, isUnseen)
+	if len(why) > 0 {
+		for _, w := range argv {
+			if w != hole {
+				a.Shown = append(a.Shown, strings.Fields(w)...) // a word of eval's text is a word they saw
+			}
+		}
+	}
 	switch {
 	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
 		a.Anything = true
-	case saw:
+	case len(why) > 0:
 		a.Commands = append(a.Commands, argv)
 	case whole:
 		a.Literal = append(a.Literal, argv)
@@ -143,15 +151,19 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 }
 
 // recordRedirect notes one output redirection and what the parse said about it.
-func (a *Approval) recordRedirect(r *syntax.Redirect, why []string) {
+func (a *Approval) recordRedirect(r *syntax.Redirect, why []string, sc scan) {
 	target, ok := literal(r.Word)
-	switch {
-	case !ok:
+	if !ok {
 		a.Redirects = append(a.Redirects, hole)
-	case slices.ContainsFunc(why, isUnseen):
-		a.Redirects = append(a.Redirects, target)
-	default:
-		a.LiteralRedirects = append(a.LiteralRedirects, target)
+		return
+	}
+	if !filepath.IsAbs(target) && !sc.lost {
+		target = filepath.Join(sc.dir, target)
+	}
+	if len(why) > 0 {
+		a.Redirects = append(a.Redirects, filepath.Clean(target))
+	} else {
+		a.LiteralRedirects = append(a.LiteralRedirects, filepath.Clean(target))
 	}
 }
 
@@ -218,9 +230,18 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 		visit(n, dir, lost)
 		switch n := n.(type) {
 		case *syntax.Assign:
+			name, _, dynamic := declared(n)
+			lost = lost || dynamic || name == "CDPATH"
+		case *syntax.WordIter:
 			lost = lost || (n.Name != nil && n.Name.Value == "CDPATH")
 		case *syntax.CallExpr:
-			if len(n.Args) == 0 || !movesDir(n.Args) {
+			if len(n.Args) == 0 {
+				return true
+			}
+			if slices.Contains(namedVars(n.Args), "CDPATH") || slices.Contains(namedVars(n.Args), unknownWord) {
+				lost = true
+			}
+			if !movesDir(n.Args) {
 				return true
 			}
 			name, _ := literal(n.Args[0])
@@ -332,10 +353,21 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 		switch n := n.(type) {
 		case *syntax.Assign:
 			asks := assignAsks(n)
-			if sc.rec != nil && n.Name != nil && slices.ContainsFunc(asks, isUnseen) {
-				sc.rec.Vars = append(sc.rec.Vars, n.Name.Value)
+			if sc.rec != nil && len(asks) > 0 {
+				if name, _, _ := declared(n); name != "" {
+					sc.rec.Vars = append(sc.rec.Vars, name)
+				} else {
+					sc.rec.Anything = true // it may set anything, so it may turn anything off
+				}
 			}
 			why = appendNew(why, asks...)
+		case *syntax.WordIter:
+			if n.Name != nil && isHookVar(n.Name.Value) {
+				if sc.rec != nil {
+					sc.rec.Vars = append(sc.rec.Vars, n.Name.Value)
+				}
+				why = appendNew(why, unseenIn(n.Name.Value, "a loop sets it to values that can't be read here"))
+			}
 		case *syntax.BinaryCmd, *syntax.Stmt:
 			why = appendNew(why, stdinAsks(n)...)
 		case *syntax.Redirect:
@@ -344,7 +376,7 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 			}
 			asks := e.redirectAsks(n, sc)
 			if sc.rec != nil {
-				sc.rec.recordRedirect(n, asks)
+				sc.rec.recordRedirect(n, asks, sc)
 			}
 			why = appendNew(why, asks...)
 		case *syntax.CallExpr:
@@ -368,12 +400,74 @@ func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 	}
 	argv, lit := args(words[1:])
 	for i := range argv {
-		if !lit[i] {
-			argv[i] = unknownWord
+		if lit[i] {
+			continue
+		}
+		argv[i] = unknownWord
+		// A message in quotes is one word, a value and not a flag. Anywhere else, or unquoted, it may split into anything.
+		if filepath.Base(name) == "git" && i > 0 && slices.Contains(commitValued, argv[i-1]) && slices.Contains(argv[:i], "commit") && oneWord(words[i+1]) {
+			argv[i] = oneValue
 		}
 	}
-	return e.programAsks(name, argv, sc)
+	why := e.programAsks(name, argv, sc)
+	for _, v := range namedVars(words) {
+		if v == unknownWord {
+			why = appendNew(why, unseen(name+" sets a variable named when it runs, which may be any"))
+		} else if isHookVar(v) {
+			why = appendNew(why, unseenIn(v, name+" sets it to a value that can't be read here"))
+		}
+	}
+	return why
 }
+
+// oneValue stands for a word that expands but stays one word.
+const oneValue = "\x01"
+
+// oneWord reports whether a word expands to exactly one word: all of it in double quotes, without $@ or $*.
+func oneWord(w *syntax.Word) bool {
+	if len(w.Parts) != 1 {
+		return false
+	}
+	q, ok := w.Parts[0].(*syntax.DblQuoted)
+	if !ok {
+		return false
+	}
+	text := source(w)
+	return len(q.Parts) > 0 && !strings.Contains(text, "$@") && !strings.Contains(text, "$*") && !strings.Contains(text, "[@]") && !strings.Contains(text, "{@") && !strings.Contains(text, "{*") && !strings.Contains(text, "[*]")
+}
+
+// namedVars returns the variables a builtin sets by name, unknownWord for a name that expands: read's, and printf -v's.
+func namedVars(words []*syntax.Word) []string {
+	if len(words) < 2 {
+		return nil
+	}
+	name, ok := literal(words[0])
+	if !ok || (name != "read" && name != "printf") {
+		return nil
+	}
+	var out []string
+	for i := 1; i < len(words); i++ {
+		a, lit := literal(words[i])
+		switch {
+		case name == "printf":
+			if lit && a == "-v" && i+1 < len(words) {
+				v, ok := literal(words[i+1])
+				if !ok {
+					v = unknownWord
+				}
+				return []string{v}
+			}
+		case !lit:
+			out = append(out, unknownWord)
+		case !strings.HasPrefix(a, "-"):
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// isHookVar reports whether a variable is one that may turn the owner's hooks off.
+func isHookVar(name string) bool { return name == "HUSKY" || name == "HUSKY_SKIP_HOOKS" }
 
 // programAsks reads a program by the name it is written with and what that name resolves to from where it runs.
 func (e *Engine) programAsks(name string, args []string, sc scan) []string {
@@ -430,7 +524,7 @@ func (e *Engine) wordsAsk(name string, args []string, sc scan) []string {
 		return e.runnerAsks(name, r, args, sc)
 	}
 	if slices.Contains(shellNames, name) {
-		return shellAsks(name, args, sc.dir)
+		return shellAsks(name, args, sc)
 	}
 	if name == "parallel" {
 		return []string{unseenIn(name, "it runs commands through a shell, with words from stdin")}
@@ -495,6 +589,9 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 	rest := args[i+1:]
 	if name == "xargs" { // it adds words from stdin, which can't be seen
 		rest = append(slices.Clone(rest), unknownWord)
+		if base := filepath.Base(args[i]); slices.Contains(shellNames, base) {
+			return appendNew(why, unseenIn(base, "it is handed code"))
+		}
 	}
 	return appendNew(why, e.programAsks(args[i], rest, sc.in())...)
 }
@@ -542,9 +639,14 @@ func runnerRead(name string, r runner, args []string) (why []string, prog int) {
 // shellAsks asks for a shell handed code in any way: -c, stdin, a script that is stdin, or a flag it can't read. A script named
 // with no flags is left alone, like any other program: what a program does when it runs is the sandbox's to hold. feedsShell
 // reads what's fed to one from outside its arguments.
-func shellAsks(name string, args []string, dir string) []string {
-	if len(args) > 0 && args[0] != unknownWord && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[0], "+") && !scriptIsStdin(args[0], dir) {
-		return nil
+func shellAsks(name string, args []string, sc scan) []string {
+	if len(args) > 0 && args[0] != unknownWord && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[0], "+") {
+		if sc.lost && !filepath.IsAbs(args[0]) {
+			return []string{unseenIn(name, "its script follows a cd that can't be read")}
+		}
+		if !scriptIsStdin(args[0], sc.dir) {
+			return nil
+		}
 	}
 	return []string{unseenIn(name, "it is handed code")}
 }
@@ -558,6 +660,9 @@ func scriptIsStdin(script, dir string) bool {
 	}
 	for range maxNesting {
 		p = filepath.Clean(p)
+		if real, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+			p = filepath.Join(real, filepath.Base(p))
+		}
 		if strings.HasPrefix(p, "/dev/") || strings.HasPrefix(p, "/proc/") {
 			return true
 		}
@@ -631,7 +736,7 @@ func stdinAsks(n syntax.Node) []string {
 	case *syntax.Stmt:
 		for _, r := range n.Redirs {
 			switch r.Op {
-			case syntax.RdrIn, syntax.RdrInOut, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+			case syntax.RdrIn, syntax.RdrInOut, syntax.DplIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
 				if shell := fed(n.Cmd); shell != "" {
 					return []string{unseenIn(shell, "it is handed code")}
 				}
@@ -668,6 +773,9 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 					if strings.Contains(w, "{}") { // what find found, which can't be seen
 						rest[j] = unknownWord
 					}
+				}
+				if base := filepath.Base(args[i+1]); slices.Contains(shellNames, base) {
+					why = appendNew(why, unseenIn(base, "it is handed code"))
 				}
 				why = appendNew(why, e.programAsks(args[i+1], rest, sc.in())...)
 			}
@@ -713,7 +821,9 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	for ; i < len(args); i++ {
 		a := args[i]
 		if a == unknownWord {
-			return appendNew(why, unseenIn("git", "a word before its subcommand expands when it runs"))
+			why = appendNew(why, unseenIn("git", "a word before its subcommand expands when it runs"))
+			sc.lost = true
+			continue
 		}
 		if !strings.HasPrefix(a, "-") {
 			break
@@ -722,14 +832,26 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		switch {
 		case flag == "--work-tree":
 			// It moves what the path rules below read.
-			return appendNew(why, unseenIn("git", "--work-tree moves where it works"))
+			why = appendNew(why, unseenIn("git", "--work-tree moves where it works"))
+			sc.lost = true
+			if !hasValue {
+				i++
+			}
 		case a == "-c" || flag == "--config-env":
 			// An alias runs inside git, where nothing sees it, and --config-env's value is an environment variable's.
-			return appendNew(why, unseenIn("git", flag+" sets config on the command line, which changes what git does"))
+			why = appendNew(why, unseenIn("git", flag+" sets config on the command line, which changes what git does"))
+			if !hasValue {
+				i++
+			}
 		case slices.Contains(gitValued, a):
 			i++
-			if i >= len(args) || args[i] == unknownWord {
-				return appendNew(why, unseenIn("git", "a value of "+a+" expands when it runs"))
+			if i >= len(args) {
+				return why
+			}
+			if args[i] == unknownWord {
+				why = appendNew(why, unseenIn("git", "a value of "+a+" expands when it runs"))
+				sc.lost = true
+				continue
 			}
 			if a == "-C" {
 				if filepath.IsAbs(args[i]) {
@@ -741,7 +863,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		case hasValue && strings.HasPrefix(flag, "--") && slices.Contains(gitValued, flag):
 		case slices.Contains(gitPlain, a):
 		default:
-			return appendNew(why, unseenIn("git", "the flag "+a+" isn't one it reads"))
+			why = appendNew(why, unseenIn("git", "the flag "+a+" isn't one it reads"))
 		}
 	}
 	if i >= len(args) {
@@ -751,7 +873,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	if gitWordsMatter(sub, rest) {
 		why = appendNew(why, unseenIn("git", "an argument of "+sub+" expands when it runs"))
 	}
-	if slices.Contains(noVerifySubcommands, sub) && slices.Contains(rest, "--no-verify") {
+	if slices.Contains(noVerifySubcommands, sub) && slices.Contains(flagsOf(sub, rest), "--no-verify") {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
 	}
 	discard := func(what string) { why = append(why, "git "+what+" discards work that cannot be recovered") }
@@ -782,8 +904,9 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			discard("restore on the working tree")
 		}
 	case "clean":
-		dry := slices.ContainsFunc(rest, func(a string) bool { return a == "--dry-run" || shortFlag(a, 'n', "e") })
-		force := slices.ContainsFunc(rest, func(a string) bool { return a == "--force" || shortFlag(a, 'f', "e") })
+		flags := flagsOf(sub, rest)
+		dry := slices.ContainsFunc(flags, func(a string) bool { return a == "--dry-run" || shortFlag(a, 'n', "e") })
+		force := slices.ContainsFunc(flags, func(a string) bool { return a == "--force" || shortFlag(a, 'f', "e") })
 		if force && !dry {
 			discard("clean -f")
 		}
@@ -798,15 +921,8 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			discard("stash " + rest[0])
 		}
 	case "commit":
-		for j := 0; j < len(rest); j++ {
-			a := rest[j]
-			if slices.Contains(commitValued, a) {
-				j++
-				continue
-			}
-			if shortFlag(a, 'n', "mFcCtuS") {
-				why = appendNew(why, "git commit --no-verify skips the owner's hooks")
-			}
+		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return shortFlag(a, 'n', "mFcCtuS") }) {
+			why = appendNew(why, "git commit --no-verify skips the owner's hooks")
 		}
 	case "config":
 		if configSetsHooksPath(rest) {
@@ -816,25 +932,38 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	return why
 }
 
-// gitWordsMatter reports whether an argument of sub that expands could be what a rule above looks for. A commit message's
-// value can't be.
+// gitWordsMatter reports whether an argument of sub that expands could be what a rule above looks for.
 func gitWordsMatter(sub string, rest []string) bool {
 	if !slices.Contains(noVerifySubcommands, sub) && !slices.Contains([]string{"reset", "checkout", "switch", "restore", "clean", "branch", "stash", "config"}, sub) {
 		return false
 	}
+	return slices.Contains(rest, unknownWord)
+}
+
+// flagsOf is a subcommand's arguments without the flags' values, which could spell a flag: a commit's message, a clean's exclude.
+// A value that expands is kept, since it may split into flags.
+func flagsOf(sub string, rest []string) []string {
+	var valued []string
+	switch sub {
+	case "commit":
+		valued = commitValued
+	case "clean":
+		valued = []string{"-e", "--exclude"}
+	}
+	var out []string
 	for j := 0; j < len(rest); j++ {
-		if sub == "commit" && slices.Contains(commitValued, rest[j]) {
+		a := rest[j]
+		if (slices.Contains(valued, a) || (sub == "clean" && shortFlag(a, 'e', "") && strings.HasSuffix(a, "e"))) && j+1 < len(rest) && rest[j+1] != unknownWord {
+			out = append(out, a)
 			j++
 			continue
 		}
-		if rest[j] == unknownWord {
-			return true
-		}
+		out = append(out, a)
 	}
-	return false
+	return out
 }
 
-// commitValued are git commit's flags whose next word is a value, which a message could spell like a flag.
+// commitValued are git commit's flags whose next word is a value.
 var commitValued = []string{"-m", "-F", "-c", "-C", "-t", "--message", "--file", "--template"}
 
 // checkoutDiscards reports whether git checkout's arguments overwrite the working tree: paths after --, a path that
@@ -858,7 +987,11 @@ func checkoutDiscards(args []string, dir string) bool {
 		case strings.ContainsAny(a, "*?[") || strings.HasPrefix(a, ":"): // a pathspec, whatever it matches
 			return true
 		default:
-			if _, err := os.Lstat(filepath.Join(dir, a)); err == nil {
+			p := a
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			if _, err := os.Lstat(p); err == nil {
 				return true
 			}
 		}
@@ -866,30 +999,18 @@ func checkoutDiscards(args []string, dir string) bool {
 	return false
 }
 
-// configSetsHooksPath reports whether git config's arguments change core.hooksPath. Reading it changes nothing.
+// configSetsHooksPath reports whether git config's arguments change core.hooksPath. Reading it changes nothing. Whatever follows the
+// key is a value, however it looks.
 func configSetsHooksPath(args []string) bool {
-	var words []string
 	changes := false
-	for _, a := range args {
+	for i, a := range args {
 		switch {
-		case a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--list" || a == "-l":
+		case strings.EqualFold(a, "core.hooksPath"):
+			return changes || i+1 < len(args)
+		case a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--list" || a == "-l" || a == "get" || a == "list":
 			return false
-		case a == "--unset" || a == "--unset-all" || a == "--add" || a == "--replace-all":
+		case a == "--unset" || a == "--unset-all" || a == "--add" || a == "--replace-all" || a == "set" || a == "unset":
 			changes = true
-		case !strings.HasPrefix(a, "-"):
-			words = append(words, a)
-		}
-	}
-	if len(words) > 0 && slices.Contains([]string{"get", "list"}, words[0]) {
-		return false
-	}
-	if len(words) > 0 && slices.Contains([]string{"set", "unset"}, words[0]) {
-		changes = true
-		words = words[1:]
-	}
-	for i, w := range words {
-		if strings.EqualFold(w, "core.hooksPath") {
-			return changes || i+1 < len(words)
 		}
 	}
 	return false
@@ -1100,19 +1221,42 @@ func HooksOff(name, value string) string {
 	return ""
 }
 
-// assignAsks is HooksOff for an assignment whose value is fixed, and asks for one that expands.
-func assignAsks(a *syntax.Assign) []string {
-	if a.Name == nil || a.Value == nil {
-		return nil
+// declared reads an assignment or a declaration's argument: the variable it sets, its value if fixed, and dynamic if what it sets
+// expands (export $v, which may set anything). A declaration's flag sets nothing.
+func declared(a *syntax.Assign) (name, value string, dynamic bool) {
+	if a.Name != nil {
+		if a.Value != nil {
+			if v, ok := literal(a.Value); ok {
+				return a.Name.Value, v, false
+			}
+			return a.Name.Value, unknownWord, false
+		}
+		return a.Name.Value, oneValue, false
+	}
+	if a.Value == nil {
+		return "", "", false
 	}
 	v, ok := literal(a.Value)
 	if !ok {
-		if a.Name.Value == "HUSKY" || a.Name.Value == "HUSKY_SKIP_HOOKS" {
-			return []string{unseenIn(a.Name.Value, "its value expands when it runs")}
-		}
-		return nil
+		return "", "", true
 	}
-	if r := HooksOff(a.Name.Value, v); r != "" {
+	if strings.HasPrefix(v, "-") || strings.HasPrefix(v, "+") {
+		return "", "", false
+	}
+	name, value, _ = strings.Cut(v, "=")
+	return name, value, false
+}
+
+// assignAsks is HooksOff for what an assignment sets, and asks if it can't read what that is.
+func assignAsks(a *syntax.Assign) []string {
+	name, value, dynamic := declared(a)
+	switch {
+	case dynamic:
+		return []string{unseen("a declaration expands when it runs, and may set any variable")}
+	case isHookVar(name) && value == unknownWord:
+		return []string{unseenIn(name, "its value expands when it runs")}
+	}
+	if r := HooksOff(name, value); r != "" {
 		return []string{r}
 	}
 	return nil

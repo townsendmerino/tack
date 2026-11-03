@@ -384,6 +384,14 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`echo -rf src | xargs rm`, `echo --hard | xargs git reset`, `echo -fd | xargs git clean`, `echo -D main | xargs git branch`, `echo drop | xargs git stash`,
 	`echo reset --hard | xargs git`, `echo src | xargs -I node_modules rm -rf node_modules`, `xargs env rm`, `xargs find`, `xargs prisma migrate`, `xargs claude`,
 	`parallel rm ::: a`, `parallel "go test {}"`, `find . -exec git checkout {} +`, `find . -exec rm {} +`, `find . -exec git reset {} ;`,
+	// A value that splits when it runs may carry flags.
+	`msg="wip --no-verify"; git commit -m $msg`, `git commit -m $@`, `git commit -m "$@"`, `git commit -m "$*"`, `git commit --message $msg`, `git commit -F $f`, `xargs git commit -m`,
+	// Declarations that may set any variable.
+	`v="HUSKY=0"; export $v`, `declare -x $v`, `local $v`, `readonly $v`, `typeset $v`, `export "$v"`, `export "HUSKY=0"`, `read HUSKY`, `printf -v HUSKY 0`, `for HUSKY in 0; do git status; done`,
+	`v="CDPATH=.github"; export $v; cd workflows; echo x > ci.yml`, `export "CDPATH=.github"; cd workflows; echo x > ci.yml`, `read CDPATH; cd workflows; echo x > ci.yml`, `for CDPATH in .github; do cd workflows; echo x > ci.yml; done`,
+	// What a flag's value hides, and flags that move.
+	`git clean -f -e -n`, `git clean -f --exclude -n`, `git checkout /abs/no/such/path/but/src/*`, `git config core.hooksPath -hooks`,
+	`cd $x; sh ./run.sh`, `sh link/0`, `sh script.sh <&3`, `find . -exec sh script.sh ;`, `find . -exec sh script.sh {} +`, `xargs sh script.sh`,
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
 	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
@@ -400,7 +408,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
-	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
+	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `git commit -m "--no-verify"`, `git commit -m "-n" --allow-empty`, `git commit -F --no-verify`, `git clean -n -e x`, `git clean -f -n`, `export FOO=1`, `export FOO=$x`, `export FOO`, `declare -x FOO=1`, `declare -r`, `read x`, `printf -v x 0`, `for x in a; do go test; done`, `export "FOO=1"`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -422,6 +430,7 @@ func TestUnseenAndCdAskInEveryMode(t *testing.T) {
 			os.MkdirAll(filepath.Join(e.Root, "backend"), 0o755)
 			os.WriteFile(filepath.Join(e.Root, "backend", "manage.py"), []byte("#!/bin/sh\n"), 0o755)
 			os.Symlink("/dev/stdin", filepath.Join(e.Root, "stdin-link"))
+			os.Symlink("/dev/fd", filepath.Join(e.Root, "link"))
 			// A rule that would cover each program: asking has to come from the rule of §6.6, not from the mode.
 			e.Rules = []Rule{{Program: "git"}, {Program: "rm"}, {Program: "go"}, {Program: "sh"}, {Program: "env"}, {Program: "sudo"}, {Program: "timeout"}, {Program: "npx"}, {Program: "find"}}
 			for _, command := range c.catch {
@@ -498,6 +507,12 @@ func TestInnerReasonShows(t *testing.T) {
 		{`nice -n $n rm -rf src`, "rm -r src"},
 		{`env $v git reset --hard`, "reset --hard"},
 		{`sudo --no-such-flag git clean -f`, "clean -f"},
+		{`git -C $d reset --hard`, "reset --hard"},
+		{`git $x reset --hard`, "reset --hard"},
+		{`git -c a=b reset --hard`, "reset --hard"},
+		{`git --config-env=a=b clean -f`, "clean -f"},
+		{`git --work-tree=w reset --hard`, "reset --hard"},
+		{`git --no-such-flag reset --hard`, "reset --hard"},
 	} {
 		if got := strings.Join(e.AlwaysAsksIn(c.command), ";"); !strings.Contains(got, c.want) {
 			t.Errorf("%s: %q, want the inner reason %q", c.command, got, c.want)
@@ -525,7 +540,9 @@ func TestApprovalCovers(t *testing.T) {
 		{`for d in a b; do rm -rf $d; done`, []string{"rm -rf a"}, []string{"git status"}},
 		{`eval "git reset --hard"`, []string{"git reset --hard", "rm -rf src"}, nil},
 		{`eval "x"; go test`, []string{"rm -rf src"}, []string{"go test"}},
-		{`git reset --hard`, nil, []string{"git reset --hard", "rm -rf src"}}, // a reason it gave covers itself, by its text
+		{`git reset --hard`, []string{"git reset --hard"}, []string{"git reset --hard HEAD", "rm -rf src"}},
+		{`git checkout -- a.txt; git checkout b.txt`, []string{"git checkout -- a.txt"}, []string{"git checkout b.txt"}}, // the same reason, from another statement
+		{`git -C $d reset --hard`, []string{"git -C src reset --hard"}, []string{"git reset --hard"}},
 		{`cd $x; rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}},
 		{`$c x; rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}}, // $c may be cd
 		{`cd $x`, nil, []string{"rm -rf src", "git status"}},
@@ -552,15 +569,17 @@ func TestApprovalCovers(t *testing.T) {
 		{`cd $x; echo y > out.txt`, []string{"out.txt"}, []string{"CLAUDE.md"}},
 		{`echo y > out.txt`, nil, []string{"out.txt", "CLAUDE.md"}},
 		{`rm -rf $d`, nil, []string{"CLAUDE.md"}},
+		{`echo x > CLAUDE.md`, []string{"CLAUDE.md"}, []string{"sub/CLAUDE.md", "AGENTS.md"}},
+		{`(cd $d && echo a > out.txt); echo b > out.txt`, nil, []string{"out.txt"}}, // the literal one, checked first
 	} {
 		a := e.ApprovalFor(c.command)
 		for _, p := range c.covered {
-			if !a.CoversRedirect(p) {
+			if !a.CoversRedirect(p, filepath.Join(e.Root, p)) {
 				t.Errorf("%s did not cover a redirect to %s: %+v", c.command, p, a)
 			}
 		}
 		for _, p := range c.not {
-			if a.CoversRedirect(p) {
+			if a.CoversRedirect(p, filepath.Join(e.Root, p)) {
 				t.Errorf("%s covered a redirect to %s: %+v", c.command, p, a)
 			}
 		}

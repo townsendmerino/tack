@@ -253,6 +253,7 @@ func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 			for _, cmd := range []string{
 				`how=--hard; git reset $how`,
 				`set -- reset --hard; git "$@"`,
+				`d=.; git -C $d reset --hard`,
 				`eval "git reset --hard"`,
 				`d=src; rm -rf $d`,
 				`rm -rf s*`,
@@ -368,9 +369,15 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
 		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
 		{``, `F=-exec; find . $F /bin/echo {} +`, "runs another program"},
+		// The same reason, or the same file name, from another statement.
+		{``, `git checkout -- work.txt; echo x > b.txt; git add b.txt; git checkout b.txt`, "asks in every mode"},
+		{``, `echo a >> .github/workflows/ci.yml; ln -s .github/workflows/ci.yml ci.yml; echo bad > ci.yml`, "asks in every mode"},
+		{``, `d=sub; (cd $d && echo a > out.txt); ln -s CLAUDE.md out.txt; echo b > out.txt`, "asks in every mode"},
 	} {
 		s := session(t, true)
 		destroyRepo(t, s)
+		os.MkdirAll(filepath.Join(s.Engine.Root, ".github", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(s.Engine.Root, "CLAUDE.md"), []byte("orders\n"), 0o644)
 		os.MkdirAll(filepath.Join(s.Engine.Root, "src"), 0o755)
 		if c.setup != "" {
 			if r := runBy(t, s, perms.ByUser, c.setup); r.Stopped != "" {
@@ -468,5 +475,39 @@ func TestApprovalHoldsAfterCd(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "CLAUDE.md")); string(b) != "new\n" {
 		t.Fatalf("the approved redirect did not happen: %q", b)
+	}
+}
+
+// What a flag that runs another program needs: to have been shown, in the command the user approved or in code they were shown.
+// Only a flag that appears when it runs stops.
+func TestApprovedRunFlagShown(t *testing.T) {
+	for _, cmd := range []string{`p=find; $p . -maxdepth 0 -exec /bin/echo {} +`, `eval "find . -maxdepth 0 -exec /bin/echo {} +"`} {
+		s := session(t, true)
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
+// HUSKY=0 in the session asks for every command that runs a program, seen or not, so an approved one runs.
+func TestSessionHooksReachUnresolvedPrograms(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
+	}
+	for _, cmd := range []string{`p=git; $p status`, `git status`} {
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Errorf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(s.Engine.Root, "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Engine.AlwaysAsksIn(`d=.; cd $d && ./run.sh`); !strings.Contains(strings.Join(got, ";"), "HUSKY=0") {
+		t.Errorf("a program it can't resolve: %v", got)
 	}
 }

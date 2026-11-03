@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -164,7 +163,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 	})
 	always = e.scanAsks(f, scan{dir: e.startDir()})
 	// What an earlier command exported: it reaches every program this one runs. Builtins run none, so unset gets out.
-	if slices.ContainsFunc(cmds, func(c Simple) bool { return c.Program != "" }) {
+	if runsProgram(f) {
 		for _, name := range sortedKeys(e.SessionEnv) {
 			if v := e.SessionEnv[name]; v != os.Getenv(name) {
 				if r := HooksOff(name, v); r != "" {
@@ -297,6 +296,20 @@ func (e *Engine) resolve(name string) (string, error) {
 		return "", fmt.Errorf("%s is not a program tack can find", name)
 	}
 	return real, nil
+}
+
+// runsProgram reports whether code may run a program, resolved or not: any simple command but a builtin that needs no rule.
+func runsProgram(f *syntax.File) bool {
+	runs := false
+	syntax.Walk(f, func(n syntax.Node) bool {
+		if c, ok := n.(*syntax.CallExpr); ok && len(c.Args) > 0 {
+			if name, ok := literal(c.Args[0]); !ok || !safeBuiltins[name] {
+				runs = true
+			}
+		}
+		return !runs
+	})
+	return runs
 }
 
 // resolveFrom is resolve for a command running in dir: a relative path means what it means there.

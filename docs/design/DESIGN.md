@@ -619,17 +619,19 @@ tool-use smoke set compares this merged set against the split one before it is f
     - config on `git`'s command line in any form (`-c`, `--config-env`), since an alias runs inside git and `--config-env` names
       an environment variable; any other global flag form it doesn't read (`-Cdir`), one that expands, `--work-tree`, or `--exec-path=<dir>`;
     - a word that expands where a rule would read it: an argument of `rm`, `find`, a `git` subcommand on the list, a program
-      the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value;
+      the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value; a value that may split (`git commit -m $msg`, not `"$msg"`); a declaration that
+      may set any variable (`export $v`);
     - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. Such a `cd`
       expands, is `pushd` or `popd`, is under a wrapper, or may not run in order (in a function, branch, loop, pipeline or process
       substitution, negated, in the background, after `||`, with more than one target, or with a redirection or assignment on
       it); setting `CDPATH` counts too. The `cd` itself doesn't ask: `cd "$d" && go test` runs;
   - **The run-time check is a second layer, and nothing depends on it alone** (`internal/shell`, the exec and open checks).
     It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user's yes
-    covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): a reason it gave, by its text, and a command
-    it said it couldn't see, with a hole where that command expands. `rm -rf $d` covers `rm -rf src` and not a later literal
-    `rm -rf build`. Only `eval`, `source` and `trap` can cover anything, since their code can be anything, and never a command
-    shown in full. Whatever was approved, a flag that makes a program run another (`perms.RunFlag`) stays checked.
+    covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): each command the parse asked about, with a hole
+    where it expands, and each redirection, by its resolved path. It goes by the statement, never by what a reason says, since two
+    statements can say the same. `rm -rf $d` covers `rm -rf src` and not a later literal `rm -rf build`. Only `eval`, `source`,
+    `trap` and a declaration that expands can cover anything, since they can be anything, and never a command shown in full. Whatever
+    was approved, a flag that makes a program run another (`perms.RunFlag`) must have been shown.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
     such a loss undoable.

@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -348,11 +347,11 @@ func (ck *checker) stop(format string, args ...any) error {
 }
 
 // everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer, behind
-// the parse. A user's yes covers a reason it gave, by its text, and what it said it couldn't see (covered, perms.Approval), and
-// nothing else. It returns the stop's error, or nil.
+// the parse. A user's yes covers what it asked about (covered, perms.Approval), and nothing else. It returns the stop's error, or
+// nil.
 func (ck *checker) everyMode(why []string, ran string, covered bool) error {
 	for _, w := range why {
-		if ck.byUser() && (covered || slices.Contains(ck.req.Scope.Reasons, w)) {
+		if ck.byUser() && covered {
 			continue
 		}
 		return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", w, ran)
@@ -397,7 +396,7 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			return next(ctx, args)
 		}
 		for _, a := range args[1:] {
-			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] {
+			if f := perms.RunFlag(path, a); f != "" && !ck.runFlags[path+" "+f] && !(ck.byUser() && ck.req.Scope.Shows(a)) {
 				return ck.stop("%s %s runs another program, and approval did not see it (the command expanded to: %s)",
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
@@ -435,7 +434,7 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 	}
 	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0
 	if write && p != "/dev/null" {
-		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, ck.req.Scope.CoversRedirect(path)); err != nil {
+		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, ck.req.Scope.CoversRedirect(path, filepath.Clean(p))); err != nil {
 			return nil, err
 		}
 	}
