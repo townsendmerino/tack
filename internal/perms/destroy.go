@@ -859,7 +859,7 @@ func runnerRead(name string, r runner, args []string) (why []string, prog int, u
 }
 
 // programsFrom returns where the program may be in a runner's words: at i, or, after a flag it can't read, which may take the next word, at any
-// word from there that isn't a flag.
+// word from there.
 func programsFrom(args []string, i int, unsure bool) []int {
 	if i < 0 {
 		return nil
@@ -869,7 +869,7 @@ func programsFrom(args []string, i int, unsure bool) []int {
 	}
 	var out []int
 	for j := i; j < len(args); j++ {
-		if args[j] != unknownWord && !strings.HasPrefix(args[j], "-") {
+		if args[j] != unknownWord {
 			out = append(out, j)
 		}
 	}

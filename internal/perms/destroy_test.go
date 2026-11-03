@@ -556,6 +556,8 @@ func TestInnerReasonShows(t *testing.T) {
 		{`env -iu FOO git reset --hard`, "reset --hard"},
 		{`sudo -nu root git reset --hard`, "reset --hard"},
 		{`sudo -C 3 git clean -f`, "clean -f"},
+		{`echo x | sudo -C 3 sh script.sh`, "handed code"},
+		{`echo x | env -iu FOO sh script.sh`, "handed code"},
 		{`sudo FOO=1 git reset --hard`, "reset --hard"},
 		{`git -C $d reset --hard`, "reset --hard"},
 		{`git $x reset --hard`, "reset --hard"},
