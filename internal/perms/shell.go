@@ -159,7 +159,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 			}
 			why = append(why, reasons...)
 		case *syntax.Redirect:
-			why = append(why, e.redirect(n)...)
+			why = append(why, e.redirect(n, dir)...)
 		}
 	})
 	always = e.scanAsks(f, scan{dir: e.startDir()})
@@ -245,9 +245,9 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 	return nil, nil
 }
 
-// redirect checks an output redirection's target: it must be literal and inside the workspace, or /dev/null. It sees
-// the shell's own redirections only; where the programs write is the sandbox's to enforce.
-func (e *Engine) redirect(r *syntax.Redirect) []string {
+// redirect checks an output redirection's target, read from dir: it must be literal and inside the workspace, or /dev/null. It
+// sees the shell's own redirections only; where the programs write is the sandbox's to enforce.
+func (e *Engine) redirect(r *syntax.Redirect, dir string) []string {
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll:
 	default:
@@ -265,7 +265,7 @@ func (e *Engine) redirect(r *syntax.Redirect) []string {
 	}
 	p := target
 	if !filepath.IsAbs(p) {
-		p = filepath.Join(e.Root, p)
+		p = filepath.Join(dir, p)
 	}
 	if !within(e.root(), resolveExisting(filepath.Clean(p))) {
 		return []string{"a redirection writes outside the repository: " + target + " (this checks the shell's " +

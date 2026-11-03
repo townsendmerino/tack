@@ -609,7 +609,7 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **The rule (2026-11-02): when the parse cannot see exactly what will run, it asks, in every mode.** It does not read
     code inside text, or guess. These all ask:
     - `eval`, `trap`, `source` and `.`, and a program name that expands;
-    - a shell handed code in any way, under any wrapper or flags: `-c`, `-s`, a script that is stdin (`/dev/stdin`, `/dev/fd/N`,
+    - a shell handed code in any way, under any wrapper or flags, on a block or subshell around it too: `-c`, `-s`, a script that is stdin (`/dev/stdin`, `/dev/fd/N`,
       `/proc/…/fd/N`, or a symlink to one), and anything fed to it: a pipe (`curl … | sh` too), `<`, a here-document or a
       here-string, even with a named script;
     - what takes its arguments from stdin or a search, where a rule would read them: `xargs rm`, `find -exec git checkout {} +`, and
@@ -620,13 +620,16 @@ tool-use smoke set compares this merged set against the split one before it is f
       an environment variable; any other global flag form it doesn't read (`-Cdir`), one that expands, `--work-tree`, or `--exec-path=<dir>`;
     - a word that expands where a rule would read it: an argument of `rm`, `find`, a `git` subcommand on the list, a program
       the data-loss rules name, or another agent; an output redirection's target; `HUSKY`'s value;
-    - a `cd` it can't place: one that expands, `pushd` or `popd`, one under a wrapper, or one that may not run in order (in a
-      function, branch, loop, pipeline or process substitution, negated, in the background, after `||`, with more than one
-      target, or with a redirection or assignment on it); and setting `CDPATH`.
+    - after a `cd` it can't place, anything that reads a path: a relative redirection, `rm`'s targets, `git checkout`. Such a `cd`
+      expands, is `pushd` or `popd`, is under a wrapper, or may not run in order (in a function, branch, loop, pipeline or process
+      substitution, negated, in the background, after `||`, with more than one target, or with a redirection or assignment on
+      it); setting `CDPATH` counts too. The `cd` itself doesn't ask: `cd "$d" && go test` runs;
   - **The run-time check is a second layer, and nothing depends on it alone** (`internal/shell`, the exec and open checks).
-    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. An approval
-    covers what it showed and nothing else: a reason it gave, or what it said couldn't be seen (`rm`'s arguments; or anything
-    at all, for `eval`). Every other check stays on.
+    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user's yes
+    covers what it showed and nothing else (`internal/perms/destroy.go:Approval`): a reason it gave, by its text, and a command
+    it said it couldn't see, with a hole where that command expands. `rm -rf $d` covers `rm -rf src` and not a later literal
+    `rm -rf build`. Only `eval`, `source` and `trap` can cover anything, since their code can be anything, and never a command
+    shown in full. Whatever was approved, a flag that makes a program run another (`perms.RunFlag`) stays checked.
   - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
     code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
     such a loss undoable.

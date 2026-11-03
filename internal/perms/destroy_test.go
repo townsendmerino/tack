@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // The must-catch and near-miss commands here are ported from AgentTrail's guardrail library,
@@ -346,8 +347,10 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`echo x > "$f"`, `echo x >> $f`, `echo x 1<>CLAUDE.md`, `echo x &>> CLAUDE.md`,
 	// Hooks, by a value that expands.
 	`HUSKY=$x git status`, `x=0; export HUSKY=$x`, `HUSKY_SKIP_HOOKS=$x env git status`,
-	// A directory it can't follow.
-	`cd $x && go test`, `cd - && go test`, `cd && go test`,
+	// After a cd it can't follow, what reads a path asks.
+	`cd $x; echo x > out.txt`, `cd -; rm -rf build`, `cd; git checkout main`, `cd $x && rm -rf node_modules`, `pushd src; echo x > out.txt`, `popd; rm -r build`,
+	`CDPATH=.github; cd workflows; echo x > ci.yml`, `export CDPATH=.github; cd workflows; echo x > ci.yml`, `CDPATH=.github cd workflows; echo x > ci.yml`,
+	`cd $x; echo x >> y`, `cd $x; echo x 1<>y`,
 	// A command it can't parse.
 	`echo "`,
 	// Git's config on the command line, whatever it sets: an alias runs inside git, and --config-env's value is an
@@ -357,10 +360,10 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	// command -v only as command's first word.
 	`command rm -rf -v src`, `command sh -v -c "git reset --hard"`, `command env -v git reset --hard`,
 	// What runs under builtin and command, and through a name that resolves to it.
-	`builtin eval 'export HUSKY=0'`, `command . x.sh`, `command source x.sh`, `builtin trap "x" EXIT`, `builtin cd $x`, `command eval "x"`, `env eval "x"`,
+	`builtin eval 'export HUSKY=0'`, `command . x.sh`, `command source x.sh`, `builtin trap "x" EXIT`, `builtin cd $x; rm -rf build`, `command eval "x"`, `env eval "x"`,
 	// A cd it can't place: paths after it would be read from the wrong directory.
 	`cd .github/workflows; f() { cd ../..; }; echo x > ci.yml`, `cd .github/workflows && true | cd ../..; echo x > ci.yml`,
-	`cd .github/workflows && cd ../.. > ci.yml`, `cd ~ && echo x > ci.yml`, `cd ~/x`, `builtin cd .github/workflows; echo x > ci.yml`, `command cd .github/workflows; echo x > ci.yml`,
+	`cd .github/workflows && cd ../.. > ci.yml`, `cd ~ && echo x > ci.yml`, `builtin cd .github/workflows; echo x > ci.yml`, `command cd .github/workflows; echo x > ci.yml`,
 	`cd .github/workflows; false && cd ../..; echo x > ci.yml`, `cd .github/workflows; true || cd ../..; echo x > ci.yml`,
 	`if true; then cd .github/workflows; fi; echo x > ci.yml`, `for d in a; do cd .github/workflows; done; echo x > ci.yml`, `cd .github/workflows & echo x > ci.yml`,
 	// Each of these would put the write at the root, away from the workflows it really reaches, if the cd counted.
@@ -369,11 +372,12 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`cd .github/workflows; case x in y) cd ../.. ;; esac; echo x > ci.yml`, `cd .github/workflows; cd ../.. | true; echo x > ci.yml`, `cd .github/workflows; cd . || cd ../..; echo x > ci.yml`,
 	`cd .github/workflows; true |& cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. &
 	echo x > ci.yml`,
-	`pushd .github/workflows; echo x > ci.yml`, `popd`, `CDPATH=.github cd workflows`, `export CDPATH=.github`,
+	`pushd .github/workflows; echo x > ci.yml`,
 	// A cd that doesn't move what follows as it reads.
 	`cd .github/workflows; ! cd . && cd ../..; echo x > ci.yml`, `cd .github/workflows; ! cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. extra; echo x > ci.yml`,
 	`cd .github/workflows; cat <(cd ../..); echo x > ci.yml`,
 	// A shell fed by stdin, whatever its script argument says.
+	`echo "git reset --hard" | { sh script.sh; }`, `(sh script.sh) <<< "git reset --hard"`, `{ sh script.sh; } < in.txt`, `echo x | (true; sh script.sh)`, `sh script.sh <> in.txt`,
 	`echo "git reset --hard" | sh /dev/stdin`, `sh /dev/stdin <<< "git reset --hard"`, `sh /dev/fd/0`, `sh /dev/fd/3 3< x`, `bash /proc/self/fd/0`, `sh /proc/1/fd/0`, `sh /dev/stdin`,
 	`sh ./stdin-link`, `echo y | sh script.sh`, `sh script.sh < in.txt`, `sh script.sh <<< y`, "sh script.sh <<EOF\ny\nEOF", `echo y | env sh script.sh`, `true | echo y | timeout 5 sh script.sh`,
 	// What takes its arguments from stdin: each is a word it can't see.
@@ -381,6 +385,9 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`echo reset --hard | xargs git`, `echo src | xargs -I node_modules rm -rf node_modules`, `xargs env rm`, `xargs find`, `xargs prisma migrate`, `xargs claude`,
 	`parallel rm ::: a`, `parallel "go test {}"`, `find . -exec git checkout {} +`, `find . -exec rm {} +`, `find . -exec git reset {} ;`,
 	// Forms the rules missed.
+	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
+	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
+	`t=5; timeout $t git reset --hard`, `n=5; nice -n $n rm -rf src`, `v=FOO=1; env $v git reset --hard`,
 	`find . -delete`, `find . -name x -delete`, `find . -fprint CLAUDE.md`, `find . -fls out`, `git checkout '*.ts'`, `git checkout 'src/*'`, `git checkout ':/src'`, `git checkout "a?c"`,
 	`git --work-tree=src checkout api.ts`, `git --work-tree src status`, `git --exec-path=/tmp/x status`,
 	// Words that expand, for the rules that read them.
@@ -393,7 +400,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
-	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
+	`echo x | grep sh`, `grep sh < in.txt`, `grep -c bash <<< x`, `(cd $x); echo x > out.txt`, `y=$(cd $x); echo x > out.txt`, `(cd $x; go test); rm -rf build`, `echo x | env grep sh`, `echo x | timeout 5 grep sh`, `env grep sh < in.txt`, `cd $x && go test`, `cd - && go test`, `cd && go test`, `popd`, `export CDPATH=.github`, `cd $x; echo $y`, `cd $x; echo x > /dev/null`, `xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -483,37 +490,114 @@ func TestRmThroughASymlinkIntoHooks(t *testing.T) {
 	}
 }
 
-// What an approval covers: a fixed reason covers itself, and a reason that says something can't be seen covers what it said
-// that about, or everything if the code as a whole can't be.
-func TestUnseenScope(t *testing.T) {
+// A wrapper's word that expands doesn't hide the reason for what it runs, so the user is shown it.
+func TestInnerReasonShows(t *testing.T) {
+	e := destroyEngine(t)
+	for _, c := range []struct{ command, want string }{
+		{`timeout $t git reset --hard`, "reset --hard"},
+		{`nice -n $n rm -rf src`, "rm -r src"},
+		{`env $v git reset --hard`, "reset --hard"},
+		{`sudo --no-such-flag git clean -f`, "clean -f"},
+	} {
+		if got := strings.Join(e.AlwaysAsksIn(c.command), ";"); !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want the inner reason %q", c.command, got, c.want)
+		}
+	}
+}
+
+// What an approval covers when a command runs: a command it showed as something it couldn't see, with what expands as a hole.
+// A command it showed in full, for no reason, is what it is, and no hole covers it.
+func TestApprovalCovers(t *testing.T) {
 	e := destroyEngine(t)
 	for _, c := range []struct {
-		command, scope string
-		unseen         bool
+		command string
+		covered []string
+		not     []string
 	}{
-		{"git reset --hard", "", false},
-		{"HUSKY=0 go test", "", false},
-		{"echo x > CLAUDE.md", "", false},
-		{"rm -rf $d", "rm", true},
-		{"git reset $how", "git", true},
-		{"find . $x", "find", true},
-		{"env $v go test", "env", true},
-		{"claude $x", "claude", true},
-		{"alembic downgrade $x", "alembic", true},
-		{"echo x > $f", ScopeRedirect, true},
-		{"HUSKY=$x go test", "HUSKY", true},
-		{"$p status", "", true},
-		{`eval "x"`, "", true},
-		{"cd $x", "", true},
+		{`rm -rf $d`, []string{"rm -rf src", "rm -rf a b", "rm -rf"}, []string{"rm -f src", "git status", "rm src"}},
+		{`d=x; rm -rf $d; rm -rf build`, []string{"rm -rf src"}, []string{"rm -rf build"}},
+		{`env git reset $how`, []string{"env git reset --hard"}, []string{"git reset --hard", "env git clean -f"}},
+		{`timeout $t git reset --hard`, []string{"timeout 5 git reset --hard"}, []string{"timeout 5 git clean -f"}},
+		{`sudo rm -rf $d`, []string{"sudo rm -rf src"}, []string{"rm -rf src"}},
+		{`npx prisma migrate $x`, []string{"npx prisma migrate reset"}, []string{"npx prisma db push"}},
+		{`$p status`, []string{"git status", "/bin/echo status"}, []string{"git reset --hard"}},
+		{`command git reset $how`, []string{"git reset --hard"}, []string{"git clean -f"}},
+		{`for d in a b; do rm -rf $d; done`, []string{"rm -rf a"}, []string{"git status"}},
+		{`eval "git reset --hard"`, []string{"git reset --hard", "rm -rf src"}, nil},
+		{`eval "x"; go test`, []string{"rm -rf src"}, []string{"go test"}},
+		{`git reset --hard`, nil, []string{"git reset --hard", "rm -rf src"}}, // a reason it gave covers itself, by its text
+		{`cd $x; rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}},
+		{`cd $x`, nil, []string{"rm -rf src", "git status"}},
 	} {
-		asks := e.AlwaysAsksIn(c.command)
-		if len(asks) == 0 {
-			t.Errorf("%s did not ask", c.command)
-			continue
+		a := e.ApprovalFor(c.command)
+		for _, ran := range c.covered {
+			if !a.Covers(strings.Fields(ran)) {
+				t.Errorf("%s did not cover %s: %+v", c.command, ran, a)
+			}
 		}
-		scope, unseen := UnseenScope(asks[0])
-		if unseen != c.unseen || (unseen && scope != c.scope) {
-			t.Errorf("%s: %q: scope %q unseen %v, want %q %v", c.command, asks[0], scope, unseen, c.scope, c.unseen)
+		for _, ran := range c.not {
+			if a.Covers(strings.Fields(ran)) {
+				t.Errorf("%s covered %s: %+v", c.command, ran, a)
+			}
 		}
+	}
+	for _, c := range []struct {
+		command string
+		covered []string
+		not     []string
+	}{
+		{`echo x > $f`, []string{"CLAUDE.md", "any"}, nil},
+		{`echo x > $f; echo y > out.txt`, []string{"CLAUDE.md"}, []string{"out.txt"}},
+		{`cd $x; echo y > out.txt`, []string{"out.txt"}, []string{"CLAUDE.md"}},
+		{`echo y > out.txt`, nil, []string{"out.txt", "CLAUDE.md"}},
+		{`rm -rf $d`, nil, []string{"CLAUDE.md"}},
+	} {
+		a := e.ApprovalFor(c.command)
+		for _, p := range c.covered {
+			if !a.CoversRedirect(p) {
+				t.Errorf("%s did not cover a redirect to %s: %+v", c.command, p, a)
+			}
+		}
+		for _, p := range c.not {
+			if a.CoversRedirect(p) {
+				t.Errorf("%s covered a redirect to %s: %+v", c.command, p, a)
+			}
+		}
+	}
+	if a := e.ApprovalFor(`HUSKY=$x git status`); !a.CoversVar("HUSKY") || a.CoversVar("HUSKY_SKIP_HOOKS") {
+		t.Errorf("vars: %+v", a)
+	}
+	if a := e.ApprovalFor(`git status`); a.CoversVar("HUSKY") {
+		t.Errorf("vars: %+v", a)
+	}
+}
+
+func TestOnlyCds(t *testing.T) {
+	for _, c := range []struct {
+		code string
+		want bool
+	}{
+		{"cd a", true}, {"cd a && cd b", true}, {"cd -- a", true},
+		{"! cd a", false}, {"cd a > f", false}, {"cd $x", false}, {"cd -", false}, {"cd", false}, {"cd a b", false},
+		{"true", false}, {"cd a && true", false}, {"cd a || cd b", false},
+	} {
+		f, err := syntax.NewParser().Parse(strings.NewReader(c.code), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := onlyCds(f.Stmts[0]); got != c.want {
+			t.Errorf("onlyCds(%s) = %v, want %v", c.code, got, c.want)
+		}
+	}
+}
+
+// A redirection's target is read from where the command has moved to, for the check of what leaves the repository too.
+func TestRedirectReadsFromTheDirectory(t *testing.T) {
+	e := destroyEngine(t)
+	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput(`cd src && echo x > ../ok.txt`)); v.Action != Allow {
+		t.Fatalf("a redirect inside the repository, after cd: %s %v", v.Action, v.Reasons)
+	}
+	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput(`cd src && echo x > ../../out.txt`)); v.Action != Ask {
+		t.Fatalf("a redirect outside the repository, after cd: %s %v", v.Action, v.Reasons)
 	}
 }

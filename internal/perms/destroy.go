@@ -23,8 +23,10 @@ const unknownWord = ""
 
 // scan is where a command is being read.
 type scan struct {
-	dir   string // where it runs
-	depth int    // the programs it is inside
+	dir   string    // where it runs
+	depth int       // the programs it is inside
+	lost  bool      // dir can't be read: a cd moved it where the parse can't follow (walkDirs)
+	rec   *Approval // when set, notes what it finds
 }
 
 func (sc scan) in() scan {
@@ -41,21 +43,116 @@ func unseen(what string) string { return what + unseenEnd }
 // unseenIn is the reason for a part it can't read: what a program gets, a redirection's target, a variable's value.
 func unseenIn(scope, what string) string { return scope + ": " + what + unseenEnd }
 
-// ScopeRedirect is the scope of a redirection's target.
-const ScopeRedirect = "redirect"
+// isUnseen reports whether a reason says something can't be seen.
+func isUnseen(reason string) bool { return strings.HasSuffix(reason, unseenEnd) }
 
-// UnseenScope reports whether a reason says something can't be seen, and what: a program's name, ScopeRedirect, a variable,
-// or "" for anything. A user who approved it was told so, and approved what it turns out to be, there. A reason that isn't
-// one covers only itself.
-func UnseenScope(reason string) (scope string, unseen bool) {
-	head, ok := strings.CutSuffix(reason, unseenEnd)
-	if !ok {
-		return "", false
+// runsTextEnd ends what a reason says of code run from text, which may be anything.
+const runsTextEnd = " runs code from text"
+
+// hole stands in Approval for a word that expands: it matches any number of words.
+const hole = "\x00"
+
+// Approval is what a user's yes to a command covers when the command runs (DESIGN §6.6). A reason it gave covers itself, by its
+// text. A command it showed as something it couldn't see covers what it turns out to be: its words, with a hole where they
+// expand. Nothing else is covered, and a command it showed in full, with nothing to say about it, is what it is: no hole
+// covers it, so what only shows when it runs still stops it.
+type Approval struct {
+	Reasons  []string   `json:"reasons"`  // every reason the parse asked
+	Anything bool       `json:"anything"` // it runs code from text, so anything may run: eval, source, trap
+	Commands [][]string `json:"commands"` // the commands it couldn't see, with holes
+	Literal  [][]string `json:"literal"`  // the commands it could
+	// Redirects are the targets it couldn't see, hole for one that expands; LiteralRedirects are those it could.
+	Redirects        []string `json:"redirects"`
+	LiteralRedirects []string `json:"literal_redirects"`
+	Vars             []string `json:"vars"` // the variables whose value it couldn't see
+}
+
+// ApprovalFor is what a user's yes to command covers.
+func (e *Engine) ApprovalFor(command string) Approval {
+	a := Approval{Reasons: e.AlwaysAsksIn(command)}
+	if f, err := syntax.NewParser().Parse(strings.NewReader(command), ""); err == nil {
+		e.scanAsks(f, scan{dir: e.startDir(), rec: &a})
 	}
-	if s, _, ok := strings.Cut(head, ": "); ok && !strings.Contains(s, " ") {
-		return s, true
+	return a
+}
+
+// Covers reports whether a yes covers a program run with args, as it runs: args[0] as written, and its arguments expanded.
+func (a Approval) Covers(args []string) bool {
+	isArgs := func(c []string) bool { return slices.Equal(c, args) }
+	if slices.ContainsFunc(a.Literal, isArgs) {
+		return false
 	}
-	return "", true
+	return a.Anything || slices.ContainsFunc(a.Commands, func(c []string) bool { return matchHoles(c, args) })
+}
+
+// CoversRedirect reports whether a yes covers a redirection to target, as it expanded.
+func (a Approval) CoversRedirect(target string) bool {
+	switch {
+	case slices.Contains(a.Redirects, target):
+		return true
+	case slices.Contains(a.LiteralRedirects, target):
+		return false
+	}
+	return a.Anything || slices.Contains(a.Redirects, hole)
+}
+
+// CoversVar reports whether a yes covers a variable's value.
+func (a Approval) CoversVar(name string) bool { return a.Anything || slices.Contains(a.Vars, name) }
+
+// matchHoles reports whether words match pattern, a hole taking any number of them.
+func matchHoles(pattern, words []string) bool {
+	if len(pattern) == 0 {
+		return len(words) == 0
+	}
+	if pattern[0] == hole {
+		for i := 0; i <= len(words); i++ {
+			if matchHoles(pattern[1:], words[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	return len(words) > 0 && pattern[0] == words[0] && matchHoles(pattern[1:], words[1:])
+}
+
+// record notes one simple command and what the parse said about it. The interpreter runs command, builtin and exec itself, so what
+// it hands on is the command under them.
+func (a *Approval) record(words []*syntax.Word, why []string) {
+	argv, lit := args(words)
+	whole := !slices.Contains(lit, false)
+	for i := range argv {
+		if !lit[i] {
+			argv[i] = hole
+		}
+	}
+	for len(argv) > 1 && (argv[0] == "command" || argv[0] == "builtin" || argv[0] == "exec") {
+		argv = argv[1:]
+		for len(argv) > 1 && strings.HasPrefix(argv[0], "-") {
+			argv = argv[1:]
+		}
+	}
+	saw := slices.ContainsFunc(why, isUnseen)
+	switch {
+	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
+		a.Anything = true
+	case saw:
+		a.Commands = append(a.Commands, argv)
+	case whole:
+		a.Literal = append(a.Literal, argv)
+	}
+}
+
+// recordRedirect notes one output redirection and what the parse said about it.
+func (a *Approval) recordRedirect(r *syntax.Redirect, why []string) {
+	target, ok := literal(r.Word)
+	switch {
+	case !ok:
+		a.Redirects = append(a.Redirects, hole)
+	case slices.ContainsFunc(why, isUnseen):
+		a.Redirects = append(a.Redirects, target)
+	default:
+		a.LiteralRedirects = append(a.LiteralRedirects, target)
+	}
 }
 
 // AlwaysAsks returns why s asks in every mode, one reason per cause, or nil. dir is where s runs, for its relative paths.
@@ -93,13 +190,15 @@ func (e *Engine) startDir() string {
 	return e.Root
 }
 
-// walkDirs visits every node under node in order, with where it runs: dir, until a cd it can place moves it. A subshell's
-// or a substitution's cd ends with it. placed is false for a simple command that may not run in order (cdPlaced).
-func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string, placed bool)) {
+// walkDirs visits every node under node in order, with where it runs: dir, moved by each cd it can place. lost is true after a cd it
+// can't, or a change of CDPATH: paths from there on can't be read. A subshell's or a substitution's cd ends with it.
+func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string, lost bool)) {
 	type frame struct {
 		node syntax.Node
 		dir  string
+		lost bool
 	}
+	lost := false
 	var stack []frame
 	syntax.Walk(node, func(n syntax.Node) bool {
 		if n == nil {
@@ -107,33 +206,58 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 			stack = stack[:len(stack)-1]
 			switch top.node.(type) {
 			case *syntax.Subshell, *syntax.CmdSubst:
-				dir = top.dir
+				dir, lost = top.dir, top.lost
 			}
 			return true
 		}
-		placed := true
-		if c, ok := n.(*syntax.CallExpr); ok {
-			path := make([]syntax.Node, len(stack))
-			for i, f := range stack {
-				path[i] = f.node
-			}
-			placed = cdPlaced(path, c)
+		path := make([]syntax.Node, len(stack))
+		for i, f := range stack {
+			path[i] = f.node
 		}
-		stack = append(stack, frame{n, dir})
-		visit(n, dir, placed)
-		if c, ok := n.(*syntax.CallExpr); ok && len(c.Args) > 0 && placed {
-			if to, ok := cdTarget(c.Args, dir); ok {
+		stack = append(stack, frame{n, dir, lost})
+		visit(n, dir, lost)
+		switch n := n.(type) {
+		case *syntax.Assign:
+			lost = lost || (n.Name != nil && n.Name.Value == "CDPATH")
+		case *syntax.CallExpr:
+			if len(n.Args) == 0 || !movesDir(n.Args) {
+				return true
+			}
+			name, _ := literal(n.Args[0])
+			to, ok := cdTarget(n.Args, dir)
+			if name == "cd" && ok && cdPlaced(path, n) {
 				dir = to
+			} else {
+				lost = true
 			}
 		}
 		return true
 	})
 }
 
+// movesDir reports whether a simple command may change the shell's directory: cd, pushd or popd, under builtin or command too, or a
+// program that expands, which may be any of them.
+func movesDir(words []*syntax.Word) bool {
+	for _, w := range words {
+		name, ok := literal(w)
+		if !ok {
+			return true
+		}
+		switch name {
+		case "cd", "pushd", "popd":
+			return true
+		case "builtin", "command":
+			continue
+		}
+		return false
+	}
+	return false
+}
+
 // cdPlaced reports whether call, under the nodes in path, runs exactly once and in order, so that a cd in it moves what
 // follows. A function body, a branch, a loop, a pipeline, a process substitution, the background, a negated statement and the
-// right-hand side of || may not; a statement with a redirection opens it before the cd moves; an assignment on it may be CDPATH. The right-hand side of && counts
-// only after cds, whose failure stops the chain.
+// right-hand side of || may not; a statement with a redirection opens it before the cd moves; an assignment on it may be CDPATH.
+// The right-hand side of && counts only after cds, whose failure stops the chain.
 func cdPlaced(path []syntax.Node, call *syntax.CallExpr) bool {
 	if len(call.Assigns) > 0 {
 		return false
@@ -158,15 +282,19 @@ func cdPlaced(path []syntax.Node, call *syntax.CallExpr) bool {
 	return true
 }
 
-// onlyCds reports whether a statement is cds joined by &&.
+// onlyCds reports whether a statement is cds it can place, joined by &&.
 func onlyCds(s *syntax.Stmt) bool {
+	if s.Negated || s.Background || len(s.Redirs) > 0 {
+		return false
+	}
 	switch c := s.Cmd.(type) {
 	case *syntax.BinaryCmd:
 		return c.Op == syntax.AndStmt && onlyCds(c.X) && onlyCds(c.Y)
 	case *syntax.CallExpr:
 		if len(c.Args) > 0 {
 			name, ok := literal(c.Args[0])
-			return ok && name == "cd"
+			_, placed := cdTarget(c.Args, "")
+			return ok && name == "cd" && placed
 		}
 	}
 	return false
@@ -194,26 +322,38 @@ func cdTarget(words []*syntax.Word, dir string) (string, bool) {
 	return dir, false // to $HOME
 }
 
-// scanAsks is AlwaysAsks for every simple command under node. It doesn't need a program to resolve: a command that fails
-// to may still be there when it runs.
+// scanAsks is AlwaysAsks for every simple command under node, noting what it finds in sc.rec if set. It doesn't need a program to
+// resolve: a command that fails to may still be there when it runs.
 func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 	var why []string
-	walkDirs(node, sc.dir, func(n syntax.Node, dir string, placed bool) {
+	walkDirs(node, sc.dir, func(n syntax.Node, dir string, lost bool) {
 		sc := sc
-		sc.dir = dir
+		sc.dir, sc.lost = dir, lost
 		switch n := n.(type) {
 		case *syntax.Assign:
-			why = appendNew(why, assignAsks(n)...)
+			asks := assignAsks(n)
+			if sc.rec != nil && n.Name != nil && slices.ContainsFunc(asks, isUnseen) {
+				sc.rec.Vars = append(sc.rec.Vars, n.Name.Value)
+			}
+			why = appendNew(why, asks...)
 		case *syntax.BinaryCmd, *syntax.Stmt:
 			why = appendNew(why, stdinAsks(n)...)
 		case *syntax.Redirect:
-			why = appendNew(why, e.redirectAsks(n, sc)...)
+			if !writes(n) {
+				return
+			}
+			asks := e.redirectAsks(n, sc)
+			if sc.rec != nil {
+				sc.rec.recordRedirect(n, asks)
+			}
+			why = appendNew(why, asks...)
 		case *syntax.CallExpr:
 			if len(n.Args) > 0 {
-				why = appendNew(why, e.callAsks(n.Args, sc)...)
-				if name, ok := literal(n.Args[0]); ok && name == "cd" && !placed {
-					why = appendNew(why, unseen("this cd may not run in order, and paths after it depend on it"))
+				asks := e.callAsks(n.Args, sc)
+				if sc.rec != nil {
+					sc.rec.record(n.Args, asks)
 				}
+				why = appendNew(why, asks...)
 			}
 		}
 	})
@@ -225,12 +365,6 @@ func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 	name, ok := literal(words[0])
 	if !ok {
 		return []string{unseen("the program " + source(words[0]) + " expands when it runs")}
-	}
-	if name == "cd" {
-		if _, ok := cdTarget(words, sc.dir); !ok {
-			return []string{unseen("cd's target expands when it runs, and paths after it depend on it")}
-		}
-		return nil
 	}
 	argv, lit := args(words[1:])
 	for i := range argv {
@@ -250,21 +384,26 @@ func (e *Engine) programAsks(name string, args []string, sc scan) []string {
 	return why
 }
 
-// redirectAsks is PathAsks for a redirection that writes, and asks for one whose target expands.
-func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
+// writes reports whether a redirection writes its target.
+func writes(r *syntax.Redirect) bool {
 	switch r.Op {
 	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
-	default:
-		return nil
+		return r.Word != nil
 	}
-	if r.Word == nil {
-		return nil
-	}
+	return false
+}
+
+// redirectAsks is PathAsks for a redirection that writes, and asks for one whose target it can't read: it expands, or it is relative
+// to a directory it has lost.
+func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
 	target, ok := literal(r.Word)
 	if !ok {
-		return []string{unseenIn(ScopeRedirect, "a redirection to "+source(r.Word)+" expands when it runs")}
+		return []string{unseenIn("redirect", "a redirection to "+source(r.Word)+" expands when it runs")}
 	}
 	if !filepath.IsAbs(target) {
+		if sc.lost {
+			return []string{unseenIn("redirect", "a redirection to "+target+" follows a cd that can't be read")}
+		}
 		target = filepath.Join(sc.dir, target)
 	}
 	return e.PathAsks(target)
@@ -282,10 +421,7 @@ func (e *Engine) wordsAsk(name string, args []string, sc scan) []string {
 		return []string{unseen(name + " nests too many programs")}
 	}
 	if stringRunners[name] {
-		return []string{unseen(name + " runs code from text")}
-	}
-	if name == "cd" || name == "pushd" || name == "popd" { // callAsks reads a plain cd: this one is under a wrapper
-		return []string{unseen(name + " here can't be followed, and paths after it depend on it")}
+		return []string{unseen(name + runsTextEnd)}
 	}
 	if safeBuiltins[name] {
 		return nil
@@ -349,31 +485,47 @@ var runners = map[string]runner{
 }
 
 func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []string {
-	valued, plain, hidden := strings.Fields(r.valued), strings.Fields(r.plain), strings.Fields(r.unseen)
 	if name == "command" && len(args) > 0 && (args[0] == "-v" || args[0] == "-V") {
 		return nil // it looks a program up, and runs nothing
 	}
-	var why []string
+	why, i := runnerRead(name, r, args)
+	if i < 0 {
+		return why
+	}
+	rest := args[i+1:]
+	if name == "xargs" { // it adds words from stdin, which can't be seen
+		rest = append(slices.Clone(rest), unknownWord)
+	}
+	return appendNew(why, e.programAsks(args[i], rest, sc.in())...)
+}
+
+// runnerRead reads a runner's own words, and returns why they ask and the index of the program it runs, or -1. A word it can't read
+// doesn't stop it, so what the runner runs is still shown. A flag it can't follow does.
+func runnerRead(name string, r runner, args []string) (why []string, prog int) {
+	valued, plain, hidden := strings.Fields(r.valued), strings.Fields(r.plain), strings.Fields(r.unseen)
 	skip := r.skip
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		flag, value, hasValue := strings.Cut(a, "=")
 		switch {
 		case a == unknownWord:
-			return appendNew(why, unseenIn(name, "an argument expands when it runs"))
+			why = appendNew(why, unseenIn(name, "an argument expands when it runs"))
+			if skip > 0 {
+				skip--
+			}
 		case a == "--":
 		case slices.Contains(hidden, flag) || (len(a) > 2 && slices.Contains(hidden, a[:2])):
-			return appendNew(why, unseenIn(name, flag+" can't be followed"))
+			return appendNew(why, unseenIn(name, flag+" can't be followed")), -1
 		case slices.Contains(valued, a):
 			i++
 			if i < len(args) && args[i] == unknownWord {
-				return appendNew(why, unseenIn(name, "a value of "+a+" expands when it runs"))
+				why = appendNew(why, unseenIn(name, "a value of "+a+" expands when it runs"))
 			}
 		case hasValue && slices.Contains(valued, flag):
 		case !strings.HasPrefix(a, "--") && len(a) > 2 && a[0] == '-' && slices.Contains(valued, a[:2]): // -n5
 		case slices.Contains(plain, a):
 		case strings.HasPrefix(a, "-") && len(a) > 1:
-			return appendNew(why, unseenIn(name, "the flag "+a+" isn't one it knows"))
+			why = appendNew(why, unseenIn(name, "the flag "+a+" isn't one it knows"))
 		case name == "env" && hasValue:
 			if r := HooksOff(flag, value); r != "" {
 				why = appendNew(why, r)
@@ -381,14 +533,10 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 		case skip > 0:
 			skip--
 		default:
-			rest := args[i+1:]
-			if name == "xargs" { // it adds words from stdin, which can't be seen
-				rest = append(slices.Clone(rest), unknownWord)
-			}
-			return appendNew(why, e.programAsks(a, rest, sc.in())...)
+			return why, i
 		}
 	}
-	return why
+	return why, -1
 }
 
 // shellAsks asks for a shell handed code in any way: -c, stdin, a script that is stdin, or a flag it can't read. A script named
@@ -425,30 +573,53 @@ func scriptIsStdin(script, dir string) bool {
 	return true
 }
 
-// feedsShell returns the shell a simple command runs, directly or under a wrapper, or "".
+// feedsShell returns the shell a simple command runs, directly or under a wrapper, or "". What the wrapper runs is read as the wrapper
+// reads it, so an argument named sh is only an argument.
 func feedsShell(words []*syntax.Word) string {
-	for i, w := range words {
-		name, ok := literal(w)
-		if !ok {
-			continue
-		}
-		if slices.Contains(shellNames, filepath.Base(name)) {
-			return filepath.Base(name)
-		}
-		if _, wrapper := runners[filepath.Base(name)]; i == 0 && !wrapper {
-			return ""
+	if len(words) == 0 {
+		return ""
+	}
+	first, ok := literal(words[0])
+	if !ok {
+		return ""
+	}
+	argv, lit := args(words[1:])
+	for i := range argv {
+		if !lit[i] {
+			argv[i] = unknownWord
 		}
 	}
-	return ""
+	name := filepath.Base(first)
+	for {
+		if slices.Contains(shellNames, name) {
+			return name
+		}
+		r, ok := runners[name]
+		if !ok {
+			return ""
+		}
+		_, i := runnerRead(name, r, argv)
+		if i < 0 {
+			return ""
+		}
+		name, argv = filepath.Base(argv[i]), argv[i+1:]
+	}
 }
 
-// stdinAsks asks for what is fed to a shell: a pipe into it, or an input redirection, a here-document or a here-string on it.
+// stdinAsks asks for what is fed to a shell: a pipe into it, or an input redirection, a here-document or a here-string on it, on a
+// block or subshell around it too.
 func stdinAsks(n syntax.Node) []string {
 	fed := func(c syntax.Command) string {
-		if call, ok := c.(*syntax.CallExpr); ok {
-			return feedsShell(call.Args)
+		shell := ""
+		if c != nil {
+			syntax.Walk(c, func(n syntax.Node) bool {
+				if call, ok := n.(*syntax.CallExpr); ok && shell == "" {
+					shell = feedsShell(call.Args)
+				}
+				return shell == ""
+			})
 		}
-		return ""
+		return shell
 	}
 	switch n := n.(type) {
 	case *syntax.BinaryCmd:
@@ -458,10 +629,10 @@ func stdinAsks(n syntax.Node) []string {
 			}
 		}
 	case *syntax.Stmt:
-		if shell := fed(n.Cmd); shell != "" {
-			for _, r := range n.Redirs {
-				switch r.Op {
-				case syntax.RdrIn, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+		for _, r := range n.Redirs {
+			switch r.Op {
+			case syntax.RdrIn, syntax.RdrInOut, syntax.Hdoc, syntax.DashHdoc, syntax.WordHdoc:
+				if shell := fed(n.Cmd); shell != "" {
 					return []string{unseenIn(shell, "it is handed code")}
 				}
 			}
@@ -479,7 +650,10 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 			why = appendNew(why, unseenIn("find", "an argument expands when it runs"))
 		case "-delete", "-fprint", "-fprint0", "-fprintf", "-fls":
 			why = appendNew(why, "find "+args[i]+" deletes or writes files, and what it matches can't be seen before it runs")
-		case "-exec", "-execdir", "-ok", "-okdir":
+		case "-execdir", "-okdir": // it runs where each match is, which paths in it depend on
+			why = appendNew(why, unseenIn("find", args[i]+" runs in each match's directory"))
+			i = len(args)
+		case "-exec", "-ok":
 			end := i + 1
 			for end < len(args) && args[end] != ";" && args[end] != "+" {
 				end++
@@ -589,6 +763,9 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			}
 		}
 	case "checkout":
+		if sc.lost && !slices.ContainsFunc(rest, func(a string) bool { return a == "-b" || a == "-B" || a == "--orphan" }) {
+			why = appendNew(why, unseenIn("git", "checkout follows a cd that can't be read"))
+		}
 		if checkoutDiscards(rest, dir) {
 			discard("checkout, used this way,")
 		}
@@ -745,6 +922,10 @@ func (e *Engine) rmAsks(args []string, sc scan) []string {
 	for _, t := range targets {
 		if t == unknownWord { // it could be a flag, a directory or the hooks
 			why = appendNew(why, unseenIn("rm", "an argument expands when it runs"))
+			continue
+		}
+		if sc.lost && !filepath.IsAbs(t) {
+			why = appendNew(why, unseenIn("rm", t+" follows a cd that can't be read"))
 			continue
 		}
 		p := t
@@ -921,9 +1102,6 @@ func HooksOff(name, value string) string {
 
 // assignAsks is HooksOff for an assignment whose value is fixed, and asks for one that expands.
 func assignAsks(a *syntax.Assign) []string {
-	if a.Name != nil && a.Name.Value == "CDPATH" {
-		return []string{unseen("CDPATH changes where a cd goes")}
-	}
 	if a.Name == nil || a.Value == nil {
 		return nil
 	}

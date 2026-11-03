@@ -45,16 +45,16 @@ type State struct {
 
 // request is what the session sends the child on stdin.
 type request struct {
-	Command    string   `json:"command"`
-	State      State    `json:"state"`
-	Root       string   `json:"root"`
-	Approved   []string `json:"approved"`    // programs approval saw, absolute and resolved
-	RunFlags   []string `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
-	Asked      []string `json:"asked"`       // why the parse asked in every mode (perms.AlwaysAsksIn): the user who approved saw these
-	Rules      []string `json:"rules"`       // the engine's rules, as written
-	Path       string   `json:"path"`        // the PATH the engine resolves rules on
-	Sandboxed  bool     `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
-	ApprovedBy string   `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
+	Command    string         `json:"command"`
+	State      State          `json:"state"`
+	Root       string         `json:"root"`
+	Approved   []string       `json:"approved"`    // programs approval saw, absolute and resolved
+	RunFlags   []string       `json:"run_flags"`   // "<program> <flag>" for run-program flags approval saw literally
+	Scope      perms.Approval `json:"scope"`       // what a user's yes to this command covers
+	Rules      []string       `json:"rules"`       // the engine's rules, as written
+	Path       string         `json:"path"`        // the PATH the engine resolves rules on
+	Sandboxed  bool           `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
+	ApprovedBy string         `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
 }
 
 // reply is what the child writes to fd 3 when the command ends.
@@ -126,7 +126,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 			}
 		}
 	}
-	req.Asked = s.Engine.AlwaysAsksIn(command)
+	req.Scope = s.Engine.ApprovalFor(command)
 	for _, r := range s.Engine.Rules {
 		req.Rules = append(req.Rules, r.String())
 	}
@@ -317,27 +317,18 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
-	asked    map[string]bool // the reasons approval showed
-	unseen   map[string]bool // the scopes it said it couldn't see (perms.UnseenScope)
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
 	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
-		asked: map[string]bool{}, unseen: map[string]bool{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
 	}
 	for _, f := range req.RunFlags {
 		ck.runFlags[f] = true
-	}
-	for _, a := range req.Asked {
-		ck.asked[a] = true
-		if scope, ok := perms.UnseenScope(a); ok {
-			ck.unseen[scope] = true
-		}
 	}
 	for _, s := range req.Rules {
 		if r, err := perms.ParseRule(s); err == nil {
@@ -356,29 +347,20 @@ func (ck *checker) stop(format string, args ...any) error {
 	return interp.ExitStatus(126)
 }
 
-// sawUnseen reports whether the user was told what a scope (perms.UnseenScope) would do can't be seen, and approved it.
-func (ck *checker) sawUnseen(scopes ...string) bool {
-	if ck.req.ApprovedBy != perms.ByUser {
-		return false
-	}
-	if ck.unseen[""] {
-		return true
-	}
-	return slices.ContainsFunc(scopes, func(s string) bool { return ck.unseen[s] })
-}
-
 // everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer, behind
-// the parse. An approval covers what it showed and nothing else: a reason it showed, or what it said couldn't be seen, in scopes
-// the reason falls under. It returns the stop's error, or nil.
-func (ck *checker) everyMode(why []string, ran string, scopes ...string) error {
+// the parse. A user's yes covers a reason it gave, by its text, and what it said it couldn't see (covered, perms.Approval), and
+// nothing else. It returns the stop's error, or nil.
+func (ck *checker) everyMode(why []string, ran string, covered bool) error {
 	for _, w := range why {
-		if ck.req.ApprovedBy == perms.ByUser && ck.asked[w] || ck.sawUnseen(scopes...) {
+		if ck.byUser() && (covered || slices.Contains(ck.req.Scope.Reasons, w)) {
 			continue
 		}
 		return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", w, ran)
 	}
 	return nil
 }
+
+func (ck *checker) byUser() bool { return ck.req.ApprovedBy == perms.ByUser }
 
 // exec checks a program as the interpreter is about to run it, after expansion.
 func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
@@ -401,20 +383,15 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
 			if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
 				if r := perms.HooksOff(name, v); r != "" {
-					if err := ck.everyMode([]string{r}, ran, name); err != nil {
+					if err := ck.everyMode([]string{r}, ran, ck.req.Scope.CoversVar(name)); err != nil {
 						return err
 					}
 				}
 			}
 		}
-		programs := []string{filepath.Base(path), filepath.Base(args[0])}
-		if err := ck.everyMode(why, ran, programs...); err != nil {
+		covered := ck.byUser() && ck.req.Scope.Covers(args)
+		if err := ck.everyMode(why, ran, covered); err != nil {
 			return err
-		}
-		// The parse told the user it couldn't see what this runs, and they approved it: the program it became is what they
-		// approved, so the checks below, of what approval saw, don't apply. Any other approval leaves them on.
-		if ck.sawUnseen(programs...) {
-			return next(ctx, args)
 		}
 		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
 			return next(ctx, args)
@@ -424,6 +401,11 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 				return ck.stop("%s %s runs another program, and approval did not see it (the command expanded to: %s)",
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
+		}
+		// The parse told the user it couldn't see what this runs, and they approved it: what it became is what they approved, so the
+		// checks below, of what approval saw, don't apply. The check above does, whatever they approved.
+		if covered {
+			return next(ctx, args)
 		}
 		if !ck.approved[path] {
 			if !ck.engine.Covers(expanded) {
@@ -453,7 +435,7 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 	}
 	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0
 	if write && p != "/dev/null" {
-		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, perms.ScopeRedirect); err != nil {
+		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, ck.req.Scope.CoversRedirect(path)); err != nil {
 			return nil, err
 		}
 	}

@@ -342,7 +342,9 @@ func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
 
 // A reason saying something can't be seen covers that thing when it shows: a redirection's target, a variable's value.
 func TestApprovalCoversWhatItSaidItCouldNotSee(t *testing.T) {
-	for _, cmd := range []string{`f=CLAUDE.md; echo new > $f`, `x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`} {
+	for _, cmd := range []string{`f=CLAUDE.md; echo new > $f`, `x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`,
+		`how=--soft; env git reset $how`, `d=sub; env rm -rf $d`, `t=5; timeout $t git status`, `how=--hard; command git reset $how`, `d=sub; for x in a; do rm -rf $d; done`,
+		`d=sub; cd $d; echo y > y.txt`} {
 		s := session(t, true)
 		destroyRepo(t, s)
 		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
@@ -363,6 +365,9 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{``, `git reset --hard; ln -s src build; rm -rf build`, "asks in every mode"},
 		{``, `git commit --no-verify -qm x --allow-empty; F=--upload-pack; git fetch $F x y`, "runs another program"},
 		{``, `rm -rf $d; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
+		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
+		{``, `F=-exec; find . $F /bin/echo {} +`, "runs another program"},
 	} {
 		s := session(t, true)
 		destroyRepo(t, s)
