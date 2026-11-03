@@ -6,6 +6,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
+	"unicode/utf8"
 )
 
 // Fitting tool results to the window (Config.FitWindow; calibration pre-registration §4.6).
@@ -68,15 +69,28 @@ func (s *Session) fit(fin proto.ToolFinished, text string, room int) (proto.Tool
 		s.cliffNote = true // the cliff: Config.CompactAtCliff compacts before the next request
 		return fin, full, nil
 	}
-	head, tail := limit*3/4, limit/4
+	head, tail := wholeCut(text, limit*3/4, limit/4)
 	pages := ""
 	if _, ok := s.cfg.Tools.Get("read_output"); ok {
 		pages = fmt.Sprintf("; read_output with handle %q pages the rest", handle)
 	}
-	cutLines := lineCount(text) - lineCount(text[:head]) - lineCount(text[len(text)-tail:])
-	fin.Result = text[:head] + fmt.Sprintf("\n[… cut %d of %d bytes (%d of %d lines) %s; narrow it with grep, or read a line range with offset and limit%s …]\n",
-		len(text)-head-tail, len(text), max(0, cutLines), lineCount(text), why, pages) + text[len(text)-tail:]
+	cutLines := lineCount(text) - lineCount(head) - lineCount(tail)
+	fin.Result = head + fmt.Sprintf("\n[… cut %d of %d bytes (%d of %d lines) %s; narrow it with grep, or read a line range with offset and limit%s …]\n",
+		len(text)-len(head)-len(tail), len(text), max(0, cutLines), lineCount(text), why, pages) + tail
 	return fin, full, nil
+}
+
+// wholeCut returns about the first head and last tail bytes of text, each short of a character it would divide. Each cut
+// is followed by a marker starting with a newline, so the CR of a CRLF it divides is still a CRLF.
+func wholeCut(text string, head, tail int) (string, string) {
+	for i := 0; i < utf8.UTFMax-1 && head > 0 && !utf8.RuneStart(text[head]); i++ {
+		head--
+	}
+	start := len(text) - tail
+	for i := 0; i < utf8.UTFMax-1 && start < len(text) && !utf8.RuneStart(text[start]); i++ {
+		start++
+	}
+	return text[:head], text[start:]
 }
 
 // lineCount is the lines in s, a final line without its newline included.
