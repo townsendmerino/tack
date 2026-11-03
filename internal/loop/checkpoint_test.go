@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -292,20 +291,6 @@ func (c *countingSnapshots) Take(context.Context) (string, string) {
 func (c *countingSnapshots) Prune(context.Context) error {
 	c.prunes++
 	return nil
-}
-
-func bashCall(id, command string) goinfertest.Reply {
-	b, _ := json.Marshal(map[string]any{"command": command})
-	return goinfertest.Calls("", id, "bash", string(b))
-}
-
-func readCall(id, path string) goinfertest.Reply {
-	return goinfertest.Calls("", id, "read", `{"path":"`+path+`"}`)
-}
-
-func editCall(id, path, old, new string) goinfertest.Reply {
-	b, _ := json.Marshal(map[string]any{"path": path, "old_string": old, "new_string": new})
-	return goinfertest.Calls("", id, "edit", string(b))
 }
 
 // Plan mode refuses bash, so it takes no snapshot on the way.

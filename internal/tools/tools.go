@@ -22,6 +22,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/shell"
 )
 
 // Tool is one tool.
@@ -53,6 +54,9 @@ type Result struct {
 	// ShowWide is set with Base by a widened read: the loop calls it when it shows the widened view, so the workspace
 	// records those lines as shown (it records the base view's lines itself).
 	ShowWide func()
+	// Ran and Wrote are set by bash: what the shell's own record says ran and what its redirections wrote (shell.Result).
+	Ran   []shell.Ran
+	Wrote []string
 }
 
 func errorf(format string, args ...any) Result {

@@ -2,9 +2,11 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -364,7 +366,7 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{`export HUSKY=0`, `echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `git commit --no-verify -qm x --allow-empty; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `git reset --hard; ln -s src build; rm -rf build`, "asks in every mode"},
-		{``, `git commit --no-verify -qm x --allow-empty; F=--upload-pack; git fetch $F x y`, "runs another program"},
+		{``, `F=--upload-pack; git fetch $F x y`, "runs another program"},
 		{``, `rm -rf $d; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
 		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},
@@ -723,5 +725,45 @@ func TestApprovedFedShellsRun(t *testing.T) {
 		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
 			t.Errorf("%s, approved, did not run: %+v", cmd, r)
 		}
+	}
+}
+
+// The record says what ran and what a redirection wrote: not what a branch skipped, and not what the run-time check stopped.
+func TestResultSaysWhatRan(t *testing.T) {
+	s := session(t, false)
+	destroyRepo(t, s)
+	os.MkdirAll(filepath.Join(s.Engine.Root, "sub"), 0o755)
+	r := runBy(t, s, perms.ByUser, `/usr/bin/false && /bin/echo skipped; /usr/bin/true || /bin/echo skipped; d=one; /bin/echo $d two; (cd sub && /usr/bin/false); /bin/ls /no/such 2>/dev/null; echo built-in > out.txt; echo x >> sub/more.txt`)
+	var got []string
+	for _, c := range r.Ran {
+		got = append(got, fmt.Sprintf("%s %s %d", filepath.Base(c.Dir), strings.Join(c.Args, " "), c.Exit))
+	}
+	base := filepath.Base(s.Engine.Root)
+	want := []string{base + " /usr/bin/false 1", base + " /usr/bin/true 0", base + " /bin/echo one two 0", "sub /usr/bin/false 1", base + " /bin/ls /no/such 1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ran %q, want %q", got, want)
+	}
+	if len(r.Wrote) != 2 || r.Wrote[0] != filepath.Join(s.Engine.Root, "out.txt") || r.Wrote[1] != filepath.Join(s.Engine.Root, "sub", "more.txt") {
+		t.Errorf("wrote %q", r.Wrote)
+	}
+
+	// Stopped before it ran: not in the record.
+	r = runBy(t, s, perms.ByUser, `git commit --no-verify -qm x --allow-empty; echo x > new.txt; git add new.txt; git checkout new.txt`)
+	if !strings.Contains(r.Stopped, "asks in every mode") {
+		t.Fatalf("%+v", r)
+	}
+	for _, c := range r.Ran {
+		if slices.Contains(c.Args, "checkout") {
+			t.Errorf("the stopped command is in the record: %v", c)
+		}
+	}
+	if len(r.Ran) != 2 {
+		t.Errorf("ran %+v", r.Ran)
+	}
+
+	// A long script is cut, and a long run of commands stops being recorded.
+	r = runBy(t, s, perms.ByUser, `/bin/echo `+strings.Repeat("x", 2*maxRanArg)+` >/dev/null; for i in $(seq 1 `+fmt.Sprint(maxRan+5)+`); do /usr/bin/true; done`)
+	if len(r.Ran) != maxRan || len(r.Ran[0].Args[1]) != maxRanArg {
+		t.Errorf("%d commands, the first's argument %d bytes", len(r.Ran), len(r.Ran[0].Args[1]))
 	}
 }

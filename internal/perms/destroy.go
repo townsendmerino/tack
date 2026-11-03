@@ -379,8 +379,8 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 	})
 }
 
-// movesDir reports whether a simple command may change the shell's directory: cd, pushd or popd, under builtin or command too, or a
-// program that expands, which may be any of them.
+// movesDir reports whether a simple command may change the shell's directory: cd, pushd, popd, or code from text, under builtin or command
+// too, or a program that expands, which may be any of them.
 func movesDir(words []*syntax.Word) bool {
 	prefixed := false
 	for _, w := range words {
@@ -391,7 +391,7 @@ func movesDir(words []*syntax.Word) bool {
 		case prefixed && strings.HasPrefix(name, "-"):
 		case name == "builtin" || name == "command":
 			prefixed = true
-		case name == "cd" || name == "pushd" || name == "popd":
+		case name == "cd" || name == "pushd" || name == "popd" || stringRunners[name]: // code from text may be a cd
 			return true
 		default:
 			return false
@@ -1147,6 +1147,18 @@ var (
 		"--html-path", "--man-path", "--info-path", "--exec-path"}
 )
 
+// gitRunsGiven are the flags with which git runs a program it's given, and gitRunsGivenSubcommands the subcommands that read them
+// beyond noVerifySubcommands, which read a word that expands anyway.
+// gitRunsGivenLetters are the same as one letter, by subcommand, with the letters whose value is the rest of the word.
+var (
+	gitRunsGiven            = []string{"--upload-pack", "--receive-pack", "--exec"}
+	gitRunsGivenSubcommands = []string{"fetch", "ls-remote", "clone", "archive", "fetch-pack", "send-pack"}
+	gitRunsGivenLetters     = map[string]struct {
+		letter byte
+		valued string
+	}{"clone": {'u', "bcjo"}, "rebase": {'x', "sXCS"}}
+)
+
 // noVerifySubcommands are the ones whose --no-verify skips the owner's hooks.
 var noVerifySubcommands = []string{"commit", "push", "merge", "am", "rebase", "cherry-pick", "revert", "pull"}
 
@@ -1208,6 +1220,17 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	}
 	if gitWordsMatter(sub, rest) {
 		why = appendNew(why, unseenIn("git", "an argument of "+sub+" expands when it runs"))
+	}
+	for _, a := range flagsOf(sub, rest) {
+		flag, _, _ := strings.Cut(a, "=")
+		if !slices.ContainsFunc(gitRunsGiven, func(full string) bool { return flagIs(flag, full) }) {
+			l, ok := gitRunsGivenLetters[sub]
+			if !ok || !shortFlag(a, l.letter, l.valued) {
+				continue
+			}
+			flag = "-" + string(l.letter)
+		}
+		why = appendNew(why, "git "+sub+" "+flag+" runs a program it is given")
 	}
 	if slices.Contains(noVerifySubcommands, sub) && slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--no-verify") }) {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
@@ -1299,7 +1322,8 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 
 // gitWordsMatter reports whether an argument of sub that expands could be what a rule above looks for.
 func gitWordsMatter(sub string, rest []string) bool {
-	if !slices.Contains(noVerifySubcommands, sub) && !slices.Contains([]string{"reset", "checkout", "switch", "restore", "clean", "branch", "stash", "config"}, sub) {
+	if !slices.Contains(noVerifySubcommands, sub) && !slices.Contains(gitRunsGivenSubcommands, sub) &&
+		!slices.Contains([]string{"reset", "checkout", "switch", "restore", "clean", "branch", "stash", "config"}, sub) {
 		return false
 	}
 	return slices.Contains(rest, unknownWord)

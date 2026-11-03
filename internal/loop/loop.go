@@ -273,6 +273,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
+	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
 		switch el := s.cfg.Now().Sub(start); {
@@ -425,6 +426,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					if s.cfg.VerifyDone {
 						fin.Result = verify.finish()
 					}
+					fin.Result += verify.tests.report(verify.last, verify.change)
 				}
 			default:
 				calls++
