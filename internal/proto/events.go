@@ -41,6 +41,8 @@ const (
 	EvDaemonHalted        EventType = "daemon.halted"
 	EvDaemonHaltRefused   EventType = "daemon.halt_refused"
 	EvCompaction          EventType = "compaction"
+	EvCheckpoint          EventType = "checkpoint"
+	EvRewind              EventType = "rewind"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -72,6 +74,8 @@ var EventTypes = map[EventType]EventSpec{
 	EvDaemonHalted:        {reflect.TypeFor[DaemonHalted](), true, false},
 	EvDaemonHaltRefused:   {reflect.TypeFor[DaemonHaltRefused](), true, false},
 	EvCompaction:          {reflect.TypeFor[Compaction](), true, false},
+	EvCheckpoint:          {reflect.TypeFor[Checkpoint](), true, false},
+	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -293,6 +297,25 @@ type HaltProcess struct {
 	PID   int       `json:"pid"`
 	Name  string    `json:"name"`
 	Start time.Time `json:"start"`
+}
+
+// Checkpoint records the snapshot of the working tree taken before a bash call (DESIGN §6.8), or why there is none, in which
+// case a client says the command can't be rewound.
+type Checkpoint struct {
+	ID          string `json:"id"`        // the tool call
+	Workspace   string `json:"workspace"` // the tree it holds
+	Snapshot    string `json:"snapshot,omitempty"`
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// Rewind records files restored from a checkpoint: To is that checkpoint's seq, Snapshot its id, and Undo the snapshot of
+// the tree the rewind replaced, which a later rewind can go back to. Changed is how many paths it touched.
+type Rewind struct {
+	To        int64  `json:"to"`
+	Workspace string `json:"workspace"`
+	Snapshot  string `json:"snapshot"`
+	Undo      string `json:"undo"`
+	Changed   int    `json:"changed"`
 }
 
 // Compaction records a rewrite of the history before request Request (DESIGN §7.6), the one place history changes

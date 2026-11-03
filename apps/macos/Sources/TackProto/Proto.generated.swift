@@ -64,6 +64,20 @@ public struct Capabilities: Codable, Equatable, Sendable {
     }
 }
 
+public struct Checkpoint: Codable, Equatable, Sendable {
+    public var id: String
+    public var workspace: String
+    public var snapshot: String?
+    public var unavailable: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case workspace = "workspace"
+        case snapshot = "snapshot"
+        case unavailable = "unavailable"
+    }
+}
+
 public struct ClientInfo: Codable, Equatable, Sendable {
     public var name: String
     public var version: String
@@ -284,6 +298,22 @@ public struct RequestSent: Codable, Equatable, Sendable {
     }
 }
 
+public struct Rewind: Codable, Equatable, Sendable {
+    public var to: Int64
+    public var workspace: String
+    public var snapshot: String
+    public var undo: String
+    public var changed: Int
+
+    enum CodingKeys: String, CodingKey {
+        case to = "to"
+        case workspace = "workspace"
+        case snapshot = "snapshot"
+        case undo = "undo"
+        case changed = "changed"
+    }
+}
+
 public struct SessionEventParams: Codable, Equatable, Sendable {
     public var session: SessionID
     public var event: Event
@@ -432,6 +462,7 @@ public enum EventPayload: Equatable, Sendable {
     case assistantDelta(AssistantDelta)
     case assistantMessage(AssistantMessage)
     case budgetExceeded(BudgetExceeded)
+    case checkpoint(Checkpoint)
     case compaction(Compaction)
     case contextAssembled(ContextAssembled)
     case daemonHaltRefused(DaemonHaltRefused)
@@ -440,6 +471,7 @@ public enum EventPayload: Equatable, Sendable {
     case permissionRequested(PermissionRequested)
     case permissionResolved(PermissionResolved)
     case requestSent(RequestSent)
+    case rewind(Rewind)
     case toolCall(ToolCall)
     case toolFinished(ToolFinished)
     case toolStarted(ToolStarted)
@@ -474,6 +506,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "assistant.delta": payload = .assistantDelta(try c.decode(AssistantDelta.self, forKey: .payload))
         case "assistant.message": payload = .assistantMessage(try c.decode(AssistantMessage.self, forKey: .payload))
         case "budget.exceeded": payload = .budgetExceeded(try c.decode(BudgetExceeded.self, forKey: .payload))
+        case "checkpoint": payload = .checkpoint(try c.decode(Checkpoint.self, forKey: .payload))
         case "compaction": payload = .compaction(try c.decode(Compaction.self, forKey: .payload))
         case "context.assembled": payload = .contextAssembled(try c.decode(ContextAssembled.self, forKey: .payload))
         case "daemon.halt_refused": payload = .daemonHaltRefused(try c.decode(DaemonHaltRefused.self, forKey: .payload))
@@ -482,6 +515,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "permission.requested": payload = .permissionRequested(try c.decode(PermissionRequested.self, forKey: .payload))
         case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
         case "request.sent": payload = .requestSent(try c.decode(RequestSent.self, forKey: .payload))
+        case "rewind": payload = .rewind(try c.decode(Rewind.self, forKey: .payload))
         case "tool.call": payload = .toolCall(try c.decode(ToolCall.self, forKey: .payload))
         case "tool.finished": payload = .toolFinished(try c.decode(ToolFinished.self, forKey: .payload))
         case "tool.started": payload = .toolStarted(try c.decode(ToolStarted.self, forKey: .payload))
@@ -502,6 +536,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .assistantDelta(let p): try c.encode(p, forKey: .payload)
         case .assistantMessage(let p): try c.encode(p, forKey: .payload)
         case .budgetExceeded(let p): try c.encode(p, forKey: .payload)
+        case .checkpoint(let p): try c.encode(p, forKey: .payload)
         case .compaction(let p): try c.encode(p, forKey: .payload)
         case .contextAssembled(let p): try c.encode(p, forKey: .payload)
         case .daemonHaltRefused(let p): try c.encode(p, forKey: .payload)
@@ -510,6 +545,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .permissionRequested(let p): try c.encode(p, forKey: .payload)
         case .permissionResolved(let p): try c.encode(p, forKey: .payload)
         case .requestSent(let p): try c.encode(p, forKey: .payload)
+        case .rewind(let p): try c.encode(p, forKey: .payload)
         case .toolCall(let p): try c.encode(p, forKey: .payload)
         case .toolFinished(let p): try c.encode(p, forKey: .payload)
         case .toolStarted(let p): try c.encode(p, forKey: .payload)

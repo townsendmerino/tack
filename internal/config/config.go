@@ -148,6 +148,11 @@ type Run struct {
 	// 3,000 bytes, into a session's first message after the instruction head (core.Options.RepoMap; calibration §13.3).
 	// Without [ken], tack opens ken's index in bm25 mode for it, at the first prompt, and adds no tool. Default off.
 	RepoMap bool `toml:"repo_map"`
+	// Snapshots takes a snapshot of the working tree before each bash call, so a command's changes can be rewound and what a
+	// snapshot can undo needs no question (DESIGN §6.8). On unless set to false, which E1 does. SnapshotMaxBytes is the largest
+	// tree it covers, ignored files counted (default 512 MiB); a larger one gets none, and the guard keeps asking.
+	Snapshots        *bool `toml:"snapshots"`
+	SnapshotMaxBytes int64 `toml:"snapshot_max_bytes"`
 	// BestOf makes an edit task up to this many attempts, each a fresh session, keeping the first whose change builds and
 	// passes the changed packages' own tests (cmd/tack/bestof.go; calibration §15.3). 0 or 1 is one attempt, the default.
 	// It needs a clean git workspace: between attempts tack restores the tree to where it started.
@@ -279,6 +284,16 @@ func (c *Config) validate() error {
 			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)
 		}
 		c.Servers[name] = s
+	}
+	if c.Run.Snapshots == nil {
+		on := true
+		c.Run.Snapshots = &on
+	}
+	if c.Run.SnapshotMaxBytes < 0 {
+		return fmt.Errorf("config: run.snapshot_max_bytes is %d; it can't be negative", c.Run.SnapshotMaxBytes)
+	}
+	if c.Run.SnapshotMaxBytes == 0 {
+		c.Run.SnapshotMaxBytes = 512 << 20
 	}
 	if c.Run.MaxRequests == 0 {
 		c.Run.MaxRequests = 40
