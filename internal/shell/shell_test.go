@@ -364,7 +364,7 @@ func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
 		{`export HUSKY=0`, `echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `git commit --no-verify -qm x --allow-empty; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `git reset --hard; ln -s src build; rm -rf build`, "asks in every mode"},
-		{``, `git commit --no-verify -qm x --allow-empty; F=--upload-pack; git fetch $F x y`, "runs another program"},
+		{``, `F=--upload-pack; git fetch $F x y`, "runs another program"},
 		{``, `rm -rf $d; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
 		{``, `d=node_modules; rm -rf $d; ln -s src build; rm -rf build`, "asks in every mode"},
 		{``, `F=--upload-pack=evil; git pull $F origin main`, "runs another program"},

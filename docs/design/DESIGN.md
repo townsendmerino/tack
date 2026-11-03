@@ -627,6 +627,7 @@ tool-use smoke set compares this merged set against the split one before it is f
       `parallel`, which also runs them through a shell;
     - a wrapper it can't fully read: an argument that expands, a flag it doesn't know, code as text (`env -S`, `npx -c`), or
       another directory (`env -C`, `sudo -D`);
+    - a `git` flag that runs a program it's given: `--upload-pack`, `--receive-pack`, `--exec`, `clone -u` and `rebase -x`;
     - config on `git`'s command line in any form (`-c`, `--config-env`), since an alias runs inside git and `--config-env` names
       an environment variable; any other global flag form it doesn't read (`-Cdir`), one that expands, `--work-tree`, or `--exec-path=<dir>`;
     - a word that expands where a rule would read it: an argument of `rm`, `find`, a `git` subcommand on the list, a program
@@ -657,11 +658,13 @@ tool-use smoke set compares this merged set against the split one before it is f
     shell text to decide when to ask, and shell can't be read completely: ten rounds of review each found more forms. A command that gets
     past it is a question that wasn't asked, not an escape, and nothing may rely on it to contain a command. Known limits, by class, of
     which more forms may remain:
-    - **Code it can't read:** a named script with no flags and nothing fed to it, and a program that runs code (`make`, `python -c`).
+    - **Code it can't read:** a named script with no flags and nothing fed to it, a program that runs code (`make`, `python -c`), and git
+      subcommands that run what they're given other than by the flags it reads (`bisect run`, `submodule foreach`, `filter-branch`,
+      `difftool -x`, `grep -O`).
     - **Programs not on the list:** anything that deletes or overwrites on its own (`mv`, `cp`, `dd`, `truncate`), or that writes a CI
       definition or an instruction file (`tee`, `sed -i`).
     - **Shell forms:** other ways to set a variable or change directory. A `cd` that fails isn't modeled, so what follows is read from the
-      wrong directory. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
+      wrong directory, and a function's or a trap's body is read from where it's written, not from where it runs. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
     - **Flag forms:** what `git` and the wrappers it reads accept beyond what it knows, which differ by version and between BSD and GNU.
     - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
     - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
