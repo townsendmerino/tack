@@ -340,6 +340,20 @@ func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
 	}
 }
 
+// A reason saying something can't be seen covers that thing when it shows: a redirection's target, a variable's value.
+func TestApprovalCoversWhatItSaidItCouldNotSee(t *testing.T) {
+	for _, cmd := range []string{`f=CLAUDE.md; echo new > $f`, `x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Errorf("%s, approved, did not run: %+v", cmd, r)
+		}
+	}
+}
+
 // An approval covers the reasons it showed, and no others. Approved for HUSKY=0 in the session, or for one --no-verify, a command
 // that only shows it destroys work when it runs is still stopped, and the checks of what approval saw stay on.
 func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {

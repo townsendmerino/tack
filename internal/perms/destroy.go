@@ -106,7 +106,7 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			switch top.node.(type) {
-			case *syntax.Subshell, *syntax.CmdSubst, *syntax.ProcSubst:
+			case *syntax.Subshell, *syntax.CmdSubst:
 				dir = top.dir
 			}
 			return true
@@ -160,9 +160,6 @@ func cdPlaced(path []syntax.Node, call *syntax.CallExpr) bool {
 
 // onlyCds reports whether a statement is cds joined by &&.
 func onlyCds(s *syntax.Stmt) bool {
-	if s.Negated {
-		return false
-	}
 	switch c := s.Cmd.(type) {
 	case *syntax.BinaryCmd:
 		return c.Op == syntax.AndStmt && onlyCds(c.X) && onlyCds(c.Y)
