@@ -79,6 +79,8 @@ type Shadow struct {
 	Git      string // the git binary; "" when none was found
 	MaxBytes int64  // the most a working tree may hold and still be snapshotted
 	Now      func() time.Time
+
+	gaveUp string // why a Take ran out of time: the next would too, at the same cost before every command
 }
 
 // New is the shadow for the workspace at root under stateDir, which is created at the first Take.
@@ -204,53 +206,51 @@ func defaultPerm(mode fs.FileMode) fs.FileMode {
 
 var errNested = errors.New("it holds a nested repository, whose .git a snapshot can't store")
 
-// survey walks the working tree without following a link: it returns the manifest, or why there can be no snapshot.
+// survey walks the working tree without following a link: it returns the manifest, or why there can be no snapshot. It
+// reads each directory once, since it runs before every command.
 func (s *Shadow) survey() (manifest, error) {
 	m := manifest{modes: map[string]fs.FileMode{}}
 	var total int64
-	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
+	var walk func(dir, rel string) error
+	walk = func(dir, rel string) error {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return err
 		}
-		if p == s.Root {
-			return nil
+		if len(entries) == 0 && rel != "" {
+			m.dirs = append(m.dirs, rel)
 		}
-		rel, err := filepath.Rel(s.Root, p)
-		if err != nil {
-			return err
-		}
-		if d.Name() == ".git" {
-			if rel == ".git" {
-				return fs.SkipDir
+		for _, d := range entries {
+			name := filepath.Join(rel, d.Name())
+			if d.Name() == ".git" {
+				if rel == "" {
+					continue
+				}
+				return errNested
 			}
-			return errNested
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.Mode().IsRegular():
-			if total += info.Size(); total > s.MaxBytes {
-				return fmt.Errorf("the working tree is over the %d-byte cap", s.MaxBytes)
-			}
-		case info.IsDir():
-			entries, err := os.ReadDir(p)
+			info, err := d.Info()
 			if err != nil {
 				return err
 			}
-			if len(entries) == 0 {
-				m.dirs = append(m.dirs, rel)
+			switch {
+			case info.Mode().IsRegular():
+				if total += info.Size(); total > s.MaxBytes {
+					return fmt.Errorf("the working tree is over the %d-byte cap", s.MaxBytes)
+				}
+			case info.IsDir():
+				if err := walk(filepath.Join(dir, d.Name()), name); err != nil {
+					return err
+				}
+			default:
+				continue // a link has no permissions of its own, and git doesn't keep the rest
 			}
-		default:
-			return nil // a link has no permissions of its own, and git doesn't keep the rest
-		}
-		if perm := info.Mode().Perm(); perm != defaultPerm(info.Mode()) {
-			m.modes[rel] = perm
+			if perm := info.Mode().Perm(); perm != defaultPerm(info.Mode()) {
+				m.modes[name] = perm
+			}
 		}
 		return nil
-	})
-	return m, err
+	}
+	return m, walk(s.Root, "")
 }
 
 // isTop reports whether the workspace is the top of a git repository. Inside one, a git command reaches files a
@@ -263,8 +263,17 @@ func (s *Shadow) isTop() bool {
 // Take snapshots the working tree and returns the checkpoint's id, or "" and why there is none. A tree that hasn't
 // changed since the last Take returns the same id.
 func (s *Shadow) Take(ctx context.Context) (id, why string) {
+	if s.gaveUp != "" {
+		return "", s.gaveUp
+	}
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
+	defer func() {
+		if why != "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			s.gaveUp = "a snapshot took longer than " + Timeout.String()
+			why = s.gaveUp
+		}
+	}()
 	if !s.isTop() {
 		return "", "the workspace is not the top of a git repository"
 	}

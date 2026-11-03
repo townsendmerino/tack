@@ -521,3 +521,26 @@ func TestSymlinksStayLinks(t *testing.T) {
 		t.Errorf("the file outside changed: %d bytes", len(b))
 	}
 }
+
+// A Take that ran out of time isn't tried again before every later command, at the same cost each time.
+func TestATakeThatRanOutOfTimeStaysOff(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	id, why := s.Take(ctx)
+	if id != "" || !strings.Contains(why, "longer than") {
+		t.Errorf("id %q why %q", id, why)
+	}
+	if id, again := s.Take(context.Background()); id != "" || again != why {
+		t.Errorf("then id %q why %q", id, again)
+	}
+	// Being cancelled isn't running out of time.
+	s = shadow(t, root)
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if id, _ := s.Take(ctx); id != "" {
+		t.Errorf("cancelled: %q", id)
+	}
+	take(t, s)
+}
