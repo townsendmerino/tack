@@ -167,3 +167,29 @@ func TestRewindRefuses(t *testing.T) {
 		t.Errorf("preview while halted: %d", code)
 	}
 }
+
+// A rewind that stops partway says so, and leaves the way back on the log.
+func TestRewindThatStopsPartway(t *testing.T) {
+	cfg, ws, seq := rewindSession(t)
+	state := filepath.Join(filepath.Dir(cfg), "state")
+	shadow := snap.New(state, ws, 1<<30)
+	if err := os.Mkdir(filepath.Join(shadow.Dir, "restore-index"), 0o755); err != nil { // git can't write its index there
+		t.Fatal(err)
+	}
+	code, _, errs := rewind(t, "-config", cfg, "-yes", "s_rewind", strconv.FormatInt(seq, 10))
+	if code != exitError || !strings.Contains(errs, "partway") || !strings.Contains(errs, "undoes") {
+		t.Errorf("%d %q", code, errs)
+	}
+	st, _ := store.Open(state)
+	events, err := st.Events("s_rewind", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := events[len(events)-1].Decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := v.(proto.Rewind); !ok || r.Undo == "" {
+		t.Errorf("last event %+v", v)
+	}
+}

@@ -1414,23 +1414,28 @@ func flagIs(a, full string) bool {
 
 // checkoutDiscards reports whether git checkout's arguments overwrite the working tree: paths after --, a path that
 // exists, a pathspec, ".", or -f. A new branch's name is not a path.
+// checkoutMoves reports whether a checkout that discards might also move HEAD or a ref, which a snapshot can't bring back.
+// Only three forms can't: a pathspec after --, git checkout ., and git checkout -f, each with flags that change neither. A
+// bare name can be a branch even when a file has it: real git takes the branch. Any other flag might move something.
 func checkoutMoves(args []string) bool {
-	force := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
+	named := false
+	for i, a := range args {
 		switch {
 		case a == "--":
-			return false
-		case flagIs(a, "--force") || shortFlag(a, 'f', "bB"):
-			force = true
-		case a == "-b" || a == "-B" || a == "--orphan":
-			return true
-		case !strings.HasPrefix(a, "-") && force:
+			return i == len(args)-1 && named // git checkout main -- switches to main
+		case a == ".":
+		case !strings.HasPrefix(a, "-"):
+			named = true
+		case !slices.ContainsFunc(checkoutKeepsHead, func(f string) bool { return flagIs(a, f) }) && a != "-f" && a != "-q":
 			return true
 		}
 	}
-	return false
+	return named
 }
+
+// checkoutKeepsHead are the long flags of git checkout that leave HEAD and the refs alone.
+var checkoutKeepsHead = []string{"--force", "--quiet", "--progress", "--no-progress", "--ours", "--theirs", "--overlay", "--no-overlay",
+	"--pathspec-from-file", "--pathspec-file-nul", "--ignore-skip-worktree-bits"}
 
 func checkoutDiscards(args []string, dir string) bool {
 	creating := false

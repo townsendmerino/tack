@@ -239,6 +239,99 @@ func TestChanges(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("changes %v, want %v", got, want)
 	}
+
+	// What git's tree doesn't hold counts too: a changed mode, an empty directory gone, a new one.
+	root = repo(t)
+	s = shadow(t, root)
+	id = take(t, s)
+	if err := os.Chmod(filepath.Join(root, ".env"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "empty")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "fresh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "day.log"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "build", "out.bin")); err != nil { // build is empty now, and that's not a change of its own
+		t.Fatal(err)
+	}
+	got, err = s.Changes(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []Change{{".env", Bring}, {"build/out.bin", Bring}, {"day.log", Bring}, {"empty/inner", Bring}, {"fresh", Remove}}
+	if !slices.Equal(got, want) {
+		t.Errorf("changes %v, want %v", got, want)
+	}
+}
+
+// A read-only directory, in the checkpoint or made since, doesn't stop a restore, and comes back read-only.
+func TestRestoreThroughReadOnlyDirectories(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	root := repo(t)
+	write(t, root, "locked/kept.txt", "kept\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "locked"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				os.Chmod(p, 0o755)
+			}
+			return nil
+		})
+	})
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	// A file changed inside it, and a new read-only directory holding a file that must go.
+	if err := os.Chmod(filepath.Join(root, "locked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "locked/kept.txt", "changed\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "locked"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "newlocked/gone.txt", "gone\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "newlocked"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
+}
+
+// A restore that fails partway says so and still hands back the way to undo it.
+func TestAFailedRestoreKeepsItsUndo(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "untracked.go", "later\n", 0o644)
+	if err := os.Remove(filepath.Join(root, "day.log")); err != nil {
+		t.Fatal(err)
+	}
+	after := capture(t, root)
+	if err := os.Mkdir(filepath.Join(s.Dir, "restore-index"), 0o755); err != nil { // read-tree can't write its index there
+		t.Fatal(err)
+	}
+	undo, err := s.Restore(context.Background(), id)
+	if err == nil || undo == "" {
+		t.Fatalf("undo %q, err %v", undo, err)
+	}
+	if err := os.Remove(filepath.Join(s.Dir, "restore-index")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Restore(context.Background(), undo); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), after)
 }
 
 // digest is every file under the user's .git, by path.
@@ -570,20 +663,29 @@ func TestSymlinksStayLinks(t *testing.T) {
 	}
 }
 
-// A Take that ran out of time isn't tried again before every later command, at the same cost each time.
+// A Take that ran out of its own time isn't tried again before every later command, at the same cost each time. The caller's
+// deadline or cancel says nothing about the next Take.
 func TestATakeThatRanOutOfTimeStaysOff(t *testing.T) {
 	root := repo(t)
 	s := shadow(t, root)
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	id, why := s.Take(ctx)
+	s.Limit = time.Nanosecond
+	id, why := s.Take(context.Background())
 	if id != "" || !strings.Contains(why, "longer than") {
 		t.Errorf("id %q why %q", id, why)
 	}
+	s.Limit = time.Minute
 	if id, again := s.Take(context.Background()); id != "" || again != why {
 		t.Errorf("then id %q why %q", id, again)
 	}
-	// Being cancelled isn't running out of time.
+
+	s = shadow(t, root)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if id, why := s.Take(ctx); id != "" || strings.Contains(why, "longer than") {
+		t.Errorf("the caller's deadline: id %q why %q", id, why)
+	}
+	take(t, s)
+
 	s = shadow(t, root)
 	ctx, cancel = context.WithCancel(context.Background())
 	cancel()
@@ -612,5 +714,44 @@ func TestTakeAfterPruneDroppedItsLast(t *testing.T) {
 		if _, err := s.Changes(context.Background(), take(t, s)); err != nil {
 			t.Fatalf("round %d: %v", i, err)
 		}
+	}
+}
+
+// Prune keeps the newest checkpoint, which may share its second with another whose id sorts first.
+func TestPruneKeepsTheNewestOfOneSecond(t *testing.T) {
+	root := repo(t)
+	when := time.Unix(2_000_000_000, 0)
+	for i := range 12 {
+		s := shadow(t, root)
+		s.Now = func() time.Time { return when }
+		write(t, root, "untracked.go", fmt.Sprintf("a %d\n", i), 0o644)
+		take(t, s)
+		write(t, root, "untracked.go", fmt.Sprintf("b %d\n", i), 0o644)
+		newest := take(t, s)
+		s.Now = func() time.Time { return when.Add(MaxAge + time.Hour) }
+		if err := s.Prune(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.known(context.Background(), newest); err != nil {
+			t.Fatalf("round %d: %v", i, err)
+		}
+	}
+}
+
+// A .git in any case, which a case-insensitive filesystem takes for the real one, is never in a snapshot or touched by a restore.
+func TestDotGitInAnyCase(t *testing.T) {
+	root := repo(t)
+	write(t, root, "src/.GIT/config", "x", 0o644)
+	if id, why := shadow(t, root).Take(context.Background()); id != "" || !strings.Contains(why, "nested") {
+		t.Errorf("id %q why %q", id, why)
+	}
+}
+
+// The walk of a large tree stops when its time is up, rather than running on after the caller has gone.
+func TestSurveyStopsWithItsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := shadow(t, repo(t)).survey(ctx); err == nil {
+		t.Error("it walked on")
 	}
 }

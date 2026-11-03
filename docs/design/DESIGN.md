@@ -836,9 +836,9 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **When it's taken.** Before each `bash` call's permission decision, and again after an approval if the owner was asked,
   since files can change during the question. A `checkpoint` event records it, or why not, just before `tool.started`.
 - **What stops asking.** With a snapshot taken for that command: `git reset --hard`, `--merge` and `--keep` with no revision
-  or `HEAD`; `git checkout` and `git restore` that discard; `git clean -f`; `rm -r` of literal paths that resolve inside
+  or `HEAD`; `git checkout .`, `git checkout -f` and `git checkout -- <paths>`; `git restore`; `git clean -f`; `rm -r` of literal paths that resolve inside
   the workspace, not `.git` or the workspace itself.
-- **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; the
+- **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; any other `git checkout`, since a bare name can be a branch even when a file has it, and real git takes the branch; the
   data-loss flags and migration resets, whose data isn't in the tree; `rm -r` outside the workspace; and everything the parse
   can't see, including a path that expands.
 - **Rewind.** `tack rewind <session> <seq>` lists the files it would change and restores them with `--yes`, first taking a

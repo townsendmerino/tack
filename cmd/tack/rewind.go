@@ -109,9 +109,9 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	} else if h != nil {
 		return fail(fmt.Sprintf("tack is halted (%s); run tack resume", halt.Path(stateDir)))
 	}
-	undo, err := shadow.Restore(ctx, point.snapshot)
-	if err != nil {
-		return fail(err)
+	undo, restoreErr := shadow.Restore(ctx, point.snapshot)
+	if undo == "" { // it changed nothing
+		return fail(restoreErr)
 	}
 	log, err := st.OpenLog(session)
 	if err != nil {
@@ -121,6 +121,10 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, Changed: len(changes)})
 	if err != nil {
 		return fail(err)
+	}
+	if restoreErr != nil {
+		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the tree is part rewound: %v; tack rewind -yes %s %d undoes what it did\n", restoreErr, session, ev.Seq)
+		return exitError
 	}
 	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; tack rewind -yes %s %d undoes it\n", len(changes), seq, session, ev.Seq)
 	return exitOK

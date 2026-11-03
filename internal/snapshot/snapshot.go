@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -78,6 +79,7 @@ type Shadow struct {
 	Git      string // the git binary; "" when none was found
 	MaxBytes int64  // the most a working tree may hold and still be snapshotted
 	Now      func() time.Time
+	Limit    time.Duration // the time a Take has; New sets Timeout
 
 	gaveUp string // why a Take ran out of time: the next would too, at the same cost before every command
 }
@@ -88,7 +90,7 @@ func New(stateDir, root string, maxBytes int64) *Shadow {
 	sum := sha256.Sum256([]byte(root))
 	git, _ := exec.LookPath("git")
 	return &Shadow{Root: root, Dir: filepath.Join(stateDir, "shadows", hex.EncodeToString(sum[:8])+".git"), Git: git,
-		MaxBytes: maxBytes, Now: time.Now}
+		MaxBytes: maxBytes, Now: time.Now, Limit: Timeout}
 }
 
 func (s *Shadow) env() []string {
@@ -207,11 +209,14 @@ var errNested = errors.New("it holds a nested repository, whose .git a snapshot 
 
 // survey walks the working tree without following a link: it returns the manifest, or why there can be no snapshot. It
 // reads each directory once, since it runs before every command.
-func (s *Shadow) survey() (manifest, error) {
+func (s *Shadow) survey(ctx context.Context) (manifest, error) {
 	m := manifest{modes: map[string]fs.FileMode{}}
 	var total int64
 	var walk func(dir, rel string) error
 	walk = func(dir, rel string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return err
@@ -221,7 +226,7 @@ func (s *Shadow) survey() (manifest, error) {
 		}
 		for _, d := range entries {
 			name := filepath.Join(rel, d.Name())
-			if d.Name() == ".git" {
+			if isDotGit(d.Name()) {
 				if rel == "" {
 					continue
 				}
@@ -252,6 +257,9 @@ func (s *Shadow) survey() (manifest, error) {
 	return m, walk(s.Root, "")
 }
 
+// isDotGit reports whether a name is .git in any case, which a case-insensitive filesystem takes for the real one.
+func isDotGit(name string) bool { return strings.EqualFold(name, ".git") }
+
 // isTop reports whether the workspace is the top of a git repository. Inside one, a git command reaches files a
 // snapshot of the workspace doesn't hold.
 func (s *Shadow) isTop() bool {
@@ -265,11 +273,12 @@ func (s *Shadow) Take(ctx context.Context) (id, why string) {
 	if s.gaveUp != "" {
 		return "", s.gaveUp
 	}
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, s.Limit)
 	defer cancel()
 	defer func() {
-		if why != "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			s.gaveUp = "a snapshot took longer than " + Timeout.String()
+		if why != "" && parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			s.gaveUp = "a snapshot took longer than " + s.Limit.String()
 			why = s.gaveUp
 		}
 	}()
@@ -279,7 +288,7 @@ func (s *Shadow) Take(ctx context.Context) (id, why string) {
 	if s.Git == "" {
 		return "", "git isn't installed"
 	}
-	m, err := s.survey()
+	m, err := s.survey(ctx)
 	if err != nil {
 		return "", err.Error()
 	}
@@ -359,7 +368,7 @@ func (s *Shadow) diff(ctx context.Context, from, to string) ([]Change, error) {
 // Changes is what a Restore of id would change in the tree as it is now. It takes a snapshot to see that, and changes
 // nothing in the tree.
 func (s *Shadow) Changes(ctx context.Context, id string) ([]Change, error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	if err := s.known(ctx, id); err != nil {
 		return nil, err
@@ -368,13 +377,77 @@ func (s *Shadow) Changes(ctx context.Context, id string) ([]Change, error) {
 	if why != "" {
 		return nil, fmt.Errorf("the tree as it is now can't be read: %s", why)
 	}
-	return s.diff(ctx, id, now)
+	changes, err := s.diff(ctx, id, now)
+	if err != nil {
+		return nil, err
+	}
+	then, err := s.manifestOf(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	current, err := s.manifestOf(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	changes = append(changes, beyondTheTree(then, current, changes)...)
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
+	return changes, nil
+}
+
+// beyondTheTree is what a restore changes that git's tree doesn't show, given what it does: empty directories and permissions,
+// from the manifests of the checkpoint and of the tree now.
+func beyondTheTree(then, now manifest, changes []Change) []Change {
+	seen := map[string]bool{}
+	for _, c := range changes {
+		seen[c.Path] = true
+	}
+	holds := func(dir string) bool {
+		return slices.ContainsFunc(changes, func(c Change) bool { return strings.HasPrefix(c.Path, dir+"/") })
+	}
+	var out []Change
+	add := func(p string, k Kind) {
+		if !seen[p] && !holds(p) {
+			seen[p] = true
+			out = append(out, Change{p, k})
+		}
+	}
+	for _, d := range then.dirs {
+		if !slices.Contains(now.dirs, d) {
+			add(d, Bring)
+		}
+	}
+	for _, d := range now.dirs {
+		if !slices.Contains(then.dirs, d) {
+			add(d, Remove)
+		}
+	}
+	for p, perm := range then.modes {
+		if now.modes[p] != perm {
+			add(p, Bring)
+		}
+	}
+	for p := range now.modes {
+		if _, ok := then.modes[p]; !ok {
+			add(p, Bring)
+		}
+	}
+	return out
+}
+
+// manifestOf is a checkpoint's manifest.
+func (s *Shadow) manifestOf(ctx context.Context, id string) (manifest, error) {
+	out, err := s.git(ctx, nil, nil, "cat-file", "commit", id)
+	if err != nil {
+		return manifest{}, err
+	}
+	_, text, _ := strings.Cut(string(out), "\n\n")
+	return parseManifest(text)
 }
 
 // Restore puts the working tree back as it was at id, touching only what differs, and returns the checkpoint of the tree
 // it replaced, so the restore can be undone. It refuses when that checkpoint can't be taken. It writes nothing under .git.
 func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	if err := s.known(ctx, id); err != nil {
 		return "", err
@@ -387,14 +460,12 @@ func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error
 	if err != nil {
 		return "", err
 	}
-	out, err := s.git(ctx, nil, nil, "cat-file", "commit", id)
+	m, err := s.manifestOf(ctx, id)
 	if err != nil {
-		return "", err
+		return undo, err
 	}
-	_, text, _ := strings.Cut(string(out), "\n\n")
-	m, err := parseManifest(text)
-	if err != nil {
-		return "", err
+	if err := s.unlockDirs(); err != nil {
+		return undo, err
 	}
 	// What wasn't there goes first, so a file can't stand where a directory must come back, and nothing is written
 	// through a link that wasn't there either.
@@ -429,6 +500,29 @@ func (s *Shadow) Restore(ctx context.Context, id string) (undo string, err error
 	return undo, s.setModes(m)
 }
 
+// unlockDirs makes every directory one the restore can work in. setModes puts them back at the end.
+func (s *Shadow) unlockDirs() error {
+	return filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() || p == s.Root {
+			return nil
+		}
+		if rel, err := filepath.Rel(s.Root, p); err == nil && isDotGit(rel) {
+			return fs.SkipDir
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm()&0o700 == 0o700 {
+			return nil
+		}
+		return os.Chmod(p, info.Mode().Perm()|0o700)
+	})
+}
+
 // sweep removes the empty directories under dir, deepest first, and reports whether dir is empty after it. Restore makes
 // the ones the checkpoint holds again.
 func (s *Shadow) sweep(dir string) (bool, error) {
@@ -439,7 +533,7 @@ func (s *Shadow) sweep(dir string) (bool, error) {
 	left := len(entries)
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if !e.IsDir() || p == filepath.Join(s.Root, ".git") {
+		if !e.IsDir() || (dir == s.Root && isDotGit(e.Name())) {
 			continue
 		}
 		isEmpty, err := s.sweep(p)
@@ -469,7 +563,7 @@ func (s *Shadow) setModes(m manifest) error {
 		if err != nil {
 			return err
 		}
-		if rel == ".git" {
+		if isDotGit(rel) {
 			return fs.SkipDir
 		}
 		info, err := d.Info()
@@ -493,7 +587,7 @@ func (s *Shadow) setModes(m manifest) error {
 // Prune drops checkpoints older than MaxAge, then the oldest half at a time while the shadow is over twice MaxBytes. The
 // newest checkpoint always stays.
 func (s *Shadow) Prune(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
 	if _, err := os.Stat(filepath.Join(s.Dir, "info", "attributes")); err != nil {
 		return nil // nothing taken yet
@@ -502,9 +596,18 @@ func (s *Shadow) Prune(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	// Newest by date, but two in one second tie, and Take's memory of its last says which.
+	if last, err := os.ReadFile(filepath.Join(s.Dir, "last")); err == nil {
+		if _, id, ok := strings.Cut(string(last), " "); ok {
+			if i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "refs/tack/"+id+" ") }); i > 0 {
+				lines = append(append([]string{lines[i]}, lines[:i]...), lines[i+1:]...)
+			}
+		}
+	}
 	var refs []string // newest first
 	dropped := false
-	for i, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for i, line := range lines {
 		ref, when, ok := strings.Cut(line, " ")
 		if !ok {
 			continue

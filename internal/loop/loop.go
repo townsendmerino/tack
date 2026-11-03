@@ -273,6 +273,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
+	defer s.endSnapshot()                                   // on every way out, an error's too
 	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
@@ -433,6 +434,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				s.calls++
 				checkpoint := s.takeSnapshot(ctx, b)
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
+				if err == nil && refused == nil && checkpoint != nil && by == proto.DecidedByUser {
+					// Files can change while a question waits, so the snapshot is taken again. If it fails now, the yes was to a
+					// question that left out what the snapshot was going to answer: ask the whole of it.
+					had := checkpoint.Snapshot != ""
+					checkpoint = s.takeSnapshot(ctx, b)
+					if had && checkpoint.Snapshot == "" {
+						refused, by, err = s.permit(ctx, b, callEv.Seq)
+					}
+				}
 				if err != nil {
 					return proto.StopError, err
 				}
@@ -442,9 +452,6 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					break
 				}
 				if checkpoint != nil {
-					if by == proto.DecidedByUser { // files can change while a question waits
-						checkpoint = s.takeSnapshot(ctx, b)
-					}
 					if _, err := s.record(proto.EvCheckpoint, callEv.Seq, *checkpoint); err != nil {
 						return proto.StopError, err
 					}

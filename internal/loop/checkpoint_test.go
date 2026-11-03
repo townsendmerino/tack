@@ -307,3 +307,104 @@ func TestPlanModeTakesNoSnapshot(t *testing.T) {
 		t.Errorf("%d snapshots", counted.takes)
 	}
 }
+
+// scriptedSnapshots answers each Take from a list, and after the last says there is none. after runs inside each Take.
+type scriptedSnapshots struct {
+	ids   []string
+	after func()
+}
+
+func (c *scriptedSnapshots) Take(context.Context) (string, string) {
+	if c.after != nil {
+		c.after()
+	}
+	if len(c.ids) == 0 {
+		return "", "the working tree is over the cap"
+	}
+	id := c.ids[0]
+	c.ids = c.ids[1:]
+	return id, ""
+}
+func (c *scriptedSnapshots) Prune(context.Context) error { return nil }
+
+// answers says yes, then no.
+type answers struct {
+	asked []proto.PermissionRequested
+	yes   []bool
+}
+
+func (a *answers) Approve(_ context.Context, req proto.PermissionRequested) (Approval, error) {
+	a.asked = append(a.asked, req)
+	allow := a.yes[0]
+	a.yes = a.yes[1:]
+	return Approval{Allow: allow}, nil
+}
+
+// A yes was given to a command whose snapshot answered part of the question. If the snapshot taken after that yes fails, the
+// question was the wrong one: it's asked again, with what the snapshot no longer answers.
+func TestASnapshotLostAfterApprovalAsksAgain(t *testing.T) {
+	command := "git branch -D x; git reset --hard"
+	for _, c := range []struct {
+		name     string
+		ids      []string
+		yes      []bool
+		asks     int
+		ran      bool
+		snapshot string
+	}{
+		{"both taken", []string{"a", "b"}, []bool{true}, 1, true, "b"},
+		{"lost, then a no", []string{"a"}, []bool{true, false}, 2, false, ""},
+		{"lost, then a yes", []string{"a"}, []bool{true, true}, 2, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ap := &answers{yes: c.yes}
+			h, _ := checkpointHarness(t, ap, false, bashCall("b1", command), goinfertest.Says("done"))
+			sh := &buildShell{}
+			cfg := h.sess.cfg
+			cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh}), sh
+			cfg.Snapshots = &scriptedSnapshots{ids: c.ids}
+			h.sess = New(cfg)
+			if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+				t.Fatal(err)
+			}
+			if len(ap.asked) != c.asks {
+				t.Fatalf("asked %d times: %+v", len(ap.asked), ap.asked)
+			}
+			if strings.Contains(strings.Join(ap.asked[0].Reasons, " "), "without a snapshot") {
+				t.Errorf("the first question held what the snapshot answers: %q", ap.asked[0].Reasons)
+			}
+			if c.asks == 2 && !strings.Contains(strings.Join(ap.asked[1].Reasons, " "), "without a snapshot") {
+				t.Errorf("the second question lacks what the snapshot no longer answers: %q", ap.asked[1].Reasons)
+			}
+			if (len(sh.ran) == 1) != c.ran {
+				t.Errorf("ran %q", sh.ran)
+			}
+			cps := h.checkpoints()
+			if !c.ran {
+				if len(cps) != 0 {
+					t.Errorf("a refused command has a checkpoint: %+v", cps)
+				}
+			} else if len(cps) != 1 || cps[0].Snapshot != c.snapshot {
+				t.Errorf("checkpoints %+v", cps)
+			}
+			if h.sess.cfg.Perms.Snapshotted {
+				t.Error("the engine still says there is a snapshot")
+			}
+		})
+	}
+}
+
+// A turn that ends on an error leaves no snapshot behind on the engine: one that fails while permit records, and one while the
+// checkpoint is recorded.
+func TestAnErrorLeavesNoSnapshot(t *testing.T) {
+	h, _ := checkpointHarness(t, nil, false, bashCall("b1", "echo hi"), goinfertest.Says("done"))
+	cfg := h.sess.cfg
+	cfg.Snapshots = &scriptedSnapshots{ids: []string{"a"}, after: func() { h.log.Close() }}
+	h.sess = New(cfg)
+	if _, err := h.sess.Turn(context.Background(), "go"); err == nil {
+		t.Fatal("the turn went on with its log closed")
+	}
+	if cfg.Perms.Snapshotted {
+		t.Error("the engine still says there is a snapshot")
+	}
+}

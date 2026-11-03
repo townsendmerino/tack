@@ -882,7 +882,7 @@ func TestSnapshotDecidesWhatStillAsks(t *testing.T) {
 	}
 	stops := []string{
 		"git reset --hard", "git reset --hard HEAD", "git reset --merge", "git reset --keep", "git reset -q --hard",
-		"git checkout .", "git checkout -- a.txt", "git checkout a.txt", "git checkout -f", "git checkout -f -- a.txt", "git checkout HEAD~1 -- a.txt",
+		"git checkout .", "git checkout -- a.txt", "git checkout -f", "git checkout -f -- a.txt", "git checkout -f --", "git checkout --force", "git checkout -q -f", "git checkout HEAD~1 -- a.txt", "git checkout -f .",
 		"git restore a.txt", "git restore --source=HEAD~1 a.txt", "git restore -W -S a.txt",
 		"git clean -f", "git clean -fd", "git clean -fdx", "git clean -ffdx",
 		"rm -r src", "rm -rf src/sub", "rm -rf ./src", "rm -r " + filepath.Join(root, "src"), "cd src && rm -rf sub", "env rm -rf src", "timeout 5 git reset --hard",
@@ -892,6 +892,11 @@ func TestSnapshotDecidesWhatStillAsks(t *testing.T) {
 		"git branch -D x", "git branch -d -f x", "git stash drop", "git stash clear",
 		"git reset --hard HEAD~1", "git reset --hard origin/main", "git reset --hard abc123", "git reset --keep v1",
 		"git checkout -f main", "git switch -f main", "git switch --discard-changes main",
+		// Whatever moves HEAD or a ref, in any position and any form. A bare name can be a branch even when a file has it: real git
+		// takes the branch, so git checkout a.txt keeps asking.
+		"git checkout main -f", "git checkout main --force", "git checkout --for main", "git checkout -f -b x", "git checkout -fb x", "git checkout -bx -f", "git checkout -Bx -f",
+		"git checkout -B x -f", "git checkout --orphan=x -f", "git checkout --orphan x -f", "git checkout --detach -f", "git checkout -d -f", "git checkout -t origin/x -f", "git checkout --track=direct origin/x -f",
+		"git checkout a.txt", "git checkout a.txt --", "git checkout -f a.txt --", "git checkout --conflict=merge -f", "git checkout -m -f",
 		"prisma migrate reset", "prisma db push --force-reset", "prisma db push --accept-data-loss", "rails db:reset",
 		"rm -r .", "rm -r .git", "rm -rf .git/objects", "rm -r " + root, "rm -rf /usr/share/zz", "rm -rf ..", "rm -r out", "rm -r out/x",
 		"rm -rf $d", "rm -rf *", "git reset $x", "git clean $x", "eval 'git reset --hard'", "sh -c 'git reset --hard'", "cd $d; rm -rf src", "xargs rm -r",
