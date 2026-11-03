@@ -149,7 +149,7 @@ func (a *Approval) record(words []*syntax.Word, why []string) {
 	switch {
 	case slices.ContainsFunc(why, func(r string) bool { return strings.HasSuffix(r, runsTextEnd+unseenEnd) }):
 		a.Anything = true
-		if argv[0] == "eval" && !slices.Contains(argv, hole) {
+		if argv[0] == "eval" {
 			a.recordText(strings.Join(argv[1:], " "))
 		}
 	case len(why) > 0:

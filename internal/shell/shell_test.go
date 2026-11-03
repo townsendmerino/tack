@@ -530,3 +530,12 @@ func TestApprovedProgramThatAppearsWhenItRuns(t *testing.T) {
 		}
 	}
 }
+
+// That pass is the user's, for what they were shown. A rule doesn't see a program that wasn't there, and it stops.
+func TestRuleDoesNotCoverAProgramThatAppears(t *testing.T) {
+	s := session(t, true, "mkdir", "chmod")
+	cmd := `mkdir -p made; printf '#!/bin/sh\n' > made/run; chmod +x made/run; made/run`
+	if r := runBy(t, s, perms.ByRule, cmd); !strings.Contains(r.Stopped, "was not approved") {
+		t.Fatalf("%+v", r)
+	}
+}
