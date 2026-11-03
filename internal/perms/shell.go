@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -131,7 +132,8 @@ var wrappers = map[string]bool{"exec": true, "command": true, "builtin": true, "
 func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string) {
 	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
-		return nil, []string{"the command does not parse: " + err.Error()}, nil
+		reason := []string{"the command does not parse: " + err.Error()}
+		return nil, reason, reason
 	}
 	for _, name := range sortedKeys(e.SessionEnv) {
 		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != os.Getenv(name) {
@@ -160,7 +162,18 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 			why = append(why, e.redirect(n)...)
 		}
 	})
-	return cmds, why, e.scanAsks(f, scan{dir: e.startDir()})
+	always = e.scanAsks(f, scan{dir: e.startDir()})
+	// What an earlier command exported: it reaches every program this one runs. Builtins run none, so unset gets out.
+	if slices.ContainsFunc(cmds, func(c Simple) bool { return c.Program != "" }) {
+		for _, name := range sortedKeys(e.SessionEnv) {
+			if v := e.SessionEnv[name]; v != os.Getenv(name) {
+				if r := HooksOff(name, v); r != "" {
+					always = appendNew(always, r)
+				}
+			}
+		}
+	}
+	return cmds, why, always
 }
 
 // simple resolves one simple command's program from dir, where it runs, looking through wrappers, and checks it against

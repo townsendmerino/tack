@@ -605,14 +605,23 @@ tool-use smoke set compares this merged set against the split one before it is f
       (`node_modules`, `dist`, `build` and the like, not through a symlink), and a path under the temp directory. Anything
       else asks, inside the workspace or out.
     - The parse looks through what runs another program (`env`, `nice`, `timeout`, `xargs`, `sudo`, `find -exec`, `npx`), and
-      into code a shell is given as text: `sh -c`, `env -S`, `npx -c`, a `git` alias starting with `!`, a here-document, and
-      text printed straight into a shell. Paths are read after a `cd` with a fixed target.
-    - What only shows after expansion stops when it runs (`internal/shell`, the exec and open checks), in `auto` too.
-    - **Code a real shell runs is never checked again,** because those checks see only tack's own interpreter. So inside it,
-      a program, a redirection, `eval` or an argument of `git` or `rm` that expands asks before it runs. This over-asks on
-      purpose: `sh -c 'rm -f "$f"'` asks.
-    - A script file, code piped in from a program, and a program that deletes files on its own are not visible to it. In
-      `auto` those stay with the sandbox until snapshots exist.
+      reads paths after a `cd` with a fixed target.
+  - **The rule (2026-11-02): when the parse cannot see exactly what will run, it asks, in every mode.** It does not read
+    code inside text, or guess. These all ask:
+    - `eval`, `trap`, `source` and `.`, and a program name that expands;
+    - a shell handed code in any way, under any wrapper or flags: `-c`, `-s`, stdin, a here-document or here-string, or a
+      pipe into it (`curl … | sh` too);
+    - a wrapper it can't fully read: an argument that expands, a flag it doesn't know, code as text (`env -S`, `npx -c`), or
+      another directory (`env -C`, `sudo -D`);
+    - a `git` global flag form it doesn't read (`-cname=value`, `-Cdir`), one that expands, or an alias starting with `!`;
+    - a word that expands where a rule would read it: an argument of `rm`, or of a `git` subcommand on the list; an
+      output redirection's target; a `cd` target; `HUSKY`'s value.
+  - **The run-time check is a second layer, and nothing depends on it alone** (`internal/shell`, the exec and open checks).
+    It sees only tack's own interpreter, never a real shell's code. It stops what `auto` or a rule let through. A user who
+    was asked approved that command, and it runs whatever it expands to.
+  - **What stays visible only to the sandbox:** a named script (`sh script.sh`, `./run.sh`), and any program that runs
+    code or deletes files on its own (`make`, `python -c`). `curl | sh` asks; `python x.py` can't. Snapshots are what make
+    such a loss undoable.
   - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
     snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,

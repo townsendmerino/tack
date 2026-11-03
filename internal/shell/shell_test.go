@@ -244,7 +244,7 @@ func runBy(t *testing.T, s *Session, by, cmd string) Result {
 // What the parse can't see is stopped when it runs (DESIGN §6.6, "Checked again as it runs"), in auto too, where the
 // sandbox would let it through: a day's work survives, and a directory.
 func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
-	for _, by := range []string{perms.ByMode, perms.ByRule, perms.ByUser} {
+	for _, by := range []string{perms.ByMode, perms.ByRule} {
 		t.Run(by, func(t *testing.T) {
 			s := session(t, true, "git", "rm")
 			file := destroyRepo(t, s)
@@ -294,22 +294,66 @@ func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 	}
 }
 
-// A user who was asked about a destructive command approved that command, and it runs. Approval covers only what they
-// were shown.
-func TestDestroyingWorkTheUserApproved(t *testing.T) {
+// A user who was asked approved that command, and it runs, whatever it expands to: they were told it could not be seen.
+// Nothing the parse asks about is rejected once approved.
+func TestApprovedCommandsRun(t *testing.T) {
+	for _, cmd := range []string{
+		`git reset --hard`,
+		`git status; how=--hard; git reset $how`,
+		`eval "git reset --hard"`,
+		`p=git; $p reset --hard`,
+		`set -- reset --hard; git "$@"`,
+	} {
+		s := session(t, true, "git")
+		file := destroyRepo(t, s)
+		if len(s.Engine.AlwaysAsksIn(cmd)) == 0 {
+			t.Fatalf("%s did not ask", cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, cmd); r.Stopped != "" || r.Exit != 0 {
+			t.Fatalf("%s, approved, did not run: %+v", cmd, r)
+		}
+		if b, _ := os.ReadFile(file); string(b) != "committed\n" {
+			t.Fatalf("%s, approved, did not happen: %q", cmd, b)
+		}
+	}
+	s := session(t, true)
+	protected := filepath.Join(s.Engine.Root, "CLAUDE.md")
+	if err := os.WriteFile(protected, []byte("orders\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := runBy(t, s, perms.ByUser, `echo new 1<>CLAUDE.md`); r.Stopped != "" {
+		t.Fatalf("an approved <> redirect: %+v", r)
+	}
+}
+
+// An approved export that turns hooks off does not wedge the session: each later command that runs a program asks, an
+// approved one runs, and unset, which runs none, gets out in any mode.
+func TestSessionHooksOffAsksWithoutWedging(t *testing.T) {
 	s := session(t, true, "git")
-	file := destroyRepo(t, s)
-	if r := runBy(t, s, perms.ByUser, `git status; how=--hard; git reset $how`); r.Stopped == "" {
-		t.Fatalf("the approval did not show --hard: %+v", r)
+	destroyRepo(t, s)
+	if r := runBy(t, s, perms.ByUser, `export HUSKY=0`); r.Stopped != "" {
+		t.Fatalf("export: %+v", r)
 	}
-	if b, _ := os.ReadFile(file); string(b) != "a day's work\n" {
-		t.Fatalf("the work is gone: %q", b)
+	if len(s.Engine.AlwaysAsksIn(`git status`)) == 0 {
+		t.Fatal("git status did not ask with HUSKY=0 in the session")
 	}
-	if r := runBy(t, s, perms.ByUser, `git reset --hard`); r.Stopped != "" || r.Exit != 0 {
-		t.Fatalf("the approved command did not run: %+v", r)
+	if r := runBy(t, s, perms.ByMode, `git status`); r.Stopped == "" {
+		t.Fatal("auto ran git with HUSKY=0 in the session")
 	}
-	if b, _ := os.ReadFile(file); string(b) != "committed\n" {
-		t.Fatalf("the approved reset did not happen: %q", b)
+	if r := runBy(t, s, perms.ByUser, `git status`); r.Stopped != "" || r.Exit != 0 {
+		t.Fatalf("approved, it did not run: %+v", r)
+	}
+	if asks := s.Engine.AlwaysAsksIn(`unset HUSKY`); len(asks) != 0 {
+		t.Fatalf("unset HUSKY asks: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByMode, `unset HUSKY`); r.Stopped != "" {
+		t.Fatalf("unset: %+v", r)
+	}
+	if asks := s.Engine.AlwaysAsksIn(`git status`); len(asks) != 0 {
+		t.Fatalf("after unset, git status asks: %v", asks)
+	}
+	if r := runBy(t, s, perms.ByMode, `git status`); r.Stopped != "" {
+		t.Fatalf("after unset, auto stopped: %+v", r)
 	}
 }
 

@@ -18,18 +18,13 @@ import (
 // The rules decide when to ask; they don't bound what a program can do. A script, or a program that deletes files on
 // its own, is not visible here. §6.8's snapshots are what make such a loss undoable.
 
-// unknownWord stands for an argument that expands at run time: it matches no rule. At the top level the run-time check
-// sees its value. In nested code it never does, so it counts as what it might be (scan.nested).
+// unknownWord stands for a word that expands at run time: it matches no rule, and asks where a rule would read it.
 const unknownWord = ""
 
 // scan is where a command is being read.
 type scan struct {
 	dir   string // where it runs
-	depth int    // the programs and code it is inside
-	// nested is true in code another process's shell runs (sh -c, env -S, code printed into a shell). internal/shell's
-	// exec and open checks see only what tack's own interpreter runs, so nothing checks this code again once it
-	// expands. What expands in a place that matters asks here, or never.
-	nested bool
+	depth int    // the programs it is inside
 }
 
 func (sc scan) in() scan {
@@ -37,13 +32,13 @@ func (sc scan) in() scan {
 	return sc
 }
 
-// expandsLater is the reason for a word in nested code that a rule would need to read.
-func expandsLater(what string) string {
-	return what + " expands inside a nested shell, where nothing checks it again"
+// unseen is the reason for what the parse can't read: when it cannot see exactly what will run, it asks (DESIGN §6.6).
+func unseen(what string) string {
+	return what + ", so what will run can't be seen before it does"
 }
 
 // AlwaysAsks returns why s asks in every mode, one reason per cause, or nil. dir is where s runs, for its relative paths.
-// An argument that expands at run time is judged only once it has (internal/shell's exec check passes Literal true).
+// internal/shell's exec check passes it what a command expanded to, as a second layer behind the parse.
 func (e *Engine) AlwaysAsks(s Simple, dir string) []string {
 	if s.Program == "" {
 		return nil
@@ -63,8 +58,7 @@ func (e *Engine) AlwaysAsks(s Simple, dir string) []string {
 	return why
 }
 
-// AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs. A user who approved it
-// approved these; the run-time check holds what expansion adds against them.
+// AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs.
 func (e *Engine) AlwaysAsksIn(command string) []string {
 	_, _, always := e.checkShell(command)
 	return always
@@ -100,10 +94,32 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 		stack = append(stack, frame{subshell || subst, dir})
 		visit(n, dir)
 		if c, ok := n.(*syntax.CallExpr); ok && len(c.Args) > 0 {
-			dir = afterCd(c.Args, dir)
+			if to, ok := cdTarget(c.Args, dir); ok {
+				dir = to
+			}
 		}
 		return true
 	})
+}
+
+// cdTarget is where a simple command leaves the shell, and whether that can be seen. Anything but cd stays in dir.
+func cdTarget(words []*syntax.Word, dir string) (string, bool) {
+	if name, ok := literal(words[0]); !ok || name != "cd" {
+		return dir, true
+	}
+	for _, w := range words[1:] {
+		t, ok := literal(w)
+		switch {
+		case !ok || t == "-":
+			return dir, false
+		case strings.HasPrefix(t, "-"):
+		case filepath.IsAbs(t):
+			return filepath.Clean(t), true
+		default:
+			return filepath.Join(dir, t), true
+		}
+	}
+	return dir, false // to $HOME
 }
 
 // scanAsks is AlwaysAsks for every simple command under node. It doesn't need a program to resolve: a command that fails
@@ -115,11 +131,7 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 		sc.dir = dir
 		switch n := n.(type) {
 		case *syntax.Assign:
-			why = appendNew(why, assignAsks(n, sc.nested)...)
-		case *syntax.BinaryCmd:
-			why = appendNew(why, e.pipedAsks(n, sc)...)
-		case *syntax.Stmt:
-			why = appendNew(why, e.stdinAsks(n, sc)...)
+			why = appendNew(why, assignAsks(n)...)
 		case *syntax.Redirect:
 			why = appendNew(why, e.redirectAsks(n, sc)...)
 		case *syntax.CallExpr:
@@ -131,35 +143,19 @@ func (e *Engine) scanAsks(node syntax.Node, sc scan) []string {
 	return why
 }
 
-// afterCd is where a simple command leaves the shell: dir, unless it is a cd with a fixed target.
-func afterCd(words []*syntax.Word, dir string) string {
-	if name, ok := literal(words[0]); !ok || name != "cd" || len(words) < 2 {
-		return dir
-	}
-	for _, w := range words[1:] {
-		t, ok := literal(w)
-		switch {
-		case !ok || t == "-":
-			return dir
-		case strings.HasPrefix(t, "-") && t != "--":
-		case t == "--":
-		case filepath.IsAbs(t):
-			return filepath.Clean(t)
-		default:
-			return filepath.Join(dir, t)
-		}
-	}
-	return dir
-}
-
 // callAsks reads one simple command by the name it is written with and the program that name resolves to.
 func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 	name, ok := literal(words[0])
 	if !ok {
-		if sc.nested {
-			return []string{expandsLater("the program " + source(words[0]))}
+		return []string{unseen("the program " + source(words[0]) + " expands when it runs")}
+	}
+	if stringRunners[name] {
+		return []string{unseen(name + " runs code from text")}
+	}
+	if name == "cd" {
+		if _, ok := cdTarget(words, sc.dir); !ok {
+			return []string{unseen("cd's target expands when it runs, and paths after it depend on it")}
 		}
-		return nil
 	}
 	if safeBuiltins[name] {
 		return nil
@@ -170,22 +166,6 @@ func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 			argv[i] = unknownWord
 		}
 	}
-	if sc.nested && (name == "eval" || name == "trap") {
-		if len(argv) == 0 {
-			return nil
-		}
-		code := argv
-		if name == "trap" {
-			code = argv[:1]
-		}
-		if slices.Contains(code, unknownWord) {
-			return []string{expandsLater(name + "'s code")}
-		}
-		return e.codeAsks(strings.Join(code, " "), sc.in())
-	}
-	if stringRunners[name] {
-		return nil
-	}
 	why := e.wordsAsk(filepath.Base(name), argv, sc)
 	if real, err := e.resolveFrom(name, sc.dir); err == nil && filepath.Base(real) != filepath.Base(name) {
 		why = appendNew(why, e.wordsAsk(filepath.Base(real), argv, sc)...)
@@ -193,11 +173,10 @@ func (e *Engine) callAsks(words []*syntax.Word, sc scan) []string {
 	return why
 }
 
-// redirectAsks is PathAsks for an output redirection whose target is fixed. At the top level the run-time check sees any
-// other; in nested code nothing does.
+// redirectAsks is PathAsks for a redirection that writes, and asks for one whose target expands.
 func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
 	switch r.Op {
-	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.RdrAll, syntax.AppAll:
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut:
 	default:
 		return nil
 	}
@@ -206,10 +185,7 @@ func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
 	}
 	target, ok := literal(r.Word)
 	if !ok {
-		if sc.nested {
-			return []string{expandsLater("a redirection to " + source(r.Word))}
-		}
-		return nil
+		return []string{unseen("a redirection to " + source(r.Word) + " expands when it runs")}
 	}
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(sc.dir, target)
@@ -220,19 +196,19 @@ func (e *Engine) redirectAsks(r *syntax.Redirect, sc scan) []string {
 // maxNesting bounds wrappers inside wrappers; past it a command asks, since nothing real nests so deep.
 const maxNesting = 8
 
-// shellNames are the shells whose -c holds code.
-var shellNames = []string{"sh", "bash", "zsh", "dash", "ksh", "ash"}
+// shellNames are the shells: what they are handed runs where nothing can read it first.
+var shellNames = []string{"sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "csh", "tcsh"}
 
 // wordsAsk is AlwaysAsks for a program named name, looking through what runs another program.
 func (e *Engine) wordsAsk(name string, args []string, sc scan) []string {
 	if sc.depth > maxNesting {
-		return []string{name + " nests too many programs to read"}
+		return []string{unseen(name + " nests too many programs")}
 	}
 	if r, ok := runners[name]; ok {
 		return e.runnerAsks(name, r, args, sc)
 	}
 	if slices.Contains(shellNames, name) {
-		return e.shellAsks(args, sc)
+		return shellAsks(name, args)
 	}
 	switch name {
 	case "find":
@@ -254,71 +230,67 @@ func appendNew(to []string, more ...string) []string {
 	return to
 }
 
-// runner is a program that runs the program named in its arguments.
+// runner is a program that runs the program named in its arguments. A flag not listed here asks: it might take a value,
+// or run something itself.
 type runner struct {
-	valued string // the flags that take the next word as a value
-	code   string // those of them whose value is code
+	valued string // the flags that take a value
+	plain  string // the flags that don't
+	unseen string // those it can't follow: code as text, or another directory
 	skip   int    // how many positional arguments come before the program
 }
 
 var runners = map[string]runner{
-	"env":        {valued: "-u --unset -C --chdir -S --split-string", code: "-S --split-string"},
+	"env":        {valued: "-u --unset", plain: "-i --ignore-environment -0 --null -v --debug", unseen: "-S --split-string -C --chdir"},
 	"nice":       {valued: "-n --adjustment"},
 	"nohup":      {},
-	"time":       {valued: "-f --format -o --output"},
-	"timeout":    {valued: "-k --kill-after -s --signal", skip: 1},
+	"time":       {valued: "-f --format -o --output", plain: "-p -v --verbose -a --append"},
+	"timeout":    {valued: "-k --kill-after -s --signal", plain: "--preserve-status --foreground -v --verbose", skip: 1},
 	"stdbuf":     {valued: "-i --input -o --output -e --error"},
-	"sudo":       {valued: "-u --user -g --group -h --host -p --prompt -C --close-from -r --role -t --type -T --command-timeout -U --other-user -D --chdir -R --chroot"},
-	"doas":       {valued: "-u -C"},
-	"xargs":      {valued: "-I -n -L -P -d -E -s -a -J -R -S"},
-	"caffeinate": {valued: "-t -w"},
-	"setsid":     {},
-	"exec":       {valued: "-a"},
-	"command":    {},
+	"sudo":       {valued: "-u --user -g --group -h --host -p --prompt -r --role -t --type -T --command-timeout -U --other-user", plain: "-n --non-interactive -E --preserve-env -H --set-home -b --background -k --reset-timestamp -S --stdin", unseen: "-D --chdir -R --chroot"},
+	"doas":       {valued: "-u", plain: "-n"},
+	"xargs":      {valued: "-I -n --max-args -L --max-lines -P --max-procs -d --delimiter -E -s --max-chars -a --arg-file -J -R -S", plain: "-0 --null -r --no-run-if-empty -t --verbose -x --exit -o"},
+	"caffeinate": {valued: "-t -w", plain: "-d -i -m -s -u"},
+	"setsid":     {plain: "-f --fork -w --wait -c --ctty"},
+	"exec":       {valued: "-a", plain: "-c -l"},
+	"command":    {plain: "-p"},
 	"builtin":    {},
-	"npx":        {valued: "-p --package -c --call", code: "-c --call"},
-	"bunx":       {valued: "-p --package"},
-	"uvx":        {valued: "--from --with"},
+	"npx":        {valued: "-p --package", plain: "-y --yes --no -q --quiet", unseen: "-c --call"},
+	"bunx":       {valued: "-p --package", plain: "-b --bun"},
+	"uvx":        {valued: "--from --with", plain: "-q --quiet"},
 }
 
 func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []string {
-	valued, code := strings.Fields(r.valued), strings.Fields(r.code)
-	var why []string
-	readCode := func(c string) {
-		if c == unknownWord {
-			if sc.nested {
-				why = appendNew(why, expandsLater(name+"'s code"))
-			}
-			return
-		}
-		why = appendNew(why, e.codeAsks(c, sc.in())...)
+	valued, plain, hidden := strings.Fields(r.valued), strings.Fields(r.plain), strings.Fields(r.unseen)
+	if name == "command" && (slices.Contains(args, "-v") || slices.Contains(args, "-V")) {
+		return nil // it looks a program up, and runs nothing
 	}
+	var why []string
 	skip := r.skip
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		flag, value, hasValue := strings.Cut(a, "=")
 		switch {
+		case a == unknownWord:
+			return appendNew(why, unseen("an argument of "+name+" expands when it runs"))
 		case a == "--":
-			continue
-		case hasValue && slices.Contains(code, flag):
-			readCode(value)
+		case slices.Contains(hidden, flag) || (len(a) > 2 && slices.Contains(hidden, a[:2])):
+			return appendNew(why, unseen(name+" "+flag+" can't be followed"))
 		case slices.Contains(valued, a):
-			if slices.Contains(code, a) && i+1 < len(args) {
-				readCode(args[i+1])
-			}
 			i++
+			if i < len(args) && args[i] == unknownWord {
+				return appendNew(why, unseen("a value of "+name+"'s "+a+" expands when it runs"))
+			}
+		case hasValue && slices.Contains(valued, flag):
+		case !strings.HasPrefix(a, "--") && len(a) > 2 && a[0] == '-' && slices.Contains(valued, a[:2]): // -n5
+		case slices.Contains(plain, a):
 		case strings.HasPrefix(a, "-") && len(a) > 1:
+			return appendNew(why, unseen(name+"'s flag "+a+" isn't one it knows"))
 		case name == "env" && hasValue:
 			if r := HooksOff(flag, value); r != "" {
 				why = appendNew(why, r)
 			}
 		case skip > 0:
 			skip--
-		case a == unknownWord:
-			if sc.nested {
-				why = appendNew(why, expandsLater("the program "+name+" runs"))
-			}
-			return why // at the top level, the run-time check sees what it became
 		default:
 			return appendNew(why, e.wordsAsk(filepath.Base(a), args[i+1:], sc.in())...)
 		}
@@ -326,147 +298,13 @@ func (e *Engine) runnerAsks(name string, r runner, args []string, sc scan) []str
 	return why
 }
 
-// shellAsks reads the code a shell is given with -c. A script file, or code piped in from a program, is not visible to
-// the parse: those stay with the sandbox. pipedAsks and stdinAsks read what is visible of the second.
-func (e *Engine) shellAsks(args []string, sc scan) []string {
-	code := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-		case a == "-o" || a == "-O" || a == "+o" || a == "+O":
-			i++
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			if !strings.HasPrefix(a, "--") && strings.Contains(a, "c") {
-				code = true
-			}
-		case a == unknownWord:
-			if sc.nested && code {
-				return []string{expandsLater("a shell's code")}
-			}
-			return nil // at the top level, the run-time check sees this same call with its value
-		case code:
-			return e.codeAsks(a, sc.in())
-		default:
-			return nil // a script file
-		}
-	}
-	return nil
-}
-
-// readsStdin reports whether a simple command is a shell that takes its code from stdin: no -c, and no script file.
-func readsStdin(words []*syntax.Word) bool {
-	if len(words) == 0 {
-		return false
-	}
-	name, ok := literal(words[0])
-	if !ok || !slices.Contains(shellNames, filepath.Base(name)) {
-		return false
-	}
-	for _, w := range words[1:] {
-		a, ok := literal(w)
-		if !ok || !strings.HasPrefix(a, "-") || (!strings.HasPrefix(a, "--") && strings.Contains(a, "c")) {
-			return false
-		}
-	}
-	return true
-}
-
-// pipedAsks reads code printed straight into a shell (echo "git reset --hard" | sh). What it prints is all that's
-// visible of it, and it runs in a real shell, so printed text that expands asks.
-func (e *Engine) pipedAsks(b *syntax.BinaryCmd, sc scan) []string {
-	if b.Op != syntax.Pipe && b.Op != syntax.PipeAll {
+// shellAsks asks for a shell handed code in any way: -c, stdin, a here-document, or a flag it can't read. A script named
+// with no flags is left alone, like any other program: what a program does when it runs is the sandbox's to hold.
+func shellAsks(name string, args []string) []string {
+	if len(args) > 0 && args[0] != unknownWord && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[0], "+") {
 		return nil
 	}
-	from, ok := b.X.Cmd.(*syntax.CallExpr)
-	into, ok2 := b.Y.Cmd.(*syntax.CallExpr)
-	if !ok || !ok2 || len(from.Args) < 2 || !readsStdin(into.Args) {
-		return nil
-	}
-	name, ok := literal(from.Args[0])
-	if !ok || (name != "echo" && name != "printf") {
-		return nil
-	}
-	printed, lit := args(from.Args[1:])
-	if slices.Contains(lit, false) {
-		return []string{expandsLater("what " + name + " prints into a shell")}
-	}
-	return e.codeAsks(printedText(name, printed), sc.in())
-}
-
-// stdinAsks reads code given to a shell as a here-document or here-string.
-func (e *Engine) stdinAsks(s *syntax.Stmt, sc scan) []string {
-	call, ok := s.Cmd.(*syntax.CallExpr)
-	if !ok || !readsStdin(call.Args) {
-		return nil
-	}
-	var why []string
-	for _, r := range s.Redirs {
-		w := r.Hdoc
-		if r.Op == syntax.WordHdoc {
-			w = r.Word
-		}
-		if w == nil {
-			continue
-		}
-		if code, ok := literal(w); ok {
-			why = appendNew(why, e.codeAsks(code, sc.in())...)
-		} else {
-			why = appendNew(why, expandsLater("a here-document given to a shell"))
-		}
-	}
-	return why
-}
-
-// printedText is what echo or printf writes for fixed arguments.
-func printedText(name string, args []string) string {
-	unescape := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\\`, `\`).Replace
-	if name == "echo" {
-		for len(args) > 0 && (args[0] == "-n" || args[0] == "-e" || args[0] == "-E" || args[0] == "-ne" || args[0] == "-en") {
-			args = args[1:]
-		}
-		return unescape(strings.Join(args, " "))
-	}
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		return ""
-	}
-	format, rest := unescape(args[0]), args[1:]
-	var b strings.Builder
-	for { // printf reuses its format until the arguments run out
-		used := false
-		for i := 0; i < len(format); i++ {
-			if format[i] != '%' || i+1 == len(format) {
-				b.WriteByte(format[i])
-				continue
-			}
-			i++
-			for i+1 < len(format) && strings.IndexByte("-+ #0123456789.", format[i]) >= 0 {
-				i++
-			}
-			if format[i] == '%' {
-				b.WriteByte('%')
-			} else if len(rest) > 0 {
-				b.WriteString(rest[0])
-				rest, used = rest[1:], true
-			}
-		}
-		if !used || len(rest) == 0 {
-			return b.String()
-		}
-	}
-}
-
-// codeAsks reads shell code given as a string, which runs where nothing checks it again.
-func (e *Engine) codeAsks(code string, sc scan) []string {
-	f, err := syntax.NewParser().Parse(strings.NewReader(code), "")
-	if err != nil {
-		return []string{"code given as a string does not parse: " + err.Error()}
-	}
-	sc.nested = true
-	return e.scanAsks(f, sc)
+	return []string{unseen(name + " is handed code")}
 }
 
 // findAsks reads the commands find is told to run.
@@ -481,10 +319,10 @@ func (e *Engine) findAsks(args []string, sc scan) []string {
 			}
 			switch {
 			case i+1 >= end:
-			case args[i+1] != unknownWord:
+			case args[i+1] == unknownWord:
+				why = appendNew(why, unseen("the program find runs expands when it runs"))
+			default:
 				why = appendNew(why, e.wordsAsk(filepath.Base(args[i+1]), args[i+2:end], sc.in())...)
-			case sc.nested:
-				why = appendNew(why, expandsLater("the program find runs"))
 			}
 			i = end
 		}
@@ -509,8 +347,14 @@ func shortFlag(arg string, letter byte, valued string) bool {
 	return false
 }
 
-// gitGlobalValued are git's own flags that take the next word as a value.
-var gitGlobalValued = []string{"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source"}
+// gitValued and gitPlain are the git global flags it reads: those that take the next word as a value, and those that
+// don't. Any other form before the subcommand asks, an attached -cname=value and -Cdir among them.
+var (
+	gitValued = []string{"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--attr-source"}
+	gitPlain  = []string{"-p", "--paginate", "-P", "--no-pager", "--bare", "--no-replace-objects", "--literal-pathspecs", "--glob-pathspecs",
+		"--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks", "--no-lazy-fetch", "--no-advice", "--version", "-v", "--help", "-h",
+		"--html-path", "--man-path", "--info-path", "--exec-path"}
+)
 
 // noVerifySubcommands are the ones whose --no-verify skips the owner's hooks.
 var noVerifySubcommands = []string{"commit", "push", "merge", "am", "rebase", "cherry-pick", "revert", "pull"}
@@ -522,48 +366,58 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	i := 0
 	for ; i < len(args); i++ {
 		a := args[i]
+		if a == unknownWord {
+			return appendNew(why, unseen("a word of git before its subcommand expands when it runs"))
+		}
 		if !strings.HasPrefix(a, "-") {
 			break
 		}
-		if v, ok := strings.CutPrefix(a, "--config-env="); ok {
-			configs = append(configs, strings.ToLower(v))
-		}
-		if !slices.Contains(gitGlobalValued, a) || i+1 >= len(args) {
-			continue
-		}
-		i++
-		switch a {
-		case "-C":
-			if filepath.IsAbs(args[i]) {
-				dir = args[i]
-			} else {
-				dir = filepath.Join(dir, args[i])
+		flag, value, hasValue := strings.Cut(a, "=")
+		switch {
+		case slices.Contains(gitValued, a):
+			i++
+			if i >= len(args) || args[i] == unknownWord {
+				return appendNew(why, unseen("a value of git's "+a+" expands when it runs"))
 			}
-		case "-c", "--config-env":
-			configs = append(configs, strings.ToLower(args[i]))
-			if k, v, ok := strings.Cut(args[i], "="); ok && strings.HasPrefix(strings.ToLower(k), "alias.") && strings.HasPrefix(v, "!") {
-				why = appendNew(why, e.codeAsks(v[1:], sc.in())...) // an alias that starts with ! is shell code
+			value = args[i]
+			switch a {
+			case "-C":
+				if filepath.IsAbs(value) {
+					dir = value
+				} else {
+					dir = filepath.Join(dir, value)
+				}
+			case "-c", "--config-env":
+				configs = append(configs, value)
 			}
+		case hasValue && strings.HasPrefix(flag, "--") && slices.Contains(gitValued, flag):
+			if flag == "--config-env" {
+				configs = append(configs, value)
+			}
+		case hasValue && flag == "--exec-path":
+		case slices.Contains(gitPlain, a):
+		default:
+			return appendNew(why, unseen("git's flag "+a+" isn't one it reads"))
 		}
 	}
 	for _, c := range configs {
-		if key, _, _ := strings.Cut(c, "="); key == "core.hookspath" {
+		key, value, _ := strings.Cut(c, "=")
+		key = strings.ToLower(key)
+		if key == "core.hookspath" {
 			why = appendNew(why, "git core.hooksPath skips the owner's hooks")
+		}
+		if strings.HasPrefix(key, "alias.") && strings.HasPrefix(value, "!") {
+			why = appendNew(why, unseen("a git alias starting with ! runs code from text"))
 		}
 	}
 	if i >= len(args) {
 		return why
 	}
-	if args[i] == unknownWord {
-		if sc.nested {
-			why = appendNew(why, expandsLater("git's subcommand"))
-		}
-		return why
-	}
 	sub, rest := args[i], args[i+1:]
-	if sc.nested && gitWordsMatter(sub, rest) {
-		why = appendNew(why, expandsLater("an argument of git "+sub))
+	if gitWordsMatter(sub, rest) {
+		why = appendNew(why, unseen("an argument of git "+sub+" expands when it runs"))
 	}
+	configs = lowered(configs)
 	if slices.Contains(noVerifySubcommands, sub) && slices.Contains(rest, "--no-verify") {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
 	}
@@ -625,6 +479,15 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		}
 	}
 	return why
+}
+
+// lowered is each of configs in lower case, for the checks that ignore case.
+func lowered(configs []string) []string {
+	out := make([]string, len(configs))
+	for i, c := range configs {
+		out[i] = strings.ToLower(c)
+	}
+	return out
 }
 
 // gitWordsMatter reports whether an argument of sub that expands could be what a rule above looks for. A commit message's
@@ -728,10 +591,8 @@ func (e *Engine) rmAsks(args []string, sc scan) []string {
 	}
 	var why []string
 	for _, t := range targets {
-		if t == unknownWord {
-			if sc.nested { // it could be a flag, a directory or the hooks
-				why = appendNew(why, expandsLater("an argument of rm"))
-			}
+		if t == unknownWord { // it could be a flag, a directory or the hooks
+			why = appendNew(why, unseen("an argument of rm expands when it runs"))
 			continue
 		}
 		p := t
@@ -859,7 +720,7 @@ func agentAsks(name string, args []string) []string {
 	if !ok {
 		return nil
 	}
-	start := []string{name + " starts another agent, which runs outside this session's checks"}
+	start := []string{a.canon + " starts another agent, which runs outside this session's checks"}
 	if len(args) == 0 {
 		return start
 	}
@@ -896,15 +757,15 @@ func HooksOff(name, value string) string {
 	return ""
 }
 
-// assignAsks is HooksOff for an assignment whose value is fixed. In nested code, it asks for one that expands.
-func assignAsks(a *syntax.Assign, nested bool) []string {
+// assignAsks is HooksOff for an assignment whose value is fixed, and asks for one that expands.
+func assignAsks(a *syntax.Assign) []string {
 	if a.Name == nil || a.Value == nil {
 		return nil
 	}
 	v, ok := literal(a.Value)
 	if !ok {
-		if nested && (a.Name.Value == "HUSKY" || a.Name.Value == "HUSKY_SKIP_HOOKS") {
-			return []string{expandsLater(a.Name.Value)}
+		if a.Name.Value == "HUSKY" || a.Name.Value == "HUSKY_SKIP_HOOKS" {
+			return []string{unseen(a.Name.Value + " expands when it runs")}
 		}
 		return nil
 	}

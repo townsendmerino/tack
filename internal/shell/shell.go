@@ -300,7 +300,10 @@ func run(req request, out io.Writer) reply {
 	}
 	sort.Strings(names)
 	for _, k := range names {
-		if v := r.Vars[k]; v.Exported && v.Kind == expand.String {
+		switch v := r.Vars[k]; {
+		case !v.IsSet(): // unset carries too, or an export could never be undone
+			delete(rep.State.Env, k)
+		case v.Exported && v.Kind == expand.String:
 			rep.State.Env[k] = v.Str
 		}
 	}
@@ -313,22 +316,18 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
-	asked    map[string]bool
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
-	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{}, asked: map[string]bool{},
+	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
 	}
 	for _, f := range req.RunFlags {
 		ck.runFlags[f] = true
-	}
-	for _, a := range req.Asked {
-		ck.asked[a] = true
 	}
 	for _, s := range req.Rules {
 		if r, err := perms.ParseRule(s); err == nil {
@@ -347,15 +346,13 @@ func (ck *checker) stop(format string, args ...any) error {
 	return interp.ExitStatus(126)
 }
 
-// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks), unless the user approved
-// a command that showed that reason: expansion can't add what they were not asked about. It returns the stop's error, or nil.
+// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer,
+// behind the parse: a user who was asked approved this command, and it runs. It returns the stop's error, or nil.
 func (ck *checker) everyMode(why []string, ran string) error {
-	for _, w := range why {
-		if ck.req.ApprovedBy != perms.ByUser || !ck.asked[w] {
-			return ck.stop("%s; it asks in every mode, and approval did not show it (%s)", w, ran)
-		}
+	if ck.req.ApprovedBy == perms.ByUser || len(why) == 0 {
+		return nil
 	}
-	return nil
+	return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", why[0], ran)
 }
 
 // exec checks a program as the interpreter is about to run it, after expansion.
@@ -384,6 +381,11 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		}
 		if err := ck.everyMode(why, strings.Join(args, " ")); err != nil {
 			return err
+		}
+		// The parse told the user it couldn't see what this runs, and they approved it: the program it became is what they
+		// approved, so the checks below, of what approval saw, don't apply.
+		if ck.req.ApprovedBy == perms.ByUser && len(ck.req.Asked) > 0 {
+			return next(ctx, args)
 		}
 		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
 			return next(ctx, args)
