@@ -402,7 +402,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	// A value counts only as a value of git commit's own flag.
 	`p=.; git checkout commit -m "$p"`, `x=--no-verify; git commit -m -m "$x"`, `x=--no-verify; git -c commit -m "$x" reset`,
 	// What sets a variable by name, under any prefix or flag that expands.
-	`builtin printf -v CDPATH .github; cd workflows; echo x > ci.yml`, `builtin read HUSKY`, `command read HUSKY`, `command -p read HUSKY`, `f=-v; printf $f HUSKY 0`, `printf "$f" HUSKY 0`, `builtin printf -v HUSKY 0`,
+	`builtin printf -v CDPATH .github; cd workflows; echo x > ci.yml`, `read -r HUSKY`, `read -a HUSKY`, `builtin read HUSKY`, `command read HUSKY`, `command -p read HUSKY`, `f=-v; printf $f HUSKY 0`, `printf "$f" HUSKY 0`, `builtin printf -v HUSKY 0`,
 	// What sets a variable through other syntax.
 	`builtin export HUSKY=0`, `command export HUSKY=0`, `builtin export $v`, `command declare -x $v`, `builtin typeset HUSKY`, `command -p export HUSKY=0`,
 	`builtin export CDPATH=.github; cd workflows; echo x > ci.yml`, `command readonly CDPATH=.github; cd workflows; echo x > ci.yml`,
