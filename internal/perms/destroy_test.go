@@ -366,7 +366,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	// Each of these would put the write at the root, away from the workflows it really reaches, if the cd counted.
 	`cd .github/workflows; if true; then cd ../..; fi; echo x > ci.yml`, `cd .github/workflows; if false; then true; else cd ../..; fi; echo x > ci.yml`,
 	`cd .github/workflows; while false; do cd ../..; done; echo x > ci.yml`, `cd .github/workflows; for d in; do cd ../..; done; echo x > ci.yml`,
-	`cd .github/workflows; case x in y) cd ../.. ;; esac; echo x > ci.yml`, `cd .github/workflows; cd ../.. | true; echo x > ci.yml`,
+	`cd .github/workflows; case x in y) cd ../.. ;; esac; echo x > ci.yml`, `cd .github/workflows; cd ../.. | true; echo x > ci.yml`, `cd .github/workflows; cd . || cd ../..; echo x > ci.yml`,
 	`cd .github/workflows; true |& cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. &
 	echo x > ci.yml`,
 	`pushd .github/workflows; echo x > ci.yml`, `popd`, `CDPATH=.github cd workflows`, `export CDPATH=.github`,
