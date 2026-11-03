@@ -340,6 +340,33 @@ func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
 	}
 }
 
+// An approval covers the reasons it showed, and no others. Approved for HUSKY=0 in the session, or for one --no-verify, a command
+// that only shows it destroys work when it runs is still stopped, and the checks of what approval saw stay on.
+func TestApprovalCoversOnlyWhatItShowed(t *testing.T) {
+	for _, c := range []struct{ setup, cmd, want string }{
+		{`export HUSKY=0`, `echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `git commit --no-verify -qm x --allow-empty; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+		{``, `git reset --hard; ln -s src build; rm -rf build`, "asks in every mode"},
+		{``, `git commit --no-verify -qm x --allow-empty; F=--upload-pack; git fetch $F x y`, "runs another program"},
+		{``, `rm -rf $d; echo x > new.txt; git add new.txt; git checkout new.txt`, "asks in every mode"},
+	} {
+		s := session(t, true)
+		destroyRepo(t, s)
+		os.MkdirAll(filepath.Join(s.Engine.Root, "src"), 0o755)
+		if c.setup != "" {
+			if r := runBy(t, s, perms.ByUser, c.setup); r.Stopped != "" {
+				t.Fatalf("%s: %+v", c.setup, r)
+			}
+		}
+		if len(s.Engine.AlwaysAsksIn(c.cmd)) == 0 {
+			t.Fatalf("%s did not ask", c.cmd)
+		}
+		if r := runBy(t, s, perms.ByUser, c.cmd); !strings.Contains(r.Stopped, c.want) {
+			t.Errorf("%s: %+v, want it stopped: %s", c.cmd, r, c.want)
+		}
+	}
+}
+
 // An approved export that turns hooks off does not wedge the session: each later command that runs a program asks, an
 // approved one runs, and unset, which runs none, gets out in any mode.
 func TestSessionHooksOffAsksWithoutWedging(t *testing.T) {

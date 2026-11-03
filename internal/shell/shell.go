@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -316,18 +317,27 @@ type checker struct {
 	engine   *perms.Engine
 	approved map[string]bool
 	runFlags map[string]bool
+	asked    map[string]bool // the reasons approval showed
+	unseen   map[string]bool // the scopes it said it couldn't see (perms.UnseenScope)
 	cancel   func()
 	stopped  string
 }
 
 func newChecker(req request) *checker {
 	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{},
+		asked: map[string]bool{}, unseen: map[string]bool{},
 		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
 	}
 	for _, f := range req.RunFlags {
 		ck.runFlags[f] = true
+	}
+	for _, a := range req.Asked {
+		ck.asked[a] = true
+		if scope, ok := perms.UnseenScope(a); ok {
+			ck.unseen[scope] = true
+		}
 	}
 	for _, s := range req.Rules {
 		if r, err := perms.ParseRule(s); err == nil {
@@ -346,14 +356,28 @@ func (ck *checker) stop(format string, args ...any) error {
 	return interp.ExitStatus(126)
 }
 
-// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer,
-// behind the parse: a user the parse asked approved this command, and it runs, but an approval given for another reason
-// doesn't cover what only shows now. It returns the stop's error, or nil.
-func (ck *checker) everyMode(why []string, ran string) error {
-	if len(why) == 0 || (ck.req.ApprovedBy == perms.ByUser && len(ck.req.Asked) > 0) {
-		return nil
+// sawUnseen reports whether the user was told what a scope (perms.UnseenScope) would do can't be seen, and approved it.
+func (ck *checker) sawUnseen(scopes ...string) bool {
+	if ck.req.ApprovedBy != perms.ByUser {
+		return false
 	}
-	return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", why[0], ran)
+	if ck.unseen[""] {
+		return true
+	}
+	return slices.ContainsFunc(scopes, func(s string) bool { return ck.unseen[s] })
+}
+
+// everyMode stops the command for a reason that asks in every mode (perms.AlwaysAsks, PathAsks). It is the second layer, behind
+// the parse. An approval covers what it showed and nothing else: a reason it showed, or what it said couldn't be seen, in scopes
+// the reason falls under. It returns the stop's error, or nil.
+func (ck *checker) everyMode(why []string, ran string, scopes ...string) error {
+	for _, w := range why {
+		if ck.req.ApprovedBy == perms.ByUser && ck.asked[w] || ck.sawUnseen(scopes...) {
+			continue
+		}
+		return ck.stop("%s; it asks in every mode, and nothing approved it (%s)", w, ran)
+	}
+	return nil
 }
 
 // exec checks a program as the interpreter is about to run it, after expansion.
@@ -373,19 +397,23 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		}
 		why := ck.engine.AlwaysAsks(expanded, hc.Dir)
 		// Whatever the program, since it may be the one that runs git: env, or a shell.
+		ran := strings.Join(args, " ")
 		for _, name := range []string{"HUSKY", "HUSKY_SKIP_HOOKS"} {
 			if v := hc.Env.Get(name).String(); v != os.Getenv(name) {
 				if r := perms.HooksOff(name, v); r != "" {
-					why = append(why, r)
+					if err := ck.everyMode([]string{r}, ran, name); err != nil {
+						return err
+					}
 				}
 			}
 		}
-		if err := ck.everyMode(why, strings.Join(args, " ")); err != nil {
+		programs := []string{filepath.Base(path), filepath.Base(args[0])}
+		if err := ck.everyMode(why, ran, programs...); err != nil {
 			return err
 		}
 		// The parse told the user it couldn't see what this runs, and they approved it: the program it became is what they
-		// approved, so the checks below, of what approval saw, don't apply.
-		if ck.req.ApprovedBy == perms.ByUser && len(ck.req.Asked) > 0 {
+		// approved, so the checks below, of what approval saw, don't apply. Any other approval leaves them on.
+		if ck.sawUnseen(programs...) {
 			return next(ctx, args)
 		}
 		if ck.req.ApprovedBy == perms.ByMode && ck.req.Sandboxed { // auto mode, inside the sandbox: the sandbox is the boundary
@@ -425,7 +453,7 @@ func (ck *checker) open(ctx context.Context, path string, flag int, perm os.File
 	}
 	write := flag&(os.O_WRONLY|os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_TRUNC) != 0
 	if write && p != "/dev/null" {
-		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path); err != nil {
+		if err := ck.everyMode(ck.engine.PathAsks(p), "a redirection to "+path, perms.ScopeRedirect); err != nil {
 			return nil, err
 		}
 	}

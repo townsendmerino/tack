@@ -22,7 +22,7 @@ func destroyEngine(t *testing.T) *Engine {
 	root, bin := t.TempDir(), t.TempDir()
 	for _, name := range strings.Fields(`git rm rmdir grep curl mvn wc bash sh zsh env nice nohup timeout xargs find sudo npx pnpm
 		alembic rails rake python python3 django-admin sequelize knex drizzle-kit claude codex gemini cursor-agent aider tack go
-		terraform apt-get prisma tee sed manage.py`) {
+		terraform apt-get prisma tee sed manage.py cat parallel`) {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -370,6 +370,19 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`cd .github/workflows; true |& cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. &
 	echo x > ci.yml`,
 	`pushd .github/workflows; echo x > ci.yml`, `popd`, `CDPATH=.github cd workflows`, `export CDPATH=.github`,
+	// A cd that doesn't move what follows as it reads.
+	`cd .github/workflows; ! cd . && cd ../..; echo x > ci.yml`, `cd .github/workflows; ! cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. extra; echo x > ci.yml`,
+	`cd .github/workflows; cat <(cd ../..); echo x > ci.yml`,
+	// A shell fed by stdin, whatever its script argument says.
+	`echo "git reset --hard" | sh /dev/stdin`, `sh /dev/stdin <<< "git reset --hard"`, `sh /dev/fd/0`, `sh /dev/fd/3 3< x`, `bash /proc/self/fd/0`, `sh /proc/1/fd/0`, `sh /dev/stdin`,
+	`sh ./stdin-link`, `echo y | sh script.sh`, `sh script.sh < in.txt`, `sh script.sh <<< y`, "sh script.sh <<EOF\ny\nEOF", `echo y | env sh script.sh`, `true | echo y | timeout 5 sh script.sh`,
+	// What takes its arguments from stdin: each is a word it can't see.
+	`echo -rf src | xargs rm`, `echo --hard | xargs git reset`, `echo -fd | xargs git clean`, `echo -D main | xargs git branch`, `echo drop | xargs git stash`,
+	`echo reset --hard | xargs git`, `echo src | xargs -I node_modules rm -rf node_modules`, `xargs env rm`, `xargs find`, `xargs prisma migrate`, `xargs claude`,
+	`parallel rm ::: a`, `parallel "go test {}"`, `find . -exec git checkout {} +`, `find . -exec rm {} +`, `find . -exec git reset {} ;`,
+	// Forms the rules missed.
+	`find . -delete`, `find . -name x -delete`, `find . -fprint CLAUDE.md`, `find . -fls out`, `git checkout '*.ts'`, `git checkout 'src/*'`, `git checkout ':/src'`, `git checkout "a?c"`,
+	`git --work-tree=src checkout api.ts`, `git --work-tree src status`, `git --exec-path=/tmp/x status`,
 	// Words that expand, for the rules that read them.
 	`find . $x`, `find . -name "$x"`, `prisma migrate $x`, `npx prisma $x`, `alembic downgrade $x`, `rails $task`, `python manage.py $cmd`, `knex $x`,
 	`claude $x`, `codex $x`, `aider $x`, `tack $x`,
@@ -380,6 +393,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
 	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
+	`xargs grep x`, `xargs git log`, `xargs git show`, `xargs echo`, `find . -exec grep x {} ;`, `find . -exec git log {} ;`, `find . -print`, `find . -type f -name x`, `sh script.sh > out.txt`, `git --exec-path`, `git checkout main`, `git checkout v1.2.3`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
@@ -400,6 +414,7 @@ func TestUnseenAndCdAskInEveryMode(t *testing.T) {
 			os.MkdirAll(filepath.Join(e.Root, ".github", "workflows"), 0o755)
 			os.MkdirAll(filepath.Join(e.Root, "backend"), 0o755)
 			os.WriteFile(filepath.Join(e.Root, "backend", "manage.py"), []byte("#!/bin/sh\n"), 0o755)
+			os.Symlink("/dev/stdin", filepath.Join(e.Root, "stdin-link"))
 			// A rule that would cover each program: asking has to come from the rule of §6.6, not from the mode.
 			e.Rules = []Rule{{Program: "git"}, {Program: "rm"}, {Program: "go"}, {Program: "sh"}, {Program: "env"}, {Program: "sudo"}, {Program: "timeout"}, {Program: "npx"}, {Program: "find"}}
 			for _, command := range c.catch {
@@ -450,6 +465,55 @@ func TestNamesResolveUnderWrappers(t *testing.T) {
 	for _, command := range []string{"rr -rf src", "env rr -rf src", "timeout 5 rr -rf src", "command rr -rf src", "find . -exec rr -rf {} +", "xargs rr -rf"} {
 		if v := e.Decide(proto.ModeAuto, "bash", false, bashInput(command)); v.Action != Ask {
 			t.Errorf("%s in auto: %s %v, want it to ask", command, v.Action, v.Reasons)
+		}
+	}
+}
+
+// A symlink into the hooks is the hooks.
+func TestRmThroughASymlinkIntoHooks(t *testing.T) {
+	e := destroyEngine(t)
+	if err := os.MkdirAll(filepath.Join(e.Root, ".git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(e.Root, ".git", "hooks"), filepath.Join(e.Root, "h")); err != nil {
+		t.Fatal(err)
+	}
+	if v := e.Decide(proto.ModeAuto, "bash", false, bashInput("rm -f h/pre-commit")); v.Action != Ask {
+		t.Fatalf("%s %v", v.Action, v.Reasons)
+	}
+}
+
+// What an approval covers: a fixed reason covers itself, and a reason that says something can't be seen covers what it said
+// that about, or everything if the code as a whole can't be.
+func TestUnseenScope(t *testing.T) {
+	e := destroyEngine(t)
+	for _, c := range []struct {
+		command, scope string
+		unseen         bool
+	}{
+		{"git reset --hard", "", false},
+		{"HUSKY=0 go test", "", false},
+		{"echo x > CLAUDE.md", "", false},
+		{"rm -rf $d", "rm", true},
+		{"git reset $how", "git", true},
+		{"find . $x", "find", true},
+		{"env $v go test", "env", true},
+		{"claude $x", "claude", true},
+		{"alembic downgrade $x", "alembic", true},
+		{"echo x > $f", ScopeRedirect, true},
+		{"HUSKY=$x go test", "HUSKY", true},
+		{"$p status", "", true},
+		{`eval "x"`, "", true},
+		{"cd $x", "", true},
+	} {
+		asks := e.AlwaysAsksIn(c.command)
+		if len(asks) == 0 {
+			t.Errorf("%s did not ask", c.command)
+			continue
+		}
+		scope, unseen := UnseenScope(asks[0])
+		if unseen != c.unseen || (unseen && scope != c.scope) {
+			t.Errorf("%s: %q: scope %q unseen %v, want %q %v", c.command, asks[0], scope, unseen, c.scope, c.unseen)
 		}
 	}
 }
