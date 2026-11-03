@@ -82,7 +82,7 @@ func doneAnswer(t *testing.T, verify bool, task string, files map[string]string,
 
 // What a turn did to the tests is in done's answer, from its own edits and commands.
 func TestDoneReportsTestChanges(t *testing.T) {
-	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "h_test.go": "package a\n\nfunc TestLast(t *testing.T) {\n\tt.Log(1)\n}\n\nfunc helper() {}\n", "tests/test_h.py": "def test_a():\n    pass\n\ndef helper():\n    pass\n", "sub/x": "", "tests/test_b.py": "def test_b():\n    x = 1\n\n    assert x\n", "two.cfg": "[a]\nfail_under = 50\n[b]\nfail_under = 80\nx = 1\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
+	files := map[string]string{"a_test.go": twoTests, "s_test.go": "package a\n\nfunc TestS(t *testing.T) { t.Skip() }\n", "a.go": "package a\n// x\n", ".coveragerc": "fail_under = 80\nmax_lines = 80\n", "h_test.go": "package a\n\nfunc TestLast(t *testing.T) {\n\tt.Log(1)\n}\n\nfunc helper() {}\n", "tests/test_h.py": "def test_a():\n    pass\n\ndef helper():\n    pass\n", "sub/x": "", "tests/h.py": "x = 1\n", "tests/more/y": "", "tests/test_l.py": "def test_l(\n    x,\n):\n    assert x\n", "c.test.js": "it('handles }', () => {\n  expect(1)\n})\n", "d.test.js": "describe('a', () => {\n  it('works', () => { one() })\n})\ndescribe('b', () => {\n  it('works', () => { two() })\n})\n", "e.test.js": "it('works', () => expect(1).toBe(1))\n\nconst h = 1\n", "tests/test_b.py": "def test_b():\n    x = 1\n\n    assert x\n", "two.cfg": "[a]\nfail_under = 50\n[b]\nfail_under = 80\nx = 1\n", "b.test.js": "it('works', () => {})\n", "tests/r.rs": "#[test]\nfn adds() {}\n", "c.go": "package a\nconst coverage = 80\n", ".retry": "recover = 80\n", "tests/test_x.py": "def test_a():\n    pass\n"}
 	skip := "func TestA(t *testing.T) { t.Skip() }"
 	for _, c := range []struct {
 		name  string
@@ -132,7 +132,20 @@ func TestDoneReportsTestChanges(t *testing.T) {
 		{name: "a named python test edited past a blank line", task: "test_b fails", calls: []goinfertest.Reply{readCall("r", "tests/test_b.py"), editCall("e", "tests/test_b.py", "    assert x\n", "    assert not x\n")}, want: []string{"edited test_b in tests/test_b.py"}},
 		{name: "a named python test edited", task: "test_a fails", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "    pass\n", "    assert 1\n")}, want: []string{"edited test_a in tests/test_x.py"}},
 
+		{name: "a directory's test moved to a directory that isn't one", calls: []goinfertest.Reply{bashCall("b", "mv tests/h.py sub")}, want: []string{"moved tests/h.py to sub"}},
+		{name: "a test commented out with a block", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "func TestA(t *testing.T) {}", "/*\nfunc TestA(t *testing.T) {}\n*/")}, want: []string{"removed TestA from a_test.go"}},
+		{name: "a python test in a docstring", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "def test_a():\n    pass\n", "\"\"\"\ndef test_a():\n    pass\n\"\"\"\n")}, want: []string{"removed test_a from tests/test_x.py"}},
+		{name: "a named python test with a long signature", task: "test_l fails", calls: []goinfertest.Reply{readCall("r", "tests/test_l.py"), editCall("e", "tests/test_l.py", "    assert x\n", "    assert not x\n")}, want: []string{"edited test_l in tests/test_l.py"}},
+		{name: "a named js test with a brace in its title", task: "handles } fails", calls: []goinfertest.Reply{readCall("r", "c.test.js"), editCall("e", "c.test.js", "expect(1)", "expect(2)")}, want: []string{"edited handles } in c.test.js"}},
+		{name: "one of two tests with the same title removed", calls: []goinfertest.Reply{readCall("r", "d.test.js"), editCall("e", "d.test.js", "  it('works', () => { two() })\n", "")}, want: []string{"removed works from d.test.js"}},
+
 		// None of these says anything.
+		{name: "a scratch test with a skip, written and deleted", calls: []goinfertest.Reply{call("w", "write", map[string]any{"path": "n_test.go", "content": skip + "\n"}), bashCall("b", "rm n_test.go")}},
+		{name: "a helper after a one-line js test", task: "works fails", calls: []goinfertest.Reply{readCall("r", "e.test.js"), editCall("e", "e.test.js", "const h = 1", "const h = 2")}},
+		{name: "a skip in a block comment", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "package a", "package a\n/* t.Skip() */")}},
+		{name: "a test's arrow in an echo", calls: []goinfertest.Reply{bashCall("b", `echo 'x -> a_test.go t.Skip()'`)}},
+		{name: "a test moved to a test directory", calls: []goinfertest.Reply{bashCall("b", "mv tests/test_x.py tests/more")}},
+		{name: "a test file edited, then its directory deleted", want: []string{"deleted tests"}, not: "edited", task: "test_x.py", calls: []goinfertest.Reply{readCall("r", "tests/test_x.py"), editCall("e", "tests/test_x.py", "pass", "assert 1"), bashCall("b", "rm -rf tests")}},
 		{name: "a helper after the named test", task: "TestLast fails", calls: []goinfertest.Reply{readCall("r", "h_test.go"), editCall("e", "h_test.go", "func helper() {}", "func helper() { _ = 1 }")}},
 		{name: "a helper after a named python test", task: "test_a fails", calls: []goinfertest.Reply{readCall("r", "tests/test_h.py"), editCall("e", "tests/test_h.py", "def helper():\n    pass\n", "def helper():\n    return 1\n")}},
 		{name: "a helper's text in a named one's file, with a brace in a string", task: "TestB fails", calls: []goinfertest.Reply{readCall("r", "a_test.go"), editCall("e", "a_test.go", "package a", "package a // {")}},
@@ -431,5 +444,26 @@ func TestRanNothingBesideABuild(t *testing.T) {
 	answer, notes = DoneNotes(doneAnswer(t, true, "fix it", files, nothing, append(edit[:2:2], bashCall("b", "go test ./... |& tail -1"))...))
 	if answer != "done" || notes != nil {
 		t.Errorf("through |&: %q %q", answer, notes)
+	}
+}
+
+// A path in the repository, written from its root or relative to it, is the same path; one that leaves isn't in it.
+func TestInRepo(t *testing.T) {
+	for _, c := range []struct {
+		p, want string
+		ok      bool
+	}{{"/r/a_test.go", "a_test.go", true}, {"a_test.go", "a_test.go", true}, {"./x/a_test.go", "x/a_test.go", true}, {"/elsewhere/a_test.go", "", false}, {"../a_test.go", "", false}, {"..", "", false}} {
+		if got, ok := inRepo("/r", c.p); got != c.want || ok != c.ok {
+			t.Errorf("%s: %q %v", c.p, got, ok)
+		}
+	}
+}
+
+// A line that ran nothing and then failed says it failed, not that it ran nothing.
+func TestRanNothingThatFailed(t *testing.T) {
+	v := &verification{call: 2, nothing: true, exit: 1}
+	c := newTestChanges("x", nil)
+	if got := c.report(v, 1); got != "" {
+		t.Errorf("report %q", got)
 	}
 }

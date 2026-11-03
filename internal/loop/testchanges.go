@@ -143,9 +143,6 @@ func (c *testChanges) deletes(root string, args []string) {
 		}
 		p, ok := inRepo(root, a)
 		if ok && (isTestFile(p) || (recursive && isTestDir(p))) {
-			if c.scratch(p) {
-				continue
-			}
 			if c.deleted == nil {
 				c.deleted = map[string]int{}
 			}
@@ -154,7 +151,9 @@ func (c *testChanges) deletes(root string, args []string) {
 			} else {
 				c.deleted[p] = c.mark
 			}
-			c.note("deleted " + p)
+			if !c.scratch(p) {
+				c.note("deleted " + p)
+			}
 		}
 	}
 }
@@ -172,8 +171,22 @@ func (c *testChanges) scratch(p string) bool {
 	return false
 }
 
-// moves notes a test file moved to a name that is not one: out of the repository under any name, or inside it to a name
-// that is not a test's. A directory in the repository that exists keeps the file's name.
+// deletedAt is when the turn's commands deleted p, or a directory around it.
+func (c *testChanges) deletedAt(p string) (int, bool) {
+	for {
+		if at, ok := c.deleted[p]; ok {
+			return at, true
+		}
+		parent := filepath.Dir(p)
+		if parent == p || parent == "." {
+			return 0, false
+		}
+		p = parent
+	}
+}
+
+// moves notes a test file moved to a name that is not one: out of the repository under any name, or inside it to a path
+// that is not a test's. Into a directory that exists, the file keeps its own name there.
 func (c *testChanges) moves(root string, args []string) {
 	var paths []string
 	for _, a := range args {
@@ -185,14 +198,19 @@ func (c *testChanges) moves(root string, args []string) {
 		return
 	}
 	dest := paths[len(paths)-1]
-	if p, ok := inRepo(root, dest); ok {
-		st, err := os.Stat(filepath.Join(root, p))
-		if isTestFile(p) || (err == nil && st.IsDir()) {
-			return
-		}
-	}
+	to, inside := inRepo(root, dest)
+	st, err := os.Stat(filepath.Join(root, to))
+	intoDir := inside && err == nil && st.IsDir()
 	for _, a := range paths[:len(paths)-1] {
-		if p, ok := inRepo(root, a); ok && isTestFile(p) {
+		p, ok := inRepo(root, a)
+		if !ok || !isTestFile(p) {
+			continue
+		}
+		target := to
+		if intoDir {
+			target = filepath.Join(to, filepath.Base(p))
+		}
+		if !isTestFile(target) { // out of the repository, target is ""
 			c.note("moved " + p + " to " + dest)
 		}
 	}
@@ -204,7 +222,7 @@ func (c *testChanges) report(last *verification, change int) string {
 	if c.ws != nil {
 		for _, f := range c.ws.ChangesSince(c.mark) {
 			p := filepath.Clean(f.Path)
-			at, deleted := c.deleted[p]
+			at, deleted := c.deletedAt(p)
 			if !deleted {
 				c.fileNotes(f)
 				continue
@@ -221,7 +239,7 @@ func (c *testChanges) report(last *verification, change int) string {
 	if c.narrow != "" {
 		notes = append(notes, "narrowed the tests with "+c.narrow+" after running them without it")
 	}
-	if last != nil && last.nothing && last.call > change {
+	if last != nil && last.nothing && last.exit == 0 && last.call > change {
 		notes = append(notes, "`"+last.command+"` ran nothing, so it verified nothing")
 	}
 	if len(notes) == 0 {
@@ -252,11 +270,12 @@ func (c *testChanges) fileNotes(f tools.FileChange) {
 		}
 		return
 	}
+	f.Before, f.After = liveCode(f.Path, f.Before), liveCode(f.Path, f.After)
 	before, order := testBodies(f.Before)
 	after, _ := testBodies(f.After)
-	for _, name := range order {
-		if _, ok := after[name]; !ok {
-			c.note("removed " + name + " from " + f.Path)
+	for _, key := range order {
+		if _, ok := after[key]; !ok {
+			c.note("removed " + testName(key) + " from " + f.Path)
 		}
 	}
 	if len(skipRe.FindAllString(f.After, -1)) > len(skipRe.FindAllString(f.Before, -1)) {
@@ -268,51 +287,84 @@ func (c *testChanges) fileNotes(f tools.FileChange) {
 	if strings.Contains(c.task, filepath.Base(f.Path)) {
 		c.note("edited " + f.Path + ", a test file the task names")
 	}
-	for _, name := range order {
-		if body, ok := after[name]; ok && body != before[name] && taskNames(c.task, name) {
-			c.note("edited " + name + " in " + f.Path + ", a test the task names")
+	for _, key := range order {
+		if body, ok := after[key]; ok && body != before[key] && taskNames(c.task, testName(key)) {
+			c.note("edited " + testName(key) + " in " + f.Path + ", a test the task names")
 		}
 	}
 }
 
+// taskNames reports whether the task holds name as a word; a JavaScript test's title can start or end with anything, so
+// one that doesn't start and end like a word is looked for as it stands.
 func taskNames(task, name string) bool {
-	return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(task)
+	if wordEnds.MatchString(name) {
+		return regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`).MatchString(task)
+	}
+	return strings.Contains(task, name)
+}
+
+var wordEnds = regexp.MustCompile(`^\w(.*\w)?$`)
+
+// Block comments and Python's triple-quoted strings, which hold no live test: commenting one out this way removes it.
+var (
+	blockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+	tripleQuoted = regexp.MustCompile(`(?s)""".*?"""|'''.*?'''`)
+)
+
+// liveCode is src without what can't run, by the file's language.
+func liveCode(path, src string) string {
+	if strings.HasSuffix(path, ".py") {
+		return tripleQuoted.ReplaceAllString(src, "")
+	}
+	return blockComment.ReplaceAllString(src, "")
 }
 
 // testFuncRe matches the start of a test function in Go, Python, JavaScript and TypeScript, or Rust; a commented-out one
 // does not match, so commenting a test out removes it.
 var testFuncRe = regexp.MustCompile("(?m)^(?:func ((?:Test|Fuzz)\\w*)\\(|\\s*(?:async\\s+)?def (test\\w*)\\(|\\s*(?:it|test)\\(\\s*['\"`]([^'\"`\\n]+)|\\s*#\\[test\\](?:\\s*#\\[[^\\]\\n]*\\])*\\s*(?:pub\\s+)?(?:async\\s+)?fn (\\w+))")
 
-// testBodies is the file's test functions by name, each with its text (testEnd), and the names in file order.
+// testBodies is the file's test functions by key, each with its text (testEnd), and the keys in file order. A key is the
+// test's name (testName), with its count when an earlier test has the same name, as JavaScript's in two describes can.
 func testBodies(src string) (map[string]string, []string) {
-	bodies := map[string]string{}
+	bodies, seen := map[string]string{}, map[string]int{}
 	var order []string
 	ms := testFuncRe.FindAllStringSubmatchIndex(src, -1)
 	for i, m := range ms {
-		name, at, python := "", 0, false
+		name, at, group := "", 0, 0
 		for g := 1; g < len(m)/2; g++ {
 			if m[2*g] >= 0 {
-				name, at, python = src[m[2*g]:m[2*g+1]], m[2*g], g == 2
+				name, at, group = src[m[2*g]:m[2*g+1]], m[2*g+1], g
 			}
 		}
 		limit := len(src)
 		if i+1 < len(ms) {
 			limit = ms[i+1][0]
 		}
-		end := testEnd(src[:limit], at, python)
-		if _, dup := bodies[name]; !dup {
-			order = append(order, name)
+		end := testEnd(src[:limit], at, group)
+		key := name
+		if n := seen[name]; n > 0 {
+			key = fmt.Sprintf("%s\x00%d", name, n)
 		}
-		bodies[name] = src[m[0]:end]
+		seen[name]++
+		order = append(order, key)
+		bodies[key] = src[m[0]:end]
 	}
 	return bodies, order
 }
 
-// testEnd is where the test whose name is at at ends in src: in Python at the next line indented no more than its def, and
-// elsewhere where the braces opened after its name close. A brace in a string can throw the count off, so a caller's src
-// stops at the next test.
-func testEnd(src string, at int, python bool) int {
-	if python {
+// testName is the name in a key of testBodies.
+func testName(key string) string {
+	name, _, _ := strings.Cut(key, "\x00")
+	return name
+}
+
+// testEnd is where a test ends in src, given the end of its name and which group of testFuncRe matched it: in Python at the
+// next line indented no more than its def, apart from the ) that closes a long signature; in JavaScript where the call
+// closes; elsewhere where the braces opened after the name close. A bracket in a string can throw the count off, so a
+// caller's src stops at the next test.
+func testEnd(src string, at, group int) int {
+	switch group {
+	case 2:
 		start := strings.LastIndexByte(src[:at], '\n') + 1
 		indent := len(src[start:]) - len(strings.TrimLeft(src[start:], " \t"))
 		for i := at; ; {
@@ -325,17 +377,23 @@ func testEnd(src string, at int, python bool) int {
 			if eol := strings.IndexByte(line, '\n'); eol >= 0 {
 				line = line[:eol]
 			}
-			if trimmed := strings.TrimLeft(line, " \t"); trimmed != "" && len(line)-len(trimmed) <= indent {
+			if trimmed := strings.TrimLeft(line, " \t"); trimmed != "" && trimmed[0] != ')' && len(line)-len(trimmed) <= indent {
 				return i
 			}
 		}
+	case 3:
+		return closes(src, at, '(', ')', 1)
 	}
-	depth := 0
+	return closes(src, at, '{', '}', 0)
+}
+
+// closes is just past where the bracket closes, counting from at with depth already open, or the end of src.
+func closes(src string, at int, open, shut byte, depth int) int {
 	for i := at; i < len(src); i++ {
 		switch src[i] {
-		case '{':
+		case open:
 			depth++
-		case '}':
+		case shut:
 			if depth--; depth <= 0 {
 				return i + 1
 			}
@@ -375,7 +433,7 @@ var (
 )
 
 // redirectRe matches a shell redirection's target as the command line writes it.
-var redirectRe = regexp.MustCompile(`>>?\s*['"]?([^\s'";&|<>]+)`)
+var redirectRe = regexp.MustCompile(`(?:^|[^-=<>])>>?\s*['"]?([^\s'";&|<>]+)`)
 
 func redirectsToTestFile(command string) bool {
 	for _, m := range redirectRe.FindAllStringSubmatch(command, -1) {
