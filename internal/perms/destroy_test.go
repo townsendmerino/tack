@@ -527,6 +527,7 @@ func TestApprovalCovers(t *testing.T) {
 		{`eval "x"; go test`, []string{"rm -rf src"}, []string{"go test"}},
 		{`git reset --hard`, nil, []string{"git reset --hard", "rm -rf src"}}, // a reason it gave covers itself, by its text
 		{`cd $x; rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}},
+		{`$c x; rm -rf build`, []string{"rm -rf build"}, []string{"rm -rf src"}}, // $c may be cd
 		{`cd $x`, nil, []string{"rm -rf src", "git status"}},
 	} {
 		a := e.ApprovalFor(c.command)
