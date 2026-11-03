@@ -792,6 +792,38 @@ tool-use smoke set compares this merged set against the split one before it is f
 - Rewinding to seq *N* restores files (pre-images in reverse order, or the snapshot) and forks the conversation at *N*. If
   a file changed outside tack since the checkpoint, rewind asks about that file.
 
+**The plan for snapshots (2026-11-03).** Edit pre-images and the conversation fork wait for `session/fork`; this builds
+the snapshot and a rewind of the files.
+
+- **What a snapshot is.** `internal/snapshot` keeps one shadow repository per workspace in tack's state directory, which
+  the sandbox denies to commands. The daemon runs `git` on it, outside the sandbox, with `GIT_DIR` and its own index
+  pointing there, and the system, global and workspace git config and attributes shut out, so nothing in the repo runs
+  and no filter changes a byte.
+- **What it holds.** Every file under the workspace except `.git`, ignored files too, because `git clean -fdx` deletes
+  them. Empty directories and modes git doesn't keep go in a small manifest beside the tree.
+- **When there is none.** The workspace isn't the top of a git repository; the tree is over `snapshot_max_bytes`, ignored
+  files counted; it holds a nested repository, whose `.git` a shadow repository can't store; or `git` fails. The
+  `checkpoint` event then says why, the client shows that the command can't be rewound, and the guard keeps asking.
+- **When it's taken.** Before each `bash` call's permission decision, and again after an approval if the owner was asked,
+  since files can change during the question. A `checkpoint` event records it, or why not, just before `tool.started`.
+- **What stops asking.** With a snapshot taken for that command: `git reset --hard`, `--merge` and `--keep` with no revision
+  or `HEAD`; `git checkout` and `git restore` that discard; `git clean -f`; `rm -r` of literal paths that resolve inside
+  the workspace, not `.git` or the workspace itself.
+- **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; the
+  data-loss flags and migration resets, whose data isn't in the tree; `rm -r` outside the workspace; and everything the parse
+  can't see, including a path that expands.
+- **Rewind.** `tack rewind <session> <seq>` lists the files it would change and restores them with `--yes`, first taking a
+  snapshot of the current tree so the rewind can itself be undone. It records a `rewind` event. It restores the working
+  tree only: staged state, refs and stashes stay as they are. Without post-images it can't tell tack's changes from yours,
+  so it lists them all.
+- **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
+  guard answers don't change; turning it on there is a decision for the owner.
+- **Keeping the shadow small.** Checkpoints older than 7 days go at the first snapshot of a session, and the oldest go when
+  the shadow passes twice the cap. A rewind to one that's gone says so.
+- **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
+  byte with modes and symlinks; the size-cap, non-git and nested-repository fallbacks; a workspace `.gitattributes` filter and
+  `.git/config` that must not run. The cost per command is measured on a realistic repository and stated here.
+
 ---
 
 ## 7. The context engine
