@@ -653,7 +653,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **Programs not on the list:** anything that deletes or overwrites on its own (`mv`, `cp`, `dd`, `truncate`), or that writes a CI
       definition or an instruction file (`tee`, `sed -i`).
     - **Shell forms:** other ways to set a variable or change directory. A `cd` that fails isn't modeled, so what follows is read from the
-      wrong directory, and a function's body is read from where it's written, not from where it's called. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
+      wrong directory, and a function's or a trap's body is read from where it's written, not from where it runs. `GIT_CONFIG_*` set to `core.hooksPath` isn't caught in `auto`.
     - **Flag forms:** what `git` and the wrappers it reads accept beyond what it knows, which differ by version and between BSD and GNU.
     - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
     - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text

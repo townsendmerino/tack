@@ -1136,10 +1136,16 @@ var (
 		"--html-path", "--man-path", "--info-path", "--exec-path"}
 )
 
-// gitRunsGiven are the flags with which git runs a program it's given. gitRunsGivenLetters are the same as one letter, by subcommand.
+// gitRunsGiven are the flags with which git runs a program it's given, and gitRunsGivenSubcommands the subcommands that read them
+// beyond noVerifySubcommands, which read a word that expands anyway.
+// gitRunsGivenLetters are the same as one letter, by subcommand, with the letters whose value is the rest of the word.
 var (
-	gitRunsGiven        = []string{"--upload-pack", "--receive-pack", "--exec"}
-	gitRunsGivenLetters = map[string]byte{"clone": 'u', "rebase": 'x'}
+	gitRunsGiven            = []string{"--upload-pack", "--receive-pack", "--exec"}
+	gitRunsGivenSubcommands = []string{"fetch", "ls-remote", "clone", "archive", "fetch-pack", "send-pack"}
+	gitRunsGivenLetters     = map[string]struct {
+		letter byte
+		valued string
+	}{"clone": {'u', "bcjo"}, "rebase": {'x', "sXCS"}}
 )
 
 // noVerifySubcommands are the ones whose --no-verify skips the owner's hooks.
@@ -1206,10 +1212,14 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	}
 	for _, a := range flagsOf(sub, rest) {
 		flag, _, _ := strings.Cut(a, "=")
-		letter, hasLetter := gitRunsGivenLetters[sub]
-		if slices.ContainsFunc(gitRunsGiven, func(full string) bool { return flagIs(flag, full) }) || (hasLetter && shortFlag(a, letter, "")) {
-			why = appendNew(why, "git "+sub+" "+flag+" runs a program it is given")
+		if !slices.ContainsFunc(gitRunsGiven, func(full string) bool { return flagIs(flag, full) }) {
+			l, ok := gitRunsGivenLetters[sub]
+			if !ok || !shortFlag(a, l.letter, l.valued) {
+				continue
+			}
+			flag = "-" + string(l.letter)
 		}
+		why = appendNew(why, "git "+sub+" "+flag+" runs a program it is given")
 	}
 	if slices.Contains(noVerifySubcommands, sub) && slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, "--no-verify") }) {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
@@ -1284,7 +1294,8 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 
 // gitWordsMatter reports whether an argument of sub that expands could be what a rule above looks for.
 func gitWordsMatter(sub string, rest []string) bool {
-	if !slices.Contains(noVerifySubcommands, sub) && !slices.Contains([]string{"reset", "checkout", "switch", "restore", "clean", "branch", "stash", "config"}, sub) {
+	if !slices.Contains(noVerifySubcommands, sub) && !slices.Contains(gitRunsGivenSubcommands, sub) &&
+		!slices.Contains([]string{"reset", "checkout", "switch", "restore", "clean", "branch", "stash", "config"}, sub) {
 		return false
 	}
 	return slices.Contains(rest, unknownWord)

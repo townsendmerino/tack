@@ -448,6 +448,10 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	// git flags that run a program they're given: real git runs it for each.
 	`git fetch --upload-pack=evil .`, `git fetch --upload-pack evil .`, `git ls-remote --upload-pack=evil .`, `git clone --upload-pack=evil . c`, `git clone -u evil . c`,
 	`git push --receive-pack=evil . x`, `git push --exec=evil . x`, `git ls-remote --exec=evil .`, `git rebase -x evil HEAD~1`, `git rebase --exec=evil HEAD~1`, `git rebase -ix evil HEAD~1`, `git fetch --upload=evil .`,
+	// The same flags in a word that expands, with nothing else in the line to ask.
+	`F=--upload-pack=evil; git fetch $F .`, `F=--exec=evil; git ls-remote $F .`, `F=-u; git clone $F evil . c`, `F=--exec=evil; git archive $F --remote=x HEAD`, `F=--upload-pack=evil; git fetch-pack $F .`, `F=--receive-pack=evil; git send-pack $F . x`,
+	// A cd in a function moves what follows whether or not the parse sees the call.
+	`f() { cd .github/workflows; }; f; echo x > ci.yml`,
 	// Forms the rules missed.
 	`find . -execdir git status ;`, `find . -okdir grep x {} ;`,
 	// A wrapper's word that expands doesn't hide what it runs: these show the inner command's reason too (TestInnerReasonShows).
@@ -458,6 +462,8 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`find . $x`, `find . -name "$x"`, `prisma migrate $x`, `npx prisma $x`, `alembic downgrade $x`, `rails $task`, `python manage.py $cmd`, `knex $x`,
 	`claude $x`, `codex $x`, `aider $x`, `tack $x`,
 }, []string{
+	// A flag's value holding the letter that would run a program, as real git reads it.
+	`git clone -bu . c`, `git clone -ou . c`, `git clone -cu=1 . c`, `git clone -ju . c`, `git rebase -Xsubtree=x main`, `git rebase -sx main`, `git rebase -Cx main`, `git rebase -Sx main`,
 	"sh script.sh", "bash ./run.sh", "go test ./...", `go test $pkg`, `git log $x`, `git commit -m "$msg"`, `git commit -F "$f"`, `git show $rev`, `git status`,
 	`git -C src status`, `git --no-pager log`, `git -p log`, `git --git-dir=.git status`, `git --version`,
 	`echo $HOME`, `x=1; echo $x`, `echo x > /dev/null`, `echo x 2>&1`, `grep x < $f`, `printf '%s\n' x`, `printf 'hello\n' | grep h`, `echo "$x" | grep h`,
@@ -862,5 +868,14 @@ func TestCodeFromTextLosesTheDirectory(t *testing.T) {
 		if got := strings.Join(e.AlwaysAsksIn(command), ";"); !strings.Contains(got, "follows a cd") {
 			t.Errorf("%s: %q", command, got)
 		}
+	}
+}
+
+// The reason names the flag that runs a program, not the cluster it came in.
+func TestGitRunsGivenNamesTheLetter(t *testing.T) {
+	e := &Engine{Root: t.TempDir(), Path: os.Getenv("PATH"), Sandboxed: true}
+	why := strings.Join(e.AlwaysAsksIn(`git rebase -ix evil HEAD~1`), "\n")
+	if !strings.Contains(why, "git rebase -x runs a program it is given") {
+		t.Errorf("reasons: %q", why)
 	}
 }
