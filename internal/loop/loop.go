@@ -795,6 +795,8 @@ type Snapshotter interface {
 	// Take returns the checkpoint's id, or "" and why there is none.
 	Take(ctx context.Context) (id, why string)
 	Prune(ctx context.Context) error
+	// Staged reports whether a command that overwrites the index would lose content a snapshot doesn't hold.
+	Staged(ctx context.Context) bool
 }
 
 // takeSnapshot takes the snapshot a bash call's permission decision reads, and returns what its checkpoint event would say:
@@ -810,12 +812,13 @@ func (s *Session) takeSnapshot(ctx context.Context, b proto.ModelBlock) *proto.C
 	}
 	id, why := s.cfg.Snapshots.Take(ctx)
 	s.cfg.Perms.Snapshotted = id != ""
+	s.cfg.Perms.Staged = id != "" && s.cfg.Snapshots.Staged(ctx)
 	return &proto.Checkpoint{ID: b.ID, Workspace: s.cfg.WS.Root(), Snapshot: id, Unavailable: why}
 }
 
 // endSnapshot ends what a snapshot answers: it was of the tree before that one command.
 func (s *Session) endSnapshot() {
 	if s.cfg.Perms != nil {
-		s.cfg.Perms.Snapshotted = false
+		s.cfg.Perms.Snapshotted, s.cfg.Perms.Staged = false, false
 	}
 }

@@ -297,15 +297,21 @@ func (e *Engine) AlwaysAsks(s Simple, dir string) []string {
 	return e.afterSnapshot(why)
 }
 
-// undoableEnd ends a reason that a snapshot of the working tree answers (DESIGN §6.8).
-const undoableEnd = "cannot be recovered without a snapshot"
+// undoableEnd ends a reason that a snapshot of the working tree answers (DESIGN §6.8), and cleanIndexEnd one it answers only when
+// nothing is staged, since the command overwrites the index and a snapshot doesn't hold that.
+const (
+	undoableEnd   = "cannot be recovered without a snapshot"
+	cleanIndexEnd = "cannot be recovered without a snapshot and a clean index"
+)
 
 // afterSnapshot is why without the reasons the command's snapshot answers, or why itself if it has none.
 func (e *Engine) afterSnapshot(why []string) []string {
 	if !e.Snapshotted {
 		return why
 	}
-	return slices.DeleteFunc(why, func(r string) bool { return strings.HasSuffix(r, undoableEnd) })
+	return slices.DeleteFunc(why, func(r string) bool {
+		return strings.HasSuffix(r, undoableEnd) || (!e.Staged && strings.HasSuffix(r, cleanIndexEnd))
+	})
 }
 
 // AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs.
@@ -1238,12 +1244,16 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 	discard := func(what string) { why = append(why, "git "+what+" discards work that cannot be recovered") }
 	// undoable is discard for what a snapshot of the working tree brings back: the tree must be the workspace's, and what
 	// the parse can't place isn't.
-	undoable := func(what string) {
+	undoable := func(what string, overwritesIndex bool) {
 		if real := resolveExisting(dir); sc.lost || !within(e.root(), real) {
 			discard(what)
 			return
 		}
-		why = append(why, "git "+what+" discards work that "+undoableEnd)
+		end := undoableEnd
+		if overwritesIndex {
+			end = cleanIndexEnd
+		}
+		why = append(why, "git "+what+" discards work that "+end)
 	}
 	switch sub {
 	case "reset":
@@ -1252,7 +1262,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 				if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return !strings.HasPrefix(a, "-") && a != "HEAD" }) {
 					discard("reset " + f + " to another revision") // it moves a ref, which a snapshot doesn't hold
 				} else {
-					undoable("reset " + f)
+					undoable("reset "+f, true)
 				}
 			}
 		}
@@ -1264,7 +1274,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			if checkoutMoves(rest) {
 				discard("checkout, used this way,")
 			} else {
-				undoable("checkout, used this way,")
+				undoable("checkout, used this way,", checkoutOverwritesIndex(rest))
 			}
 		}
 	case "switch":
@@ -1281,7 +1291,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			return flagIs(a, "--worktree") || shortFlag(a, 'W', gitValuedFlags["restore"].letters())
 		}, "worktree")
 		if !staged || worktree {
-			undoable("restore on the working tree")
+			undoable("restore on the working tree", staged)
 		}
 	case "clean":
 		flags := flagsOf(sub, rest)
@@ -1292,7 +1302,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			return flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["clean"].letters())
 		})
 		if force && !dry {
-			undoable("clean -f")
+			undoable("clean -f", false)
 		}
 	case "branch":
 		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
@@ -1431,6 +1441,22 @@ func checkoutMoves(args []string) bool {
 		}
 	}
 	return named
+}
+
+// checkoutOverwritesIndex reports whether a checkout that can't move HEAD (checkoutMoves) still overwrites the index: -f resets it
+// to HEAD, and a tree-ish before -- writes its paths there. git checkout . and git checkout -- <paths> only read it.
+func checkoutOverwritesIndex(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "--":
+			return false
+		case flagIs(a, "--force") || a == "-f":
+			return true
+		case a != "." && !strings.HasPrefix(a, "-"):
+			return true
+		}
+	}
+	return false
 }
 
 // checkoutKeepsHead are the long flags of git checkout that leave HEAD and the refs alone.

@@ -90,6 +90,9 @@ type Engine struct {
 	// Snapshotted says a snapshot of the working tree was taken for the next command (DESIGN §6.8), so what it can undo needs
 	// no question.
 	Snapshotted bool
+	// Staged says the index differs from HEAD, or that it couldn't be told: a command that overwrites the index would lose
+	// content the snapshot doesn't hold, so it still asks.
+	Staged bool
 	// SessionDir is where this session's next command starts (internal/shell.Session keeps it current), or "" for Root.
 	SessionDir string
 	// SessionEnv is the exported variables earlier commands set in this session (internal/shell.Session keeps it

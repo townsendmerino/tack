@@ -773,3 +773,18 @@ func TestResultSaysWhatRan(t *testing.T) {
 		t.Errorf("%d commands, the first's argument %d bytes", len(r.Ran), len(r.Ran[0].Args[1]))
 	}
 }
+
+// The run-time check reads the same two flags: with something staged, what overwrites the index is stopped when it ran with
+// nothing approving it, and with nothing staged it runs.
+func TestRunTimeCheckKnowsWhatsStaged(t *testing.T) {
+	s := session(t, true)
+	destroyRepo(t, s)
+	s.Engine.Snapshotted, s.Engine.Staged = true, true
+	if r := runBy(t, s, perms.ByMode, `git reset --hard`); !strings.Contains(r.Stopped, "asks in every mode") {
+		t.Errorf("staged: %+v", r)
+	}
+	s.Engine.Staged = false
+	if r := runBy(t, s, perms.ByMode, `git reset --hard`); r.Stopped != "" {
+		t.Errorf("nothing staged: %+v", r)
+	}
+}

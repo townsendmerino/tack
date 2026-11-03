@@ -983,3 +983,44 @@ func TestGitRunsGivenNamesTheLetter(t *testing.T) {
 		t.Errorf("reasons: %q", why)
 	}
 }
+
+// A snapshot holds the working tree, not the index. With something staged, what overwrites the index goes on asking, and what
+// leaves it alone stops, as it does with nothing staged.
+func TestStagedKeepsAskingWhatOverwritesTheIndex(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overwrites := []string{"git reset --hard", "git reset --hard HEAD", "git reset --merge", "git reset --keep", "git checkout -f", "git checkout --force",
+		"git checkout HEAD~1 -- a.txt", "git checkout -f -- a.txt", "git restore -S -W a.txt", "git restore --staged --worktree a.txt", "git restore --source=HEAD~1 -S -W a.txt"}
+	leaves := []string{"git checkout .", "git checkout -- a.txt", "git restore a.txt", "git restore --source=HEAD~1 a.txt", "git clean -f", "git clean -fdx", "rm -r src"}
+	for _, staged := range []bool{true, false} {
+		e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true, Staged: staged}
+		decide := func(command string) Action {
+			input, _ := json.Marshal(map[string]string{"command": command})
+			return e.Decide(proto.ModeAuto, "bash", false, input).Action
+		}
+		for _, command := range overwrites {
+			want := Allow
+			if staged {
+				want = Ask
+			}
+			if got := decide(command); got != want {
+				t.Errorf("staged %v, %s: %v, want %v", staged, command, got, want)
+			}
+		}
+		for _, command := range leaves {
+			if got := decide(command); got != Allow {
+				t.Errorf("staged %v, %s: %v", staged, command, got)
+			}
+		}
+	}
+	// With no snapshot, everything asks whatever the index holds, and Staged alone answers nothing.
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Staged: false}
+	if why := e.AlwaysAsksIn("git reset --hard"); len(why) == 0 || !strings.Contains(why[0], "without a snapshot") {
+		t.Errorf("reasons %q", why)
+	}
+}

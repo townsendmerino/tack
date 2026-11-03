@@ -54,6 +54,7 @@ type request struct {
 	Path        string         `json:"path"`        // the PATH the engine resolves rules on
 	Sandboxed   bool           `json:"sandboxed"`   // rules allow a program approval did not see only inside the sandbox
 	Snapshotted bool           `json:"snapshotted"` // a snapshot of the tree was taken for this command (perms.Engine.Snapshotted)
+	Staged      bool           `json:"staged"`      // the index differs from HEAD (perms.Engine.Staged)
 	ApprovedBy  string         `json:"approved_by"` // perms.ByUser, ByRule or ByMode: who allowed the command
 }
 
@@ -132,7 +133,7 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	if s.state.Dir == "" {
 		s.state.Dir = s.Engine.Root
 	}
-	req := request{Command: command, State: s.state, Root: s.Engine.Root, Path: s.Engine.Path, Sandboxed: s.Engine.Sandboxed, Snapshotted: s.Engine.Snapshotted,
+	req := request{Command: command, State: s.state, Root: s.Engine.Root, Path: s.Engine.Path, Sandboxed: s.Engine.Sandboxed, Snapshotted: s.Engine.Snapshotted, Staged: s.Engine.Staged,
 		ApprovedBy: approvedBy(ctx)}
 	for _, c := range s.Engine.Analyze(command) {
 		if c.Program == "" {
@@ -350,7 +351,7 @@ type checker struct {
 
 func newChecker(req request) *checker {
 	ck := &checker{req: req, approved: map[string]bool{}, runFlags: map[string]bool{}, runs: map[string]int{},
-		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed, Snapshotted: req.Snapshotted}}
+		engine: &perms.Engine{Root: req.Root, Path: req.Path, Sandboxed: req.Sandboxed, Snapshotted: req.Snapshotted, Staged: req.Staged}}
 	for _, p := range req.Approved {
 		ck.approved[p] = true
 	}

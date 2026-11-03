@@ -685,7 +685,8 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
       inside `eval` and out goes by the written-out statement.
   - **With a snapshot taken for that command,** one it can undo stops asking (§6.8 lists both sides). The ones it can't undo keep
-    asking: the snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
+    asking: the snapshot holds the working tree, not refs, stashes or the index, so `git branch -D` and the stash commands stay on
+    the list, and what overwrites the index stays on it while the index differs from HEAD.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
   agent-context and safety-bypass groups:
   - edits to CI definitions (`.github/workflows/`, `.gitlab-ci.yml` and the like);
@@ -838,14 +839,18 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **What stops asking.** With a snapshot taken for that command: `git reset --hard`, `--merge` and `--keep` with no revision
   or `HEAD`; `git checkout .`, `git checkout -f` and `git checkout -- <paths>`; `git restore`; `git clean -f`; `rm -r` of literal paths that resolve inside
   the workspace, not `.git` or the workspace itself.
+- **What keeps asking only while something is staged.** Of those, `git reset`, `git checkout -f`, `git checkout <tree-ish> -- <paths>`
+  and `git restore -S -W` overwrite the index, and a snapshot doesn't hold it, so content staged and then edited further would be
+  lost. So they ask while the index differs from HEAD, or while that can't be told (`git diff-index --cached --quiet HEAD`, with
+  `fsmonitor` and hooks off). The others leave the index alone and stop asking either way.
 - **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; any other `git checkout`, since a bare name can be a branch even when a file has it, and real git takes the branch; the
   data-loss flags and migration resets, whose data isn't in the tree; `rm -r` outside the workspace; and everything the parse
   can't see, including a path that expands.
 - **Rewind.** `tack rewind -yes <session> <seq>` restores the files; without `-yes` it lists what it would change. It compares the
   tree with the checkpoint directly, so what stops a new snapshot doesn't stop going back. It first takes a snapshot of the
   current tree so the rewind can be undone, and says so when it can't. It records a `rewind` event. It restores the working tree
-  only: refs, stashes and the index are not brought back, so what was staged and destroyed by a command that asked no question
-  comes back as a file, not as staged. Without post-images it can't tell tack's changes from yours,
+  only: refs, stashes and the index are not brought back. A staged file a command removed from the index comes back as a file, not
+  as staged; that command asked no question only because the index matched HEAD. Without post-images it can't tell tack's changes from yours,
   so it lists them all.
 - **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
   guard answers don't change; turning it on there is a decision for the owner.
@@ -861,6 +866,8 @@ tool-use smoke set compares this merged set against the split one before it is f
   | tack | 354 | 46 | 1.5 s | 41 ms | not measured |
   | postgres | 7,216 | 134 | 6.4 s | 100 ms | 142 ms |
   | kubernetes | 26,667 | 364 | 23 s | 412 ms | not measured |
+
+  Telling whether the index differs from HEAD adds about 15 ms per command, on all three (median of 15, a one-off, right after a timed run ended).
 
   A tree over the cap costs about 93 ms before it says so (ken, 4.7 GB, at the 512 MiB default). On postgres, restoring one file
   took 0.4 s and restoring after `rm -r src` took 1.3 s; the shadow held 38 MiB after the first snapshot. A build output is

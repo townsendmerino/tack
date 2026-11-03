@@ -360,6 +360,7 @@ func TestTheUsersGitIsUntouched(t *testing.T) {
 	before := digest(t, root)
 	status := run(t, root, "git", "status", "--porcelain")
 	id := take(t, s)
+	s.Staged(context.Background())
 	write(t, root, "src/a.go", "changed\n", 0o644)
 	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
@@ -401,6 +402,7 @@ func TestNothingInTheWorkspaceRuns(t *testing.T) {
 	s := shadow(t, root)
 	before := capture(t, root)
 	id := take(t, s)
+	s.Staged(context.Background())
 	write(t, root, "ident.txt", "gone\n", 0o644)
 	if _, _, err := s.Restore(context.Background(), id); err != nil {
 		t.Fatal(err)
@@ -906,5 +908,47 @@ func TestChangesOfWhatTheTreeDoesntHold(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "a")); err == nil {
 		t.Error("a stayed")
+	}
+}
+
+// Staged is the index against HEAD: not the working tree, and what it can't tell counts as yes.
+func TestStaged(t *testing.T) {
+	ctx := context.Background()
+	root := repo(t) // repo stages src/staged.go
+	s := shadow(t, root)
+	if !s.Staged(ctx) {
+		t.Error("a staged file isn't staged")
+	}
+	run(t, root, "git", "reset", "-q", "--", "src/staged.go")
+	if s.Staged(ctx) { // src/a.go has changes too, unstaged, and they don't count
+		t.Error("nothing staged, and it says something is")
+	}
+	write(t, root, "src/a.go", "staged edit\n", 0o644)
+	run(t, root, "git", "add", "src/a.go")
+	write(t, root, "src/a.go", "further edit\n", 0o644)
+	if !s.Staged(ctx) {
+		t.Error("staged and then edited further isn't staged")
+	}
+	// Nothing committed yet.
+	unborn := t.TempDir()
+	run(t, unborn, "git", "init", "-q")
+	if !shadow(t, unborn).Staged(ctx) {
+		t.Error("a repository with no HEAD: it can't tell, and says no")
+	}
+	// No repository, no git.
+	if !shadow(t, t.TempDir()).Staged(ctx) {
+		t.Error("no repository: it can't tell, and says no")
+	}
+	s = shadow(t, root)
+	s.Git = filepath.Join(root, "no-such-git")
+	if !s.Staged(ctx) {
+		t.Error("no git: it can't tell, and says no")
+	}
+	// The caller's git variables reach nothing.
+	clean := repo(t)
+	run(t, clean, "git", "reset", "-q")
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(root, ".git", "index"))
+	if shadow(t, clean).Staged(ctx) {
+		t.Error("it read another index")
 	}
 }

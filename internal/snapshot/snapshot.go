@@ -353,6 +353,22 @@ func (s *Shadow) lastUsed(ref string, unix int64) time.Time {
 	return time.Unix(unix, 0)
 }
 
+// Staged reports whether the user's index differs from HEAD, so a command that overwrites it would lose content a snapshot doesn't
+// hold, or whether it can't tell, which counts as yes. It reads the user's repository, so it turns off what its config could run,
+// takes no optional lock, and compares only the index with the tree: nothing runs and nothing under .git is written.
+func (s *Shadow) Staged(ctx context.Context) bool {
+	if s.Git == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.Limit)
+	defer cancel()
+	c := exec.CommandContext(ctx, s.Git, "-C", s.Root, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+		"diff-index", "--cached", "--quiet", "HEAD", "--")
+	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + s.Dir, "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null", "GIT_ATTR_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}
+	return c.Run() != nil
+}
+
 // NoUndo says why a rewind right now couldn't be undone, or "" when, as far as a walk of the tree can tell, it could.
 func (s *Shadow) NoUndo(ctx context.Context) string {
 	if !s.isTop() {

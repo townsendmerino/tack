@@ -292,6 +292,7 @@ func (c *countingSnapshots) Prune(context.Context) error {
 	c.prunes++
 	return nil
 }
+func (c *countingSnapshots) Staged(context.Context) bool { return false }
 
 // Plan mode refuses bash, so it takes no snapshot on the way.
 func TestPlanModeTakesNoSnapshot(t *testing.T) {
@@ -329,6 +330,7 @@ func (c *scriptedSnapshots) Take(context.Context) (string, string) {
 	return id, ""
 }
 func (c *scriptedSnapshots) Prune(context.Context) error { return nil }
+func (c *scriptedSnapshots) Staged(context.Context) bool { return false }
 
 // answers says yes, then no.
 type answers struct {
@@ -410,5 +412,61 @@ func TestAnErrorLeavesNoSnapshot(t *testing.T) {
 	}
 	if cfg.Perms.Snapshotted {
 		t.Error("the engine still says there is a snapshot")
+	}
+}
+
+// Through the loop, on a real repository: with something staged, git reset --hard asks, and it leaves the staged work alone when
+// told no; with nothing staged it runs; and the flag doesn't outlive its command.
+func TestStagedWorkKeepsAsking(t *testing.T) {
+	gitIn := func(t *testing.T, root string, args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = root
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	ap := &approver{answer: Approval{}}
+	h, _ := checkpointHarness(t, ap, true, bashCall("b1", "git reset --hard"), goinfertest.Says("done"))
+	root := h.ws.Root()
+	file := filepath.Join(root, "mcp", "token_budget.go")
+	if err := os.WriteFile(file, []byte("package mcp // staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", "mcp/token_budget.go")
+	if err := os.WriteFile(file, []byte("package mcp // edited further\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ap.asked) != 1 {
+		t.Fatalf("asked %+v", ap.asked)
+	}
+	if !strings.Contains(strings.Join(ap.asked[0].Reasons, " "), "without a snapshot") {
+		t.Errorf("reasons %q", ap.asked[0].Reasons)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "package mcp // edited further\n" {
+		t.Errorf("it ran: %q", b)
+	}
+	if h.sess.cfg.Perms.Staged {
+		t.Error("the engine still says something is staged")
+	}
+
+	ap = &approver{answer: Approval{}}
+	h, _ = checkpointHarness(t, ap, true, bashCall("b1", "git reset --hard"), goinfertest.Says("done"))
+	root = h.ws.Root()
+	file = filepath.Join(root, "mcp", "token_budget.go")
+	if err := os.WriteFile(file, []byte("package mcp // not staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ap.asked) != 0 {
+		t.Errorf("nothing staged, and it asked: %+v", ap.asked)
+	}
+	if b, _ := os.ReadFile(file); string(b) == "package mcp // not staged\n" {
+		t.Error("it didn't run")
 	}
 }
