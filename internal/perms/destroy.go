@@ -110,7 +110,7 @@ func walkDirs(node syntax.Node, dir string, visit func(n syntax.Node, dir string
 }
 
 // cdPlaced reports whether call, under the nodes in path, runs exactly once and in order, so that a cd in it moves what
-// follows. A function body, a branch, a loop, a pipeline, the background and a right-hand side of || may not; a statement
+// follows. A function body, a branch, a loop, a pipeline, the background and the right-hand side of || may not; a statement
 // with a redirection opens it before the cd moves; an assignment on it may be CDPATH. The right-hand side of && counts
 // only after cds, whose failure stops the chain.
 func cdPlaced(path []syntax.Node, call *syntax.CallExpr) bool {
@@ -126,10 +126,10 @@ func cdPlaced(path []syntax.Node, call *syntax.CallExpr) bool {
 				return false
 			}
 		case *syntax.BinaryCmd:
-			if n.Op != syntax.AndStmt {
+			if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
 				return false
 			}
-			if i+1 < len(path) && path[i+1] == syntax.Node(n.Y) && !onlyCds(n.X) {
+			if i+1 < len(path) && path[i+1] == syntax.Node(n.Y) && (n.Op == syntax.OrStmt || !onlyCds(n.X)) {
 				return false
 			}
 		}

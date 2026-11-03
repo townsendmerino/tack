@@ -363,6 +363,12 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`cd .github/workflows && cd ../.. > ci.yml`, `cd ~ && echo x > ci.yml`, `cd ~/x`, `builtin cd .github/workflows; echo x > ci.yml`, `command cd .github/workflows; echo x > ci.yml`,
 	`cd .github/workflows; false && cd ../..; echo x > ci.yml`, `cd .github/workflows; true || cd ../..; echo x > ci.yml`,
 	`if true; then cd .github/workflows; fi; echo x > ci.yml`, `for d in a; do cd .github/workflows; done; echo x > ci.yml`, `cd .github/workflows & echo x > ci.yml`,
+	// Each of these would put the write at the root, away from the workflows it really reaches, if the cd counted.
+	`cd .github/workflows; if true; then cd ../..; fi; echo x > ci.yml`, `cd .github/workflows; if false; then true; else cd ../..; fi; echo x > ci.yml`,
+	`cd .github/workflows; while false; do cd ../..; done; echo x > ci.yml`, `cd .github/workflows; for d in; do cd ../..; done; echo x > ci.yml`,
+	`cd .github/workflows; case x in y) cd ../.. ;; esac; echo x > ci.yml`, `cd .github/workflows; cd ../.. | true; echo x > ci.yml`,
+	`cd .github/workflows; true |& cd ../..; echo x > ci.yml`, `cd .github/workflows; cd ../.. &
+	echo x > ci.yml`,
 	`pushd .github/workflows; echo x > ci.yml`, `popd`, `CDPATH=.github cd workflows`, `export CDPATH=.github`,
 	// Words that expand, for the rules that read them.
 	`find . $x`, `find . -name "$x"`, `prisma migrate $x`, `npx prisma $x`, `alembic downgrade $x`, `rails $task`, `python manage.py $cmd`, `knex $x`,
@@ -373,7 +379,7 @@ var unseenCases = commandCases{"what the parse cannot see", []string{
 	`echo $HOME`, `x=1; echo $x`, `echo x > /dev/null`, `echo x 2>&1`, `grep x < $f`, `printf '%s\n' x`, `printf 'hello\n' | grep h`, `echo "$x" | grep h`,
 	`env FOO=1 go test`, `env -i go test`, `env -u FOO go test`, `nice -n 5 go test`, `nice -n5 go test`, `timeout 5 go test`, `timeout -k 1 5 go test`, `timeout --kill-after=1 5 go test`,
 	`timeout --preserve-status 5 go test`, `xargs -0 -n 1 grep x`, `xargs -I {} grep x`, `npx -y prisma generate`, `sudo -n go test`, `sudo -u root go test`, `command -v git`,
-	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
+	`cd src && go test`, `cd src; go test`, `(cd src; go test)`, `cd src && cd .. && go test`, `{ cd src; go test; }`, `cd src && go test ./... 2>&1 || true`, `cd src || true`, `cd src || exit 1`, `find . -name x`, `find . -exec grep foo {} +`, `HUSKY=1 go test`,
 	`go test $x`, `prisma generate`, `npx prisma generate`, `alembic upgrade head`, `command -v $x`, `command -V git`, `builtin echo x`,
 }}
 
