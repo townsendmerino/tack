@@ -211,3 +211,22 @@ included. Inbound is checked only at `listen`, by local address.
   `internal/modelfetch` is the case seen: `httptest: failed to listen on a port: listen tcp6 [::1]:0: bind: operation
   not permitted`.
 - **Open design question:** run `go test` outside Seatbelt, in a VM, or under a port-scoped firewall rule.
+
+## ADR-006 — E1 runs with snapshots on
+
+**Decided by the owner (Francis, 2026-11-04):** the E1 calibration and its arms run with `snapshots` on, as the released tack
+does. The eval should measure what ships, and users will run with snapshots on.
+
+- **What it changes.** Commands a snapshot can undo (`git reset --hard`, discarding `git checkout` and `git restore`, `git clean -f`,
+  `rm -r` inside the workspace) stop asking, and in E1 an ask is a refusal. So runs from here on see fewer permission questions than
+  earlier runs, which were refused. Both arms of a comparison get the same change.
+- **Not directly comparable.** Runs from here on are not directly comparable with earlier snapshot-off runs. A comparison across the
+  two periods must say so. A comparison inside one period is unaffected.
+- **What it adds.** A `checkpoint` event per bash call in each log, and a shadow repository per workspace under the state directory.
+  The cost per command is in DESIGN §6.8. Workspaces over `snapshot_max_bytes` (ken is one) get no snapshot, and the guard keeps
+  asking there, so the setting does not engage on every task.
+- **What was recommended against.** The recommendation was to keep it off, because the recorded ask rate (1 of 1,207 bash calls)
+  says it should not move a pass count, and a setting that engages on some tasks only is a poor thing to hold fixed. The owner chose
+  to match what ships.
+- **Still to do.** The A1 pilot's config (`internal/eval/pilot/tack.go`, `snapshots = false`) and its test
+  `TestE1RunsWithoutSnapshots` still say off. Changing them is a code change and goes through its own PR.
