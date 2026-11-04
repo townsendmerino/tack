@@ -20,7 +20,7 @@ func main() {
 	var o Options
 	flag.StringVar(&o.Base, "base", "", "git ref to diff against through its merge base (default origin/main, else main)")
 	flag.BoolVar(&o.All, "all", false, "check every package and Go file in the module")
-	flag.StringVar(&o.Timeout, "timeout", "3m", "go test -timeout")
+	flag.StringVar(&o.Timeout, "timeout", "", "go test -timeout (default 3m, 10m where the sandbox escape tests run)")
 	flag.Parse()
 	o.Log = os.Stdout
 

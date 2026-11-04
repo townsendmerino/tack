@@ -267,6 +267,18 @@ type testEvent struct {
 	Output  string
 }
 
+// testTimeout is go test's -timeout: what was asked for, else 3m, or 10m where the escape tests run (sandboxtest). cmd/tack's take
+// about the whole 3m on a Mac, and a gate that goes red on its own default stops being believed. A hang still fails.
+func testTimeout(asked string, sandbox bool) string {
+	switch {
+	case asked != "":
+		return asked
+	case sandbox:
+		return "10m"
+	}
+	return "3m"
+}
+
 // checkTests runs the packages' tests on the host and gives one cell per package. A package whose tests all skipped
 // is INCONCLUSIVE, not a pass (CLAUDE.md: a skip is not a pass). Each package's result line streams to log as it
 // finishes.
@@ -274,16 +286,19 @@ func checkTests(root string, pkgs []string, timeout string, log io.Writer) []gat
 	if len(pkgs) == 0 {
 		return []gate.Cell{{Name: "test", Outcome: gate.NA}}
 	}
-	args := []string{"test", "-json", "-timeout", timeout}
+	args := []string{"test", "-json"}
 	var extra []gate.Cell
+	sandbox := false
 	if runtime.GOOS == "darwin" {
 		if canSandbox() {
+			sandbox = true
 			args = append(args, "-tags", "sandboxtest") // the escape tests (internal/sandbox, internal/shell)
 		} else if needsSandbox(pkgs) {
 			extra = append(extra, gate.Cell{Name: "test sandbox escapes", Outcome: gate.Inconclusive,
 				Detail: "sandbox-exec cannot start here (already inside a sandbox?): the escape tests did not run; run touched outside tack's sandbox"})
 		}
 	}
+	args = append(args, "-timeout", testTimeout(timeout, sandbox))
 	cmd := exec.Command("go", append(args, pkgs...)...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
