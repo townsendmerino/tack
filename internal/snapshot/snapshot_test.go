@@ -1392,6 +1392,9 @@ func TestRestoreTouchesOnlyWhatDiffers(t *testing.T) {
 	}
 	root := repo(t)
 	write(t, root, "locked/kept.txt", "kept\n", 0o644)
+	if err := os.Mkdir(filepath.Join(root, "locked", "emptysub"), 0o755); err != nil { // unchanged, and no reason to open locked
+		t.Fatal(err)
+	}
 	if err := os.Chmod(filepath.Join(root, "locked"), 0o555); err != nil {
 		t.Fatal(err)
 	}
@@ -1430,8 +1433,17 @@ func TestRestoreTouchesOnlyWhatDiffers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := s.toOpen(d), []string{"open"}; !slices.Equal(got, want) {
-		t.Errorf("it would open %q, want %q", got, want)
+	opened, err := s.openDirs(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 1 || opened["open"] != 0o555 {
+		t.Errorf("it opened %v, want only open", opened)
+	}
+	for dir, perm := range opened {
+		if err := os.Chmod(filepath.Join(root, dir), perm); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
 		t.Fatal(err)
@@ -1545,4 +1557,157 @@ func TestRemovedDirectoriesGetTheirModesBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	sameTree(t, capture(t, root), before)
+}
+
+// A link standing where the checkpoint holds a directory isn't followed: what's on the other side keeps its mode.
+func TestRestoreDoesntFollowALinkOutOfTheTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	root := repo(t)
+	write(t, root, "dir/sub/file.txt", "kept\n", 0o644)
+	write(t, root, "dir/fixed.txt", "kept\n", 0o600)
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	outside := t.TempDir()
+	write(t, outside, "sub/theirs.txt", "theirs\n", 0o644)
+	if err := os.Chmod(filepath.Join(outside, "sub"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(outside, "sub"), 0o755) })
+	if err := os.RemoveAll(filepath.Join(root, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.openDirs(mustDifferences(t, s, id)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Lstat(filepath.Join(outside, "sub"))
+	if err != nil || st.Mode().Perm() != 0o555 {
+		t.Fatalf("looking through the link: %v %v", st, err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
+	st, err = os.Lstat(filepath.Join(outside, "sub"))
+	if err != nil || st.Mode().Perm() != 0o555 {
+		t.Errorf("the directory outside: %v %v", st, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(outside, "sub", "theirs.txt")); err != nil || string(b) != "theirs\n" {
+		t.Errorf("the file outside: %q %v", b, err)
+	}
+}
+
+func mustDifferences(t *testing.T, s *Shadow, id string) difference {
+	t.Helper()
+	d, err := s.differences(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// A directory made unreadable after the checkpoint: what's under it is restored while it's open, and it closes last.
+func TestRestoreUnderADirectoryMadeUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads anything")
+	}
+	for _, c := range []struct {
+		name string
+		do   func(t *testing.T, root string)
+	}{
+		{"a changed file under it", func(t *testing.T, root string) { write(t, root, "top/mid/file.txt", "changed\n", 0o644) }},
+		{"a mode alone under it", func(t *testing.T, root string) {
+			if err := os.Chmod(filepath.Join(root, "top/mid/file.txt"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := repo(t)
+			write(t, root, "top/mid/file.txt", "kept\n", 0o644)
+			s := shadow(t, root)
+			before := capture(t, root)
+			id := take(t, s)
+			c.do(t, root)
+			for _, p := range []string{"top/mid", "top"} {
+				if err := os.Chmod(filepath.Join(root, p), 0o000); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() {
+				os.Chmod(filepath.Join(root, "top"), 0o755)
+				os.Chmod(filepath.Join(root, "top/mid"), 0o755)
+			})
+			if _, _, err := s.Restore(context.Background(), id, true); err != nil {
+				t.Fatal(err)
+			}
+			sameTree(t, capture(t, root), before)
+		})
+	}
+}
+
+// Failing to open a directory comes before anything has changed, and what was opened goes back.
+func TestOpeningFailsBeforeAnythingChanges(t *testing.T) {
+	if runtime.GOOS != "darwin" || os.Geteuid() == 0 {
+		t.Skip("needs chflags and a user chmod can fail for")
+	}
+	root := repo(t)
+	write(t, root, "stuck/inner/file.txt", "kept\n", 0o644)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "stuck/inner/file.txt", "changed\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "stuck/inner"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "stuck"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	run(t, root, "chflags", "uchg", "stuck/inner")
+	t.Cleanup(func() {
+		os.Chmod(filepath.Join(root, "stuck"), 0o755)
+		exec.Command("chflags", "nouchg", filepath.Join(root, "stuck/inner")).Run()
+		os.Chmod(filepath.Join(root, "stuck/inner"), 0o755)
+	})
+	if _, _, err := s.Restore(context.Background(), id, false); !errors.Is(err, ErrUntouched) {
+		t.Errorf("err %v", err)
+	}
+	for _, p := range []string{"stuck", "stuck/inner"} {
+		if st, err := os.Stat(filepath.Join(root, p)); err != nil || st.Mode().Perm() != 0o555 {
+			t.Errorf("%s left as %v %v", p, st, err)
+		}
+	}
+}
+
+// From the default too: a directory holding only a FIFO has a mode a checkpoint keeps.
+func TestModeDriftFromTheDefaultOnADirectoryHoldingOnlyAFIFO(t *testing.T) {
+	root := repo(t)
+	mkfifo(t, root, "plain/app.fifo")
+	s := shadow(t, root)
+	id := take(t, s)
+	if err := os.Chmod(filepath.Join(root, "plain"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Changes(context.Background(), id); err != nil || !slices.Equal(got, []Change{{"plain", Bring}}) {
+		t.Errorf("changes %v %v", got, err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(root, "plain")); err != nil || st.Mode().Perm() != 0o755 {
+		t.Errorf("plain: %v %v", st, err)
+	}
+}
+
+// NoUndo keeps to the limit the others do.
+func TestNoUndoKeepsToItsLimit(t *testing.T) {
+	s := shadow(t, repo(t))
+	s.Limit = time.Nanosecond
+	if why := s.NoUndo(context.Background()); why == "" {
+		t.Error("it walked on past its limit")
+	}
 }
