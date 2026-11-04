@@ -163,6 +163,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		WidenRepeats:         cfg.Run.WidenRepeats,
 		InjectContext:        cfg.Run.InjectContext,
 		RepoMap:              cfg.Run.RepoMap,
+		Snapshots:            *cfg.Run.Snapshots,
+		SnapshotMaxBytes:     cfg.Run.SnapshotMaxBytes,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
@@ -306,6 +308,7 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 	var mu sync.Mutex
 	done := make(chan string, 1)
 	var answer strings.Builder
+	noRewind := map[string]bool{}
 	cl.OnEvent = func(p proto.SessionEventParams) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -333,6 +336,8 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 			fmt.Fprintf(stderr, "· %s %s\n", e.Name, e.Input)
 		case proto.ToolFinished:
 			fmt.Fprintf(stderr, "  %s, %d lines\n", e.Outcome, strings.Count(e.Result, "\n"))
+		case proto.Checkpoint:
+			warnNoRewind(stderr, noRewind, e.Unavailable)
 		case proto.ErrorEvent:
 			fmt.Fprintf(stderr, "tack: %s error: %s\n", e.Class, e.Message)
 		case proto.DaemonHalted:

@@ -3,6 +3,7 @@ package perms
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -861,6 +862,109 @@ func TestRedirectAfterALostCdSaysWhatItMayBe(t *testing.T) {
 	}
 }
 
+// With a snapshot of the working tree taken for this command, what it can undo stops asking in every mode. What it can't
+// undo goes on asking: refs and stashes, data that isn't in the tree, paths outside the workspace or under .git, and
+// anything the parse can't see (DESIGN §6.6, §6.8).
+func TestSnapshotDecidesWhatStillAsks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src/sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git/objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink("/usr/share", filepath.Join(root, "out")); err != nil { // the temp directory is free already (rmFree)
+		t.Fatal(err)
+	}
+	stops := []string{
+		"git reset --hard", "git reset --hard HEAD", "git reset --merge", "git reset --keep", "git reset -q --hard",
+		"git checkout .", "git checkout -- a.txt", "git checkout -f", "git checkout -f -- a.txt", "git checkout -f --", "git checkout --force", "git checkout -q -f", "git checkout HEAD~1 -- a.txt", "git checkout -f .",
+		"git restore a.txt", "git restore --source=HEAD~1 a.txt", "git restore -W -S a.txt",
+		"git clean -f", "git clean -fd", "git clean -fdx", "git clean -ffdx",
+		"rm -r src", "rm -rf src/sub", "rm -rf ./src", "rm -r " + filepath.Join(root, "src"), "cd src && rm -rf sub", "env rm -rf src", "timeout 5 git reset --hard",
+		"git reset --hard; git clean -fdx; rm -rf src", "git -C src clean -f", "git -C src reset --hard",
+	}
+	asks := []string{
+		"git branch -D x", "git branch -d -f x", "git stash drop", "git stash clear",
+		"git reset --hard HEAD~1", "git reset --hard origin/main", "git reset --hard abc123", "git reset --keep v1",
+		"git checkout -f main", "git switch -f main", "git switch --discard-changes main",
+		// Whatever moves HEAD or a ref, in any position and any form. A bare name can be a branch even when a file has it: real git
+		// takes the branch, so git checkout a.txt keeps asking.
+		"git checkout main -f", "git checkout main --force", "git checkout --for main", "git checkout -f -b x", "git checkout -fb x", "git checkout -bx -f", "git checkout -Bx -f",
+		"git checkout -B x -f", "git checkout --orphan=x -f", "git checkout --orphan x -f", "git checkout --detach -f", "git checkout -d -f", "git checkout -t origin/x -f", "git checkout --track=direct origin/x -f",
+		"git checkout a.txt", "git checkout a.txt --", "git checkout -f a.txt --", "git checkout --conflict=merge -f", "git checkout -m -f",
+		"prisma migrate reset", "prisma db push --force-reset", "prisma db push --accept-data-loss", "rails db:reset",
+		"rm -r .", "rm -r .git", "rm -rf .git/objects", "rm -r " + root, "rm -rf /usr/share/zz", "rm -rf ..", "rm -r out", "rm -r out/x",
+		"rm -rf $d", "rm -rf *", "git reset $x", "git clean $x", "eval 'git reset --hard'", "sh -c 'git reset --hard'", "cd $d; rm -rf src", "xargs rm -r",
+		"rm -r src .git", "git reset --hard; git branch -D x", "git commit --no-verify -m x", "rm -rf .git/hooks",
+		"echo x > .github/workflows/ci.yml",
+		"git -C /tmp clean -f", "git -C " + outside + " reset --hard", "cd " + outside + " && git reset --hard", "cd $d; git reset --hard", "git -C $d clean -f",
+	}
+	for _, snapshotted := range []bool{true, false} {
+		e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: snapshotted}
+		for _, command := range stops {
+			input, _ := json.Marshal(map[string]string{"command": command})
+			v := e.Decide(proto.ModeAuto, "bash", false, input)
+			if snapshotted && v.Action != Allow {
+				t.Errorf("with a snapshot, %s: %v %q", command, v.Action, v.Reasons)
+			}
+			if !snapshotted && v.Action != Ask {
+				t.Errorf("without one, %s: %v", command, v.Action)
+			}
+		}
+		for _, command := range asks {
+			input, _ := json.Marshal(map[string]string{"command": command})
+			if v := e.Decide(proto.ModeAuto, "bash", false, input); v.Action != Ask {
+				t.Errorf("snapshot %v, %s: %v, want it to ask", snapshotted, command, v.Action)
+			}
+		}
+	}
+	// A command that stays on the list says what's left, not what the snapshot covers.
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+	why := strings.Join(e.AlwaysAsksIn("git reset --hard; git branch -D x"), "\n")
+	if strings.Contains(why, "reset") || !strings.Contains(why, "branch -D") {
+		t.Errorf("reasons: %q", why)
+	}
+}
+
+// The second layer reads what a command expanded to the same way: with a snapshot, no question for what it covers.
+func TestSnapshotAtRunTime(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	rm, err := exec.LookPath("rm")
+	if err != nil {
+		t.Skip("no rm")
+	}
+	for _, c := range []struct {
+		s    Simple
+		asks bool
+	}{
+		{Simple{Program: git, Name: "git", Args: []string{"reset", "--hard"}, Literal: []bool{true, true}}, false},
+		{Simple{Program: git, Name: "git", Args: []string{"branch", "-D", "x"}, Literal: []bool{true, true, true}}, true},
+		{Simple{Program: rm, Name: "rm", Args: []string{"-rf", "src"}, Literal: []bool{true, true}}, false},
+		{Simple{Program: rm, Name: "rm", Args: []string{"-rf", "/usr"}, Literal: []bool{true, true}}, true},
+	} {
+		e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+		if got := len(e.AlwaysAsks(c.s, root)) > 0; got != c.asks {
+			t.Errorf("%v: asks %v", c.s, got)
+		}
+		e.Snapshotted = false
+		if len(e.AlwaysAsks(c.s, root)) == 0 {
+			t.Errorf("without a snapshot, %v doesn't ask", c.s)
+		}
+	}
+}
+
 // What may change directory where the parse can't read it loses the directory: code from text, as a cd does.
 func TestCodeFromTextLosesTheDirectory(t *testing.T) {
 	e := destroyEngine(t)
@@ -877,5 +981,115 @@ func TestGitRunsGivenNamesTheLetter(t *testing.T) {
 	why := strings.Join(e.AlwaysAsksIn(`git rebase -ix evil HEAD~1`), "\n")
 	if !strings.Contains(why, "git rebase -x runs a program it is given") {
 		t.Errorf("reasons: %q", why)
+	}
+}
+
+// A snapshot holds the working tree, not the index. With something staged, what overwrites the index goes on asking, and what
+// leaves it alone stops, as it does with nothing staged.
+func TestStagedKeepsAskingWhatOverwritesTheIndex(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overwrites := []string{"git reset --hard", "git reset --hard HEAD", "git reset --merge", "git reset --keep", "git checkout -f", "git checkout --force",
+		"git checkout HEAD~1 -- a.txt", "git checkout -f -- a.txt", "git restore -S -W a.txt", "git restore --staged --worktree a.txt", "git restore --source=HEAD~1 -S -W a.txt"}
+	leaves := []string{"git checkout .", "git checkout -- a.txt", "git restore a.txt", "git restore --source=HEAD~1 a.txt", "git clean -f", "git clean -fdx", "rm -r src"}
+	for _, staged := range []bool{true, false} {
+		e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true, Staged: staged}
+		decide := func(command string) Action {
+			input, _ := json.Marshal(map[string]string{"command": command})
+			return e.Decide(proto.ModeAuto, "bash", false, input).Action
+		}
+		for _, command := range overwrites {
+			want := Allow
+			if staged {
+				want = Ask
+			}
+			if got := decide(command); got != want {
+				t.Errorf("staged %v, %s: %v, want %v", staged, command, got, want)
+			}
+		}
+		for _, command := range leaves {
+			if got := decide(command); got != Allow {
+				t.Errorf("staged %v, %s: %v", staged, command, got)
+			}
+		}
+	}
+	// With no snapshot, everything asks whatever the index holds, and Staged alone answers nothing.
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Staged: false}
+	if why := e.AlwaysAsksIn("git reset --hard"); len(why) == 0 || !strings.Contains(why[0], "without a snapshot") {
+		t.Errorf("reasons %q", why)
+	}
+}
+
+// The reason says whether a snapshot exists, so losing one changes the question.
+func TestReasonSaysWhetherThereIsASnapshot(t *testing.T) {
+	root := t.TempDir()
+	with := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true, Staged: true}
+	without := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Staged: true}
+	a, b := with.AlwaysAsksIn("git reset --hard"), without.AlwaysAsksIn("git reset --hard")
+	if len(a) != 1 || len(b) != 1 || a[0] == b[0] {
+		t.Fatalf("with %q, without %q", a, b)
+	}
+	if !strings.Contains(a[0], "what's staged") || !strings.Contains(b[0], "without a snapshot") {
+		t.Errorf("with %q, without %q", a, b)
+	}
+}
+
+// After a cd that can't be read, a relative rm target may be anywhere: the snapshot doesn't answer it, and what's said is about the
+// target and the cd, not an undoable deletion.
+func TestRmAfterACdThatCantBeReadStillAsks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+	for _, command := range []string{"cd $d; rm -rf src", "cd $d && rm -r src", "d=/tmp; cd $d; rm -rf src"} {
+		why := strings.Join(e.AlwaysAsksIn(command), "\n")
+		if !strings.Contains(why, "rm") || !strings.Contains(why, "cd that can't be read") {
+			t.Errorf("%s: reasons %q", command, why)
+		}
+	}
+}
+
+// Reasons say what resolves through a link, so one swapped in during a question is a new reason, not the old one.
+func TestReasonsNameWhatLinksResolveTo(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a", "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "b", "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	before := e.ReasonsIn("git branch -D x; rm -r link/target")
+	for _, swap := range []string{filepath.Join(root, "b"), outside} {
+		if err := os.Remove(filepath.Join(root, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(swap, filepath.Join(root, "link")); err != nil {
+			t.Fatal(err)
+		}
+		after := e.ReasonsIn("git branch -D x; rm -r link/target")
+		if slices.Equal(before, after) || !slices.ContainsFunc(after, func(r string) bool { return !slices.Contains(before, r) }) {
+			t.Errorf("swapped to %s: before %q, after %q", swap, before, after)
+		}
+	}
+	// A link that stays the same is the same set.
+	if err := os.Remove(filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if again := e.ReasonsIn("git branch -D x; rm -r link/target"); !slices.Equal(before, again) {
+		t.Errorf("unchanged: %q then %q", before, again)
 	}
 }

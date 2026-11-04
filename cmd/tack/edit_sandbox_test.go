@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -175,5 +176,120 @@ func TestEditRunBestOf(t *testing.T) {
 	out := stdout.String()
 	if strings.Contains(out, `"w1"`) || !strings.Contains(out, `"w2"`) || strings.Count(out, `"type":"turn.end"`) != 1 {
 		t.Fatalf("stdout should carry attempt 2's events only:\n%.1500s", out)
+	}
+}
+
+// TestSnapshotsInTheSandbox: end to end on macOS, under the real Seatbelt profile. In auto mode git reset --hard over uncommitted
+// work runs with no question and destroys it; a sandboxed command can't reach the shadow repository, so it can't tamper with what
+// a rewind brings back; and tack rewind restores the work.
+func TestSnapshotsInTheSandbox(t *testing.T) {
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	os.WriteFile(filepath.Join(ws, "work.txt"), []byte("committed\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(ws, "work.txt"), []byte("a day's work\n"), 0o644)
+	var script http.Handler // the model's script names the state directory, which the config holding the server's URL decides
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { script.ServeHTTP(w, r) }))
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	state := filepath.Join(filepath.Dir(cfg), "state")
+	script = goinfertest.NewScripted("m", 32768,
+		goinfertest.Calls("", "b1", "bash", `{"command":"git reset --hard"}`),
+		goinfertest.Calls("", "b2", "bash", `{"command":"/bin/ls `+filepath.Join(state, "shadows")+`"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`),
+		goinfertest.Calls("", "d2", "done", `{"reason":"y"}`))
+	var stdout, stderr bytes.Buffer
+	code := dispatch([]string{"run", "--config", cfg, "--workspace", ws, "--edit", "--json", "Go."}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit %d\nstderr: %s\nstdout: %s", code, stderr.String(), stdout.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "work.txt")); string(b) != "committed\n" {
+		t.Fatalf("git reset --hard didn't run: %q\n%s\n%s", b, stdout.String(), stderr.String())
+	}
+	var session string
+	var seq int64
+	results := map[string]proto.ToolFinished{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		var ev proto.Event
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		v, _ := ev.Decode()
+		switch p := v.(type) {
+		case proto.ToolFinished:
+			results[p.ID] = p
+		case proto.Checkpoint:
+			if p.ID == "b1" {
+				if p.Snapshot == "" {
+					t.Fatalf("no snapshot: %+v", p)
+				}
+				seq = ev.Seq
+			}
+		}
+	}
+	if r := results["b1"]; r.Outcome != proto.OutcomeOK {
+		t.Errorf("git reset --hard: %+v", r)
+	}
+	if r := results["b2"]; !strings.Contains(r.Result, "Operation not permitted") {
+		t.Errorf("a command reached the shadow: %+v", r)
+	}
+	entries, err := os.ReadDir(filepath.Join(state, "sessions"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("sessions: %v %v", entries, err)
+	}
+	session = strings.TrimSuffix(entries[0].Name(), filepath.Ext(entries[0].Name()))
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"rewind", "-config", cfg, "-yes", session, fmt.Sprint(seq)}, &out, &errb); code != exitOK {
+		t.Fatalf("rewind: %d %s %s", code, out.String(), errb.String())
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "work.txt")); string(b) != "a day's work\n" {
+		t.Errorf("after the rewind: %q", b)
+	}
+}
+
+// TestSnapshotsOffInTheSandbox: with snapshots = false, as E1 sets it, there's no checkpoint, the guard asks with nobody to answer,
+// and the work stays.
+func TestSnapshotsOffInTheSandbox(t *testing.T) {
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	os.WriteFile(filepath.Join(ws, "work.txt"), []byte("committed\n"), 0o644)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-q", "-m", "base"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = ws
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(ws, "work.txt"), []byte("a day's work\n"), 0o644)
+	script := goinfertest.NewScripted("m", 32768,
+		goinfertest.Calls("", "b1", "bash", `{"command":"git reset --hard"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"x"}`))
+	ts := httptest.NewServer(script)
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	f, err := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("\n[run]\nsnapshots = false\n")
+	f.Close()
+	var stdout, stderr bytes.Buffer
+	if code := dispatch([]string{"run", "--config", cfg, "--workspace", ws, "--edit", "--json", "Go."}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit %d\nstderr: %s\nstdout: %s", code, stderr.String(), stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"checkpoint"`) {
+		t.Error("a checkpoint with snapshots off")
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "work.txt")); string(b) != "a day's work\n" {
+		t.Errorf("the guard let it run: %q", b)
+	}
+	if !strings.Contains(stdout.String(), "without a snapshot") {
+		t.Errorf("no reason in %s", stdout.String())
 	}
 }

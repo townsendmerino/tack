@@ -294,13 +294,69 @@ func (e *Engine) AlwaysAsks(s Simple, dir string) []string {
 			why = appendNew(why, e.wordsAsk(name, args, scan{dir: dir})...)
 		}
 	}
-	return why
+	return e.afterSnapshot(why)
+}
+
+// undoableEnd ends a reason that a snapshot of the working tree answers (DESIGN §6.8), and cleanIndexEnd one it answers only when
+// nothing is staged, since the command overwrites the index and a snapshot doesn't hold that. stagedEnd replaces cleanIndexEnd
+// when there is a snapshot and something staged, so a reason always says which it is and losing the snapshot changes the question.
+const (
+	undoableEnd   = "cannot be recovered without a snapshot"
+	cleanIndexEnd = "cannot be recovered without a snapshot and a clean index"
+	stagedEnd     = "a snapshot can't bring back, since it overwrites what's staged"
+)
+
+// afterSnapshot is why as the command's snapshot leaves it: what the snapshot answers is gone, and what it can't is said so. With no
+// snapshot it is why itself.
+func (e *Engine) afterSnapshot(why []string) []string {
+	if !e.Snapshotted {
+		return why
+	}
+	var left []string
+	for _, r := range why {
+		switch {
+		case strings.HasSuffix(r, undoableEnd):
+		case strings.HasSuffix(r, cleanIndexEnd):
+			if e.Staged {
+				left = append(left, strings.TrimSuffix(r, cleanIndexEnd)+stagedEnd)
+			}
+		default:
+			left = append(left, r)
+		}
+	}
+	return left
 }
 
 // AlwaysAsksIn returns why command asks in every mode, as Decide reads it before it runs.
 func (e *Engine) AlwaysAsksIn(command string) []string {
 	_, _, always := e.checkShell(command)
-	return always
+	return e.afterSnapshot(always)
+}
+
+// ReasonsIn is every reason command would ask for as things stand: those that ask in every mode and those that ask only outside
+// auto. It reads the tree, so it can differ from one moment to the next.
+func (e *Engine) ReasonsIn(command string) []string {
+	cmds, why, always := e.checkShell(command)
+	out := append(e.afterSnapshot(always), why...)
+	// A reason names a path as written, and a link swapped in under it changes what it means without changing the words. So each
+	// path that goes through a link is listed with where it ends up, and a different link is a different list.
+	dir := e.startDir()
+	for _, c := range cmds {
+		for i, a := range c.Args {
+			if !c.Literal[i] || strings.HasPrefix(a, "-") {
+				continue
+			}
+			p := a
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			p = filepath.Clean(p)
+			if real := resolveExisting(p); real != p {
+				out = appendNew(out, "the path "+p+" leads to "+real)
+			}
+		}
+	}
+	return out
 }
 
 // startDir is where the session's next command starts.
@@ -1225,11 +1281,28 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 		why = append(why, "git "+sub+" --no-verify skips the owner's hooks")
 	}
 	discard := func(what string) { why = append(why, "git "+what+" discards work that cannot be recovered") }
+	// undoable is discard for what a snapshot of the working tree brings back: the tree must be the workspace's, and what
+	// the parse can't place isn't.
+	undoable := func(what string, overwritesIndex bool) {
+		if real := resolveExisting(dir); sc.lost || !within(e.root(), real) {
+			discard(what)
+			return
+		}
+		end := undoableEnd
+		if overwritesIndex {
+			end = cleanIndexEnd
+		}
+		why = append(why, "git "+what+" discards work that "+end)
+	}
 	switch sub {
 	case "reset":
 		for _, f := range []string{"--hard", "--merge", "--keep"} {
 			if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return flagIs(a, f) }) {
-				discard("reset " + f)
+				if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool { return !strings.HasPrefix(a, "-") && a != "HEAD" }) {
+					discard("reset " + f + " to another revision") // it moves a ref, which a snapshot doesn't hold
+				} else {
+					undoable("reset "+f, true)
+				}
 			}
 		}
 	case "checkout":
@@ -1237,7 +1310,11 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			why = appendNew(why, unseenIn("git", "checkout follows a cd that can't be read"))
 		}
 		if checkoutDiscards(rest, dir) {
-			discard("checkout, used this way,")
+			if checkoutMoves(rest) {
+				discard("checkout, used this way,")
+			} else {
+				undoable("checkout, used this way,", checkoutOverwritesIndex(rest))
+			}
 		}
 	case "switch":
 		if slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
@@ -1253,7 +1330,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			return flagIs(a, "--worktree") || shortFlag(a, 'W', gitValuedFlags["restore"].letters())
 		}, "worktree")
 		if !staged || worktree {
-			discard("restore on the working tree")
+			undoable("restore on the working tree", staged)
 		}
 	case "clean":
 		flags := flagsOf(sub, rest)
@@ -1264,7 +1341,7 @@ func (e *Engine) gitAsks(args []string, sc scan) []string {
 			return flagIs(a, "--force") || shortFlag(a, 'f', gitValuedFlags["clean"].letters())
 		})
 		if force && !dry {
-			discard("clean -f")
+			undoable("clean -f", false)
 		}
 	case "branch":
 		del := slices.ContainsFunc(flagsOf(sub, rest), func(a string) bool {
@@ -1386,6 +1463,45 @@ func flagIs(a, full string) bool {
 
 // checkoutDiscards reports whether git checkout's arguments overwrite the working tree: paths after --, a path that
 // exists, a pathspec, ".", or -f. A new branch's name is not a path.
+// checkoutMoves reports whether a checkout that discards might also move HEAD or a ref, which a snapshot can't bring back.
+// Only three forms can't: a pathspec after --, git checkout ., and git checkout -f, each with flags that change neither. A
+// bare name can be a branch even when a file has it: real git takes the branch. Any other flag might move something.
+func checkoutMoves(args []string) bool {
+	named := false
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return i == len(args)-1 && named // git checkout main -- switches to main
+		case a == ".":
+		case !strings.HasPrefix(a, "-"):
+			named = true
+		case !slices.ContainsFunc(checkoutKeepsHead, func(f string) bool { return flagIs(a, f) }) && a != "-f" && a != "-q":
+			return true
+		}
+	}
+	return named
+}
+
+// checkoutOverwritesIndex reports whether a checkout that can't move HEAD (checkoutMoves) still overwrites the index: -f resets it
+// to HEAD, and a tree-ish before -- writes its paths there. git checkout . and git checkout -- <paths> only read it.
+func checkoutOverwritesIndex(args []string) bool {
+	for _, a := range args {
+		switch {
+		case a == "--":
+			return false
+		case flagIs(a, "--force") || a == "-f":
+			return true
+		case a != "." && !strings.HasPrefix(a, "-"):
+			return true
+		}
+	}
+	return false
+}
+
+// checkoutKeepsHead are the long flags of git checkout that leave HEAD and the refs alone.
+var checkoutKeepsHead = []string{"--force", "--quiet", "--progress", "--no-progress", "--ours", "--theirs", "--overlay", "--no-overlay",
+	"--pathspec-from-file", "--pathspec-file-nul", "--ignore-skip-worktree-bits"}
+
 func checkoutDiscards(args []string, dir string) bool {
 	creating := false
 	for i := 0; i < len(args); i++ {
@@ -1476,13 +1592,31 @@ func (e *Engine) rmAsks(args []string, sc scan) []string {
 			why = appendNew(why, "rm "+t+" removes the owner's hooks")
 		}
 		if recursive && !e.rmFree(t, p, dir) {
-			why = appendNew(why, "rm -r "+t+" deletes a directory that cannot be recovered")
+			end := "cannot be recovered"
+			if (!sc.lost || filepath.IsAbs(t)) && e.inTree(p) { // a relative path after a cd that can't be read may be anywhere
+				end = undoableEnd
+			}
+			why = appendNew(why, "rm -r "+t+" deletes a directory that "+end)
 		}
 	}
 	if recursive && len(targets) == 0 { // xargs, or a glob that matched nothing: nothing here says what it deletes
 		why = appendNew(why, "rm -r with no path here deletes what it is handed")
 	}
 	return why
+}
+
+// inTree reports whether p, followed through any link, is inside the working tree a snapshot holds: under the workspace,
+// not the workspace itself, and not under .git.
+func (e *Engine) inTree(p string) bool {
+	real, root := resolveExisting(p), e.root()
+	if real == root || !within(root, real) {
+		return false
+	}
+	rel, err := filepath.Rel(root, real)
+	if err != nil {
+		return false
+	}
+	return !slices.ContainsFunc(strings.Split(filepath.ToSlash(rel), "/"), func(seg string) bool { return strings.EqualFold(seg, ".git") })
 }
 
 func inHooks(p string) bool {

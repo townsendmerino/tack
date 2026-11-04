@@ -179,3 +179,27 @@ func TestWidenRepeatsSetting(t *testing.T) {
 		t.Fatalf("widen_repeats alone: %+v, %v", c.Run, err)
 	}
 }
+
+func TestSnapshotSettings(t *testing.T) {
+	load := func(run string) (*Config, error) {
+		p := filepath.Join(t.TempDir(), "config.toml")
+		os.WriteFile(p, []byte("main = \"a\"\n[servers.a]\nkind = \"goinfer-child\"\nbinary = \"/g\"\nmodel_path = \"/m/x.gguf\"\nctx = 16384\n[run]\n"+run), 0o600)
+		return Load(p)
+	}
+	c, err := load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !*c.Run.Snapshots || c.Run.SnapshotMaxBytes != 512<<20 {
+		t.Errorf("defaults: %v %d", *c.Run.Snapshots, c.Run.SnapshotMaxBytes)
+	}
+	if c, err = load("snapshots = false\nsnapshot_max_bytes = 7\n"); err != nil {
+		t.Fatal(err)
+	}
+	if *c.Run.Snapshots || c.Run.SnapshotMaxBytes != 7 {
+		t.Errorf("set: %v %d", *c.Run.Snapshots, c.Run.SnapshotMaxBytes)
+	}
+	if _, err = load("snapshot_max_bytes = -1\n"); err == nil || !strings.Contains(err.Error(), "negative") {
+		t.Errorf("negative: %v", err)
+	}
+}

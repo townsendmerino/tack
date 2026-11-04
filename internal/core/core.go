@@ -25,6 +25,7 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/snapshot"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
 	"github.com/townsendmerino/tack/internal/window"
@@ -106,6 +107,10 @@ type Options struct {
 	// RepoMap puts the workspace's generated map (internal/window/repomap.go; calibration §13.3) into a session's first
 	// message, after the instruction head. It needs OpenRepoMap.
 	RepoMap bool
+	// Snapshots takes a snapshot of the working tree before each bash call in a session that writes (DESIGN §6.8), in a shadow
+	// repository under Store's root, for trees up to SnapshotMaxBytes.
+	Snapshots        bool
+	SnapshotMaxBytes int64
 	// OpenRepoMap opens the index the map reads, over a workspace root, at the first prompt. The Core closes it after
 	// use when it is an io.Closer.
 	OpenRepoMap func(ctx context.Context, root string) (window.MapIndex, error)
@@ -407,6 +412,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		s.kit = kit.Close
 		root := ws.Root()
 		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
+		if c.opt.Snapshots {
+			cfg.Snapshots = snapshot.New(c.opt.Store.Root(), root, c.opt.SnapshotMaxBytes)
+		}
 	}
 	if c.opt.WholeInstructions && c.opt.InstructionsHead {
 		if name, content := readInstructionFile(ws.Root()); name != "" {

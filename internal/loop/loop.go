@@ -111,6 +111,9 @@ type Config struct {
 	Perms   *perms.Engine
 	Mode    proto.Mode
 	Approve Approver
+	// Snapshots, when set, takes a snapshot of the working tree before each bash call (DESIGN §6.8). What the snapshot can undo
+	// then needs no question (perms.Engine.Snapshotted), and a checkpoint event records it or why there is none.
+	Snapshots Snapshotter
 	// EditTask makes every request require a tool call (tool_choice any) and ends a turn only through the done tool,
 	// which Tools must hold. Changed reports whether the workspace differs from where the session began; done with
 	// no change is refused once (DoneNoChange), R13's loop mitigation (DESIGN §17).
@@ -123,6 +126,7 @@ type Config struct {
 
 // Session is one session's loop. Turns run one at a time; it is not safe for concurrent use.
 type Session struct {
+	pruned   bool // Config.Snapshots has pruned its old checkpoints for this session
 	cfg      Config
 	conv     *server.Conversation
 	requests int // requests sent in the session so far
@@ -269,6 +273,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
+	defer s.endSnapshot()                                   // on every way out, an error's too
 	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
@@ -427,13 +432,37 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			default:
 				calls++
 				s.calls++
+				checkpoint := s.takeSnapshot(ctx, b)
+				var asked []string // what the question is about to hold, read before it: the reasons read the tree, which can change
+				if checkpoint != nil {
+					asked = s.cfg.Perms.ReasonsIn(bashCommand(b))
+				}
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
+				if checkpoint != nil {
+					// Files can change while a question waits, so the snapshot is taken again after each one. If there's a reason now
+					// that the question didn't hold, the yes was to something else: ask the whole of it, until an answer holds.
+					for err == nil && refused == nil && by == proto.DecidedByUser {
+						checkpoint = s.takeSnapshot(ctx, b)
+						now := s.cfg.Perms.ReasonsIn(bashCommand(b))
+						if subset(now, asked) {
+							break
+						}
+						asked = now
+						refused, by, err = s.permit(ctx, b, callEv.Seq)
+					}
+				}
 				if err != nil {
 					return proto.StopError, err
 				}
 				if refused != nil {
 					fin = *refused
+					s.endSnapshot()
 					break
+				}
+				if checkpoint != nil {
+					if _, err := s.record(proto.EvCheckpoint, callEv.Seq, *checkpoint); err != nil {
+						return proto.StopError, err
+					}
 				}
 				var full []byte
 				// Progressive widening (Config.WidenRepeats; mask.go, shownChain): a whole read or a grep whose result
@@ -476,6 +505,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 						ran.ShowWide() // the widened lines were shown: the workspace records them
 					}
 				}
+				s.endSnapshot()
 				verify.observe(calls, b.Name, b.Input, ran, s.cfg.Perms)
 				// ADR-004's ordering rule: the blob, directory entry included, is durable before the event naming it is
 				// recorded, so it is durable before any sync that makes that event durable.
@@ -764,3 +794,50 @@ func notRun(ctx context.Context) string {
 // callKey identifies a tool call by its tool and its input, with the input's JSON normalised so a repeat with its keys
 // in another order is the same call. A malformed input keys by its raw bytes.
 func callKey(b proto.ModelBlock) string { return CallKey(b.Name, b.Input) }
+
+// Snapshotter takes snapshots of the working tree (internal/snapshot.Shadow).
+type Snapshotter interface {
+	// Take returns the checkpoint's id, or "" and why there is none.
+	Take(ctx context.Context) (id, why string)
+	Prune(ctx context.Context) error
+	// Staged reports whether a command that overwrites the index would lose content a snapshot doesn't hold.
+	Staged(ctx context.Context) bool
+}
+
+// takeSnapshot takes the snapshot a bash call's permission decision reads, and returns what its checkpoint event would say:
+// nil for any other call, or when the session keeps no snapshots. Pruning fails quietly, since a checkpoint kept too long
+// costs only disk. Plan mode refuses bash before it could matter.
+func (s *Session) takeSnapshot(ctx context.Context, b proto.ModelBlock) *proto.Checkpoint {
+	if s.cfg.Snapshots == nil || s.cfg.Perms == nil || b.Name != "bash" || s.cfg.Mode == proto.ModePlan {
+		return nil
+	}
+	if !s.pruned {
+		s.pruned = true
+		_ = s.cfg.Snapshots.Prune(ctx)
+	}
+	id, why := s.cfg.Snapshots.Take(ctx)
+	s.cfg.Perms.Snapshotted = id != ""
+	s.cfg.Perms.Staged = id != "" && s.cfg.Snapshots.Staged(ctx)
+	return &proto.Checkpoint{ID: b.ID, Workspace: s.cfg.WS.Root(), Snapshot: id, Unavailable: why}
+}
+
+// bashCommand is a bash call's command line.
+func bashCommand(b proto.ModelBlock) string {
+	var in struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(b.Input, &in)
+	return in.Command
+}
+
+// subset reports whether every string in a is in b.
+func subset(a, b []string) bool {
+	return !slices.ContainsFunc(a, func(s string) bool { return !slices.Contains(b, s) })
+}
+
+// endSnapshot ends what a snapshot answers: it was of the tree before that one command.
+func (s *Session) endSnapshot() {
+	if s.cfg.Perms != nil {
+		s.cfg.Perms.Snapshotted, s.cfg.Perms.Staged = false, false
+	}
+}

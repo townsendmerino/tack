@@ -171,6 +171,14 @@ func TestTackLeftRepo(t *testing.T) {
 	}
 }
 
+// TestE1RunsWithoutSnapshots: every arm's config turns them off, so a run's requests, wall time and guard answers stay what they
+// were (DESIGN §6.8).
+func TestE1RunsWithoutSnapshots(t *testing.T) {
+	if !strings.Contains(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, t.TempDir()), "\nsnapshots = false\n") {
+		t.Error("the arm's config doesn't turn snapshots off")
+	}
+}
+
 // TestSummarizeTackReadsTheTestReport: done's answer and its report are separate fields, whichever answer it is, and a
 // refusal is neither.
 func TestSummarizeTackReadsTheTestReport(t *testing.T) {

@@ -612,9 +612,9 @@ tool-use smoke set compares this merged set against the split one before it is f
   approval time, and a rule matches the resolved path and its flags. An allow rule for `go test` therefore does not cover
   `go test ./... && curl … | sh`: every simple command in a pipeline, list, subshell or substitution must be allowed on
   its own, and a redirect to a path outside the workspace asks.
-- **Commands that destroy work inside the workspace ask, in every mode, until §6.8's snapshots exist.** The sandbox
-  keeps a command inside the workspace; it does not stop the command from wiping it. In `auto`, `git reset --hard`
-  over a day's uncommitted work runs without a question and cannot be rewound.
+- **Commands that destroy work inside the workspace ask, in every mode, unless §6.8's snapshot can undo them.** The sandbox
+  keeps a command inside the workspace; it does not stop the command from wiping it. Without a snapshot, `git reset --hard`
+  over a day's uncommitted work could run in `auto` and not be rewound.
   - The list, from the working-tree and destructive-data groups of AgentTrail's guardrail library (`github.com/agenttrailhq/guardrails`, Apache-2.0, read 2026-11-02):
     - `git reset --hard`, `--merge` and `--keep`;
     - `git checkout` or `git restore` used to discard changes;
@@ -684,8 +684,9 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **Other agents:** a prompt given as a plain argument (`claude "do x"`).
     - **What a yes covers:** what runs can't say which statement it is, so a branch that skips one throws the count off; and identical text
       inside `eval` and out goes by the written-out statement.
-  - **Once snapshots exist,** a command the snapshot can undo stops asking. The ones it can't undo keep asking: the
-    snapshot holds the working tree, not refs or stashes, so `git branch -D` and the stash commands stay on the list.
+  - **With a snapshot taken for that command,** one it can undo stops asking (§6.8 lists both sides). The ones it can't undo keep
+    asking: the snapshot holds the working tree, not refs, stashes or the index, so `git branch -D` and the stash commands stay on
+    the list, and what overwrites the index stays on it while the index differs from HEAD.
 - **Other things that ask in every mode,** from checking tack's rules against the same library's file-scope,
   agent-context and safety-bypass groups:
   - edits to CI definitions (`.github/workflows/`, `.gitlab-ci.yml` and the like);
@@ -820,6 +821,63 @@ tool-use smoke set compares this merged set against the split one before it is f
   command. Without a snapshot, the UI says the command's changes cannot be rewound.
 - Rewinding to seq *N* restores files (pre-images in reverse order, or the snapshot) and forks the conversation at *N*. If
   a file changed outside tack since the checkpoint, rewind asks about that file.
+
+**Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** Edit pre-images and the conversation fork wait for
+`session/fork`; this is the snapshot and a rewind of the files.
+
+- **What a snapshot is.** `internal/snapshot` keeps one shadow repository per workspace in tack's state directory, which
+  the sandbox denies to commands. The daemon runs `git` on it, outside the sandbox, with `GIT_DIR` and its own index
+  pointing there, and the system, global and workspace git config and attributes shut out, so nothing in the repo runs
+  and no filter changes a byte.
+- **What it holds.** Every file under the workspace except `.git`, ignored files too, because `git clean -fdx` deletes
+  them. Empty directories and modes git doesn't keep go in a small manifest beside the tree.
+- **When there is none.** The workspace isn't the top of a git repository; the tree is over `snapshot_max_bytes`, ignored
+  files counted; it holds a nested repository, whose `.git` a shadow repository can't store; or `git` fails. The
+  `checkpoint` event then says why, the client shows that the command can't be rewound, and the guard keeps asking.
+- **When it's taken.** Before each `bash` call's permission decision, and again after an approval if the owner was asked,
+  since files can change during the question. A `checkpoint` event records it, or why not, just before `tool.started`.
+- **What stops asking.** With a snapshot taken for that command: `git reset --hard`, `--merge` and `--keep` with no revision
+  or `HEAD`; `git checkout .`, `git checkout -f` and `git checkout -- <paths>`; `git restore`; `git clean -f`; `rm -r` of literal paths that resolve inside
+  the workspace, not `.git` or the workspace itself.
+- **What keeps asking only while something is staged.** Of those, `git reset`, `git checkout -f`, `git checkout <tree-ish> -- <paths>`
+  and `git restore -S -W` overwrite the index, and a snapshot doesn't hold it, so content staged and then edited further would be
+  lost. So they ask while the index differs from HEAD, or while that can't be told (`git diff-index --cached --quiet HEAD`, with
+  `fsmonitor` and hooks off). The others leave the index alone and stop asking either way.
+- **What keeps asking.** `git branch -D` and the stash commands; `git reset` to another revision, which moves a ref; any other `git checkout`, since a bare name can be a branch even when a file has it, and real git takes the branch; the
+  data-loss flags and migration resets, whose data isn't in the tree; `rm -r` outside the workspace; and everything the parse
+  can't see, including a path that expands.
+- **Rewind.** `tack rewind -yes <session> <seq>` restores the files; without `-yes` it lists what it would change. It compares the
+  tree with the checkpoint directly, so what stops a new snapshot doesn't stop going back. It first takes a snapshot of the
+  current tree so the rewind can be undone, and it never destroys the tree without that. If the snapshot fails for any reason (a
+  rule, git, an unreadable file, time), it refuses and changes nothing, unless `-no-undo` says that's on purpose after a preview
+  that warned about it, so a tree too big to snapshot can still go back. If another session holds the shadow, it refuses either way. It records a `rewind` event. It restores the working tree
+  only: refs, stashes and the index are not brought back. A staged file a command removed from the index comes back as a file, not
+  as staged; that command asked no question only because the index matched HEAD. Without post-images it can't tell tack's changes from yours,
+  so it lists them all.
+- **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
+  guard answers don't change; turning it on there is a decision for the owner.
+- **Keeping the shadow small.** A checkpoint a command or a rewind last relied on over 7 days ago goes at the first snapshot of a session, and
+  the least recently used go when the shadow passes twice the cap, so that second limit can take one sooner. A rewind to one that's gone says so.
+- **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
+  byte with modes and symlinks; the size-cap, non-git and nested-repository fallbacks; a workspace `.gitattributes` filter and
+  `.git/config` that must not run.
+- **What it costs,** on an M-series Mac, a one-off measurement, not a benchmark with a gate:
+
+  | workspace | files | MiB | first snapshot | each command, nothing changed | one small file changed |
+  |---|---|---|---|---|---|
+  | tack | 354 | 46 | 1.5 s | 41 ms | not measured |
+  | postgres | 7,216 | 134 | 6.4 s | 100 ms | 142 ms |
+  | kubernetes | 26,667 | 364 | 23 s | 412 ms | not measured |
+
+  Telling whether the index differs from HEAD adds about 15 ms per command, on all three (median of 15, a one-off, right after a timed run ended).
+
+  A tree over the cap costs about 93 ms before it says so (ken, 4.7 GB, at the 512 MiB default). On postgres, restoring one file
+  took 0.4 s and restoring after `rm -r src` took 1.3 s; the shadow held 38 MiB after the first snapshot. A build output is
+  stored again each time it changes, because ignored files count, which is why old checkpoints go.
+- **A restore touches only what differs.** An unchanged empty directory stays the same directory, and a read-only directory with
+  nothing changed under it isn't opened.
+- **Not covered:** sockets and FIFOs aren't kept, and a restore leaves them alone, with the directories that hold them. One standing where the checkpoint holds something stops the rewind, which says so. A first snapshot over a minute turns snapshots off
+  for that session, and the guard keeps asking. The workspace must be the top of its repository.
 
 ---
 
