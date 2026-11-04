@@ -878,6 +878,10 @@ tool-use smoke set compares this merged set against the split one before it is f
   nothing changed under it isn't opened.
 - **Not covered:** sockets and FIFOs aren't kept, and a restore leaves them alone, with the directories that hold them. One standing where the checkpoint holds something stops the rewind, which says so. A first snapshot over a minute turns snapshots off
   for that session, and the guard keeps asking. The workspace must be the top of its repository.
+- **Known limit of the re-ask after an approval (2026-11-04):** the "the path P leads to REAL" reasons resolve each literal argument against
+  the directory the command starts in, not against one it `cd`s into earlier in the same line (`cd dir1 && rm -r target`). A link
+  swapped in under such a path during the question may not ask again. It is acceptable because `rm` on a link removes the link itself
+  and the shell's run-time check still guards execution; it is written down so nobody reads the re-ask as covering it.
 
 ---
 
