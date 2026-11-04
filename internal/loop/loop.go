@@ -433,17 +433,21 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				calls++
 				s.calls++
 				checkpoint := s.takeSnapshot(ctx, b)
+				var asked []string // what the question is about to hold, read before it: the reasons read the tree, which can change
+				if checkpoint != nil {
+					asked = s.cfg.Perms.AlwaysAsksIn(bashCommand(b))
+				}
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
 				if checkpoint != nil {
-					// Files can change while a question waits, so the snapshot is taken again after each one. If what it answers has
-					// changed, the yes was to a question that left that out: ask the whole of it, until an answer holds.
-					command := bashCommand(b)
+					// Files can change while a question waits, so the snapshot is taken again after each one. If there's a reason now
+					// that the question didn't hold, the yes was to something else: ask the whole of it, until an answer holds.
 					for err == nil && refused == nil && by == proto.DecidedByUser {
-						asked := s.cfg.Perms.AlwaysAsksIn(command)
 						checkpoint = s.takeSnapshot(ctx, b)
-						if subset(s.cfg.Perms.AlwaysAsksIn(command), asked) {
+						now := s.cfg.Perms.AlwaysAsksIn(bashCommand(b))
+						if subset(now, asked) {
 							break
 						}
+						asked = now
 						refused, by, err = s.permit(ctx, b, callEv.Seq)
 					}
 				}

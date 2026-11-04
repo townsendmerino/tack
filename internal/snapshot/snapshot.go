@@ -342,7 +342,7 @@ func (s *Shadow) take(ctx context.Context) (id, why string) {
 	stamp := treeStamp(tree, m)
 	lastPath := filepath.Join(s.Dir, "last")
 	if last, err := os.ReadFile(lastPath); err == nil {
-		if have, lastID, ok := strings.Cut(string(last), " "); ok && have == stamp {
+		if have, lastID, ok := strings.Cut(string(last), " "); ok && have == stamp && s.known(ctx, lastID) == nil {
 			if why := s.markUsed(lastID); why != "" {
 				return "", why
 			}
@@ -520,7 +520,8 @@ type difference struct {
 // differences compares the tree with the checkpoint without taking anything from git but the checkpoint. A directory the
 // checkpoint holds nothing under goes as one thing, what it holds not looked at, so a nested repository or an unreadable
 // directory is no obstacle. One it does hold that can't be read is opened for the length of the look and put back as it was.
-// Sockets and FIFOs are left alone.
+// Sockets and FIFOs are left alone, with the directories that hold them, so one standing where the checkpoint holds something is
+// an error: it can't be both left alone and restored.
 func (s *Shadow) differences(ctx context.Context, id string) (difference, error) {
 	var d difference
 	var err error
@@ -565,6 +566,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 		return defaultPerm(mode)
 	}
 	seen := map[string]bool{}
+	var inTheWay []string
 	var walk func(dir, rel string) error
 	walk = func(dir, rel string) error {
 		if err := ctx.Err(); err != nil {
@@ -586,6 +588,12 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 			switch {
 			case info.IsDir():
 				if !holds[name] {
+					if holdsSpecial(filepath.Join(dir, de.Name())) { // what's new in it goes, and it stays
+						if err := walk(filepath.Join(dir, de.Name()), name); err != nil {
+							return err
+						}
+						continue
+					}
 					drop(name)
 					continue
 				}
@@ -617,12 +625,19 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 				case info.Mode().IsRegular() && info.Mode().Perm() != permWant(name, info.Mode()):
 					bring(name)
 				}
+			default:
+				if _, isFile := files[name]; isFile || holds[name] {
+					inTheWay = append(inTheWay, name)
+				}
 			}
 		}
 		return nil
 	}
 	if err := walk(s.Root, ""); err != nil {
 		return d, err
+	}
+	if len(inTheWay) > 0 {
+		return d, fmt.Errorf("a socket or FIFO stands where the checkpoint holds %q: move it, then rewind", inTheWay)
 	}
 	for p := range files {
 		if !seen[p] {
@@ -642,6 +657,19 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 		return d.changes[i].Kind < d.changes[j].Kind
 	})
 	return d, nil
+}
+
+// holdsSpecial reports whether a socket, FIFO or the like is anywhere under dir, as far as can be read.
+func holdsSpecial(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && !d.Type().IsRegular() && d.Type()&fs.ModeSymlink == 0 {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // sameAs reports whether a file or link on disk is what git's tree holds for it: the kind, the executable bit, and the blob's
@@ -849,7 +877,10 @@ func (s *Shadow) setModes(m manifest) error {
 			return err
 		}
 		if isDotGit(rel) {
-			return fs.SkipDir
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil // a linked worktree's: SkipDir here would skip the rest of the root
 		}
 		info, err := d.Info()
 		if err != nil {

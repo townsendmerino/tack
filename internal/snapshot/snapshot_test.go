@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -34,7 +35,10 @@ func capture(t *testing.T, root string) map[string]entry {
 			return nil
 		}
 		if rel == ".git" {
-			return filepath.SkipDir
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
@@ -388,6 +392,7 @@ func TestNothingInTheWorkspaceRuns(t *testing.T) {
 	t.Setenv("GIT_DIR", filepath.Join(root, ".git")) // a caller's git variables reach nothing
 	t.Setenv("GIT_INDEX_FILE", filepath.Join(root, ".git", "index"))
 	pwned := filepath.Join(t.TempDir(), "pwned")
+	write(t, filepath.Dir(pwned), "pwned.sh", "#!/bin/sh\ntouch "+pwned+"\n", 0o755) // so that fsmonitor would leave a mark if it ran
 	cmd := "touch " + pwned + "; cat"
 	write(t, root, ".gitattributes", "* filter=evil text eol=crlf ident\n", 0o644)
 	config := "[filter \"evil\"]\n\tclean = " + cmd + "\n\tsmudge = " + cmd + "\n\trequired = true\n[core]\n\tfsmonitor = " + pwned + ".sh\n\thooksPath = hooks\n\tautocrlf = true\n"
@@ -1253,5 +1258,121 @@ func TestNoUndoWithoutGit(t *testing.T) {
 	s.Git = ""
 	if why := s.NoUndo(context.Background()); !strings.Contains(why, "git") {
 		t.Errorf("why %q", why)
+	}
+}
+
+// In a linked worktree .git is a file, and every path after it still gets its mode back.
+func TestRestoreInALinkedWorktree(t *testing.T) {
+	main := repo(t)
+	root := filepath.Join(t.TempDir(), "linked")
+	run(t, main, "git", "worktree", "add", "-q", "-b", "other", root)
+	write(t, root, "secret.txt", "s\n", 0o600)
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	if err := os.Chmod(filepath.Join(root, "secret.txt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
+	if st, err := os.Lstat(filepath.Join(root, ".git")); err != nil || st.IsDir() {
+		t.Errorf(".git: %v %v", st, err)
+	}
+}
+
+// A checkpoint whose ref has gone isn't handed back, whatever Take remembers.
+func TestTakeChecksTheCheckpointItRemembers(t *testing.T) {
+	root := repo(t)
+	s := shadow(t, root)
+	now := time.Unix(2_000_000_000, 0)
+	s.Now = func() time.Time { now = now.Add(time.Minute); return now }
+	id := take(t, s)
+	if _, err := s.git(context.Background(), nil, nil, "update-ref", "-d", "refs/tack/"+id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := take(t, s)
+	if err := s.known(context.Background(), got); err != nil {
+		t.Errorf("it handed back %s: %v", got, err)
+	}
+}
+
+func mkfifo(t *testing.T, root, rel string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Sockets and FIFOs are left alone: a directory holding only them isn't removed, one that also holds a new file loses only the
+// file, and the snapshot and the preview neither hang on them nor count them.
+func TestSpecialFilesAreLeftAlone(t *testing.T) {
+	root := repo(t)
+	mkfifo(t, root, "run/app.fifo")
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	if why := s.NoUndo(context.Background()); why != "" {
+		t.Errorf("NoUndo: %q", why)
+	}
+	if got, err := s.Changes(context.Background(), id); err != nil || len(got) != 0 {
+		t.Errorf("unchanged: %v %v", got, err)
+	}
+	write(t, root, "run/later.txt", "x\n", 0o644)
+	mkfifo(t, root, "fresh/only.fifo")
+	want := []Change{{"run/later.txt", Remove}}
+	if got, err := s.Changes(context.Background(), id); err != nil || !slices.Equal(got, want) {
+		t.Errorf("changes %v %v, want %v", got, err, want)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	want2 := capture(t, root)
+	if _, ok := want2["fresh/only.fifo"]; !ok {
+		t.Error("the new FIFO went")
+	}
+	delete(want2, "fresh/only.fifo")
+	delete(want2, "fresh")
+	sameTree(t, want2, before)
+}
+
+// A socket or FIFO standing where the checkpoint holds something can't be left alone and restored too: it refuses, and says which.
+func TestASpecialFileInTheWay(t *testing.T) {
+	for _, c := range []struct {
+		name, at string
+		clear    func(root string) error
+	}{
+		{"a file", "untracked.go", func(root string) error { return os.Remove(filepath.Join(root, "untracked.go")) }},
+		{"a directory", "empty/inner", func(root string) error { return os.Remove(filepath.Join(root, "empty/inner")) }},
+		{"a directory with files", "src", func(root string) error { return os.RemoveAll(filepath.Join(root, "src")) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := repo(t)
+			s := shadow(t, root)
+			id := take(t, s)
+			if err := c.clear(root); err != nil {
+				t.Fatal(err)
+			}
+			mkfifo(t, root, c.at)
+			after := capture(t, root)
+			if _, err := s.Changes(context.Background(), id); err == nil || !strings.Contains(err.Error(), c.at) {
+				t.Errorf("Changes: %v", err)
+			}
+			if _, _, err := s.Restore(context.Background(), id, true); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), c.at) {
+				t.Errorf("Restore: %v", err)
+			}
+			sameTree(t, capture(t, root), after)
+		})
 	}
 }

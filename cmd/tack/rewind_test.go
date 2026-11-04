@@ -287,3 +287,11 @@ func TestNoRewindWarnsOncePerReason(t *testing.T) {
 		t.Errorf("%d warnings: %q", got, out.String())
 	}
 }
+
+// A path that's both removed and brought back, a file for a directory, counts once.
+func TestRewoundPaths(t *testing.T) {
+	got := rewoundPaths([]snap.Change{{Path: "a", Kind: snap.Bring}, {Path: "a", Kind: snap.Remove}, {Path: "b", Kind: snap.Remove}})
+	if got != 2 {
+		t.Errorf("%d paths", got)
+	}
+}

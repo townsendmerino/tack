@@ -127,7 +127,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		return fail(err)
 	}
 	defer log.Close()
-	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, NoUndo: why, Changed: len(changes)})
+	ev, err := log.Append(proto.EvRewind, seq, proto.Rewind{To: seq, Workspace: point.workspace, Snapshot: point.snapshot, Undo: undo, NoUndo: why, Changed: rewoundPaths(changes)})
 	if err != nil {
 		return fail(err)
 	}
@@ -139,7 +139,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the tree is part rewound: %v; %s\n", restoreErr, back)
 		return exitError
 	}
-	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; %s\n", len(changes), seq, back)
+	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; %s\n", rewoundPaths(changes), seq, back)
 	return exitOK
 }
 
@@ -194,4 +194,13 @@ func warnNoRewind(w io.Writer, seen map[string]bool, why string) {
 	}
 	seen[why] = true
 	fmt.Fprintf(w, "tack: this session's commands can't be rewound: %s\n", why)
+}
+
+// rewoundPaths is how many paths a rewind touches: a file for a directory is one path removed and brought back.
+func rewoundPaths(changes []snap.Change) int {
+	paths := map[string]bool{}
+	for _, c := range changes {
+		paths[c.Path] = true
+	}
+	return len(paths)
 }
