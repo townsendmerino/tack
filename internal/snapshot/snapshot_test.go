@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -1354,6 +1355,8 @@ func TestASpecialFileInTheWay(t *testing.T) {
 		clear    func(root string) error
 	}{
 		{"a file", "untracked.go", func(root string) error { return os.Remove(filepath.Join(root, "untracked.go")) }},
+		{"inside a directory where a file was", "untracked.go/inner/app.fifo", func(root string) error { return os.Remove(filepath.Join(root, "untracked.go")) }},
+		{"inside a directory where a link was", "link/app.fifo", func(root string) error { return os.Remove(filepath.Join(root, "link")) }},
 		{"a directory", "empty/inner", func(root string) error { return os.Remove(filepath.Join(root, "empty/inner")) }},
 		{"a directory with files", "src", func(root string) error { return os.RemoveAll(filepath.Join(root, "src")) }},
 	} {
@@ -1366,13 +1369,180 @@ func TestASpecialFileInTheWay(t *testing.T) {
 			}
 			mkfifo(t, root, c.at)
 			after := capture(t, root)
-			if _, err := s.Changes(context.Background(), id); err == nil || !strings.Contains(err.Error(), c.at) {
+			name := strings.SplitN(c.at, "/", 2)[0] // what stands in the way is the directory, when the FIFO is inside one
+			if c.at == "empty/inner" {
+				name = c.at
+			}
+			if _, err := s.Changes(context.Background(), id); err == nil || !strings.Contains(err.Error(), name) {
 				t.Errorf("Changes: %v", err)
 			}
-			if _, _, err := s.Restore(context.Background(), id, true); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), c.at) {
+			if _, _, err := s.Restore(context.Background(), id, true); !errors.Is(err, ErrUntouched) || !strings.Contains(err.Error(), name) {
 				t.Errorf("Restore: %v", err)
 			}
 			sameTree(t, capture(t, root), after)
 		})
 	}
+}
+
+// A restore touches only what differs: an unchanged empty directory is the same directory after it, one kept for a FIFO keeps its
+// mode, and a read-only directory with nothing changed under it isn't opened.
+func TestRestoreTouchesOnlyWhatDiffers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	root := repo(t)
+	write(t, root, "locked/kept.txt", "kept\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "locked"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "open/kept.txt", "kept\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "open"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(filepath.Join(root, "locked"), 0o755)
+		os.Chmod(filepath.Join(root, "open"), 0o755)
+	})
+	mkfifo(t, root, "private/app.fifo")
+	if err := os.Chmod(filepath.Join(root, "private"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := shadow(t, root)
+	id := take(t, s)
+	emptyBefore, err := os.Stat(filepath.Join(root, "empty/inner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mkfifo(t, root, "later/app.fifo")
+	if err := os.Chmod(filepath.Join(root, "later"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "untracked.go", "later\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "open"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "open/new.txt", "new\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "open"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// Which directories it opens: those a change is under, and no others.
+	d, err := s.differences(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := s.toOpen(d), []string{"open"}; !slices.Equal(got, want) {
+		t.Errorf("it would open %q, want %q", got, want)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	emptyAfter, err := os.Stat(filepath.Join(root, "empty/inner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(emptyBefore, emptyAfter) {
+		t.Error("the empty directory was removed and made again")
+	}
+	for p, want := range map[string]os.FileMode{"later": 0o700, "private": 0o700, "locked": 0o555, "open": 0o555} {
+		st, err := os.Stat(filepath.Join(root, p))
+		if err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: %v %v, want %o", p, st, err, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "open/new.txt")); err == nil {
+		t.Error("the new file in the read-only directory stayed")
+	}
+}
+
+// A directory's own mode shows in Changes even if all it holds is a FIFO.
+func TestModeDriftOnADirectoryHoldingOnlyAFIFO(t *testing.T) {
+	root := repo(t)
+	mkfifo(t, root, "private/app.fifo")
+	if err := os.Chmod(filepath.Join(root, "private"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := shadow(t, root)
+	id := take(t, s)
+	if err := os.Chmod(filepath.Join(root, "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Changes(context.Background(), id); err != nil || !slices.Equal(got, []Change{{"private", Bring}}) {
+		t.Errorf("changes %v %v", got, err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(root, "private")); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("private: %v %v", st, err)
+	}
+}
+
+// A directory that can't be read, even opened, isn't taken for an empty one: both refuse. chflags is how to make chmod fail without
+// being root, so this runs on the Mac.
+func TestADirectoryThatCantBeReadRefuses(t *testing.T) {
+	if runtime.GOOS != "darwin" || os.Geteuid() == 0 {
+		t.Skip("needs chflags and a user chmod can fail for")
+	}
+	root := repo(t)
+	s := shadow(t, root)
+	id := take(t, s)
+	write(t, root, "src/later.go", "x\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "src"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	run(t, root, "chflags", "uchg", "src")
+	t.Cleanup(func() {
+		exec.Command("chflags", "nouchg", filepath.Join(root, "src")).Run()
+		os.Chmod(filepath.Join(root, "src"), 0o755)
+	})
+	if _, err := s.Changes(context.Background(), id); err == nil {
+		t.Error("Changes read it as empty")
+	}
+	if _, _, err := s.Restore(context.Background(), id, true); !errors.Is(err, ErrUntouched) {
+		t.Errorf("Restore: %v", err)
+	}
+}
+
+// What a command removed comes back with the modes it had: a directory with its own mode above a file, an empty one, and an empty
+// one inside a read-only directory that must be opened to make it.
+func TestRemovedDirectoriesGetTheirModesBack(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	root := repo(t)
+	write(t, root, "priv/secret.txt", "s\n", 0o644)
+	if err := os.Chmod(filepath.Join(root, "priv"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "bare"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "ro", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, "ro"), 0o755) })
+	s := shadow(t, root)
+	before := capture(t, root)
+	id := take(t, s)
+	for _, p := range []string{"priv", "bare"} {
+		if err := os.RemoveAll(filepath.Join(root, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(filepath.Join(root, "ro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "ro", "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "ro"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Restore(context.Background(), id, false); err != nil {
+		t.Fatal(err)
+	}
+	sameTree(t, capture(t, root), before)
 }

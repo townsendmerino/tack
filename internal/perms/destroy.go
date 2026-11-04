@@ -333,6 +333,13 @@ func (e *Engine) AlwaysAsksIn(command string) []string {
 	return e.afterSnapshot(always)
 }
 
+// ReasonsIn is every reason command would ask for as things stand: those that ask in every mode and those that ask only outside
+// auto. It reads the tree, so it can differ from one moment to the next.
+func (e *Engine) ReasonsIn(command string) []string {
+	_, why, always := e.checkShell(command)
+	return append(e.afterSnapshot(always), why...)
+}
+
 // startDir is where the session's next command starts.
 func (e *Engine) startDir() string {
 	if e.SessionDir != "" {

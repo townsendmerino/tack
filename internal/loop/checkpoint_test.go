@@ -614,3 +614,38 @@ type approverFunc func(proto.PermissionRequested) (Approval, error)
 func (f approverFunc) Approve(_ context.Context, req proto.PermissionRequested) (Approval, error) {
 	return f(req)
 }
+
+// So does a reason that doesn't ask in every mode: a redirection that leads out of the workspace by the time the yes comes.
+func TestAWriteOutOfTheWorkspaceDuringTheQuestionAsksAgain(t *testing.T) {
+	var root string
+	ap := &answers{yes: []bool{true, false}}
+	replaced := false
+	approve := approverFunc(func(req proto.PermissionRequested) (Approval, error) {
+		if !replaced {
+			replaced = true
+			if err := os.RemoveAll(filepath.Join(root, "mcp")); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink("/usr/share", filepath.Join(root, "mcp")); err != nil {
+				t.Error(err)
+			}
+		}
+		return ap.Approve(context.Background(), req)
+	})
+	h, _ := checkpointHarness(t, approve, false, bashCall("b1", "git branch -D x; echo hi > mcp/out.txt"), goinfertest.Says("done"))
+	root = h.ws.Root()
+	sh := &buildShell{}
+	cfg := h.sess.cfg
+	cfg.Tools, cfg.Shell = tools.New(tools.Options{Write: true, Shell: sh}), sh
+	cfg.Snapshots = &scriptedSnapshots{ids: []string{"a", "b"}}
+	h.sess = New(cfg)
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if len(ap.asked) != 2 {
+		t.Fatalf("asked %d times: %+v", len(ap.asked), ap.asked)
+	}
+	if len(sh.ran) != 0 {
+		t.Errorf("it ran: %q", sh.ran)
+	}
+}

@@ -874,6 +874,8 @@ tool-use smoke set compares this merged set against the split one before it is f
   A tree over the cap costs about 93 ms before it says so (ken, 4.7 GB, at the 512 MiB default). On postgres, restoring one file
   took 0.4 s and restoring after `rm -r src` took 1.3 s; the shadow held 38 MiB after the first snapshot. A build output is
   stored again each time it changes, because ignored files count, which is why old checkpoints go.
+- **A restore touches only what differs.** An unchanged empty directory stays the same directory, and a read-only directory with
+  nothing changed under it isn't opened.
 - **Not covered:** sockets and FIFOs aren't kept, and a restore leaves them alone, with the directories that hold them. One standing where the checkpoint holds something stops the rewind, which says so. A first snapshot over a minute turns snapshots off
   for that session, and the guard keeps asking. The workspace must be the top of its repository.
 

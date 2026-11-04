@@ -435,7 +435,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				checkpoint := s.takeSnapshot(ctx, b)
 				var asked []string // what the question is about to hold, read before it: the reasons read the tree, which can change
 				if checkpoint != nil {
-					asked = s.cfg.Perms.AlwaysAsksIn(bashCommand(b))
+					asked = s.cfg.Perms.ReasonsIn(bashCommand(b))
 				}
 				refused, by, err := s.permit(ctx, b, callEv.Seq)
 				if checkpoint != nil {
@@ -443,7 +443,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					// that the question didn't hold, the yes was to something else: ask the whole of it, until an answer holds.
 					for err == nil && refused == nil && by == proto.DecidedByUser {
 						checkpoint = s.takeSnapshot(ctx, b)
-						now := s.cfg.Perms.AlwaysAsksIn(bashCommand(b))
+						now := s.cfg.Perms.ReasonsIn(bashCommand(b))
 						if subset(now, asked) {
 							break
 						}

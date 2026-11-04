@@ -514,6 +514,7 @@ type difference struct {
 	changes  []Change
 	remove   []string
 	checkout []string
+	fix      []string // paths whose mode alone is wrong
 	manifest manifest
 }
 
@@ -554,6 +555,12 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 		emptyDirs[dir], holds[dir] = true, true
 		hold(dir)
 	}
+	for p := range d.manifest.modes {
+		if _, isFile := files[p]; !isFile { // a directory with a mode of its own, which may hold only a FIFO
+			holds[p] = true
+			hold(p)
+		}
+	}
 	bring := func(p string) { d.changes = append(d.changes, Change{p, Bring}) }
 	drop := func(p string) {
 		d.changes = append(d.changes, Change{p, Remove})
@@ -574,7 +581,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil // what the checkpoint holds under it reads as missing, and is written back
+			return err // taking it for empty would leave what's in it behind
 		}
 		for _, de := range entries {
 			name := filepath.Join(rel, de.Name())
@@ -589,6 +596,11 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 			case info.IsDir():
 				if !holds[name] {
 					if holdsSpecial(filepath.Join(dir, de.Name())) { // what's new in it goes, and it stays
+						if _, isFile := files[name]; isFile {
+							inTheWay = append(inTheWay, name)
+							seen[name] = true
+							continue
+						}
 						if err := walk(filepath.Join(dir, de.Name()), name); err != nil {
 							return err
 						}
@@ -600,6 +612,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 				seen[name] = true
 				if info.Mode().Perm() != permWant(name, info.Mode()) {
 					bring(name)
+					d.fix = append(d.fix, name)
 				}
 				sub := filepath.Join(dir, de.Name())
 				perm := info.Mode().Perm()
@@ -624,6 +637,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 					d.checkout = append(d.checkout, name)
 				case info.Mode().IsRegular() && info.Mode().Perm() != permWant(name, info.Mode()):
 					bring(name)
+					d.fix = append(d.fix, name)
 				}
 			default:
 				if _, isFile := files[name]; isFile || holds[name] {
@@ -758,7 +772,8 @@ func (s *Shadow) Restore(parent context.Context, id string, withoutUndo bool) (u
 			return undo, noUndo, fmt.Errorf("%w: %w", ErrUntouched, err)
 		}
 	}
-	if err := s.unlockDirs(); err != nil {
+	opened, err := s.openDirs(s.toOpen(d))
+	if err != nil {
 		return undo, noUndo, err
 	}
 	// What wasn't there goes first, so a file can't stand where a directory must come back, and nothing is written
@@ -767,7 +782,7 @@ func (s *Shadow) Restore(parent context.Context, id string, withoutUndo bool) (u
 		if err := ctx.Err(); err != nil {
 			return undo, noUndo, err
 		}
-		if err := os.RemoveAll(filepath.Join(s.Root, p)); err != nil {
+		if err := removeAll(filepath.Join(s.Root, p)); err != nil {
 			return undo, noUndo, err
 		}
 	}
@@ -775,9 +790,6 @@ func (s *Shadow) Restore(parent context.Context, id string, withoutUndo bool) (u
 	for _, p := range d.checkout {
 		bring.WriteString(p)
 		bring.WriteByte(0)
-	}
-	if _, err := s.sweep(s.Root); err != nil {
-		return undo, noUndo, err
 	}
 	if bring.Len() > 0 {
 		if _, err := s.git(ctx, bring.Bytes(), []string{index}, "checkout-index", "-f", "-z", "--stdin"); err != nil {
@@ -789,7 +801,7 @@ func (s *Shadow) Restore(parent context.Context, id string, withoutUndo bool) (u
 			return undo, noUndo, err
 		}
 	}
-	if err := s.setModes(m); err != nil {
+	if err := s.putModesBack(d, opened); err != nil {
 		return undo, noUndo, err
 	}
 	s.remember(ctx, id, m)
@@ -813,91 +825,99 @@ func treeStamp(tree string, m manifest) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// unlockDirs makes every directory one the restore can work in. setModes puts them back at the end.
-func (s *Shadow) unlockDirs() error {
-	return filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
+// toOpen is the directories, top first, that a restore must be able to work in: those above something it removes or writes that
+// aren't open now. A directory with nothing changed under it isn't one, read-only or not.
+func (s *Shadow) toOpen(d difference) []string {
+	want := map[string]bool{}
+	var out []string
+	note := func(p string) {
+		var chain []string
+		for dir := filepath.Dir(p); dir != "."; dir = filepath.Dir(dir) {
+			chain = append(chain, dir)
+		}
+		for i := len(chain) - 1; i >= 0; i-- {
+			if want[chain[i]] {
+				continue
+			}
+			want[chain[i]] = true
+			if st, err := os.Lstat(filepath.Join(s.Root, chain[i])); err == nil && st.IsDir() && st.Mode().Perm()&0o700 != 0o700 {
+				out = append(out, chain[i])
+			}
+		}
+	}
+	for _, list := range [][]string{d.remove, d.checkout, d.manifest.dirs} {
+		for _, p := range list {
+			note(p)
+		}
+	}
+	return out
+}
+
+// openDirs gives each directory what a restore needs, and returns the modes they had.
+func (s *Shadow) openDirs(dirs []string) (map[string]fs.FileMode, error) {
+	opened := map[string]fs.FileMode{}
+	for _, dir := range dirs {
+		p := filepath.Join(s.Root, dir)
+		st, err := os.Lstat(p)
 		if err != nil {
-			return err
+			return opened, err
 		}
-		if !d.IsDir() || p == s.Root {
-			return nil
+		if err := os.Chmod(p, st.Mode().Perm()|0o700); err != nil {
+			return opened, err
 		}
-		if rel, err := filepath.Rel(s.Root, p); err == nil && isDotGit(rel) {
-			return fs.SkipDir
+		opened[dir] = st.Mode().Perm()
+	}
+	return opened, nil
+}
+
+// removeAll is os.RemoveAll through read-only directories under p, and a link is only a link.
+func removeAll(p string) error {
+	_ = filepath.WalkDir(p, func(q string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(q, 0o700)
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode().Perm()&0o700 == 0o700 {
-			return nil
-		}
-		return os.Chmod(p, info.Mode().Perm()|0o700)
+		return nil
 	})
+	return os.RemoveAll(p)
 }
 
-// sweep removes the empty directories under dir, deepest first, and reports whether dir is empty after it. Restore makes
-// the ones the checkpoint holds again.
-func (s *Shadow) sweep(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false, err
-	}
-	left := len(entries)
-	for _, e := range entries {
-		p := filepath.Join(dir, e.Name())
-		if !e.IsDir() || (dir == s.Root && isDotGit(e.Name())) {
-			continue
-		}
-		isEmpty, err := s.sweep(p)
-		if err != nil {
-			return false, err
-		}
-		if isEmpty {
-			if err := os.Remove(p); err != nil {
-				return false, err
-			}
-			left--
-		}
-	}
-	return left == 0, nil
-}
-
-// setModes gives every path the permissions the checkpoint had: what the manifest says, or else the default.
-func (s *Shadow) setModes(m manifest) error {
-	return filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
+// putModesBack ends a restore: what it opened goes back as it was, then every path it wrote or whose mode was wrong, and the
+// directories above what it wrote, get the mode the checkpoint says.
+func (s *Shadow) putModesBack(d difference, opened map[string]fs.FileMode) error {
+	for dir, perm := range opened {
+		if err := os.Chmod(filepath.Join(s.Root, dir), perm); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if p == s.Root {
-			return nil
-		}
-		rel, err := filepath.Rel(s.Root, p)
-		if err != nil {
-			return err
-		}
-		if isDotGit(rel) {
-			if d.IsDir() {
-				return fs.SkipDir
+	}
+	paths := map[string]bool{}
+	for _, list := range [][]string{d.fix, d.checkout, d.manifest.dirs} {
+		for _, p := range list {
+			paths[p] = true
+			for dir := filepath.Dir(p); dir != "."; dir = filepath.Dir(dir) {
+				paths[dir] = true
 			}
-			return nil // a linked worktree's: SkipDir here would skip the rest of the root
 		}
-		info, err := d.Info()
+	}
+	for rel := range paths { // a snapshot only holds directories it could read, so the order can't lock this out
+		p := filepath.Join(s.Root, rel)
+		info, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
 		if !info.Mode().IsRegular() && !info.IsDir() {
-			return nil
+			continue
 		}
-		want, ok := m.modes[rel]
+		want, ok := d.manifest.modes[rel]
 		if !ok {
 			want = defaultPerm(info.Mode())
 		}
-		if info.Mode().Perm() == want {
-			return nil
+		if info.Mode().Perm() != want {
+			if err := os.Chmod(p, want); err != nil {
+				return err
+			}
 		}
-		return os.Chmod(p, want)
-	})
+	}
+	return nil
 }
 
 // Prune drops checkpoints a command last relied on over MaxAge ago, then the least recently used half at a time while the shadow
