@@ -1711,3 +1711,19 @@ func TestNoUndoKeepsToItsLimit(t *testing.T) {
 		t.Error("it walked on past its limit")
 	}
 }
+
+// NoUndo says so when snapshots are off for the session.
+func TestNoUndoSaysWhenSnapshotsAreOff(t *testing.T) {
+	s := shadow(t, repo(t))
+	s.gaveUp = "a snapshot took longer than 1m0s"
+	if why := s.NoUndo(context.Background()); why != s.gaveUp {
+		t.Errorf("why %q", why)
+	}
+}
+
+// A failed opening puts back what it opened, deepest first, so none is left closed with one above it open.
+func TestOpenRollbackOrder(t *testing.T) {
+	if got := deepestFirst(map[string]fs.FileMode{"a": 0o555, "a/b": 0o555, "a/b/c": 0o500, "z": 0o555}); got[0] != "a/b/c" || got[1] != "a/b" {
+		t.Errorf("order %v", got)
+	}
+}

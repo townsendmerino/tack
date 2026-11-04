@@ -1038,3 +1038,58 @@ func TestReasonSaysWhetherThereIsASnapshot(t *testing.T) {
 		t.Errorf("with %q, without %q", a, b)
 	}
 }
+
+// After a cd that can't be read, a relative rm target may be anywhere: the snapshot doesn't answer it, and what's said is about the
+// target and the cd, not an undoable deletion.
+func TestRmAfterACdThatCantBeReadStillAsks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+	for _, command := range []string{"cd $d; rm -rf src", "cd $d && rm -r src", "d=/tmp; cd $d; rm -rf src"} {
+		why := strings.Join(e.AlwaysAsksIn(command), "\n")
+		if !strings.Contains(why, "rm") || !strings.Contains(why, "cd that can't be read") {
+			t.Errorf("%s: reasons %q", command, why)
+		}
+	}
+}
+
+// Reasons say what resolves through a link, so one swapped in during a question is a new reason, not the old one.
+func TestReasonsNameWhatLinksResolveTo(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a", "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "b", "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{Root: root, Path: os.Getenv("PATH"), Sandboxed: true, Snapshotted: true}
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	before := e.ReasonsIn("git branch -D x; rm -r link/target")
+	for _, swap := range []string{filepath.Join(root, "b"), outside} {
+		if err := os.Remove(filepath.Join(root, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(swap, filepath.Join(root, "link")); err != nil {
+			t.Fatal(err)
+		}
+		after := e.ReasonsIn("git branch -D x; rm -r link/target")
+		if slices.Equal(before, after) || !slices.ContainsFunc(after, func(r string) bool { return !slices.Contains(before, r) }) {
+			t.Errorf("swapped to %s: before %q, after %q", swap, before, after)
+		}
+	}
+	// A link that stays the same is the same set.
+	if err := os.Remove(filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "a"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if again := e.ReasonsIn("git branch -D x; rm -r link/target"); !slices.Equal(before, again) {
+		t.Errorf("unchanged: %q then %q", before, again)
+	}
+}

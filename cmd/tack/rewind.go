@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/halt"
@@ -68,8 +69,8 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	}
-	var seq int64
-	if _, err := fmt.Sscan(fs.Arg(1), &seq); err != nil {
+	seq, err := strconv.ParseInt(fs.Arg(1), 10, 64)
+	if err != nil {
 		return fail(fmt.Sprintf("%q is not a seq", fs.Arg(1)))
 	}
 	var point *rewindPoint

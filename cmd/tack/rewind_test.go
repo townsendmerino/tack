@@ -295,3 +295,12 @@ func TestRewoundPaths(t *testing.T) {
 		t.Errorf("%d paths", got)
 	}
 }
+
+func TestRewindSeqMustBeANumber(t *testing.T) {
+	cfg, _, _ := rewindSession(t)
+	for _, seq := range []string{"1x", "1 2", "0x1", "+", "9999999999999999999999"} {
+		if code, _, errs := rewind(t, "-config", cfg, "s_rewind", seq); code != exitError || !strings.Contains(errs, "not a seq") {
+			t.Errorf("%q: %d %q", seq, code, errs)
+		}
+	}
+}

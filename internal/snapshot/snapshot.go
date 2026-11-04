@@ -446,6 +446,9 @@ func (s *Shadow) Staged(ctx context.Context) bool {
 func (s *Shadow) NoUndo(ctx context.Context) string {
 	ctx, cancel := context.WithTimeout(ctx, s.Limit)
 	defer cancel()
+	if s.gaveUp != "" {
+		return s.gaveUp
+	}
 	if !s.isTop() {
 		return "the workspace is not the top of a git repository"
 	}
@@ -888,14 +891,28 @@ func (s *Shadow) openDirs(d difference) (map[string]fs.FileMode, error) {
 	for _, list := range [][]string{d.remove, d.checkout, d.fix, d.missing} {
 		for _, p := range list {
 			if err := open(p); err != nil {
-				for dir, perm := range opened {
-					_ = os.Chmod(filepath.Join(s.Root, dir), perm)
+				for _, dir := range deepestFirst(opened) {
+					_ = os.Chmod(filepath.Join(s.Root, dir), opened[dir])
 				}
 				return nil, err
 			}
 		}
 	}
 	return opened, nil
+}
+
+// deepestFirst is the directories in m, the deepest first, so putting their modes back never closes one with another below it
+// still to do.
+func deepestFirst(m map[string]fs.FileMode) []string {
+	dirs := make([]string, 0, len(m))
+	for dir := range m {
+		dirs = append(dirs, dir)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		a, b := strings.Count(dirs[i], string(filepath.Separator)), strings.Count(dirs[j], string(filepath.Separator))
+		return a > b || (a == b && dirs[i] < dirs[j])
+	})
+	return dirs
 }
 
 // removeAll is os.RemoveAll through read-only directories under p, and a link is only a link.

@@ -336,8 +336,27 @@ func (e *Engine) AlwaysAsksIn(command string) []string {
 // ReasonsIn is every reason command would ask for as things stand: those that ask in every mode and those that ask only outside
 // auto. It reads the tree, so it can differ from one moment to the next.
 func (e *Engine) ReasonsIn(command string) []string {
-	_, why, always := e.checkShell(command)
-	return append(e.afterSnapshot(always), why...)
+	cmds, why, always := e.checkShell(command)
+	out := append(e.afterSnapshot(always), why...)
+	// A reason names a path as written, and a link swapped in under it changes what it means without changing the words. So each
+	// path that goes through a link is listed with where it ends up, and a different link is a different list.
+	dir := e.startDir()
+	for _, c := range cmds {
+		for i, a := range c.Args {
+			if !c.Literal[i] || strings.HasPrefix(a, "-") {
+				continue
+			}
+			p := a
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			p = filepath.Clean(p)
+			if real := resolveExisting(p); real != p {
+				out = appendNew(out, "the path "+p+" leads to "+real)
+			}
+		}
+	}
+	return out
 }
 
 // startDir is where the session's next command starts.
@@ -1574,7 +1593,7 @@ func (e *Engine) rmAsks(args []string, sc scan) []string {
 		}
 		if recursive && !e.rmFree(t, p, dir) {
 			end := "cannot be recovered"
-			if e.inTree(p) {
+			if (!sc.lost || filepath.IsAbs(t)) && e.inTree(p) { // a relative path after a cd that can't be read may be anywhere
 				end = undoableEnd
 			}
 			why = appendNew(why, "rm -r "+t+" deletes a directory that "+end)
