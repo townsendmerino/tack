@@ -107,10 +107,8 @@ func (c *testChanges) commands(eng *perms.Engine, command string, r tools.Result
 var scriptEditors = []string{"sed", "perl", "awk", "gawk", "ruby", "python", "python3", "ed"}
 
 func (c *testChanges) note(s string) {
-	for _, n := range c.notes {
-		if n == s {
-			return
-		}
+	if slices.Contains(c.notes, s) {
+		return
 	}
 	c.notes = append(c.notes, s)
 }
@@ -517,12 +515,7 @@ func isTestFile(p string) bool {
 		strings.Contains(base, ".test."), strings.Contains(base, ".spec."):
 		return true
 	}
-	for _, seg := range strings.Split(dir, "/") {
-		if isTestDirName(seg) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(strings.Split(dir, "/"), isTestDirName)
 }
 
 // isTestDir reports whether the path is, or is inside, a test directory.

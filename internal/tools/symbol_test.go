@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -163,10 +164,8 @@ func (f *fakeSymbols) synced(p string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, s := range f.syncs {
-		for _, q := range s {
-			if q == p {
-				return true
-			}
+		if slices.Contains(s, p) {
+			return true
 		}
 	}
 	return false
