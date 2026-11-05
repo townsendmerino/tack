@@ -175,7 +175,7 @@ func (m manifest) String() string {
 
 func parseManifest(text string) (manifest, error) {
 	m := manifest{modes: map[string]fs.FileMode{}}
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			continue
 		}
@@ -563,7 +563,7 @@ func (s *Shadow) differences(ctx context.Context, id string) (difference, error)
 			holds[dir] = true
 		}
 	}
-	for _, rec := range bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
+	for rec := range bytes.SplitSeq(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
 		meta, path, ok := strings.Cut(string(rec), "\t")
 		fields := strings.Fields(meta)
 		if !ok || len(fields) != 3 {

@@ -411,7 +411,7 @@ func onlyTasks(ts []pilot.Task, list string) ([]pilot.Task, error) {
 		return ts, nil
 	}
 	want := map[int]bool{}
-	for _, s := range strings.Split(list, ",") {
+	for s := range strings.SplitSeq(list, ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(s))
 		if err != nil {
 			return nil, fmt.Errorf("-only %q: %q is not a task number", list, s)

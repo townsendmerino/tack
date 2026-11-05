@@ -90,7 +90,7 @@ func Print(w io.Writer, name string, cells []Cell) Report {
 		}
 		fmt.Fprintln(w, b.String())
 		if c.Outcome != OK && c.Outcome != NA && strings.TrimSpace(c.Detail) != "" {
-			for _, line := range strings.Split(strings.TrimRight(c.Detail, "\n"), "\n") {
+			for line := range strings.SplitSeq(strings.TrimRight(c.Detail, "\n"), "\n") {
 				fmt.Fprintln(w, "    "+line)
 			}
 		}

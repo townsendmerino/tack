@@ -536,7 +536,7 @@ func IsSecret(p string) bool {
 			return true
 		}
 	}
-	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+	for seg := range strings.SplitSeq(filepath.ToSlash(p), "/") {
 		if seg == ".ssh" || seg == ".aws" || seg == ".gnupg" {
 			return true
 		}

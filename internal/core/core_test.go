@@ -44,7 +44,7 @@ type tapConn struct {
 }
 
 func (c *tapConn) Write(p []byte) (int, error) {
-	for _, l := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+	for l := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
 		c.t.add("c2d", []byte(l))
 	}
 	return c.Conn.Write(p)

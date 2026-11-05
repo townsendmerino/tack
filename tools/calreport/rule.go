@@ -21,7 +21,7 @@ type rule struct {
 func parseRule(s string) (rule, error) {
 	var r rule
 	seen := map[string]bool{}
-	for _, kv := range strings.Split(s, ",") {
+	for kv := range strings.SplitSeq(s, ",") {
 		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
 		if !ok {
 			return r, fmt.Errorf("%q is not key=value", kv)

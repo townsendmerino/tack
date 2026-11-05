@@ -130,7 +130,7 @@ func measure(ctx context.Context, mirrors, suite string, t pilot.Task, dump stri
 
 // rowLists reports whether map m's row for file lists the symbol name.
 func rowLists(m, file, name string) bool {
-	for _, line := range strings.Split(m, "\n") {
+	for line := range strings.SplitSeq(m, "\n") {
 		if rest, ok := strings.CutPrefix(line, file+": "); ok {
 			return slices.Contains(strings.Split(rest, ", "), name)
 		}

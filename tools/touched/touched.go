@@ -112,7 +112,7 @@ func changedFiles(root, base string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	var out []string
-	for _, l := range strings.Split(diff+"\n"+untracked, "\n") {
+	for l := range strings.SplitSeq(diff+"\n"+untracked, "\n") {
 		if l = strings.TrimSpace(l); l != "" && !seen[l] {
 			seen[l] = true
 			out = append(out, l)

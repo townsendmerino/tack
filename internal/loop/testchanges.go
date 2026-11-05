@@ -34,7 +34,7 @@ func DoneNotes(result string) (string, []string) {
 		return result, nil
 	}
 	var notes []string
-	for _, line := range strings.Split(strings.TrimSuffix(report, "\n]"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(report, "\n]"), "\n") {
 		notes = append(notes, strings.TrimPrefix(line, "- "))
 	}
 	return answer, notes
@@ -621,7 +621,7 @@ func gitSubcommand(args []string) (string, []string) {
 // package, so a run where another one ran, or failed, is not one.
 func ranNothing(output string) bool {
 	saw := false
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		switch {
 		case strings.Contains(line, "[no tests to run]"), strings.Contains(line, "[no test files]"):
 			saw = true

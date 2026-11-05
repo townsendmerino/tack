@@ -153,7 +153,7 @@ func bestWindow(content, text string) (lines []string, score []int, at, n int) {
 		}
 	}
 	whole := map[string]bool{}
-	for _, l := range strings.Split(text, "\n") {
+	for l := range strings.SplitSeq(text, "\n") {
 		if t := strings.TrimSpace(l); t != "" {
 			whole[t] = true
 		}

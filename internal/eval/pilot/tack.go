@@ -205,7 +205,7 @@ func TackDir(out string) string { return out + "-tack" }
 // preflightError is tack's line saying why the preflight failed, from its stderr.
 func preflightError(stderr string) string {
 	b, _ := os.ReadFile(stderr)
-	for _, l := range strings.Split(string(b), "\n") {
+	for l := range strings.SplitSeq(string(b), "\n") {
 		if strings.HasPrefix(l, "tack run: preflight") {
 			return l
 		}

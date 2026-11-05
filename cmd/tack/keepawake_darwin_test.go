@@ -24,7 +24,7 @@ func TestKeepAwakeHoldsIdleSleepOff(t *testing.T) {
 	var out []byte
 	for range 50 {
 		out, _ = exec.Command("pmset", "-g", "assertions").Output()
-		for _, l := range strings.Split(string(out), "\n") {
+		for l := range strings.SplitSeq(string(out), "\n") {
 			if strings.Contains(l, want) && strings.Contains(l, "PreventUserIdleSystemSleep") {
 				return
 			}

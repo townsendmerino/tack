@@ -54,7 +54,7 @@ var fakeRedirect = regexp.MustCompile(`(?:^|[^-=<>])>>?\s*['"]?([^\s'";&|<>]+)`)
 // report makes of a record. TestDoneNotesOnlyWhatRan has the real shell, whose record tells them apart.
 func (d *deletingShell) Run(_ context.Context, command string, _ time.Duration) (shell.Result, error) {
 	if rest, ok := strings.CutPrefix(command, "rm "); ok {
-		for _, p := range strings.Fields(rest) {
+		for p := range strings.FieldsSeq(rest) {
 			if !strings.HasPrefix(p, "-") && !filepath.IsAbs(p) {
 				os.Remove(filepath.Join(d.root, p))
 			}

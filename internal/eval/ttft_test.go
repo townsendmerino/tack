@@ -59,7 +59,7 @@ func TestTTFTAppendCellAppends(t *testing.T) {
 		}
 	}
 	cells := map[string]int{}
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		var rec struct{ Cell string }
 		json.Unmarshal([]byte(line), &rec)
 		cells[rec.Cell]++

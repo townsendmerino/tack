@@ -135,7 +135,7 @@ func FixGold(ctx context.Context, mirrors, repo, base, commit string, testFiles 
 	}
 	changedFiles := map[string]string{}
 	file := ""
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		switch {
 		case strings.HasPrefix(line, "--- a/"):
 			file = cleanPath(strings.TrimPrefix(line, "--- a/"))
@@ -509,7 +509,7 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 		return tf.mapRange(pth, start, end), nil
 
 	case "search":
-		for _, line := range strings.Split(cleanResult, "\n") {
+		for line := range strings.SplitSeq(cleanResult, "\n") {
 			if m := searchHeaderRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
 				pth := cleanPath(m[1])
 				if tf := tree[pth]; tf != nil {
@@ -561,7 +561,7 @@ func extractTackToolSpans(name string, rawInput json.RawMessage, outcome string,
 		return seen, nil
 
 	case "grep":
-		for _, l := range strings.Split(cleanResult, "\n") {
+		for l := range strings.SplitSeq(cleanResult, "\n") {
 			if m := grepMatchRe.FindStringSubmatch(l); m != nil {
 				pth := cleanPath(m[1])
 				ln, _ := strconv.Atoi(m[2])
@@ -843,7 +843,7 @@ func bashCallSpans(words []string, tree map[string]*trackedFile) []LineSpan {
 			return nil
 		}
 		for _, ex := range exprs {
-			for _, part := range strings.Split(ex, ";") {
+			for part := range strings.SplitSeq(ex, ";") {
 				m := sedRangePrintRe.FindStringSubmatch(strings.TrimSpace(part))
 				if m == nil {
 					continue

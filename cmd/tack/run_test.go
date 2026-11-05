@@ -136,7 +136,7 @@ func TestRunFitWindowReachesTheLoop(t *testing.T) {
 		if code := dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "read big.txt"}, &stdout, &stderr); code != exitOK {
 			t.Fatalf("fit_window %v: exit %d: %s", fit, code, stderr.String())
 		}
-		for _, l := range strings.Split(stdout.String(), "\n") {
+		for l := range strings.SplitSeq(stdout.String(), "\n") {
 			if strings.Contains(l, `"type":"tool.finished"`) {
 				return l
 			}
