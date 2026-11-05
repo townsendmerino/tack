@@ -150,7 +150,6 @@ type field struct {
 func fields(t reflect.Type) []field {
 	var out []field
 	for f := range t.Fields() {
-		f := f
 		tag := f.Tag.Get("json")
 		if !f.IsExported() || tag == "-" {
 			continue
