@@ -864,8 +864,8 @@ func (s *Shadow) openDirs(d difference) (map[string]fs.FileMode, error) {
 		for dir := filepath.Dir(p); dir != "."; dir = filepath.Dir(dir) {
 			chain = append(chain, dir)
 		}
-		for i := len(chain) - 1; i >= 0; i-- {
-			dir := chain[i]
+		for _, dir := range slices.Backward(chain) {
+
 			isDir, ok := looked[dir]
 			if ok {
 				if !isDir {

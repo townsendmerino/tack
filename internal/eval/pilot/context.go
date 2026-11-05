@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -658,8 +659,8 @@ func applyTrackedEdit(tf *trackedFile, pth, oldStr, newStr string, repAll bool, 
 					off += i + len(oldStr)
 				}
 				var all []LineSpan
-				for i := len(matches) - 1; i >= 0; i-- {
-					m := matches[i]
+				for _, m := range slices.Backward(matches) {
+
 					sLine, eLine := byteSpanToLines(tf.content, m[0], m[1])
 					out := tf.content[:m[0]] + newStr + tf.content[m[1]:]
 					all = append(all, tf.replaceLines(pth, sLine, eLine, newStr, out)...)

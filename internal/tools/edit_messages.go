@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -46,8 +47,8 @@ func (w *Workspace) appliedEdit(abs, old, new string) (int, bool) {
 func (w *Workspace) changeThatRemoved(abs, text string) (change, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for i := len(w.changes) - 1; i >= 0; i-- {
-		c := w.changes[i]
+	for _, c := range slices.Backward(w.changes) {
+
 		if c.abs == abs && strings.Contains(c.before, text) && !strings.Contains(c.after, text) {
 			return c, true
 		}
