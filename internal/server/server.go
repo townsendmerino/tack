@@ -72,11 +72,11 @@ type Block struct {
 }
 
 // TextBlock makes a text block.
-func TextBlock(s string) Block { return Block{ModelBlock: proto.ModelBlock{Type: "text", Text: s}} }
+func TextBlock(s string) Block { return Block{Type: "text", Text: s} }
 
 // ToolResultBlock makes a tool_result block.
 func ToolResultBlock(id, result string, isError bool) Block {
-	return Block{ModelBlock: proto.ModelBlock{Type: "tool_result"}, ToolUseID: id, Result: result, IsError: isError}
+	return Block{Type: "tool_result", ToolUseID: id, Result: result, IsError: isError}
 }
 
 // Delta is streamed text for the open block.
