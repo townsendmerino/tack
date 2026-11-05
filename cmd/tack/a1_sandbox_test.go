@@ -405,7 +405,7 @@ func TestA1CannotReadTheMirror(t *testing.T) {
 	rec, out := a1Run(t, task, mirrors, script)
 	evs, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "events.jsonl"))
 	results := map[string]string{}
-	for _, line := range strings.Split(string(evs), "\n") {
+	for line := range strings.SplitSeq(string(evs), "\n") {
 		var ev struct {
 			Type    string `json:"type"`
 			Payload struct {
