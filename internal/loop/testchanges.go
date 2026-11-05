@@ -34,7 +34,7 @@ func DoneNotes(result string) (string, []string) {
 		return result, nil
 	}
 	var notes []string
-	for _, line := range strings.Split(strings.TrimSuffix(report, "\n]"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(report, "\n]"), "\n") {
 		notes = append(notes, strings.TrimPrefix(line, "- "))
 	}
 	return answer, notes
@@ -107,10 +107,8 @@ func (c *testChanges) commands(eng *perms.Engine, command string, r tools.Result
 var scriptEditors = []string{"sed", "perl", "awk", "gawk", "ruby", "python", "python3", "ed"}
 
 func (c *testChanges) note(s string) {
-	for _, n := range c.notes {
-		if n == s {
-			return
-		}
+	if slices.Contains(c.notes, s) {
+		return
 	}
 	c.notes = append(c.notes, s)
 }
@@ -517,12 +515,7 @@ func isTestFile(p string) bool {
 		strings.Contains(base, ".test."), strings.Contains(base, ".spec."):
 		return true
 	}
-	for _, seg := range strings.Split(dir, "/") {
-		if isTestDirName(seg) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(strings.Split(dir, "/"), isTestDirName)
 }
 
 // isTestDir reports whether the path is, or is inside, a test directory.
@@ -628,7 +621,7 @@ func gitSubcommand(args []string) (string, []string) {
 // package, so a run where another one ran, or failed, is not one.
 func ranNothing(output string) bool {
 	saw := false
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		switch {
 		case strings.Contains(line, "[no tests to run]"), strings.Contains(line, "[no test files]"):
 			saw = true

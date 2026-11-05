@@ -170,9 +170,9 @@ func a1Task(t *testing.T, dep bool) (pilot.Task, string) {
 	if out, err := exec.Command("git", "clone", "-q", "--mirror", src, filepath.Join(mirrors, "m.git")).CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	task := pilot.Task{N: 1, Candidate: mine.Candidate{Repo: "m", Commit: commit, Base: base, Tests: []string{"TestAdd"},
+	task := pilot.Task{N: 1, Repo: "m", Commit: commit, Base: base, Tests: []string{"TestAdd"},
 		Packages: []string{"./calc"}, TestFiles: []string{"calc/calc_test.go"}, Statement: "Add subtracts; it should add.",
-		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}}
+		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}
 	return task, mirrors
 }
 
@@ -273,7 +273,7 @@ func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Sc
 func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 6; i++ { // done with nothing changed is refused once, then accepted
+	for range 6 { // done with nothing changed is refused once, then accepted
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
@@ -324,7 +324,7 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 4; i++ { // done with nothing changed is refused once, then accepted
+	for range 4 { // done with nothing changed is refused once, then accepted
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
@@ -358,7 +358,7 @@ func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 func TestA1LoneArmRepeatsWithSettings(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
@@ -405,7 +405,7 @@ func TestA1CannotReadTheMirror(t *testing.T) {
 	rec, out := a1Run(t, task, mirrors, script)
 	evs, _ := os.ReadFile(filepath.Join(out, "task-01", "A1", "events.jsonl"))
 	results := map[string]string{}
-	for _, line := range strings.Split(string(evs), "\n") {
+	for line := range strings.SplitSeq(string(evs), "\n") {
 		var ev struct {
 			Type    string `json:"type"`
 			Payload struct {

@@ -23,7 +23,7 @@ import (
 func destroyEngine(t *testing.T) *Engine {
 	t.Helper()
 	root, bin := t.TempDir(), t.TempDir()
-	for _, name := range strings.Fields(`git rm rmdir grep curl mvn wc bash sh zsh env nice nohup timeout xargs find sudo npx pnpm
+	for name := range strings.FieldsSeq(`git rm rmdir grep curl mvn wc bash sh zsh env nice nohup timeout xargs find sudo npx pnpm
 		alembic rails rake python python3 django-admin sequelize knex drizzle-kit claude codex gemini cursor-agent aider tack go
 		terraform apt-get prisma tee sed manage.py cat parallel`) {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {

@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -163,10 +164,8 @@ func (f *fakeSymbols) synced(p string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, s := range f.syncs {
-		for _, q := range s {
-			if q == p {
-				return true
-			}
+		if slices.Contains(s, p) {
+			return true
 		}
 	}
 	return false
@@ -441,7 +440,7 @@ func TestEditBySymbolRefusesWhatSymbolCannotShowWhole(t *testing.T) {
 	ws, _, _ := symbolWorkspace(t)
 	var long strings.Builder
 	long.WriteString("package pull\n\nfunc Long() {\n")
-	for i := 0; i < readMaxLines; i++ {
+	for range readMaxLines {
 		long.WriteString("\tx()\n")
 	}
 	long.WriteString("}\n\nfunc Wide() {\n\ty := \"" + strings.Repeat("w", maxLineRunes) + "\"\n}\n")

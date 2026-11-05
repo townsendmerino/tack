@@ -315,9 +315,7 @@ func run(req request, out io.Writer) reply {
 		fmt.Fprintln(out, "tack shell: the working directory left the repository; the next command starts at its root")
 	}
 	rep.State.Env = map[string]string{}
-	for k, v := range req.State.Env {
-		rep.State.Env[k] = v
-	}
+	maps.Copy(rep.State.Env, req.State.Env)
 	names := make([]string, 0, len(r.Vars))
 	for k := range r.Vars {
 		names = append(names, k)

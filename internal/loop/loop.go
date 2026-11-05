@@ -784,8 +784,7 @@ func sleep(ctx context.Context, d time.Duration) error {
 
 // notRun says why a call was not run once the turn's context is cancelled.
 func notRun(ctx context.Context) string {
-	var h *halt.Halted
-	if errors.As(context.Cause(ctx), &h) {
+	if h, ok := errors.AsType[*halt.Halted](context.Cause(ctx)); ok {
 		return h.Error()
 	}
 	return "the user cancelled the turn"

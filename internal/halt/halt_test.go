@@ -1,7 +1,6 @@
 package halt
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,8 +47,7 @@ func TestWatch(t *testing.T) {
 	dir := t.TempDir()
 	Halt(dir, "tack halt", "") // already halted when the watch starts
 	events := make(chan string, 8)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go Watch(ctx, dir, 5*time.Millisecond, func(h proto.DaemonHalted) { events <- "halt " + h.Trigger }, func() { events <- "resume" })
 	next := func(want string) {
 		t.Helper()

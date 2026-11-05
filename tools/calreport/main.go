@@ -337,18 +337,20 @@ func perTask(w io.Writer, j *jobData, others []*jobData) {
 		}
 		fmt.Fprintln(w)
 	}
-	head := "| task |"
-	rule := "|---|"
+	var head strings.Builder
+	head.WriteString("| task |")
+	var rule strings.Builder
+	rule.WriteString("|---|")
 	for i, c := range cols {
 		label := c.label
 		if len(others) > 0 {
 			label = strconv.Itoa(i + 1)
 		}
-		head += fmt.Sprintf(" %s passes | %s window-full | %s cap |", label, label, label)
-		rule += "---|---|---|"
+		head.WriteString(fmt.Sprintf(" %s passes | %s window-full | %s cap |", label, label, label))
+		rule.WriteString("---|---|---|")
 	}
-	fmt.Fprintln(w, head)
-	fmt.Fprintln(w, rule)
+	fmt.Fprintln(w, head.String())
+	fmt.Fprintln(w, rule.String())
 	for _, t := range append(ts, 0) {
 		row := fmt.Sprintf("| %d |", t)
 		if t == 0 {
@@ -403,11 +405,12 @@ func stops(w io.Writer, j *jobData) {
 		for _, r := range j.arms[a] {
 			c[stopKind(r)]++
 		}
-		row := "| " + a + " |"
+		var row strings.Builder
+		row.WriteString("| " + a + " |")
 		for _, k := range ks {
-			row += fmt.Sprintf(" %d |", c[k])
+			row.WriteString(fmt.Sprintf(" %d |", c[k]))
 		}
-		fmt.Fprintln(w, row)
+		fmt.Fprintln(w, row.String())
 	}
 	fmt.Fprintln(w)
 }

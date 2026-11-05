@@ -38,7 +38,7 @@ func currentSymbolTurn(t *testing.T, on bool, edits int) (int32, string) {
 	t.Helper()
 	const wrong = `{"path":"a.go","old_string":"return 1;","new_string":"return 2"}`
 	replies := []goinfertest.Reply{goinfertest.Calls("", "r0", "read", `{"path":"a.go"}`)}
-	for i := 0; i < edits; i++ {
+	for i := range edits {
 		if i > 0 {
 			replies = append(replies, goinfertest.Calls("", "r", "read", `{"path":"a.go"}`))
 		}
@@ -107,7 +107,7 @@ func TestLazySpansKeepsAFailedOpen(t *testing.T) {
 		opens++
 		return nil, os.ErrNotExist
 	}}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := l.SymbolAt(context.Background(), "a.go", 1); err != os.ErrNotExist {
 			t.Fatalf("call %d: %v", i, err)
 		}

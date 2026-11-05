@@ -25,7 +25,7 @@ func TestIdentifiers(t *testing.T) {
 func TestPack(t *testing.T) {
 	root := t.TempDir()
 	var b strings.Builder
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		b.WriteString("abcdefghijklmnopqrstuvwxyz\n") // 27 bytes a line, 9 tokens
 	}
 	os.WriteFile(filepath.Join(root, "a.go"), []byte(b.String()), 0o644)

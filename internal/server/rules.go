@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // Validate enforces the Messages API's message-structure rules on a request before it is sent (DESIGN §6.3).
@@ -97,10 +98,5 @@ func Validate(req Request) error {
 }
 
 func contains(s []string, x string) bool {
-	for _, v := range s {
-		if v == x {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, x)
 }

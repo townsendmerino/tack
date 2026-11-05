@@ -56,7 +56,7 @@ func TestEditRunInTheSandbox(t *testing.T) {
 	}
 	results := map[string]proto.ToolFinished{}
 	stop := ""
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
 		var ev proto.Event
 		if json.Unmarshal([]byte(line), &ev) != nil {
 			continue
@@ -215,7 +215,7 @@ func TestSnapshotsInTheSandbox(t *testing.T) {
 	var session string
 	var seq int64
 	results := map[string]proto.ToolFinished{}
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
 		var ev proto.Event
 		if json.Unmarshal([]byte(line), &ev) != nil {
 			continue

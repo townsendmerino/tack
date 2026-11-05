@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -147,9 +148,7 @@ func (s *Searcher) Sync(ctx context.Context, paths []string) (bool, error) {
 		return false, err
 	}
 	s.mu.Lock()
-	for p, st := range states {
-		s.synced[p] = st
-	}
+	maps.Copy(s.synced, states)
 	s.mu.Unlock()
 	return true, nil
 }

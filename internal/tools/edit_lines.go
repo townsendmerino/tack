@@ -102,7 +102,7 @@ func (t editTool) byLines(ctx context.Context, ws *Workspace, given string, star
 		return errorf("lines %d-%d of %q are not what you read there: the file has changed since, and an edit above them "+
 			"moves them. Read them again", start, end, given)
 	}
-	for _, l := range strings.Split(strings.TrimSuffix(old, "\n"), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSuffix(old, "\n"), "\n") {
 		if cut(l) != l {
 			return errorf("lines %d-%d of %q hold a line longer than read shows whole; change it with old_string", start, end, given)
 		}

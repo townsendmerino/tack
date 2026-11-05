@@ -49,7 +49,7 @@ func StubCheck(ctx context.Context, r Repo, c Candidate, oracle []string, work s
 	if err != nil {
 		return fail("diff: %v", err)
 	}
-	for _, f := range strings.Fields(names) {
+	for f := range strings.FieldsSeq(names) {
 		if !isNonTestGo(f) {
 			continue
 		}
@@ -269,7 +269,7 @@ func packageNames(dir string, paths []string) map[string]string {
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "CGO_ENABLED=0")
 	out, _ := cmd.Output()
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if p, n, ok := strings.Cut(line, " "); ok && n != "" {
 			names[p] = n
 		}

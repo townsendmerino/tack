@@ -203,7 +203,7 @@ func TestRepeatRuleSeesTheFileChange(t *testing.T) {
 	grow := `{"path":"a.go","old_string":"package a","new_string":"package a\n// grown"}`
 	fail := `{"path":"b.go","old_string":"package zzz","new_string":"package b"}`
 	script := []goinfertest.Reply{goinfertest.Calls("", "r0", "read", `{"path":"a.go"}`, "r1", "read", `{"path":"b.go"}`)}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		script = append(script, goinfertest.Calls("", fmt.Sprintf("g%d", i), "edit", grow))
 	}
 	for i := 3; i < 15; i++ { // from the fifth request, the growing edit and the failing one

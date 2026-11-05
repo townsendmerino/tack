@@ -1369,7 +1369,7 @@ func TestASpecialFileInTheWay(t *testing.T) {
 			}
 			mkfifo(t, root, c.at)
 			after := capture(t, root)
-			name := strings.SplitN(c.at, "/", 2)[0] // what stands in the way is the directory, when the FIFO is inside one
+			name, _, _ := strings.Cut(c.at, "/") // what stands in the way is the directory, when the FIFO is inside one
 			if c.at == "empty/inner" {
 				name = c.at
 			}

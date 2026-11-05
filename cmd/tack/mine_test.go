@@ -58,7 +58,7 @@ func TestMineChooseHonoursTheCommittedPilot(t *testing.T) {
 		return mine.Candidate{Repo: "r", Commit: commit, Verified: &mine.Verified{OK: true, Stub: &mine.Stub{Funcs: []string{"f"}}}}
 	}
 	var verified []mine.Candidate
-	for i := 0; i < 14; i++ {
+	for i := range 14 {
 		verified = append(verified, ok(strings.Repeat(string(rune('a'+i)), 40)))
 	}
 	writeJSONL(filepath.Join(out, "verified.jsonl"), verified...)

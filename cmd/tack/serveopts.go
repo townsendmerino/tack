@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,10 +35,8 @@ func (l *serveOptionList) Set(v string) error {
 		sort.Strings(names)
 		return fmt.Errorf("goinfer-serve option %q is not passed through; allowed: %s", v, strings.Join(names, ", "))
 	}
-	for _, o := range *l {
-		if o == v {
-			return nil
-		}
+	if slices.Contains(*l, v) {
+		return nil
 	}
 	*l = append(*l, v)
 	return nil
@@ -64,10 +63,8 @@ func (l *settingList) Set(v string) error {
 	if !pilot.RunSettings[v] {
 		return fmt.Errorf("[run] setting %q is not one an arm may switch on; allowed: %s", v, settingNames())
 	}
-	for _, s := range *l {
-		if s == v {
-			return nil
-		}
+	if slices.Contains(*l, v) {
+		return nil
 	}
 	*l = append(*l, v)
 	return nil

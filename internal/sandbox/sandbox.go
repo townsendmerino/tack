@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -196,8 +197,8 @@ func resolve(p string) string {
 	var rest []string
 	for d := p; ; d = filepath.Dir(d) {
 		if r, err := filepath.EvalSymlinks(d); err == nil {
-			for i := len(rest) - 1; i >= 0; i-- {
-				r = filepath.Join(r, rest[i])
+			for _, r0 := range slices.Backward(rest) {
+				r = filepath.Join(r, r0)
 			}
 			return r
 		}

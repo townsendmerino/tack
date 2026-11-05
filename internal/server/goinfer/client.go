@@ -84,8 +84,6 @@ type wireRequest struct {
 	Stream      bool          `json:"stream,omitempty"`
 }
 
-func str(s string) *string { return &s }
-
 func toWire(req server.Request, stream bool) wireRequest {
 	w := wireRequest{Model: req.Model, MaxTokens: req.MaxTokens, System: req.System, Tools: req.Tools,
 		Temperature: req.Temperature, TopP: req.TopP, TopK: req.TopK, Stream: stream}
@@ -103,15 +101,15 @@ func toWire(req server.Request, stream bool) wireRequest {
 			wb := wireBlock{Type: b.Type}
 			switch b.Type {
 			case "text":
-				wb.Text = str(b.Text)
+				wb.Text = new(b.Text)
 			case "thinking":
-				wb.Thinking, wb.Signature = str(b.Thinking), str(b.Signature)
+				wb.Thinking, wb.Signature = new(b.Thinking), new(b.Signature)
 			case "redacted_thinking":
 				wb.Data = b.Data
 			case "tool_use":
 				wb.ID, wb.Name, wb.Input = b.ID, b.Name, b.Input
 			case "tool_result":
-				wb.ToolUseID, wb.Content, wb.IsError = b.ToolUseID, str(b.Result), b.IsError
+				wb.ToolUseID, wb.Content, wb.IsError = b.ToolUseID, new(b.Result), b.IsError
 			}
 			wm.Content = append(wm.Content, wb)
 		}

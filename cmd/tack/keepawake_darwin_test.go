@@ -22,9 +22,9 @@ func TestKeepAwakeHoldsIdleSleepOff(t *testing.T) {
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 	want := fmt.Sprintf("pid %d(caffeinate)", cmd.Process.Pid)
 	var out []byte
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		out, _ = exec.Command("pmset", "-g", "assertions").Output()
-		for _, l := range strings.Split(string(out), "\n") {
+		for l := range strings.SplitSeq(string(out), "\n") {
 			if strings.Contains(l, want) && strings.Contains(l, "PreventUserIdleSystemSleep") {
 				return
 			}

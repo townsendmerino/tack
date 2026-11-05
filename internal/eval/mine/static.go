@@ -80,7 +80,7 @@ func subModules(r Repo) ([]string, error) {
 		return nil, err
 	}
 	var dirs []string
-	for _, f := range strings.Split(out, "\n") {
+	for f := range strings.SplitSeq(out, "\n") {
 		if path.Base(f) == "go.mod" && path.Dir(f) != "." {
 			dirs = append(dirs, path.Dir(f)+"/")
 		}
@@ -121,7 +121,7 @@ func Static(r Repo) ([]Candidate, Stats, error) {
 		return nil, st, err
 	}
 	var out []Candidate
-	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(log), "\n") {
 		f := strings.SplitN(line, "\x00", 3)
 		if len(f) != 3 {
 			continue
@@ -158,7 +158,7 @@ func check(r Repo, subs []string, commit, parent, subject string) (Candidate, bo
 	}
 	c := Candidate{Repo: r.Name, Commit: commit, Base: parent, Subject: subject}
 	var nonTest, testFiles []string
-	for _, l := range strings.Split(strings.TrimSpace(ns), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(ns), "\n") {
 		fs := strings.Fields(l)
 		if len(fs) != 3 {
 			continue
@@ -326,7 +326,7 @@ func bigTestdata(r Repo, commit, pkg string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		fs := strings.Fields(l)
 		if len(fs) >= 4 {
 			if size, err := strconv.Atoi(fs[3]); err == nil && size > maxTestdataSize {
@@ -371,7 +371,7 @@ func literalInFix(r Repo, parent, commit string, nonTest, literals []string) (st
 		return "", err
 	}
 	var added strings.Builder
-	for _, l := range strings.Split(diff, "\n") {
+	for l := range strings.SplitSeq(diff, "\n") {
 		if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++") {
 			added.WriteString(l[1:])
 			added.WriteByte('\n')

@@ -54,7 +54,7 @@ func TestBuildAfterEditInTheSandbox(t *testing.T) {
 		t.Fatalf("exit %d\nstderr: %s\nstdout: %s", code, stderr.String(), stdout.String())
 	}
 	results := map[string]proto.ToolFinished{}
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
 		var ev proto.Event
 		if json.Unmarshal([]byte(line), &ev) != nil {
 			continue

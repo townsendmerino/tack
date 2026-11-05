@@ -286,7 +286,7 @@ func TestOracleCheck(t *testing.T) {
 	}
 	b, _ := os.ReadFile(filepath.Join(out, "oracle-check.jsonl"))
 	var recs []CheckRecord
-	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 		var r CheckRecord
 		json.Unmarshal([]byte(l), &r)
 		recs = append(recs, r)

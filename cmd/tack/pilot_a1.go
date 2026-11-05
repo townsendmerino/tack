@@ -62,8 +62,7 @@ func pilotServeCmd(args []string, stdout, stderr io.Writer) int {
 	ps, err := startPilotServer(ctx, *serve, *modelPath, *ctxN, *out, opts, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot-serve:", err)
-		var void voidError
-		if errors.As(err, &void) {
+		if _, ok := errors.AsType[voidError](err); ok {
 			return exitError
 		}
 		if errors.Is(err, eval.ErrHeld) {

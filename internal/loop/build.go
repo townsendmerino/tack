@@ -92,7 +92,7 @@ func (s *Session) buildNote(ctx context.Context, input json.RawMessage) string {
 // mod's absolute path cut, the first BuildErrorLines of them, each cut at buildLineRunes.
 func buildErrors(shown, output, mod string) string {
 	var lines []string
-	for _, l := range strings.Split(output, "\n") {
+	for l := range strings.SplitSeq(output, "\n") {
 		if strings.TrimSpace(l) == "" || strings.HasPrefix(l, "# ") {
 			continue
 		}

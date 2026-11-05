@@ -297,7 +297,7 @@ func TestCompactAtCliffReactsWhenStuck(t *testing.T) {
 		replies = append(replies, grep(fmt.Sprintf("g%d", i+1), p))
 	}
 	reads := func(tag string) {
-		for i := 0; i < 9; i++ {
+		for i := range 9 {
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("%s%d", tag, i), "read", bigRead))
 		}
 	}
@@ -335,7 +335,7 @@ func TestCompactAtCliffReactsWhenStuck(t *testing.T) {
 func TestCompactAtCliffKeepsTheRepeatRuleAwayFromTheCliff(t *testing.T) {
 	var replies []goinfertest.Reply
 	replies = append(replies, goinfertest.Calls("", "g0", "grep", `{"pattern":"line 00"}`)) // old and large: stubbable if it compacted
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"small.txt","offset":1,"limit":3}`))
 	}
 	h := cliffHarness(t, true, replies...)
@@ -355,10 +355,10 @@ func TestCompactAtCliffKeepsTheRepeatRuleAwayFromTheCliff(t *testing.T) {
 func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		replies := []goinfertest.Reply{}
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 		}
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"^hit ","path":"hits.txt"}`))
 		}
 		replies = append(replies, goinfertest.Says("ok"))
@@ -401,7 +401,7 @@ func TestCompactAtCliffWidensARepeatedCall(t *testing.T) {
 // three times shows 200, 600, then all 700 lines.
 func TestCompactAtCliffWidensAlone(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 	}
 	replies = append(replies, goinfertest.Says("ok"))
@@ -436,10 +436,10 @@ func callsAt(prompt int, calls ...string) goinfertest.Reply {
 // the turn ends with repeat_loop, and no stuck compaction runs, though old greps (requests 5 and 6) are there to stub.
 func TestCompactAtCliffEndsOnAnyLoopAwayFromTheCliff(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 6; i++ { // requests 1-6: the cliff stubs 1-4; 5 and 6 are left for a stuck compaction
+	for i := range 6 { // requests 1-6: the cliff stubs 1-4; 5 and 6 are left for a stuck compaction
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", fmt.Sprintf(`{"pattern":"line 0%d"}`, i)))
 	}
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("b%d", i), "read", bigRead,
 			fmt.Sprintf("s%d", i), "read", `{"path":"small.txt","offset":1,"limit":3}`))
 	}
@@ -465,7 +465,7 @@ func TestCompactAtCliffEndsOnAnyLoopAwayFromTheCliff(t *testing.T) {
 // nothing, and the one at the limit is a cliff compaction of the grep.
 func TestCompactAtCliffRunsTheCliffFirst(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 9; i++ {
+	for i := range 9 {
 		calls := []string{fmt.Sprintf("b%d", i), "read", bigRead}
 		if i == 5 {
 			calls = append(calls, "g5", "grep", `{"pattern":"line 00"}`)
@@ -528,10 +528,10 @@ func TestCompactAtCliffShownResultStartsTheCountAgain(t *testing.T) {
 	const window = 100_000
 	read := `{"path":"small.txt","offset":1,"limit":40}`
 	var replies []goinfertest.Reply
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		replies = append(replies, callsAt(window-300, fmt.Sprintf("n%d", i), "read", read))
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
 	}
 	replies = append(replies, goinfertest.Says("ok"))
@@ -570,7 +570,7 @@ func TestCompactAtCliffWideningStartsAfterTheNote(t *testing.T) {
 	}
 	run := func(first int) *harness {
 		replies := []goinfertest.Reply{callsAt(first, "n0", "read", read)}
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			replies = append(replies, callsAt(100, fmt.Sprintf("s%d", i), "read", read))
 		}
 		replies = append(replies, goinfertest.Says("ok"))
@@ -604,7 +604,7 @@ func TestCompactAtCliffWideningStartsAfterTheNote(t *testing.T) {
 // turn's first request.
 func TestCompactAtCliffNoteDoesNotCrossTurns(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", fmt.Sprintf(`{"pattern":"line 0%d"}`, i)))
 	}
 	replies = append(replies, goinfertest.Calls("", "b0", "read", bigRead), goinfertest.Says("ok"))
@@ -630,7 +630,7 @@ func TestCompactAtCliffNoteDoesNotCrossTurns(t *testing.T) {
 func TestCompactAtCliffRepeatRuleStillEndsAWidenedLoop(t *testing.T) {
 	for on, want := range map[bool]int{true: 11, false: 9} {
 		var replies []goinfertest.Reply
-		for i := 0; i < 12; i++ {
+		for i := range 12 {
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 		}
 		h := cliffHarness(t, on, replies...)
@@ -653,7 +653,7 @@ func TestCompactAtCliffRepeatRuleStillEndsAWidenedLoop(t *testing.T) {
 // 700-line file is cut, and the stored whole output of each (its blob) stays 200 lines rather than widening.
 func TestCompactAtCliffCutResultEndsTheChain(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 	}
 	replies = append(replies, goinfertest.Says("ok"))
@@ -691,7 +691,7 @@ func wideFile(h *harness) {
 // unchanged repeat at 200 (the 11th call) ends the turn with repeat_loop.
 func TestCompactAtCliffChainFreezesOnACut(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 14; i++ {
+	for i := range 14 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 	}
 	h := cliffHarness(t, true, replies...)
@@ -722,10 +722,10 @@ func TestCompactAtCliffCompactionClearsTheChain(t *testing.T) {
 	read := `{"path":"wide.txt"}`
 	run := func(gap int) (r2Masked bool, r2Lines, r3Lines int) {
 		var replies []goinfertest.Reply
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			replies = append(replies, callsAt(100, fmt.Sprintf("r%d", i), "read", read))
 		}
-		for i := 0; i < gap; i++ {
+		for i := range gap {
 			replies = append(replies, callsAt(100, fmt.Sprintf("g%d", i), "glob", `{"pattern":"*.txt"}`))
 		}
 		replies = append(replies, callsAt(window-300, "b0", "read", bigRead), callsAt(100, "r3", "read", read), goinfertest.Says("ok"))
@@ -831,7 +831,7 @@ func TestCompactAtCliffCutWideReadCoversTheBase(t *testing.T) {
 // shows 200 lines each time.
 func TestCompactAtCliffAloneDoesNotWiden(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		replies = append(replies, goinfertest.Calls("", fmt.Sprintf("r%d", i), "read", `{"path":"wide.txt"}`))
 	}
 	replies = append(replies, goinfertest.Says("ok"))

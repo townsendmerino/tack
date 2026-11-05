@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // A file's contents being durable is not enough: after power loss, a new file or a renamed blob is only reachable if
@@ -38,11 +39,11 @@ func mkdirAllSynced(path string, perm os.FileMode) error {
 			break
 		}
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		if err := os.Mkdir(missing[i], perm); err != nil && !os.IsExist(err) {
+	for _, m := range slices.Backward(missing) {
+		if err := os.Mkdir(m, perm); err != nil && !os.IsExist(err) {
 			return err
 		}
-		if err := syncDir(filepath.Dir(missing[i])); err != nil {
+		if err := syncDir(filepath.Dir(m)); err != nil {
 			return err
 		}
 	}

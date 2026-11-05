@@ -64,7 +64,7 @@ func scratchRepo(t *testing.T) Repo {
 
 	var big strings.Builder
 	big.WriteString("package calc\n\n")
-	for i := 0; i < 90; i++ {
+	for i := range 90 {
 		fmt.Fprintf(&big, "func F%d() int { return %d }\n", i, i)
 	}
 	write("calc/big.go", big.String())
@@ -140,7 +140,7 @@ func TestStaticAndVerify(t *testing.T) {
 
 func TestChooseIsFixedDisjointAndCapped(t *testing.T) {
 	var cs []Candidate
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		repo := []string{"goinfer", "ken", "aikit"}[i%3]
 		if i < 30 {
 			repo = "goinfer" // most candidates in one repo, so the cap bites

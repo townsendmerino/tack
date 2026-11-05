@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -149,8 +149,7 @@ type field struct {
 
 func fields(t reflect.Type) []field {
 	var out []field
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		tag := f.Tag.Get("json")
 		if !f.IsExported() || tag == "-" {
 			continue
@@ -288,7 +287,7 @@ func sortedKeys[K ~string, V any](m map[K]V) []K {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

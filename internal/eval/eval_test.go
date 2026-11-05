@@ -86,7 +86,7 @@ func fakeServe(args []string) {
 		if len(req.Tools) > 0 && req.MaxTokens > ttftMaxTokens && !strings.Contains(text, "tool") { // the smoke, not the first-token probe
 			// grep for the prompt's first capitalised or path-like word: right for some tasks, wrong for others.
 			word := "x"
-			for _, f := range strings.Fields(text) {
+			for f := range strings.FieldsSeq(text) {
 				if strings.ContainsAny(f, "ABCDEFGHIJKLMNOPQRSTUVWXYZ./_") && f != "Repository:" {
 					word = strings.Trim(f, "?.,")
 					break
@@ -306,7 +306,7 @@ func TestRunEndToEnd(t *testing.T) {
 		TTFTMS                    *int64 `json:"ttft_ms"`
 	}
 	byPhase := map[string][]rec{}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		var r rec
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatalf("%v: %s", err, line)

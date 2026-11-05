@@ -84,7 +84,7 @@ func fixHunks(mirrors, repo, base, commit string) map[string][][2]int {
 	out, _ := exec.Command("git", "--git-dir", filepath.Join(mirrors, repo+".git"), "diff", "-U0", base, commit).Output()
 	h := map[string][][2]int{}
 	file := ""
-	for _, l := range strings.Split(string(out), "\n") {
+	for l := range strings.SplitSeq(string(out), "\n") {
 		switch {
 		case strings.HasPrefix(l, "+++ b/"):
 			file = strings.TrimPrefix(l, "+++ b/")

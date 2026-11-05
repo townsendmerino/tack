@@ -308,7 +308,7 @@ func (w *Workspace) scrub(s string) string {
 // inGit reports whether abs is inside a .git directory, in any letter case, since macOS's file system ignores it: tools
 // never write there (DESIGN §6.6).
 func inGit(w *Workspace, abs string) bool {
-	for _, seg := range strings.Split(w.Rel(abs), "/") {
+	for seg := range strings.SplitSeq(w.Rel(abs), "/") {
 		if strings.EqualFold(seg, ".git") {
 			return true
 		}

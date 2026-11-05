@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,13 +131,14 @@ func Summarize(w io.Writer, name string, results []ArmResult) int {
 		cells = append(cells, c)
 	}
 	rep := gate.Reconcile(cells)
-	msg := fmt.Sprintf("%s: %d of %d arms measured or fell back as expected", name, rep.Pass, len(results))
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("%s: %d of %d arms measured or fell back as expected", name, rep.Pass, len(results)))
 	for _, v := range []string{"void", "unexpected"} {
 		if len(flagged[v]) > 0 {
-			msg += fmt.Sprintf("; %s: %s", v, strings.Join(flagged[v], ", "))
+			msg.WriteString(fmt.Sprintf("; %s: %s", v, strings.Join(flagged[v], ", ")))
 		}
 	}
-	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg))
+	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg.String()))
 	return rep.Exit
 }
 
@@ -156,9 +158,7 @@ func (r *runner) logf(format string, args ...any) {
 func (r *runner) record(arm Arm, phase string, fields map[string]any) {
 	rec := map[string]any{"box": r.o.Manifest.Box, "arm": arm.Name, "model_path": arm.ModelPath, "phase": phase,
 		"at": time.Now().UTC().Format(time.RFC3339), "tack": r.o.TackRev, "goinfer": r.o.Manifest.GoinferRev}
-	for k, v := range fields {
-		rec[k] = v
-	}
+	maps.Copy(rec, fields)
 	b, _ := json.Marshal(rec)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -372,7 +372,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	var unstable []int
 	phase("smoke", 2*len(SmokeTasks), func() {
 		first := make([]bool, len(SmokeTasks))
-		for run := 0; run < 2; run++ {
+		for run := range 2 {
 			for i := range SmokeTasks {
 				res, err := r.smokeOne(ctx, srv, arm, i)
 				p.step()
@@ -430,7 +430,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	})
 	phase("decode", 3, func() {
 		var rates []float64
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			s, err := decodeOnce(ctx, srv, arm.Name, arm.ProbeThinking)
 			p.step()
 			f := map[string]any{"rep": i + 1, "tok_per_s": s.Rate, "tokens": s.Tokens, "text_chars": s.TextChars,
@@ -487,8 +487,7 @@ func (r *runner) serveCheck(ctx context.Context, url, key, model string) (string
 	cmd := exec.CommandContext(cctx, r.o.Manifest.GoinferServe, "check", "-api-key", key, "-model", model, url)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			return string(out), ee.ExitCode()
 		}
 		return string(out) + "\n" + err.Error(), -1

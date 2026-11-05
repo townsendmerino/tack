@@ -19,7 +19,7 @@ import (
 // cell keeps its single rewritten message.
 func TestTTFTAppendCellAppends(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < ttftRequests; i++ {
+	for range ttftRequests {
 		replies = append(replies, goinfertest.Says("w"))
 	}
 	script := goinfertest.NewScripted("m", 8192, replies...)
@@ -59,7 +59,7 @@ func TestTTFTAppendCellAppends(t *testing.T) {
 		}
 	}
 	cells := map[string]int{}
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		var rec struct{ Cell string }
 		json.Unmarshal([]byte(line), &rec)
 		cells[rec.Cell]++

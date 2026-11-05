@@ -475,7 +475,7 @@ func collectResultFiles(scanDir, jobsFile string, args []string, includeSupersed
 		if err != nil {
 			return nil, err
 		}
-		for _, line := range strings.Split(string(b), "\n") {
+		for line := range strings.SplitSeq(string(b), "\n") {
 			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
 				out = append(out, line)
 			}

@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -136,7 +137,7 @@ func run(serve, model, backend, dir string, n int) error {
 	times := make([][]time.Duration, len(methods))
 	during := 0
 	t0 := time.Now()
-	for i := 0; i < n; i++ {
+	for range n {
 		for m := range methods {
 			if _, err := f.Write(rec); err != nil {
 				return err
@@ -159,7 +160,7 @@ func run(serve, model, backend, dir string, n int) error {
 		elapsed.Round(time.Millisecond), during, n*len(methods))
 	rows := []map[string]any{}
 	for m, ts := range times {
-		sort.Slice(ts, func(i, j int) bool { return ts[i] < ts[j] })
+		slices.Sort(ts)
 		q := func(p float64) time.Duration { return ts[int(p*float64(len(ts)-1))].Round(time.Microsecond) }
 		fmt.Printf("%-24s p50 %-10s p99 %-10s max %s\n", methods[m].name, q(0.50), q(0.99), ts[len(ts)-1].Round(time.Microsecond))
 		rows = append(rows, map[string]any{"method": methods[m].name, "p50_us": q(0.50).Microseconds(),

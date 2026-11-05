@@ -677,7 +677,7 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Recor
 	if o.A1 != "" {
 		// A remote server's log arrives over ssh: wait, briefly, for its lines to catch up with the capture.
 		reqDir := filepath.Join(dir, "requests")
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			if timed, err := PairTimings(rec.Requests, reqDir); err == nil {
 				rec.Timed = timed
 				break

@@ -111,7 +111,7 @@ func TestRunUsage(t *testing.T) {
 func TestRunFitWindowReachesTheLoop(t *testing.T) {
 	ws := t.TempDir()
 	var big strings.Builder
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		big.WriteString("a line of a long file, long enough to count\n")
 	}
 	if err := os.WriteFile(filepath.Join(ws, "big.txt"), []byte(big.String()), 0o644); err != nil {
@@ -136,7 +136,7 @@ func TestRunFitWindowReachesTheLoop(t *testing.T) {
 		if code := dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "read big.txt"}, &stdout, &stderr); code != exitOK {
 			t.Fatalf("fit_window %v: exit %d: %s", fit, code, stderr.String())
 		}
-		for _, l := range strings.Split(stdout.String(), "\n") {
+		for l := range strings.SplitSeq(stdout.String(), "\n") {
 			if strings.Contains(l, `"type":"tool.finished"`) {
 				return l
 			}
@@ -197,7 +197,7 @@ func replayMatchesLive(t *testing.T, notes bool) {
 	run := func(on bool) string {
 		t.Helper()
 		replies := []goinfertest.Reply{goinfertest.Calls("", "r0", "read", `{"path":"a.go"}`)}
-		for i := 0; i < 12; i++ { // two calls a response: one repeats unchanged, one varies
+		for i := range 12 { // two calls a response: one repeats unchanged, one varies
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"nothing matches this"}`,
 				fmt.Sprintf("v%d", i), "glob", fmt.Sprintf(`{"pattern":"*%d.go"}`, i)))
 		}
@@ -297,7 +297,7 @@ func TestRunInstructionsHead(t *testing.T) {
 	if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	first := strings.SplitN(stdout.String(), "\n", 2)[0]
+	first, _, _ := strings.Cut(stdout.String(), "\n")
 	if !strings.Contains(first, "Stage explicit paths.") || strings.Contains(first, "Run the canary.") || !strings.Contains(first, "## Tests") {
 		t.Fatalf("the first message is not the head: %s", first)
 	}
@@ -339,7 +339,7 @@ func TestRunInjectContext(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		first, _, _ := strings.Cut(stdout.String(), "\n")
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}
@@ -381,7 +381,7 @@ func TestRunRepoMap(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		first, _, _ := strings.Cut(stdout.String(), "\n")
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}

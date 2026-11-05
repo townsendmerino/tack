@@ -12,7 +12,7 @@ import (
 func TestRepeatGuardStopsAtTheLimit(t *testing.T) {
 	var g RepeatGuard
 	k := CallKey("grep", json.RawMessage(`{"pattern":"x","path":"."}`))
-	for i := 0; i < RepeatLimit; i++ { // the first call and RepeatLimit-1 repeats
+	for i := range RepeatLimit { // the first call and RepeatLimit-1 repeats
 		if n, stop := g.Observe(k, "no matches"); stop || n != i {
 			t.Fatalf("call %d: repeats %d, stop %v", i+1, n, stop)
 		}
@@ -26,7 +26,7 @@ func TestRepeatGuardCountsOnlyUnchangedResults(t *testing.T) {
 	var g RepeatGuard
 	k, other := CallKey("read", json.RawMessage(`{"path":"a"}`)), CallKey("edit", json.RawMessage(`{"path":"a"}`))
 	g.Observe(k, "v1")
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		g.Observe(k, "v1")
 		g.Observe(other, "ok") // calls in between do not reset k's count
 	}

@@ -10,7 +10,7 @@ import (
 
 func TestValidate(t *testing.T) {
 	use := func(id string) Block {
-		return Block{ModelBlock: proto.ModelBlock{Type: "tool_use", ID: id, Name: "read", Input: json.RawMessage(`{}`)}}
+		return Block{Type: "tool_use", ID: id, Name: "read", Input: json.RawMessage(`{}`)}
 	}
 	u := func(bs ...Block) Message { return Message{Role: User, Content: bs} }
 	a := func(bs ...Block) Message { return Message{Role: Assistant, Content: bs} }
