@@ -19,7 +19,7 @@ import (
 // cell keeps its single rewritten message.
 func TestTTFTAppendCellAppends(t *testing.T) {
 	var replies []goinfertest.Reply
-	for i := 0; i < ttftRequests; i++ {
+	for range ttftRequests {
 		replies = append(replies, goinfertest.Says("w"))
 	}
 	script := goinfertest.NewScripted("m", 8192, replies...)

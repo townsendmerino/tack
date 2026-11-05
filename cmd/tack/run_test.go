@@ -111,7 +111,7 @@ func TestRunUsage(t *testing.T) {
 func TestRunFitWindowReachesTheLoop(t *testing.T) {
 	ws := t.TempDir()
 	var big strings.Builder
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		big.WriteString("a line of a long file, long enough to count\n")
 	}
 	if err := os.WriteFile(filepath.Join(ws, "big.txt"), []byte(big.String()), 0o644); err != nil {
@@ -197,7 +197,7 @@ func replayMatchesLive(t *testing.T, notes bool) {
 	run := func(on bool) string {
 		t.Helper()
 		replies := []goinfertest.Reply{goinfertest.Calls("", "r0", "read", `{"path":"a.go"}`)}
-		for i := 0; i < 12; i++ { // two calls a response: one repeats unchanged, one varies
+		for i := range 12 { // two calls a response: one repeats unchanged, one varies
 			replies = append(replies, goinfertest.Calls("", fmt.Sprintf("g%d", i), "grep", `{"pattern":"nothing matches this"}`,
 				fmt.Sprintf("v%d", i), "glob", fmt.Sprintf(`{"pattern":"*%d.go"}`, i)))
 		}

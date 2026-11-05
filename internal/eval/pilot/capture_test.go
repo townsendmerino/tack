@@ -178,7 +178,7 @@ func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
 			}
 			return 0
 		}
-		for i := 0; i < requests; i++ {
+		for range requests {
 			post()
 		}
 		return c.Slept()

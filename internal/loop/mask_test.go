@@ -362,7 +362,7 @@ func TestShownChain(t *testing.T) {
 	f := shownChain{}
 	f.record("k", "A", 0, true)
 	f.record("k", "A", 1, false) // cut at 1: freeze at 0
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		f.record("k", "A", f.level("k"), i%2 == 0)
 		if f.level("k") != 0 {
 			t.Fatalf("after a cut at 1, repeat %d: level %d, want frozen at 0", i, f.level("k"))

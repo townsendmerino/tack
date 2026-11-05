@@ -129,7 +129,7 @@ func TestPrepareRepoReachesNoLaterCommit(t *testing.T) {
 	}
 	gitDo(src, "init", "-q", "-b", "main")
 	var shas []string
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		os.WriteFile(filepath.Join(src, "f.txt"), []byte(fmt.Sprint(i)), 0o644)
 		gitDo(src, "add", "f.txt")
 		gitDo(src, "commit", "-q", "-m", fmt.Sprint("c", i))

@@ -441,7 +441,7 @@ func TestEditBySymbolRefusesWhatSymbolCannotShowWhole(t *testing.T) {
 	ws, _, _ := symbolWorkspace(t)
 	var long strings.Builder
 	long.WriteString("package pull\n\nfunc Long() {\n")
-	for i := 0; i < readMaxLines; i++ {
+	for range readMaxLines {
 		long.WriteString("\tx()\n")
 	}
 	long.WriteString("}\n\nfunc Wide() {\n\ty := \"" + strings.Repeat("w", maxLineRunes) + "\"\n}\n")

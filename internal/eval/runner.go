@@ -371,7 +371,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	var unstable []int
 	phase("smoke", 2*len(SmokeTasks), func() {
 		first := make([]bool, len(SmokeTasks))
-		for run := 0; run < 2; run++ {
+		for run := range 2 {
 			for i := range SmokeTasks {
 				res, err := r.smokeOne(ctx, srv, arm, i)
 				p.step()
@@ -429,7 +429,7 @@ func (r *runner) arm(ctx context.Context, arm Arm) (res ArmResult) {
 	})
 	phase("decode", 3, func() {
 		var rates []float64
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			s, err := decodeOnce(ctx, srv, arm.Name, arm.ProbeThinking)
 			p.step()
 			f := map[string]any{"rep": i + 1, "tok_per_s": s.Rate, "tokens": s.Tokens, "text_chars": s.TextChars,

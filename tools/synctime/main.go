@@ -136,7 +136,7 @@ func run(serve, model, backend, dir string, n int) error {
 	times := make([][]time.Duration, len(methods))
 	during := 0
 	t0 := time.Now()
-	for i := 0; i < n; i++ {
+	for range n {
 		for m := range methods {
 			if _, err := f.Write(rec); err != nil {
 				return err

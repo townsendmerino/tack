@@ -78,7 +78,7 @@ func Verify(ctx context.Context, r Repo, c Candidate, work string) Verified {
 	if err := checkout(work, c.Commit); err != nil {
 		return fail("checkout commit: %v", err)
 	}
-	for run := 0; run < 2; run++ { // rule 3
+	for run := range 2 { // rule 3
 		res, secs := RunTests(ctx, work, v.Oracle, c.Packages)
 		v.OnCommit[run], v.CommitSecs[run] = res, secs
 		for _, t := range v.Oracle {

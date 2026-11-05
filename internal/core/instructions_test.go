@@ -24,10 +24,10 @@ func TestInstructionHeadFirstSectionAndOutline(t *testing.T) {
 func TestInstructionHeadStaysUnderItsCap(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("# notes\n\n")
-	for i := 0; i < 400; i++ {
+	for range 400 {
 		b.WriteString("a long line of the first section, to fill it up\n")
 	}
-	for i := 0; i < 300; i++ {
+	for range 300 {
 		b.WriteString("\n## heading number " + strings.Repeat("x", 20) + "\n\nbody\n")
 	}
 	window := 4096 // cap: 614 tokens, 1,842 bytes
