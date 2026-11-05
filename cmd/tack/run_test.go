@@ -297,7 +297,7 @@ func TestRunInstructionsHead(t *testing.T) {
 	if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	first := strings.SplitN(stdout.String(), "\n", 2)[0]
+	first, _, _ := strings.Cut(stdout.String(), "\n")
 	if !strings.Contains(first, "Stage explicit paths.") || strings.Contains(first, "Run the canary.") || !strings.Contains(first, "## Tests") {
 		t.Fatalf("the first message is not the head: %s", first)
 	}
@@ -339,7 +339,7 @@ func TestRunInjectContext(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		first, _, _ := strings.Cut(stdout.String(), "\n")
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}
@@ -381,7 +381,7 @@ func TestRunRepoMap(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first := strings.SplitN(stdout.String(), "\n", 2)[0]
+		first, _, _ := strings.Cut(stdout.String(), "\n")
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}
