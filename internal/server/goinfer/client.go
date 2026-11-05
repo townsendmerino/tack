@@ -84,9 +84,6 @@ type wireRequest struct {
 	Stream      bool          `json:"stream,omitempty"`
 }
 
-//go:fix inline
-func str(s string) *string { return new(s) }
-
 func toWire(req server.Request, stream bool) wireRequest {
 	w := wireRequest{Model: req.Model, MaxTokens: req.MaxTokens, System: req.System, Tools: req.Tools,
 		Temperature: req.Temperature, TopP: req.TopP, TopK: req.TopK, Stream: stream}
