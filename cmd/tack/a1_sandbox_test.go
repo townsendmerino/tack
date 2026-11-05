@@ -170,9 +170,9 @@ func a1Task(t *testing.T, dep bool) (pilot.Task, string) {
 	if out, err := exec.Command("git", "clone", "-q", "--mirror", src, filepath.Join(mirrors, "m.git")).CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	task := pilot.Task{N: 1, Candidate: mine.Candidate{Repo: "m", Commit: commit, Base: base, Tests: []string{"TestAdd"},
+	task := pilot.Task{N: 1, Repo: "m", Commit: commit, Base: base, Tests: []string{"TestAdd"},
 		Packages: []string{"./calc"}, TestFiles: []string{"calc/calc_test.go"}, Statement: "Add subtracts; it should add.",
-		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}}
+		ReviewedBy: "owner", Verified: &mine.Verified{OK: true, Oracle: []string{"TestAdd"}}}
 	return task, mirrors
 }
 
