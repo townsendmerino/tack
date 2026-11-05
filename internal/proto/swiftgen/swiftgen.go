@@ -149,8 +149,8 @@ type field struct {
 
 func fields(t reflect.Type) []field {
 	var out []field
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
+		f := f
 		tag := f.Tag.Get("json")
 		if !f.IsExported() || tag == "-" {
 			continue
