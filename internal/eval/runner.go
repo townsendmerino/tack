@@ -131,13 +131,14 @@ func Summarize(w io.Writer, name string, results []ArmResult) int {
 		cells = append(cells, c)
 	}
 	rep := gate.Reconcile(cells)
-	msg := fmt.Sprintf("%s: %d of %d arms measured or fell back as expected", name, rep.Pass, len(results))
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("%s: %d of %d arms measured or fell back as expected", name, rep.Pass, len(results)))
 	for _, v := range []string{"void", "unexpected"} {
 		if len(flagged[v]) > 0 {
-			msg += fmt.Sprintf("; %s: %s", v, strings.Join(flagged[v], ", "))
+			msg.WriteString(fmt.Sprintf("; %s: %s", v, strings.Join(flagged[v], ", ")))
 		}
 	}
-	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg))
+	fmt.Fprintln(w, gate.Verdict(rep.Outcome, msg.String()))
 	return rep.Exit
 }
 

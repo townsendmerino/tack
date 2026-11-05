@@ -2,6 +2,7 @@ package loop
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
@@ -32,11 +33,11 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 		}
 		switch p := v.(type) {
 		case proto.UserMessage:
-			text := ""
+			var text strings.Builder
 			for _, b := range p.Content {
-				text += b.Text
+				text.WriteString(b.Text)
 			}
-			if err := conv.BeginTurn(UserText(turns == 0, workspaceRoot, text), false); err != nil {
+			if err := conv.BeginTurn(UserText(turns == 0, workspaceRoot, text.String()), false); err != nil {
 				return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 			}
 			turns++
