@@ -148,3 +148,16 @@ func TestCheckGoLeavesNoBinary(t *testing.T) {
 		}
 	}
 }
+
+// The default limit is 3m, and 10m where the escape tests run (cmd/tack's take about the whole 3m on a Mac); one asked for is kept.
+func TestTestTimeout(t *testing.T) {
+	for _, c := range []struct {
+		asked   string
+		sandbox bool
+		want    string
+	}{{"", false, "3m"}, {"", true, "10m"}, {"90s", false, "90s"}, {"90s", true, "90s"}, {"20m", true, "20m"}} {
+		if got := testTimeout(c.asked, c.sandbox); got != c.want {
+			t.Errorf("asked %q sandbox %v: %q, want %q", c.asked, c.sandbox, got, c.want)
+		}
+	}
+}
