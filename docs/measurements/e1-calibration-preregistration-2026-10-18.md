@@ -2718,3 +2718,10 @@ Francis chose (a) and (b) at 13:47 (relayed by the coordinator): build lever 2 w
   - **Time:** about 4.5 to 5.5 hours, since `lean_results` runs took longer in §16.1 (B 246 min of runs, A 222).
 - **Outcome (read 2026-11-02; record `e1-calibration-c10-cliff-2026-11-02.md`): A 16 of 36, B 17 of 36, d = +1, against
   edges of 2 and 4. Not shown: the do-nothing arm A wins, and `compact_at_cliff` is not adopted.**
+
+## Note, 2026-11-04: runs from here on have snapshots on
+
+Francis decided (ADR-006) that E1 runs with `snapshots` on, as the released tack does. Runs from here on are **not directly
+comparable** with the snapshot-off runs of §12 to §16.2: commands a snapshot can undo no longer ask, and in these runs an ask was a
+refusal, so they see fewer permission questions. Of 1,207 recorded bash calls, 1 asked, so the effect on a pass count is expected to be
+small, but that is a prediction. Compare inside a period; across the two, say so. No registered rule changes.

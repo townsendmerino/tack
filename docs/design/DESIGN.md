@@ -854,8 +854,9 @@ tool-use smoke set compares this merged set against the split one before it is f
   only: refs, stashes and the index are not brought back. A staged file a command removed from the index comes back as a file, not
   as staged; that command asked no question only because the index matched HEAD. Without post-images it can't tell tack's changes from yours,
   so it lists them all.
-- **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it off, so its requests, wall time and
-  guard answers don't change; turning it on there is a decision for the owner.
+- **Settings.** `snapshots` (on) and `snapshot_max_bytes` in `[run]`. E1 runs with it on (ADR-006, Francis, 2026-11-04): the eval
+  matches what ships. Runs from here on see fewer permission questions than earlier, snapshot-off runs and aren't directly comparable with
+  them.
 - **Keeping the shadow small.** A checkpoint a command or a rewind last relied on over 7 days ago goes at the first snapshot of a session, and
   the least recently used go when the shadow passes twice the cap, so that second limit can take one sooner. A rewind to one that's gone says so.
 - **Checks.** Red first: a real `git reset --hard`, `rm -r` and `git clean -fdx` followed by a rewind, compared byte for
