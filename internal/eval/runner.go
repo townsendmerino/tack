@@ -487,8 +487,7 @@ func (r *runner) serveCheck(ctx context.Context, url, key, model string) (string
 	cmd := exec.CommandContext(cctx, r.o.Manifest.GoinferServe, "check", "-api-key", key, "-model", model, url)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			return string(out), ee.ExitCode()
 		}
 		return string(out) + "\n" + err.Error(), -1
