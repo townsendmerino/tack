@@ -273,7 +273,7 @@ func a1Run(t *testing.T, task pilot.Task, mirrors string, script *goinfertest.Sc
 func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 6; i++ { // done with nothing changed is refused once, then accepted
+	for range 6 { // done with nothing changed is refused once, then accepted
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
@@ -324,7 +324,7 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 4; i++ { // done with nothing changed is refused once, then accepted
+	for range 4 { // done with nothing changed is refused once, then accepted
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
@@ -358,7 +358,7 @@ func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 func TestA1LoneArmRepeatsWithSettings(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		replies = append(replies, goinfertest.Calls("", "d1", "done", `{"reason":"x"}`), goinfertest.Calls("", "d2", "done", `{"reason":"x"}`))
 	}
 	script := goinfertest.NewScripted("qwen", 32768, replies...)
