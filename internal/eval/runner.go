@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -156,9 +157,7 @@ func (r *runner) logf(format string, args ...any) {
 func (r *runner) record(arm Arm, phase string, fields map[string]any) {
 	rec := map[string]any{"box": r.o.Manifest.Box, "arm": arm.Name, "model_path": arm.ModelPath, "phase": phase,
 		"at": time.Now().UTC().Format(time.RFC3339), "tack": r.o.TackRev, "goinfer": r.o.Manifest.GoinferRev}
-	for k, v := range fields {
-		rec[k] = v
-	}
+	maps.Copy(rec, fields)
 	b, _ := json.Marshal(rec)
 	r.mu.Lock()
 	defer r.mu.Unlock()
