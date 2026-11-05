@@ -171,11 +171,12 @@ func TestTackLeftRepo(t *testing.T) {
 	}
 }
 
-// TestE1RunsWithoutSnapshots: every arm's config turns them off, so a run's requests, wall time and guard answers stay what they
-// were (DESIGN §6.8).
-func TestE1RunsWithoutSnapshots(t *testing.T) {
-	if !strings.Contains(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, t.TempDir()), "\nsnapshots = false\n") {
-		t.Error("the arm's config doesn't turn snapshots off")
+// TestE1RunsWithSnapshots: every arm's config turns them on, as the released tack has them (ADR-006, Francis, 2026-11-04). Runs from
+// here on are not directly comparable with earlier snapshot-off runs (DESIGN §6.8).
+func TestE1RunsWithSnapshots(t *testing.T) {
+	cfg := tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, t.TempDir())
+	if !strings.Contains(cfg, "\nsnapshots = true\n") || strings.Contains(cfg, "snapshots = false") {
+		t.Error("the arm's config doesn't turn snapshots on")
 	}
 }
 
