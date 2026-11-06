@@ -2725,3 +2725,60 @@ Francis decided (ADR-006) that E1 runs with `snapshots` on, as the released tack
 comparable** with the snapshot-off runs of §12 to §16.2: commands a snapshot can undo no longer ask, and in these runs an ask was a
 refusal, so they see fewer permission questions. Of 1,207 recorded bash calls, 1 asked, so the effect on a pass count is expected to be
 small, but that is a prediction. Compare inside a period; across the two, say so. No registered rule changes.
+
+## 17. Amendment C11: a one-night screen of the bundle on what ships — drafted 2026-11-05 for Francis, before any run
+
+**96 runs (48 per arm, 4 per task per arm), about 3.5 hours in one night (22:00 to about 01:30), on the Mac on AC.**
+**The smallest effect it can detect is about +10 points of pass rate (d ≈ +5 out of 48 each) at 80% power, which is about what
+§12.25 found (A 5.4%, B 15.5%).** It cannot see a smaller one, and it cannot show the bundle worse (below). Nothing is queued
+until Francis approves this section, and no second night without him saying so.
+
+- **The question.** Does the bundle still beat A1 on the tack that ships, with snapshots on (ADR-006)? §12.25 showed it with
+  snapshots off: A 9 of 168, B 26 of 168, d = +17, all on tasks 1 (+12), 11 (+3) and 12 (+2). Runs from here on are not directly
+  comparable with those (the Note above), so this is a screen on what ships, not a continuation.
+- **The arms, as §12.25's.** A is A1 with no `[run]` settings beyond the pilot's base config, which now has `snapshots = true`
+  (#71). B is A plus the seven of the bundle, passed as `-compare-setting`. So both arms have snapshots, and the one difference
+  between them is the bundle. Both: Qwen3-8B `Q4_K_M` at 16,384, thinking off, forced-call mode, sampling 0.7 / 0.8 / 20,
+  `max_tokens` 2048, failure budget 8, the 10-minute cap, the 12 tasks.
+- **Choices for Francis.** The model: Qwen3-8B is A1's, and the one §12.25's variance is for. The 35B's screens (§15, §16) all
+  start from the bundle, so they have no A1 arm to repeat. The server: goinfer `b2b5e816` on nobara, as §12.25.
+- **Build.** tack at a pinned build of `main`, from a `git archive` of the commit that merges this section and #71, built clean on
+  both machines. It differs from §12.25's `f5f7ecc` in the permission guard (#59 to #62), the `done` answer's test-change report
+  (#63), control characters escaped in tool output (§9.3), and snapshots with their `checkpoint` events (#65). None adds a byte to a
+  request except an escaped control character: the report is on the `done` that ends a turn, and no request follows it.
+- **Size and order.** The 12 tasks, 8 runs each, in pairs A B B A A B B A, each run after the cell check, and one fit-only load
+  before the night. 4 per task per arm is the fewest that gives 80% power at §12.25's effect, from its variance (below). A full
+  night of 168 runs (7 per task per arm, about 5.5 to 6 hours) has 93% power at that effect and 80% at +8.8 points. It is Francis's
+  choice, not this section's.
+- **The decision rule (§12.25's form).** d = B's passes − A's, out of 48 each.
+  - **sd = 2.00.** Under no effect d has variance 2 · 4 · Σ p(1−p), over §12.25's per-task pass rates, the two arms pooled: task 1
+    at 6/14, task 11 at 10.5/14, task 12 at 1/14, and zero for the other nine.
+
+| d (B − A, out of 48 each) | verdict |
+|---|---|
+| **+4 or more** (d ≥ 2 sd = 3.99) | **clearly better: the bundle stays** |
+| +2 to +3 (1 sd ≤ d < 2 sd) | parked: stop, and come back with whether a second night is worth it |
+| −1 to +1 | not shown: the bundle's benefit is not demonstrated, and it stays adopted (§12.25) until Francis decides |
+| −2 or less | parked on the low side: stop, report, and come back, as above |
+
+  - **"Clearly worse" cannot be reached at this size.** A passes about 2.6 of 48 here, nearly all on task 11, so d cannot fall to
+    −4 (2 sd) unless B passes none and A passes more than it did. A result at −2 or below is therefore reported and stops for Francis,
+    and the bundle is not dropped on it. Dropping it on one night would be dropping a +17 result at 336 runs on 96.
+  - **When the bundle does nothing:** shown by chance about 2%, parked about 14% (taking d as normal, which is rough at 48 runs).
+  - **Power, from §12.25's rates, shown at +4 or more:** 81% at §12.25's effect, about 20% at half of it. An effect that small is
+    missed, and the read says so.
+- **Void and stopping:** a void inside a run is re-run once in its place and listed (§12.25's rule (a)). A night that ends early (a
+  crash, the power, a lock) is not counted: it is listed, and the whole screen is re-run on a later night, only with Francis's say.
+  An arm short of 48 counted runs rate-scales d and its sd (§12.25's rule (b)). A snapshot unavailable (a cap, a nested repository) is
+  not a void: it is what ships, and it is reported.
+- **Predictions (tack's session, before any run),** from §12.25 and the recorded guard rate (1 of 1,207 bash calls asked): A passes 0
+  to 6 of 48 and B 3 to 13; d between +1 and +11; task 1 B at least 3 of 4 and A at most 1; task 11 A at least 2 of 4. Every run with
+  a bash call has a `checkpoint` event and none is unavailable (the repositories are 4, 47 and 307 MiB, under the 512 MiB cap).
+  Snapshots add under 10% to a run's wall time (estimated from §6.8's costs, not measured here).
+- **Reported, not decided on:** §12.25's list, and `checkpoint` events and their reasons, commands a snapshot let through, wall time
+  per run against §12.25's, and the `done` answers' test-change notes (#63). §12.25's runs appear task by task for context. They are not
+  pooled.
+- **The read:** `tools/calreport -rule sd=2.0,n=48`, with §12.25's two nights beside it as `-compare`.
+- **A second night.** If the result is parked, I come back with whether a second night is worth it, from the 96 runs' own spread
+  and the power of adding 96 more. It is not queued without Francis's decision, and how it combines with these runs is registered
+  before it runs.
