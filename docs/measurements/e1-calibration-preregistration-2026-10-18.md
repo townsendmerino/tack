@@ -2745,7 +2745,7 @@ section. The Mac is on AC until Monday 2026-11-09, so the earliest nights are 20
   `git archive` of the commit that merges this section and #71, built clean on both machines. It differs from §12.25's `f5f7ecc`
   in the permission guard (#59 to #62), the `done` answer's test-change report (#63), control characters escaped in tool output
   (§9.3), and snapshots with their `checkpoint` events (#65). None of these add a byte to a request except an escaped control
-  character and the report on the `done` that ends a turn.
+  character: the test-change report is on the `done` that ends a turn, and no request follows it.
 - **Size and order: 336 runs over two nights of 168**, 14 per task per arm as §12.25: A B B A A B B A A B B A A B, 7 per arm each
   night (`-reps 7`), each run after the cell check, and one fit-only load before night 1. Night 2 is queued after night 1 is
   checked for completion, void cells and harness errors only, with no passes tabulated between them.
