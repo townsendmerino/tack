@@ -253,7 +253,7 @@ func TestSnapshotsInTheSandbox(t *testing.T) {
 	}
 }
 
-// TestSnapshotsOffInTheSandbox: with snapshots = false, as E1 sets it, there's no checkpoint, the guard asks with nobody to answer,
+// TestSnapshotsOffInTheSandbox: with snapshots = false, there's no checkpoint, the guard asks with nobody to answer,
 // and the work stays.
 func TestSnapshotsOffInTheSandbox(t *testing.T) {
 	ws, _ := filepath.EvalSymlinks(t.TempDir())

@@ -171,11 +171,31 @@ func TestTackLeftRepo(t *testing.T) {
 	}
 }
 
-// TestE1RunsWithoutSnapshots: every arm's config turns them off, so a run's requests, wall time and guard answers stay what they
-// were (DESIGN §6.8).
-func TestE1RunsWithoutSnapshots(t *testing.T) {
-	if !strings.Contains(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, t.TempDir()), "\nsnapshots = false\n") {
-		t.Error("the arm's config doesn't turn snapshots off")
+// TestE1RunsWithSnapshots: every arm's config turns snapshots on, as the released tack has them (ADR-006, Francis, 2026-11-04). Runs from
+// here on are not directly comparable with earlier snapshot-off runs (DESIGN §6.8). An arm is a list of RunSettings, so this builds the
+// config of each setting an arm may carry, alone and all together, and of the E1 arms' own definitions: none may set snapshots to
+// anything but one true.
+func TestE1RunsWithSnapshots(t *testing.T) {
+	srv := Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}
+	all := make([]string, 0, len(RunSettings))
+	for name := range RunSettings {
+		all = append(all, name)
+	}
+	sort.Strings(all)
+	arms := map[string][]string{"none": nil, "every setting at once": all}
+	for _, name := range all {
+		arms[name] = []string{name}
+	}
+	for name, settings := range arms {
+		cfg := tackConfig(srv, t.TempDir(), settings...)
+		if n := strings.Count(cfg, "\nsnapshots = true\n"); n != 1 || strings.Contains(cfg, "snapshots = false") || strings.Count(cfg, "snapshots") != 1 {
+			t.Errorf("arm %q: its config doesn't have snapshots on exactly once:\n%s", name, cfg)
+		}
+	}
+	for name, line := range runValues {
+		if strings.Contains(line, "snapshots") {
+			t.Errorf("setting %q writes %q, which would set snapshots", name, line)
+		}
 	}
 }
 

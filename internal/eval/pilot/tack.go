@@ -54,7 +54,7 @@ turn_tokens = 1000000000
 max_errors = 8
 session_tokens = 1000000000
 session_tool_calls = 1000000
-snapshots = false
+snapshots = true
 `, filepath.Join(out, "state"), s.BaseURL, s.Model, filepath.Join(out, "token"), f("temperature"), f("top_p"), f("top_k"), ModelsDir(), replyLimit) + runLines(settings)
 }
 

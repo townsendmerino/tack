@@ -228,5 +228,4 @@ does. The eval should measure what ships, and users will run with snapshots on.
 - **What was recommended against.** The recommendation was to keep it off, because the recorded ask rate (1 of 1,207 bash calls)
   says it should not move a pass count, and a setting that engages on some tasks only is a poor thing to hold fixed. The owner chose
   to match what ships.
-- **Still to do.** The A1 pilot's config (`internal/eval/pilot/tack.go`, `snapshots = false`) and its test
-  `TestE1RunsWithoutSnapshots` still say off. Changing them is a code change and goes through its own PR.
+- **Done (2026-11-05).** The A1 pilot's config (`internal/eval/pilot/tack.go`) now sets `snapshots = true`, and `TestE1RunsWithSnapshots` asserts it.
