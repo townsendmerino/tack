@@ -2789,3 +2789,21 @@ until Francis approves this section, and no second night without him saying so.
 - **A second night.** If the result is parked, I come back with whether a second night is worth it, from the 96 runs' own spread
   and the power of adding 96 more. It is not queued without Francis's decision, and how it combines with these runs is registered
   before it runs.
+
+- **The first night, 2026-11-05 22:23 to 23:00, is void entirely, and 2026-11-06 re-runs the same registration (the coordinator, 03:45).**
+  - **What happened.** 89 of the 96 runs were void on the pilot's disk floor: "19.8 GB free ... under the 20 GB a run needs". The
+    job started with 21 GiB free. Only task 1 ran: 7 of its 8 slots were counted before the floor tripped, and every other slot was
+    void. No pass data of that night has been read or tabulated, and none is used.
+  - **Why.** Each run leaves a snapshot shadow repository in its tack state directory, measured at 167 MB for a goinfer task (all 7
+    runs the same), and under 1 MB of everything else. Seven runs used 1.2 GB, which was the margin.
+  - **What was freed (Francis approved).** Go's module cache was cleared and four duplicate models moved to nobara: 48 GiB free.
+  - **The re-run is not a continuation.** The same arms, the same 96 runs, the same build (tack `4d34f17`), a fresh night in a fresh
+    directory (`night-2026-11-06`). The void night's directory is kept as `void-2026-11-05`. The rule, bands and predictions above
+    stand unchanged.
+  - **The launcher changes, none of which touches a run.** It deletes each run's snapshot shadow once its row is in
+    `results.jsonl` (events, logs, requests and results stay), so a run keeps under 1 MB. It refuses to start below 40 GiB free,
+    which is the 20 GB floor plus 96 runs at 0.2 GB each (167 MB rounded up, as if nothing were deleted), and prints that number. It
+    refuses before 2026-11-06 22:00. It reaches nobara as `nobara-ts`, because the Mac is away from home. It logs the free disk to
+    `disk.tsv` after each sweep, so the disk each run used is in the record.
+  - **What the incidental data say about snapshots, not about passes:** the 7 counted runs had 9 `checkpoint` events and none
+    "unavailable", and every config had `snapshots = true`.
