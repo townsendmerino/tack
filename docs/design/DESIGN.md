@@ -1101,6 +1101,22 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   - Francis split it from `compact_at_cliff` on 2026-11-01. The data put the repeat loops at the cliff, where widening
     does not apply.
 - **Not yet built:** the summarizing and re-retrieval steps above.
+- **Proposed: pinning what faults** (`[run] pin_faulted`, off by default; from Pichay, arXiv 2603.09023, which treats
+  the window as the top of a memory hierarchy). Added 2026-11-07 (owner).
+  - **A fault** is the model asking again for a result a compaction stubbed: a read of the same path, a grep or glob
+    with the same pattern and scope. Shell commands are not counted, since rerunning a test after an edit is normal.
+  - **Pinning:** a faulted read is kept whole by path at later compactions, and a faulted grep or glob by its pattern.
+    An item that faults twice is not stubbed again for the rest of the session, which stops thrashing.
+  - **Batched, never per turn:** pinning only changes what the next compaction stubs, so the cached prefix still
+    breaks once per compaction, not on every fault.
+  - **The evidence** (the 28 C-series sessions in `~/tack-runs/e1/c*` with a compaction event, counted 2026-11-07):
+    38 of 149 stubbed results were asked for again (19 exactly, 19 by the same path or pattern). By kind: reads 23 of
+    48, shell commands 12 of 19, grep 3 of 75, glob 0 of 7. Pichay reports a 0.0254% fault rate in its replay; tack's
+    25% shows a 16k window with a small model is far from that. The sample is small, so the read figure is rough.
+  - **The trade-off:** pinned reads keep more in the window, against the limit that masking relieves. It needs its own
+    screen against `compact_at_cliff` alone.
+  - **A metric now, at no cost:** the fault rate by kind, from the existing `compaction` events and tool calls, as a
+    mechanism metric for the `mask_observations` and `compact_at_cliff` screens.
 
 **Transcripts as a corpus.** Exported transcripts form a second ken workspace, so `search` can be scoped to past
 sessions ("what did we decide about the KV floor?"). It uses ken's markdown chunker and needs no ken change.
