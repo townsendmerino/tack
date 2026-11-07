@@ -131,6 +131,9 @@ unchanged, and the read above does not depend on these figures.
 
 ## A second night: Francis's call
 
+**Decided (Francis, 2026-11-07 09:19): no second night.** C11 is parked after one night (A 3/48, B 6/48, d = +3, edges 2
+and 4). The bundle stays adopted (§12.25), and snapshots stay on (ADR-006). The rule above is not registered.
+
 §17 asks for this when the read is parked: whether a second night is worth it, from the 96 runs' own spread and the
 power of 96 more. The exact distributions are in `second-night-power/` (the program and its output).
 
