@@ -215,7 +215,8 @@ it is fixed.
   first two already (§6.7) and should read `.agents/knowledge/` too when it exists. Writing back would keep a repo's
   memory versioned and visible instead of in tack's own state, and ken indexes it like any other file. Two cautions: a
   growing file eats the instruction budget (§2.3), so learnings belong in their own sections or in `.agents/knowledge/`
-  files read on demand; and every addition goes through the normal edit approval, never written silently.
+  files read on demand; and every addition goes through the normal edit approval, never written silently. How the
+  pages are kept true, loaded and consolidated is in §6.7, "Memory across sessions".
 
 **Already covered.** DevBox keeps real tokens out of its sandboxes: they hold placeholders, and an egress proxy swaps in
 the real ones on the way out. tack calls no hosted model, so it holds no model key, and §6.6 denies commands the network
@@ -803,6 +804,47 @@ tool-use smoke set compares this merged set against the split one before it is f
   under it; a user-level `~/.config/tack/AGENTS.md`; *proposed* (§2.5), `.agents/knowledge/` files, read on demand.
   Long files are loaded by section (§2.3). The owner's repos depend on these: their `CLAUDE.md` files carry hard rules
   (the staticcheck canary, explicit-path staging, the night queue).
+- **Memory across sessions** (added 2026-11-07, from Anthropic's "The components of agent memory").
+  - **What the article found that matters at tack's size:**
+    - Weaker models barely used their memory: on one benchmark, Sonnet 4.6 went from 0.330 to 0.364, against Opus
+      5.5's 0.655 to 0.838, and often didn't open its memory files.
+    - A wrong note kept being trusted and did repeated harm.
+    - One page per subject kept 57 of 57 facts, where one shared table kept 41.
+    - Searching transcripts together with subject pages beat search alone, 61% against 53%.
+    - Whatever is loaded into every session should stay a short index.
+  - **The pages are `.agents/knowledge/` (§2.5): one page per file, package or subject, never one growing file.**
+  - **Each page is pinned to the code it describes.**
+    - A page names its file or symbol and records that code's content hash, the way ledger items are anchored (§7.5).
+    - When the code changes, tack marks the page as possibly out of date and doesn't load it as fact until it is
+      checked or updated.
+    - This catches a stale note mechanically, with no model call.
+  - **The harness loads the notes; the model doesn't have to ask.**
+    - Auto-context (§7.4) brings in the pages for the files and names in the task, through ken, within its budget.
+    - Every session gets only a short index of page titles, sized for the 16k window.
+  - **Past sessions are searchable memory** (P2, with the transcripts corpus). ken indexes tack's own event logs, so
+    "the last edit to `banner.go` failed this way" can surface without anyone writing a note.
+  - **Dreaming: consolidation, on demand or overnight.** A job reads sessions and proposes changes to
+    `.agents/knowledge/`:
+    - fixing pages that the code or the logs contradict;
+    - merging duplicates;
+    - adding what a session learned;
+    - pruning what no longer holds.
+  - **How dreaming runs:**
+    - **On demand,** with `tack dream` or the app's command, over one session or the current workspace. It runs at
+      once when its model server is free, and otherwise queues.
+    - **Overnight,** in the night queue, over the day's sessions in every workspace.
+    - Either way it may use a larger model than the loop's: it runs offline, outside the 16k window. On nobara that is
+      the 35B, still local.
+    - Its output is always a proposed diff for the owner to review, never applied silently.
+    - It holds the model server like any other job: it waits behind a registered screen and never runs inside one.
+  - **Measured runs start with memory off and empty.** One E1 run's notes must never reach another, the same kind of leak
+    as the mirror reads the coordinator's 2026-10-31 audit found (§6.6).
+    - Testing whether memory helps needs a set of related tasks in one repository, which E1's independent tasks are
+      not. That is a later screen, held to full measurement rules only if its number will be published or settle a
+      direction.
+  - **Order:** the pages with their pins, the harness loading them, and memory off in measured runs come with
+    `.agents/knowledge/` in P1's instruction-file step. Searchable sessions come with P2's transcripts corpus. Dreaming
+    follows, as an experiment measured before it is relied on.
 - **Skills.** `SKILL.md` folders in Claude Code's format, from `.claude/skills/` and `~/.claude/skills/`, listed by
   one-line description and read only when used, so they cost little of the window.
 - **MCP client (P5).** The official Go SDK (`modelcontextprotocol/go-sdk`, which ken already uses); stdio and Streamable
