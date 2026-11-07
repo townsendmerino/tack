@@ -2779,6 +2779,13 @@ until Francis approves this section, and no second night without him saying so.
   per run against §12.25's, and the `done` answers' test-change notes (#63). §12.25's runs appear task by task for context. They are not
   pooled.
 - **The read:** `tools/calreport -rule sd=2.0,n=48`, with §12.25's two nights beside it as `-compare`.
+- **Outcome (read 2026-11-07; record `e1-calibration-c11-onenight-2026-11-07.md`): A 3 of 48, B 6 of 48, d = +3, against
+  edges of 2 and 4. Parked: no more runs, and a second night is Francis's call. The bundle stays adopted (§12.25).**
+  - The night started at 03:35 PST on 2026-11-07, outside the 22:00 window, at Francis's word: runs 03:36 to 06:21, 96 counted, 0 void.
+  - d is task 1 (B 4/4, A 0/4) and task 11 (A 3/4, B 2/4). Every prediction that could be checked held.
+  - 232 `checkpoint` events, 0 unavailable. No command was of a kind a snapshot answers, and no question was asked.
+  - The figures under "When the bundle does nothing" were normal approximations: exact, from the same rates, shown 3.8% and
+    parked 18.7%. The 81% power is right.
 - **A second night.** If the result is parked, I come back with whether a second night is worth it, from the 96 runs' own spread
   and the power of adding 96 more. It is not queued without Francis's decision, and how it combines with these runs is registered
   before it runs.
