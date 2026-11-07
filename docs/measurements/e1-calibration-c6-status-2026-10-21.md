@@ -133,6 +133,19 @@ changes measured one by one, so these too are ideas to screen.
 - **Learnings written back to the repo** belong to P1's instruction-file step, not a screen (`docs/design/p1-notes.md`,
   step 5).
 
+Added 2026-11-07, from Pichay (arXiv 2603.09023), which treats the window as the top of a memory hierarchy.
+- **Pinning what faults** (DESIGN §7.6, `[run] pin_faulted`, off by default). A stubbed read, grep or glob that the
+  model asks for again is a fault; later compactions keep it whole, and one that faults twice is not stubbed again
+  that session.
+  - The evidence: in the 28 sessions with a compaction, 38 of 149 stubbed results were asked for again. Reads: 23 of
+    48. Grep: 3 of 75. So stubbing reads mostly costs a tool call and the same tokens back.
+  - To screen after §16.2, against `compact_at_cliff` alone. The mechanism metric: faults per compaction, and window
+    use at the cliff.
+- **The fault rate as a metric**, starting with the §16.2 analysis, needs no code: it comes from the `compaction` events
+  and the tool calls after them.
+
+Source: <https://arxiv.org/abs/2603.09023>.
+
 ## The bundle night (§12.9)
 
 **Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 was settled. It was settled on
