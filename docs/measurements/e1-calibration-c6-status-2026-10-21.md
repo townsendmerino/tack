@@ -3,7 +3,14 @@
 <!-- citations-at: ac4cded -->
 
 A resume note for C6, the loop changes measured on Qwen3-8B at 16,384 (pre-registration §12). First written
-2026-10-21; brought up to date 2026-10-30.
+2026-10-21; brought up to date 2026-10-30, and for the bundle's standing 2026-11-07.
+
+## Where it stands, 2026-11-07
+
+- **The bundle is adopted,** on §12.25's powered comparison: A 9 of 168, B 26 of 168, d = +17, shown
+  (`-c6-powered-2026-10-31`).
+- **C11 parked after one night (A 3/48, B 6/48, d = +3, edges 2 and 4); no second night, Francis 2026-11-07 09:19; the
+  bundle stays adopted (§12.25), snapshots stay on (ADR-006)** (§17, `-c11-onenight-2026-11-07`).
 
 ## Where it stands, 2026-10-30
 
