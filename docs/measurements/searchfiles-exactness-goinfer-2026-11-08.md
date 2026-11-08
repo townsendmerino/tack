@@ -69,7 +69,7 @@ about it.
 
 ## Run spec: SearchFiles latency on goinfer (night; not run)
 
-*Proposed; Francis to approve the rule before it is queued.*
+*Rule approved by Francis on 2026-11-08 (15:01, through the coordinator). He set the bars at twice the proposed 50 and 200 ms. It is registered before the run; nothing is queued.*
 
 - **Question:** what ken's route adds to a turn on the owner's largest repository. It runs once per user message,
   before the first request, so its latency is on the critical path.
@@ -85,9 +85,9 @@ about it.
 - **Records:** per cell, the load average and free memory at its start, p50, p95 and max per call, and the index's
   chunk count. A cell started at a load average above 2 is void.
 - **Decision rule (pre-registered, proposed):**
-  - **p95 ≤ 50 ms** in hybrid: ken's route runs inline on every user message.
-  - **50–200 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
-  - **> 200 ms:** it runs off the critical path or not at all. The deterministic route stays.
+  - **p95 ≤ 100 ms** in hybrid: ken's route runs inline on every user message.
+  - **100–400 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
+  - **> 400 ms:** it runs off the critical path or not at all. The deterministic route stays.
   - The do-nothing arm is the deterministic route alone, which costs no search.
 - **Expected wall time:** about 15 minutes: index load about 1 minute, then 2 modes × 94 queries × 20 rounds, with
   hybrid well under 0.5 s a call.
