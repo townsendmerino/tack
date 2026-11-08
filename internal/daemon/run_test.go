@@ -19,6 +19,7 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 var testClient = proto.ClientInfo{Name: "test", Version: "0"}
@@ -238,11 +239,11 @@ func TestSpawnDetached(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { syscall.Kill(pid, syscall.SIGKILL) }) // the pid this test started
-	sid, err := syscall.Getsid(pid)
+	sid, err := unix.Getsid(pid)
 	if err != nil || sid != pid {
 		t.Fatalf("the spawned process's session is %d (%v); want its own, %d", sid, err, pid)
 	}
-	if mine, _ := syscall.Getsid(0); sid == mine {
+	if mine, _ := unix.Getsid(0); sid == mine {
 		t.Fatal("the spawned process shares this process's session")
 	}
 	deadline := time.Now().Add(5 * time.Second)
