@@ -243,3 +243,19 @@ func TestServeSettings(t *testing.T) {
 		}
 	}
 }
+
+// TestOnDemandRemote: a goinfer-remote may be on demand (tack serve), with a start command for when socket activation
+// is not set up; a start without on_demand, or on a child, is refused.
+func TestOnDemandRemote(t *testing.T) {
+	const remote = "[servers.nobara]\nkind = \"goinfer-remote\"\nurl = \"http://nobara:8091\"\n"
+	c, err := load(t, remote+"on_demand = true\nstart = [\"ssh\", \"nobara\", \"tack\", \"serve\", \"-detach\"]\n")
+	if err != nil || !c.Servers["nobara"].OnDemand || len(c.Servers["nobara"].Start) != 5 {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	if _, err := load(t, remote+"start = [\"ssh\"]\n"); err == nil || !strings.Contains(err.Error(), "on_demand") {
+		t.Fatalf("start without on_demand: %v", err)
+	}
+	if _, err := load(t, "[servers.mac]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 1\non_demand = true\n"); err == nil {
+		t.Fatal("on_demand on a goinfer-child was taken")
+	}
+}

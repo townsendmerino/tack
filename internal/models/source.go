@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/townsendmerino/tack/internal/config"
@@ -54,6 +55,16 @@ func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, e
 			if tok, err = config.ReadToken(s.TokenFile); err != nil {
 				return nil, err
 			}
+		}
+		if s.OnDemand {
+			var offer []string // this machine's own servers, to suggest when the box is busy
+			for n, o := range cfg.Servers {
+				if o.Kind == config.KindChild {
+					offer = append(offer, n)
+				}
+			}
+			slices.Sort(offer)
+			return NewOnDemand(name, s.URL, tok, s.Model, s.Start, offer, hc), nil
 		}
 		return NewRemote(name, s.URL, tok, s.Model, hc), nil
 	}

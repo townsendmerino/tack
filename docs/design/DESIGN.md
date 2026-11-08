@@ -1912,6 +1912,7 @@ App Store.
 | type | persisted | payload |
 |---|---|---|
 | `session.created` | yes (fsync), always the first | workspace (resolved), model, mode: enough to reopen the session from its log |
+| `model.status` | no (live only) | server, state (loading, ready), message such as "loading model on nobara": the status line |
 | `user.message` | yes | content blocks, attachments |
 | `context.assembled` | yes | composition by kind, items added, items now stale |
 | `request.sent` | yes | server, model, request seq |
