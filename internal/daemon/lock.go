@@ -40,7 +40,7 @@ type Holder struct {
 	PID     int       `json:"pid"`
 	Version string    `json:"version"`
 	Start   time.Time `json:"start"`
-	// ProcStart is when the process with PID started (procStart), so a record whose pid a later process reused names
+	// ProcStart is when the process with PID started (procInfo), so a record whose pid a later process reused names
 	// nobody.
 	ProcStart string `json:"proc_start,omitempty"`
 }
@@ -78,17 +78,14 @@ func Acquire(stateDir, version string) (*Lock, error) {
 		f.Close()
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := takeLock(f, stateDir); err != nil {
 		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, &HeldError{Holder: awaitHolder(stateDir)}
-		}
-		return nil, fmt.Errorf("daemon: locking %s: %w", path, err)
+		return nil, err
 	}
 	if afterLock != nil {
 		afterLock()
 	}
-	ps, _ := procStart(os.Getpid()) // empty where unsupported: then ReadHolder trusts no record
+	ps, _, _ := procInfo(os.Getpid()) // empty where unsupported: then ReadHolder trusts no record
 	h := Holder{PID: os.Getpid(), Version: version, Start: time.Now().UTC().Truncate(time.Second), ProcStart: ps}
 	if err := writeHolder(stateDir, h); err != nil {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
@@ -115,8 +112,8 @@ func writeHolder(stateDir string, h Holder) error {
 }
 
 // ReadHolder reads the record of the daemon holding the lock in stateDir. It is zero when there is none, and when the
-// process that wrote it is gone: a daemon that died without releasing leaves its record behind, and its pid may since
-// name another process, so the record's process start time must match.
+// process that wrote it is gone or a zombie: a daemon that died without releasing leaves its record behind, and its
+// pid may since name another process, so the record's process start time must match.
 //
 // It does not probe daemon.lock: taking the lock even for a moment would make a daemon starting then find it held and
 // exit, leaving none.
@@ -126,22 +123,35 @@ func ReadHolder(stateDir string) Holder {
 	if err != nil || json.Unmarshal(b, &h) != nil || h.PID <= 0 || h.ProcStart == "" {
 		return Holder{}
 	}
-	if ps, err := procStart(h.PID); err != nil || ps != h.ProcStart {
+	if ps, live, err := procInfo(h.PID); err != nil || !live || ps != h.ProcStart {
 		return Holder{}
 	}
 	return h
 }
 
-// awaitHolder is ReadHolder for a start that just lost: the winner writes its record right after it takes the lock,
-// so an empty read is retried, for up to a second, before the holder is reported unknown.
-func awaitHolder(stateDir string) Holder {
-	for range 100 {
+// takeLock takes the exclusive flock on f, the lock file in stateDir, without blocking. Held by a daemon that has
+// recorded itself, it is a *HeldError naming that daemon at once. Held with no valid record, the holder is starting
+// (it writes its record right after taking the lock) or stopping (Release removes the record, then unlocks), so the
+// lock is tried again for up to a second: a stopping holder's lock is taken once dropped, and a starting one's record
+// read once written. Past that it is a *HeldError naming nobody.
+func takeLock(f *os.File, stateDir string) error {
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return fmt.Errorf("daemon: locking %s: %w", f.Name(), err)
+		}
 		if h := ReadHolder(stateDir); h.PID != 0 {
-			return h
+			return &HeldError{Holder: h}
+		}
+		if time.Now().After(deadline) {
+			return &HeldError{}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return Holder{}
 }
 
 // Dir is the state directory the lock is in.

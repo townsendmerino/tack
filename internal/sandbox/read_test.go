@@ -79,3 +79,27 @@ func TestRealResolvesDotDotAfterTheLink(t *testing.T) {
 		}
 	}
 }
+
+// TestRealFollowsLinksBeyondWhatExists: a symlink whose target does not exist yet is still followed, since the path
+// will be its target's once that is made; and a "..", after a name that does not exist, cancels that name, so a link
+// after it is followed too.
+func TestRealFollowsLinksBeyondWhatExists(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	resolved, _ := filepath.EvalSymlinks(dir)
+	os.Symlink(filepath.Join(dir, "later"), filepath.Join(dir, "dangling")) // later does not exist
+	os.MkdirAll(filepath.Join(dir, "there"), 0o700)
+	os.Symlink(filepath.Join(dir, "there"), filepath.Join(dir, "link"))
+	for _, c := range []struct{ in, want string }{
+		{dir + "/dangling/state", filepath.Join(resolved, "later", "state")},
+		{dir + "/dangling", filepath.Join(resolved, "later")},
+		{dir + "/missing/../link/state", filepath.Join(resolved, "there", "state")},
+	} {
+		if got := real(c.in); got != c.want {
+			t.Errorf("real(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

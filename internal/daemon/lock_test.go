@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,26 +33,43 @@ func TestReleaseClearsTheHolder(t *testing.T) {
 	}
 }
 
-// TestAStaleHolderIsUnknown: the record of a daemon that died without releasing names nobody, whether its pid is
-// gone or now another user's process.
+// TestAStaleHolderIsUnknown: a record names its process by pid and start time, both real here. A running process's
+// own record names it; once the process has exited, as a zombie not yet reaped and then reaped, the same record names
+// nobody: a daemon that died without releasing left it.
 func TestAStaleHolderIsUnknown(t *testing.T) {
 	dir := shortDir(t)
-	cmd := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := cmd.Run(); err != nil {
+	os.MkdirAll(dir, 0o700)
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	dead := cmd.Process.Pid
-	os.MkdirAll(dir, 0o700)
-	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`, dead), 0o600)
-	if h := ReadHolder(dir); h != (Holder{}) {
-		t.Fatalf("a dead daemon's record reads as %+v, want no holder", h)
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) // the pid this test started
+	start, live, err := procInfo(pid)
+	if err != nil || !live || start == "" {
+		t.Fatalf("procInfo(%d) = %q, %v, %v; want a running process's start", pid, start, live, err)
 	}
-	// A pid reused by another user's process (pid 1 is root's) is not this user's daemon either.
-	if os.Getuid() != 0 {
-		os.WriteFile(filepath.Join(dir, HolderName), []byte(`{"pid":1,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`), 0o600)
-		if h := ReadHolder(dir); h != (Holder{}) {
-			t.Fatalf("a record naming another user's process reads as %+v, want no holder", h)
+	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","proc_start":%q}`, pid, start), 0o600)
+	if h := ReadHolder(dir); h.PID != pid || h.Version != "crashed" {
+		t.Fatalf("a running process's own record reads as %+v, want it named", h)
+	}
+	cmd.Process.Kill() // it exits, and stays a zombie until Wait reaps it
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output(); strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			break // ps, not procInfo, says when: the test is of procInfo
 		}
+		if time.Now().After(deadline) {
+			t.Fatal("the killed process never showed as a zombie")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if h := ReadHolder(dir); h != (Holder{}) {
+		t.Fatalf("a zombie's record reads as %+v, want no holder", h)
+	}
+	cmd.Wait()
+	if h := ReadHolder(dir); h != (Holder{}) {
+		t.Fatalf("a reaped process's record reads as %+v, want no holder", h)
 	}
 }
 
@@ -288,4 +306,36 @@ func TestAReusedPidIsNotTheHolder(t *testing.T) {
 		t.Fatalf("this process's own record reads as %+v", h)
 	}
 	l.Release()
+}
+
+// TestAStartRacingAReleaseWins: a daemon starting while the last one releases finds the lock held and no holder
+// record (Release removes it before it unlocks). It keeps trying the lock, and takes it once it is dropped, instead
+// of reporting a holder that has gone.
+func TestAStartRacingAReleaseWins(t *testing.T) {
+	dir := shortDir(t)
+	old, err := Acquire(dir, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	old.beforeUnlock = func() { // the record is gone and the lock still held: start the next daemon now
+		go func() {
+			l, err := Acquire(dir, "next")
+			if err == nil {
+				defer l.Release()
+			}
+			got <- err
+		}()
+		time.Sleep(100 * time.Millisecond) // it finds the lock held, and must not give up
+	}
+	start := time.Now()
+	if err := old.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-got; err != nil {
+		t.Fatalf("a start racing the release: %v, want it to take the lock", err)
+	}
+	if took := time.Since(start); took > 900*time.Millisecond {
+		t.Fatalf("the racing start took %s; it should take the lock as soon as it is dropped", took)
+	}
 }
