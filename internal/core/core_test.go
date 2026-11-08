@@ -173,8 +173,8 @@ func TestTrafficConformsToTheProtocol(t *testing.T) {
 	}
 	evs := f.waitTurnEnd(t)
 	f.logTiming(t)
-	if pr.Seq != 1 || evs[0].Type != proto.EvUserMessage {
-		t.Fatalf("prompt seq %d, first event %s", pr.Seq, evs[0].Type)
+	if pr.Seq != 2 || evs[0].Type != proto.EvSessionCreated || evs[1].Type != proto.EvUserMessage {
+		t.Fatalf("prompt seq %d, events %v; want session.created, then the prompt's user.message at seq 2", pr.Seq, types(evs))
 	}
 	time.Sleep(20 * time.Millisecond) // let the tap see the last line
 	f.tap.mu.Lock()

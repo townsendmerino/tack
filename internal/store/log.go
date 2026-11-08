@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -52,18 +54,39 @@ type Log struct {
 	onSync func(proto.EventType, time.Duration)
 }
 
-func (s *Store) logPath(id proto.SessionID) string {
-	return filepath.Join(s.root, "sessions", string(id), "events.jsonl")
+func (s *Store) logPath(id proto.SessionID) (string, error) {
+	if !ValidSessionID(id) {
+		return "", fmt.Errorf("store: %q is not a session id", id)
+	}
+	return filepath.Join(s.root, "sessions", string(id), "events.jsonl"), nil
 }
 
-// Create starts a new session's log. It fails if the session exists.
+// lockLog takes the writer's lock on an open log: an exclusive flock, dropped when the file is closed.
+func lockLog(f *os.File) error {
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return ErrLogBusy
+		}
+		return fmt.Errorf("store: locking %s: %w", f.Name(), err)
+	}
+	return nil
+}
+
+// Create starts a new session's log and holds its writer's lock until Close. It fails if the session exists.
 func (s *Store) Create(id proto.SessionID) (*Log, error) {
-	p := s.logPath(id)
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, err
+	}
 	if err := mkdirAllSynced(filepath.Dir(p), 0o700); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	if err := lockLog(f); err != nil {
+		f.Close()
 		return nil, err
 	}
 	if err := syncDir(filepath.Dir(p)); err != nil { // the new log's directory entry (ADR-004)
@@ -73,14 +96,22 @@ func (s *Store) Create(id proto.SessionID) (*Log, error) {
 	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
 }
 
-// OpenLog reopens an existing session's log for appending. A torn last line (a crash mid-append, so no trailing
+// OpenLog reopens an existing session's log for appending, holding its writer's lock until Close: a log another Log has
+// open, in this process or another, is ErrLogBusy, and nothing is read or cut. A torn last line (a crash mid-append, so no trailing
 // newline) is cut off; a malformed line anywhere else is an error, since the log is the truth and must not be guessed
 // at.
 func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
-	p := s.logPath(id)
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	if err := lockLog(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s", err, id)
 	}
 	evs, good, err := readEvents(f)
 	if err != nil {
@@ -106,7 +137,11 @@ func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
 
 // Events reads a session's persisted events with seq ≥ fromSeq. A torn last line is ignored.
 func (s *Store) Events(id proto.SessionID, fromSeq int64) ([]proto.Event, error) {
-	f, err := os.Open(s.logPath(id))
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(p)
 	if err != nil {
 		return nil, err
 	}
@@ -256,4 +291,46 @@ func Inspect(evs []proto.Event) Interrupted {
 		}
 	}
 	return st
+}
+
+// ErrLogBusy is OpenLog finding the session's log open for appending in another Log, in this process or another.
+var ErrLogBusy = errors.New("store: the session's log is open in another tack process")
+
+// Sessions names every session in the store that has a log, in id order: creation order, since ids are ULIDs.
+func (s *Store) Sessions() ([]proto.SessionID, error) {
+	ents, err := os.ReadDir(filepath.Join(s.root, "sessions"))
+	if err != nil {
+		return nil, err
+	}
+	var ids []proto.SessionID
+	for _, e := range ents {
+		id := proto.SessionID(e.Name())
+		if !e.IsDir() || !ValidSessionID(id) {
+			continue
+		}
+		if p, _ := s.logPath(id); fileExists(p) {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil // ReadDir sorts by name
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// ValidSessionID says whether id can name a session: "s_" then 1 to 62 ASCII letters and digits. Ids come from
+// clients and become paths, so an id is one path element and cannot leave the store.
+func ValidSessionID(id proto.SessionID) bool {
+	rest, ok := strings.CutPrefix(string(id), "s_")
+	if !ok || rest == "" || len(rest) > 62 {
+		return false
+	}
+	for _, r := range rest {
+		if !(r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
+			return false
+		}
+	}
+	return true
 }
