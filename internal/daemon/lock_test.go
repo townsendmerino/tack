@@ -31,7 +31,8 @@ func TestReleaseClearsTheHolder(t *testing.T) {
 	}
 }
 
-// TestAStaleHolderIsUnknown: the record of a daemon that died without releasing (its pid is gone) names nobody.
+// TestAStaleHolderIsUnknown: the record of a daemon that died without releasing names nobody, whether its pid is
+// gone or now another user's process.
 func TestAStaleHolderIsUnknown(t *testing.T) {
 	dir := shortDir(t)
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
@@ -44,10 +45,17 @@ func TestAStaleHolderIsUnknown(t *testing.T) {
 	if h := ReadHolder(dir); h != (Holder{}) {
 		t.Fatalf("a dead daemon's record reads as %+v, want no holder", h)
 	}
+	// A pid reused by another user's process (pid 1 is root's) is not this user's daemon either.
+	if os.Getuid() != 0 {
+		os.WriteFile(filepath.Join(dir, HolderName), []byte(`{"pid":1,"version":"crashed","start":"2026-11-08T12:00:00Z"}`), 0o600)
+		if h := ReadHolder(dir); h != (Holder{}) {
+			t.Fatalf("a record naming another user's process reads as %+v, want no holder", h)
+		}
+	}
 }
 
-// TestLosersNameTheWinner: CLIs starting daemons at once each lose to the one that won, and name it or nobody, never
-// an earlier daemon that has left.
+// TestLosersNameTheWinner: CLIs starting daemons at once each lose to the one that won and name it, never an earlier
+// daemon that has left: a loser that reads before the winner has recorded itself waits for the record.
 func TestLosersNameTheWinner(t *testing.T) {
 	dir := shortDir(t)
 	old, err := Acquire(dir, "old")
@@ -79,8 +87,11 @@ func TestLosersNameTheWinner(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	if winner == "" || len(named) != n-1 {
+		t.Fatalf("winner %q, %d losers; want one winner and %d losers", winner, len(named), n-1)
+	}
 	for _, v := range named {
-		if v != "" && v != winner {
+		if v != winner {
 			t.Errorf("a loser named %q; the winner is %q", v, winner)
 		}
 	}
@@ -153,5 +164,63 @@ func TestReleaseIsSafeBesideListenAndNewToken(t *testing.T) {
 				t.Fatalf("Listen bound a socket that Release left open (stat: %v)", err)
 			}
 		}
+	}
+}
+
+// TestPrivateDirRefusesAPathOthersCanRedirect: a state directory reached through a symlink another user owns is
+// refused, since they could re-point it after the check at a directory of their own and read the token; so is one
+// under a directory others can write without the sticky bit, where they could swap it. This user's own symlink, and a
+// sticky shared directory (as /tmp is), are fine. The test box cannot make a file another user owns, so the
+// symlink's owner is reported as uid 4242 (ownerOf).
+func TestPrivateDirRefusesAPathOthersCanRedirect(t *testing.T) {
+	base := shortDir(t)
+	target, link := filepath.Join(base, "target"), filepath.Join(base, "link")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateDir(link); err != nil {
+		t.Fatalf("this user's own symlink: %v", err)
+	}
+	orig := ownerOf
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == link {
+			return 4242
+		}
+		return orig(path, fi)
+	}
+	defer func() { ownerOf = orig }()
+	for _, dir := range []string{link, filepath.Join(link, "state")} {
+		if err := privateDir(dir); err == nil || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), "4242") {
+			t.Errorf("privateDir(%s) through another user's symlink: %v, want refused", dir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(target, "state")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused path was made anyway: %v", err)
+	}
+	ownerOf = orig
+
+	shared := filepath.Join(base, "shared")
+	os.Mkdir(shared, 0o700)
+	os.Chmod(shared, 0o777)
+	if err := privateDir(filepath.Join(shared, "state")); err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Errorf("under a directory anyone can write: %v, want refused", err)
+	}
+	os.Chmod(shared, 0o777|fs.ModeSticky)
+	if err := privateDir(filepath.Join(shared, "state")); err != nil {
+		t.Errorf("under a sticky shared directory: %v", err)
+	}
+}
+
+// TestAcquireNarrowsAWideLockFile: a daemon.lock left wider than 0600 is made 0600.
+func TestAcquireNarrowsAWideLockFile(t *testing.T) {
+	dir := shortDir(t)
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, LockName), nil, 0o644)
+	acquire(t, dir)
+	if st, _ := os.Stat(filepath.Join(dir, LockName)); st.Mode().Perm() != 0o600 {
+		t.Fatalf("daemon.lock is %v, want 0600", st.Mode().Perm())
 	}
 }

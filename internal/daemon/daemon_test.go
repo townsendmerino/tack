@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,26 +199,36 @@ func TestPeerUIDIsTheCaller(t *testing.T) {
 }
 
 // TestAcceptRefusesAnotherUser: a connection whose peer is not the daemon's user is closed unanswered, and Refused is
-// told; the listener goes on accepting.
+// told; the same Accept goes on to return the next connection, this user's.
 func TestAcceptRefusesAnotherUser(t *testing.T) {
 	ln, err := acquire(t, shortDir(t)).Listen()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln.uid = os.Getuid() + 1 // as if every connection came from another user
+	var n atomic.Int32
+	real := ln.peer
+	ln.peer = func(c *net.UnixConn) (int, error) { // the first connection is another user's; the rest are real
+		if n.Add(1) == 1 {
+			return os.Getuid() + 1, nil
+		}
+		return real(c)
+	}
 	refused := make(chan error, 1)
 	ln.Refused = func(err error) { refused <- err }
 	accepted := make(chan net.Conn, 1)
 	go func() {
-		if c, err := ln.Accept(); err == nil {
-			accepted <- c
+		c, err := ln.Accept() // one call: it must refuse the first and return the second
+		if err != nil {
+			t.Error(err)
+			return
 		}
+		accepted <- c
 	}()
-	c, err := net.Dial("unix", ln.Addr().String())
+	other, err := net.Dial("unix", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer other.Close()
 	select {
 	case err := <-refused:
 		if !strings.Contains(err.Error(), "uid") {
@@ -229,9 +240,20 @@ func TestAcceptRefusesAnotherUser(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the connection was neither refused nor accepted")
 	}
-	c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if n, err := c.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+	other.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := other.Read(make([]byte, 1)); n != 0 || err != io.EOF {
 		t.Fatalf("read on the refused connection: %d bytes, %v; want EOF", n, err)
+	}
+	mine, err := net.Dial("unix", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mine.Close()
+	select {
+	case c := <-accepted:
+		c.Close()
+	case <-time.After(5 * time.Second):
+		t.Fatal("after refusing one connection, the listener did not accept the next")
 	}
 }
 

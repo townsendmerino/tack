@@ -45,14 +45,15 @@ func TestRealResolvesAPathThatDoesNotExistYet(t *testing.T) {
 	if resolved == dir {
 		t.Fatalf("%s is its own real path; the test needs one reached through a symlink", dir)
 	}
-	for in, want := range map[string]string{
-		dir:                                    resolved,
-		filepath.Join(dir, "state"):            filepath.Join(resolved, "state"),
-		filepath.Join(dir, "state", "a", "b"):  filepath.Join(resolved, "state", "a", "b"),
-		filepath.Join(dir, "x", "..", "state"): filepath.Join(resolved, "state"),
+	for _, c := range []struct{ in, want string }{
+		{dir, resolved},
+		{filepath.Join(dir, "state"), filepath.Join(resolved, "state")},
+		{filepath.Join(dir, "state", "a", "b"), filepath.Join(resolved, "state", "a", "b")},
+		{dir + "/x/../state", filepath.Join(resolved, "state")}, // written uncleaned: x does not exist
+		{dir + "/state/", filepath.Join(resolved, "state")},
 	} {
-		if got := real(in); got != want {
-			t.Errorf("real(%q) = %q, want %q", in, got, want)
+		if got := real(c.in); got != c.want {
+			t.Errorf("real(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
