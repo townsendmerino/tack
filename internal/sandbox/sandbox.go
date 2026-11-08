@@ -12,6 +12,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -70,18 +71,44 @@ var Secrets = []string{
 	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
 }
 
-// real is p with symlinks resolved, as Seatbelt matches paths. A path that does not exist yet has its deepest existing
-// ancestor resolved and the rest kept, so a rule for it still matches once it is made.
+// real is p with symlinks resolved, as Seatbelt matches paths, and ".." taken as the kernel takes it: the parent of
+// what the path so far resolves to, never cleaned away first. A path that does not exist yet has its existing part
+// resolved and the rest kept, so a rule for it still matches once it is made.
 func real(p string) string {
-	p = filepath.Clean(p)
+	if !filepath.IsAbs(p) {
+		if wd, err := os.Getwd(); err == nil {
+			p = wd + string(filepath.Separator) + p
+		}
+	}
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
 	}
-	parent := filepath.Dir(p)
-	if parent == p {
-		return p
+	var parts []string
+	for _, c := range strings.Split(p, string(filepath.Separator)) {
+		if c != "" && c != "." {
+			parts = append(parts, c)
+		}
 	}
-	return filepath.Join(real(parent), filepath.Base(p))
+	cur := string(filepath.Separator)
+	for i, name := range parts {
+		if name == ".." {
+			cur = filepath.Dir(cur)
+			continue
+		}
+		r, err := filepath.EvalSymlinks(filepath.Join(cur, name))
+		if err != nil { // missing from here on, so none of the rest is a symlink
+			for _, n := range parts[i:] {
+				if n == ".." {
+					cur = filepath.Dir(cur)
+				} else {
+					cur = filepath.Join(cur, n)
+				}
+			}
+			return cur
+		}
+		cur = r
+	}
+	return cur
 }
 
 func q(p string) string { return fmt.Sprintf("%q", real(p)) }
