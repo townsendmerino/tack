@@ -94,7 +94,8 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 // Resume returns the loop of a session reopened from its log (DESIGN §6.1): history is every persisted event so far,
 // and must not end inside a turn (a crash's open turn is closed first, by core's recovery). The conversation is
 // Rebuild's, so the next request keeps the cached prefix; the session's counts toward its budgets are the log's:
-// requests sent, tokens the server computed, and tool calls run, which leaves out calls answered "error: not run".
+// requests sent, tokens the server computed, and the tool calls the loop counted: each that reached a permission
+// decision or started, and done (callsRan).
 //
 // What the live loop keeps only in memory starts empty: the files the model has seen, so edit asks for a fresh read
 // of a file first, and the observations masking reads, so results from before the resume are never masked.
@@ -124,13 +125,38 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 			} else {
 				s.tokens += p.Prompt + p.Output
 			}
-		case proto.ToolCall:
-			s.calls++
-		case proto.ToolFinished:
-			if p.Outcome == proto.OutcomeCancelled && strings.HasPrefix(p.Result, "error: not run: ") {
-				s.calls--
+		}
+	}
+	s.calls = callsRan(history)
+	return s, nil
+}
+
+// callsRan counts the tool calls the live loop counted toward the session's budget: every call that reached a
+// permission decision or started, and every done call answered ok. A call answered without either (malformed, a
+// repeat of a failed call, not run for a budget, a cancel or a shutdown) did not count. Events name their call by its
+// tool.call's seq, as their cause.
+func callsRan(history []proto.Event) int {
+	name := map[int64]string{}
+	ran := map[int64]bool{}
+	for _, ev := range history {
+		switch ev.Type {
+		case proto.EvToolCall:
+			if v, err := ev.Decode(); err == nil {
+				name[ev.Seq] = v.(proto.ToolCall).Name
+			}
+		case proto.EvPermissionRequested, proto.EvPermissionResolved, proto.EvToolStarted:
+			ran[ev.Cause] = true
+		case proto.EvToolFinished:
+			if v, err := ev.Decode(); err == nil && name[ev.Cause] == "done" && v.(proto.ToolFinished).Outcome == proto.OutcomeOK {
+				ran[ev.Cause] = true
 			}
 		}
 	}
-	return s, nil
+	n := 0
+	for seq := range name {
+		if ran[seq] {
+			n++
+		}
+	}
+	return n
 }

@@ -59,6 +59,21 @@ func TestResumeRefusesALogInsideATurn(t *testing.T) {
 // TestResumeCountsOnlyCallsThatRan: a call the turn's budget answered "not run" did not count toward the session's
 // tool calls live, and does not count on resume either.
 func TestResumeCountsOnlyCallsThatRan(t *testing.T) {
+	t.Run("a repeated failed call", func(t *testing.T) {
+		h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "read", `{"path":"nope.go"}`),
+			goinfertest.Calls("", "t2", "read", `{"path":"nope.go"}`), goinfertest.Says("gave up"))
+		if stop, err := h.sess.Turn(context.Background(), "read it"); err != nil || stop != proto.StopEndTurn {
+			t.Fatalf("turn: %q, %v", stop, err)
+		}
+		evs, _ := h.st.Events("s_test", 0)
+		r, err := Resume(h.sess.cfg, evs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.sess.calls != 1 || r.calls != h.sess.calls {
+			t.Fatalf("live counted %d calls, resumed %d; want 1 and 1: the repeat was answered without running", h.sess.calls, r.calls)
+		}
+	})
 	b := testBudget
 	b.MaxToolCalls = 1
 	h := newHarness(t, b, goinfertest.Calls("", "t1", "glob", `{"pattern":"*.go"}`, "t2", "glob", `{"pattern":"*.md"}`))
