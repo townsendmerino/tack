@@ -28,6 +28,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return evalCmd(args[1:], stdout, stderr)
 	case "daemon":
 		return daemonCmd(args[1:], stdout, stderr)
+	case "serve":
+		return serveCmd(args[1:], stdout, stderr)
 	case "halt":
 		return haltCmd(args[1:], stdout, stderr)
 	case "resume":
@@ -57,6 +59,8 @@ func usage(w io.Writer) {
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
   tack daemon run|start|stop|status [-config FILE]
                                   the daemon: in the foreground, started detached, stopped after a drain, or asked how it is
+  tack serve [-detach] [-config FILE]
+                                  the on-demand model server, on the box with the GPU ([serve] in the config)
   tack halt [-reason TEXT]        stop every running turn and command; refuse new turns
   tack resume                     lift a halt
   tack rewind [-yes [-no-undo]] <session> [seq]

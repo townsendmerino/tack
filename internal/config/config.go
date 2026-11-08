@@ -31,6 +31,24 @@ type Config struct {
 	Sandbox Sandbox `toml:"sandbox"`
 	// Daemon configures `tack daemon` (DESIGN §6.1).
 	Daemon Daemon `toml:"daemon"`
+	// Serve configures `tack serve`, the on-demand model server on the box with the GPU (DESIGN §8.2); absent means
+	// this machine serves none.
+	Serve *Serve `toml:"serve"`
+}
+
+// Serve is [serve]: what `tack serve` runs on demand on nobara (DESIGN §8.2). It runs Server, a goinfer-child of
+// [servers], behind its own listener: the first request starts it (refused while goinfer's timing lock is held), and
+// after IdleUnload without a request the model unloads and the processes exit.
+type Serve struct {
+	Server string `toml:"server"`
+	// Listen is the address to listen on when systemd does not hand tack serve its socket (started over ssh): the
+	// tailnet address and a port.
+	Listen string `toml:"listen"`
+	// KeyFile holds the bearer key every client presents (mode 0600).
+	KeyFile    string   `toml:"key_file"`
+	IdleUnload Duration `toml:"idle_unload"` // default 15m
+	// TimingLock is goinfer's timing lock (scripts/timing_lock.py); default ~/.goinfer-timing.lock.
+	TimingLock string `toml:"timing_lock"`
 }
 
 // Daemon is [daemon].
@@ -350,6 +368,24 @@ func (c *Config) validate() error {
 		return fmt.Errorf("daemon.shutdown_grace is %s; it must be positive", g)
 	case g == 0:
 		c.Daemon.ShutdownGrace.Duration = 10 * time.Second
+	}
+	if s := c.Serve; s != nil {
+		if srv, ok := c.Servers[s.Server]; !ok || srv.Kind != KindChild {
+			return fmt.Errorf("serve.server = %q: want the name of a %s in [servers]", s.Server, KindChild)
+		}
+		if s.KeyFile = expand(s.KeyFile); s.KeyFile == "" {
+			return errors.New("serve.key_file is required: every client of tack serve presents its key")
+		}
+		switch d := s.IdleUnload.Duration; {
+		case d < 0:
+			return fmt.Errorf("serve.idle_unload is %s; it must be positive", d)
+		case d == 0:
+			s.IdleUnload.Duration = 15 * time.Minute
+		}
+		if s.TimingLock == "" {
+			s.TimingLock = "~/.goinfer-timing.lock"
+		}
+		s.TimingLock = expand(s.TimingLock)
 	}
 	c.StateDir = expand(c.StateDir)
 	return nil
