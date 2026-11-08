@@ -96,43 +96,61 @@ func (s *Store) Create(id proto.SessionID) (*Log, error) {
 	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
 }
 
-// OpenLog reopens an existing session's log for appending, holding its writer's lock until Close: a log another Log has
-// open, in this process or another, is ErrLogBusy, and nothing is read or cut. A torn last line (a crash mid-append, so no trailing
+// OpenLog is Reopen without the events.
+func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
+	l, _, err := s.Reopen(id)
+	return l, err
+}
+
+// Reopen reopens an existing session's log for appending, holding its writer's lock until Close, and returns its
+// events, read once under that lock: a log another Log has open, in this process or another, is ErrLogBusy, and
+// nothing is read or cut. A torn last line (a crash mid-append, so no trailing
 // newline) is cut off; a malformed line anywhere else is an error, since the log is the truth and must not be guessed
 // at.
-func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
+func (s *Store) Reopen(id proto.SessionID) (*Log, []proto.Event, error) {
 	p, err := s.logPath(id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := lockLog(f); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("%w: %s", err, id)
+		return nil, nil, fmt.Errorf("%w: %s", err, id)
 	}
 	evs, good, err := readEvents(f)
 	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("store: %s: %w", p, err)
+		return nil, nil, fmt.Errorf("store: %s: %w", p, err)
 	}
 	if st, _ := f.Stat(); st != nil && st.Size() != good {
 		if err := f.Truncate(good); err != nil {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		if err := f.Sync(); err != nil {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	l := &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
 	if n := len(evs); n > 0 {
 		l.lastSeq = evs[n-1].Seq
 	}
-	return l, nil
+	return l, evs, nil
+}
+
+// Discard closes a log Create made and removes its session, for a session that could not be made after all. The
+// writer's lock is held until the files are gone.
+func (s *Store) Discard(l *Log) error {
+	p, err := s.logPath(l.id)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(filepath.Dir(p))
+	return errors.Join(err, l.Close())
 }
 
 // Events reads a session's persisted events with seq ≥ fromSeq. A torn last line is ignored.
