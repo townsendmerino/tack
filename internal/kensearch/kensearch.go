@@ -103,3 +103,32 @@ func (s *Searcher) Close() error {
 }
 
 var _ tools.Searcher = (*Searcher)(nil)
+
+// SectionHit is a hit inside one markdown file, with its section's heading path (K9's Hit.HeadingPath).
+type SectionHit struct {
+	StartLine, EndLine int
+	Score              float64
+	HeadingPath        []string
+}
+
+// SearchFile is the top k hits for query inside file, a path from the workspace root, in the workspace's mode, ranked as
+// the whole repository's search ranks them (ken's SearchFiles). It errors when file is not in the index: ken's search
+// alone would answer an unindexed path with no hits (DESIGN §12, K9 "On adoption"). ken pulls at most 5,000 candidates
+// before it keeps the file's, so on a larger index a hit can be missing (tools/searchfilescheck measures it).
+func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file string) ([]SectionHit, error) {
+	if _, err := s.ws.Sections(ctx, file); err != nil {
+		return nil, err
+	}
+	hits, _, err := s.ws.SearchFiles(ctx, query, k, s.ws.Status().Mode, []string{file})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SectionHit, len(hits))
+	for i, h := range hits {
+		out[i] = SectionHit{StartLine: h.StartLine, EndLine: h.EndLine, Score: h.Score, HeadingPath: h.HeadingPath}
+	}
+	return out, nil
+}
+
+// Chunks is the number of chunks in the index.
+func (s *Searcher) Chunks() int { return s.ws.Status().ChunkCount }
