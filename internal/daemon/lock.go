@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +40,9 @@ type Holder struct {
 	PID     int       `json:"pid"`
 	Version string    `json:"version"`
 	Start   time.Time `json:"start"`
+	// ProcStart is when the process with PID started (procStart), so a record whose pid a later process reused names
+	// nobody.
+	ProcStart string `json:"proc_start,omitempty"`
 }
 
 // HeldError is Acquire finding another daemon holding the lock. Holder is that daemon's record, zero when it is not
@@ -56,6 +59,9 @@ func (e *HeldError) Error() string {
 
 // currentUID is this process's uid, for privateDir; tests replace it.
 var currentUID = os.Getuid
+
+// afterLock, when set (tests), runs in Acquire between taking the lock and writing the holder record.
+var afterLock func()
 
 // Acquire takes the lock in stateDir for a daemon of version, never waiting: another holder is a *HeldError naming it.
 // It makes stateDir if needed, and makes it 0700 if it was wider; a directory another user owns is refused.
@@ -79,7 +85,11 @@ func Acquire(stateDir, version string) (*Lock, error) {
 		}
 		return nil, fmt.Errorf("daemon: locking %s: %w", path, err)
 	}
-	h := Holder{PID: os.Getpid(), Version: version, Start: time.Now().UTC().Truncate(time.Second)}
+	if afterLock != nil {
+		afterLock()
+	}
+	ps, _ := procStart(os.Getpid()) // empty where unsupported: then ReadHolder trusts no record
+	h := Holder{PID: os.Getpid(), Version: version, Start: time.Now().UTC().Truncate(time.Second), ProcStart: ps}
 	if err := writeHolder(stateDir, h); err != nil {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
@@ -105,11 +115,18 @@ func writeHolder(stateDir string, h Holder) error {
 }
 
 // ReadHolder reads the record of the daemon holding the lock in stateDir. It is zero when there is none, and when the
-// record's process is gone: a daemon that died without releasing leaves its record behind.
+// process that wrote it is gone: a daemon that died without releasing leaves its record behind, and its pid may since
+// name another process, so the record's process start time must match.
+//
+// It does not probe daemon.lock: taking the lock even for a moment would make a daemon starting then find it held and
+// exit, leaving none.
 func ReadHolder(stateDir string) Holder {
 	var h Holder
 	b, err := os.ReadFile(filepath.Join(stateDir, HolderName))
-	if err != nil || json.Unmarshal(b, &h) != nil || h.PID <= 0 || !alive(h.PID) {
+	if err != nil || json.Unmarshal(b, &h) != nil || h.PID <= 0 || h.ProcStart == "" {
+		return Holder{}
+	}
+	if ps, err := procStart(h.PID); err != nil || ps != h.ProcStart {
 		return Holder{}
 	}
 	return h
@@ -125,12 +142,6 @@ func awaitHolder(stateDir string) Holder {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return Holder{}
-}
-
-// alive says whether pid names a running process of this user's. EPERM, a process this user may not signal, is
-// another user's: a crashed daemon's pid reused, never the daemon, whose state directory is this user's alone.
-func alive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
 }
 
 // Dir is the state directory the lock is in.
@@ -195,66 +206,84 @@ func privateDir(dir string) error {
 	return nil
 }
 
-// checkPath refuses a path another user could redirect to a directory of theirs. Every symlink on the path as written
-// must be this user's or root's, and every directory on the path resolved must be this user's or root's and not
-// writable by others unless it is sticky, as /tmp is (sshd's StrictModes is the model). Components that do not exist
-// yet end the walk: privateDir makes them, as this user's.
+// checkPath refuses a path another user could redirect to a directory of theirs. It walks the path as the kernel
+// resolves it, one component at a time from /, following each symlink where it is met: every directory passed through
+// must be this user's or root's and not writable by others unless it is sticky, as /tmp is (sshd's StrictModes is the
+// model), and every symlink must be this user's or root's. A component that does not exist yet ends the walk:
+// privateDir makes the rest, as this user's.
 func checkPath(abs string) error {
 	trusted := func(uid int) bool { return uid == currentUID() || uid == 0 }
-	for _, p := range prefixes(abs) {
-		fi, err := os.Lstat(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if fi.Mode()&fs.ModeSymlink != 0 && !trusted(ownerOf(p, fi)) {
-			return fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", p, ownerOf(p, fi))
-		}
-	}
-	for _, p := range prefixes(resolveExisting(abs)) {
-		fi, err := os.Lstat(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if !fi.IsDir() {
-			continue
-		}
+	checkDir := func(p string, fi fs.FileInfo) error {
 		if uid := ownerOf(p, fi); !trusted(uid) {
 			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
 		}
 		if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&fs.ModeSticky == 0 {
 			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it", p)
 		}
+		return nil
+	}
+	root, err := os.Lstat("/")
+	if err != nil {
+		return err
+	}
+	if err := checkDir("/", root); err != nil {
+		return err
+	}
+	cur, rest, links := "/", components(abs), 0
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		if name == ".." {
+			cur = filepath.Dir(cur) // cur is resolved, so its parent is the physical one
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case fi.Mode()&fs.ModeSymlink != 0:
+			if uid := ownerOf(next, fi); !trusted(uid) {
+				return fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", next, uid)
+			}
+			if links++; links > 40 {
+				return fmt.Errorf("daemon: %s: too many levels of symlinks", abs)
+			}
+			target, err := os.Readlink(next)
+			if err != nil {
+				return err
+			}
+			if filepath.IsAbs(target) {
+				cur = "/"
+			}
+			rest = append(components(target), rest...)
+		case fi.IsDir():
+			if err := checkDir(next, fi); err != nil {
+				return err
+			}
+			cur = next
+		case len(rest) > 0:
+			return fmt.Errorf("daemon: %s is not a directory", next)
+		default:
+			return nil // the last component is a file; privateDir says so
+		}
 	}
 	return nil
 }
 
-// prefixes is every path from / to abs: "/", "/a", "/a/b".
-func prefixes(abs string) []string {
-	out := []string{abs}
-	for p := abs; filepath.Dir(p) != p; {
-		p = filepath.Dir(p)
-		out = append(out, p)
+// components splits a path into its names, dropping empty ones and ".", keeping "..".
+func components(p string) []string {
+	var out []string
+	for _, c := range strings.Split(p, string(filepath.Separator)) {
+		if c != "" && c != "." {
+			out = append(out, c)
+		}
 	}
-	slices.Reverse(out)
 	return out
-}
-
-// resolveExisting is abs with the symlinks of its deepest existing ancestor resolved, and the rest kept.
-func resolveExisting(abs string) string {
-	if r, err := filepath.EvalSymlinks(abs); err == nil {
-		return r
-	}
-	parent := filepath.Dir(abs)
-	if parent == abs {
-		return abs
-	}
-	return filepath.Join(resolveExisting(parent), filepath.Base(abs))
 }
 
 // ownerOf is the uid owning the file fi describes, -1 if the platform does not say; tests replace it, since a test
