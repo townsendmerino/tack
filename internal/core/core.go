@@ -287,6 +287,7 @@ func params[T any](req proto.Request) (T, *proto.Error) {
 func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 	switch req.Method {
 	case proto.MethodInitialize:
+		cn.privileged = false // a re-initialize starts over, and one that fails for any reason leaves none
 		p, perr := params[proto.InitializeParams](req)
 		if perr != nil {
 			return nil, perr
@@ -295,7 +296,6 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
 				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
 		}
-		cn.privileged = false
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
 				return nil, &proto.Error{Code: proto.CodeUnauthorized, Message: "initialize: the client token is wrong; read it again from client.token"}

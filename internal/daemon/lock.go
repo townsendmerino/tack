@@ -31,8 +31,9 @@ type Lock struct {
 	mu sync.Mutex // held by every method throughout, Release included
 	f  *os.File   // nil once released
 	ln *Listener  // the socket Listen bound, closed by Release before the lock is dropped
-	// beforeUnlock, when set (tests), runs in Release just before the flock is dropped.
-	beforeUnlock func()
+	// step, when set (tests), is told each of Release's steps as it completes: "holder removed", "socket closed",
+	// then "unlocking", just before the flock is dropped.
+	step func(string)
 }
 
 // Holder is what daemon.holder records about the daemon holding the lock.
@@ -63,8 +64,9 @@ var currentUID = os.Getuid
 // afterLock, when set (tests), runs in Acquire between taking the lock and writing the holder record.
 var afterLock func()
 
-// Acquire takes the lock in stateDir for a daemon of version, never waiting: another holder is a *HeldError naming it.
-// It makes stateDir if needed, and makes it 0700 if it was wider; a directory another user owns is refused.
+// Acquire takes the lock in stateDir for a daemon of version. A holder that has recorded itself is a *HeldError naming
+// it at once; while the lock is held with no valid record, a daemon starting or stopping, it is tried again for up to
+// a second (takeLock). stateDir is made if needed and checked first (privateDir).
 func Acquire(stateDir, version string) (*Lock, error) {
 	if err := privateDir(stateDir); err != nil {
 		return nil, err
@@ -157,9 +159,13 @@ func takeLock(f *os.File, stateDir string) error {
 // Dir is the state directory the lock is in.
 func (l *Lock) Dir() string { return l.dir }
 
-// Release closes the socket Listen bound, removes the holder record, then drops the lock. The order matters: closing
-// the listener unlinks the socket path, and once the lock is dropped that path may already be the next daemon's, as
-// may the record. Releasing twice is a no-op.
+// Release removes the holder record, closes the socket Listen bound, then drops the lock. The order matters:
+//   - the record goes first, so a client that finds the socket gone and starts a daemon finds no holder named, and
+//     that start waits for the lock (takeLock) instead of naming this daemon and giving up;
+//   - the socket goes before the lock, since closing the listener unlinks its path, and once the lock is dropped that
+//     path may already be the next daemon's.
+//
+// Releasing twice is a no-op.
 func (l *Lock) Release() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -167,25 +173,33 @@ func (l *Lock) Release() error {
 		return nil
 	}
 	var errs []error
+	if err := os.Remove(filepath.Join(l.dir, HolderName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		errs = append(errs, err)
+	}
+	l.tell("holder removed")
 	if l.ln != nil {
 		if err := l.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			errs = append(errs, err)
 		}
 		l.ln = nil
 	}
-	if err := os.Remove(filepath.Join(l.dir, HolderName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		errs = append(errs, err)
-	}
-	if l.beforeUnlock != nil {
-		l.beforeUnlock()
-	}
+	l.tell("socket closed")
+	l.tell("unlocking")
 	errs = append(errs, syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN), l.f.Close())
 	l.f = nil
 	return errors.Join(errs...)
 }
 
-// privateDir makes dir (0700) if it is missing, and makes it 0700 if it is wider. It refuses, changing nothing, a
-// directory another user owns or could redirect (checkPath): tack's state is its user's alone.
+// tell reports a Release step to the test hook, if any.
+func (l *Lock) tell(step string) {
+	if l.step != nil {
+		l.step(step)
+	}
+}
+
+// privateDir makes dir (0700) if it is missing, and narrows it to 0700 if others may read or search it. It refuses,
+// changing nothing, a directory others own or may write, or one under a path they could redirect (checkPath): what
+// they may already have put there is not tack's to trust, so it is not narrowed. tack's state is its user's alone.
 func privateDir(dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -200,12 +214,9 @@ func privateDir(dir string) error {
 	if err := checkPath(abs); err != nil { // and after, now that every component exists
 		return err
 	}
-	st, err := os.Stat(abs)
+	st, err := os.Stat(abs) // a directory: MkdirAll fails on anything else
 	if err != nil {
 		return err
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("daemon: %s is not a directory", dir)
 	}
 	if uid := ownerOf(abs, st); uid != currentUID() {
 		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, currentUID())
@@ -228,7 +239,7 @@ func checkPath(abs string) error {
 			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
 		}
 		if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&fs.ModeSticky == 0 {
-			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it", p)
+			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
 		}
 		return nil
 	}

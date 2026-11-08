@@ -64,6 +64,11 @@ func TestAStaleHolderIsUnknown(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// procInfo itself must say so: on some kernels a zombie's start time changes too, which would hide a missing
+	// state check behind the start-time comparison.
+	if _, live, err := procInfo(pid); err == nil && live {
+		t.Fatal("procInfo reports the zombie as running")
+	}
 	if h := ReadHolder(dir); h != (Holder{}) {
 		t.Fatalf("a zombie's record reads as %+v, want no holder", h)
 	}
@@ -151,7 +156,11 @@ func TestReleaseClosesTheSocketBeforeDroppingTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	var atUnlock error
-	l.beforeUnlock = func() { _, atUnlock = os.Stat(SocketPath(dir)) }
+	l.step = func(s string) {
+		if s == "unlocking" {
+			_, atUnlock = os.Stat(SocketPath(dir))
+		}
+	}
 	if err := l.Release(); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +327,10 @@ func TestAStartRacingAReleaseWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := make(chan error, 1)
-	old.beforeUnlock = func() { // the record is gone and the lock still held: start the next daemon now
+	old.step = func(s string) {
+		if s != "unlocking" { // the record is gone and the lock still held: start the next daemon now
+			return
+		}
 		go func() {
 			l, err := Acquire(dir, "next")
 			if err == nil {
@@ -337,5 +349,39 @@ func TestAStartRacingAReleaseWins(t *testing.T) {
 	}
 	if took := time.Since(start); took > 900*time.Millisecond {
 		t.Fatalf("the racing start took %s; it should take the lock as soon as it is dropped", took)
+	}
+}
+
+// TestAStartOnceTheSocketIsGoneWins: a client that finds the socket gone starts a daemon; if that happens while the
+// last one is still releasing, the new one must not find the old one's record and give up: Release removes the
+// record before it closes the socket, so the start waits for the lock and takes it.
+func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
+	dir := shortDir(t)
+	old, err := Acquire(dir, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	old.step = func(s string) {
+		if s != "socket closed" {
+			return
+		}
+		go func() { // as a client that just failed to dial would start one
+			l, err := Acquire(dir, "next")
+			if err == nil {
+				defer l.Release()
+			}
+			got <- err
+		}()
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := old.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-got; err != nil {
+		t.Fatalf("a start once the socket was gone: %v, want it to take the lock", err)
 	}
 }
