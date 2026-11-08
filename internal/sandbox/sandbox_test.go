@@ -181,8 +181,8 @@ func TestDaemonSocketIsOutOfReach(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(state)
-	if state, err = filepath.EvalSymlinks(state); err != nil { // Seatbelt matches real paths: /tmp is /private/tmp
-		t.Fatal(err)
+	if real, _ := filepath.EvalSymlinks(state); real == state {
+		t.Fatalf("%s is its own real path; the test needs a state directory reached through a symlink (/tmp is /private/tmp)", state)
 	}
 	sock := filepath.Join(state, "daemon.sock")
 	ln, err := net.Listen("unix", sock)

@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"testing"
 
@@ -12,7 +14,8 @@ import (
 
 // TestInitializeChecksTheClientToken: initialize is where the client token is checked, once per connection (DESIGN
 // §9.2). The right token makes the connection privileged, no token leaves it unprivileged, and a wrong one is refused
-// and leaves the connection unprivileged. A Core with no token refuses any token presented.
+// and leaves the connection unprivileged, even one the right token had made privileged. A Core with no token refuses
+// any token presented.
 func TestInitializeChecksTheClientToken(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -40,13 +43,25 @@ func TestInitializeChecksTheClientToken(t *testing.T) {
 	if r, err := initialize(connect(withToken), ""); err != nil || r.Privileged {
 		t.Errorf("no token: privileged %v, err %v; want an unprivileged connection", r.Privileged, err)
 	}
-	cl := connect(withToken)
 	var pe *proto.Error
-	if _, err := initialize(cl, "0123456789abcdeX"); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+	if _, err := initialize(connect(withToken), "0123456789abcdeX"); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("a wrong token: %v, want code %d", err, proto.CodeUnauthorized)
 	}
-	if r, err := initialize(cl, ""); err != nil || r.Privileged {
-		t.Errorf("after a wrong token, initialize without one: privileged %v, err %v; want unprivileged", r.Privileged, err)
+	// What a connection is privileged for is its own state, read here right after each initialize on one connection.
+	cn := &conn{enc: json.NewEncoder(io.Discard)}
+	initOn := func(token string) *proto.Error {
+		p, _ := json.Marshal(proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: token})
+		_, perr := withToken.dispatch(cn, proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodInitialize, Params: p})
+		return perr
+	}
+	if perr := initOn("0123456789abcdeX"); perr == nil || cn.privileged {
+		t.Errorf("a wrong token on a new connection: %v, privileged %v; want refused and unprivileged", perr, cn.privileged)
+	}
+	if perr := initOn("0123456789abcdef"); perr != nil || !cn.privileged {
+		t.Fatalf("the right token: %v, privileged %v", perr, cn.privileged)
+	}
+	if perr := initOn("0123456789abcdeX"); perr == nil || perr.Code != proto.CodeUnauthorized || cn.privileged {
+		t.Errorf("a wrong token on a privileged connection: %v, privileged %v; want refused, and the privilege gone", perr, cn.privileged)
 	}
 	noToken := New(ctx, Options{Store: st, Version: "test"})
 	if _, err := initialize(connect(noToken), "0123456789abcdef"); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {

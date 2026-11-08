@@ -31,3 +31,28 @@ func TestReadPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestRealResolvesAPathThatDoesNotExistYet: Seatbelt matches real paths, so a profile path must be real even when it
+// does not exist yet, as a state directory under /tmp (which is /private/tmp) may not: the deepest existing ancestor is
+// resolved, and the rest kept.
+func TestRealResolvesAPathThatDoesNotExistYet(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	resolved, _ := filepath.EvalSymlinks(dir)
+	if resolved == dir {
+		t.Fatalf("%s is its own real path; the test needs one reached through a symlink", dir)
+	}
+	for in, want := range map[string]string{
+		dir:                                    resolved,
+		filepath.Join(dir, "state"):            filepath.Join(resolved, "state"),
+		filepath.Join(dir, "state", "a", "b"):  filepath.Join(resolved, "state", "a", "b"),
+		filepath.Join(dir, "x", "..", "state"): filepath.Join(resolved, "state"),
+	} {
+		if got := real(in); got != want {
+			t.Errorf("real(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

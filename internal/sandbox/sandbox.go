@@ -70,11 +70,18 @@ var Secrets = []string{
 	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
 }
 
+// real is p with symlinks resolved, as Seatbelt matches paths. A path that does not exist yet has its deepest existing
+// ancestor resolved and the rest kept, so a rule for it still matches once it is made.
 func real(p string) string {
+	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
 	}
-	return filepath.Clean(p)
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(real(parent), filepath.Base(p))
 }
 
 func q(p string) string { return fmt.Sprintf("%q", real(p)) }

@@ -146,7 +146,7 @@ func TestModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]os.FileMode{dir: 0o700, SocketPath(dir): 0o600,
-		filepath.Join(dir, TokenName): 0o600, filepath.Join(dir, LockName): 0o600} {
+		filepath.Join(dir, TokenName): 0o600, filepath.Join(dir, LockName): 0o600, filepath.Join(dir, HolderName): 0o600} {
 		st, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
