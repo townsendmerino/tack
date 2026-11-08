@@ -34,6 +34,7 @@ type fakeReport struct {
 	EnvKey     bool     `json:"env_key"`
 	Loads      int      `json:"loads"`
 	Unloads    int      `json:"unloads"`
+	Fits       int      `json:"fits"`
 	BadAuth    int      `json:"bad_auth"`
 	SessionDir string   `json:"session_dir"`
 }
@@ -75,6 +76,26 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 	})
 	admin := http.NewServeMux()
+	admin.HandleFunc("POST /admin/models/fit", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name, Path string }
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		rep.Fits++
+		save()
+		mu.Unlock()
+		switch {
+		case strings.Contains(req.Path, "nofit"):
+			fmt.Fprint(w, `{"fits":false,"decline":"KV needs 9.0 GB at this context; 2.1 GB is free","decode_path":"unknown"}`)
+		case strings.Contains(req.Path, "streams"):
+			fmt.Fprint(w, `{"fits":false,"decline":"weights do not fit","retry":"the load retries with -stream-weights","decode_path":"unknown"}`)
+		case strings.Contains(req.Path, "cpufit"):
+			fmt.Fprint(w, `{"fits":true,"decode_path":"cpu (int4): metal declines this quantization"}`)
+		case strings.Contains(req.Path, "resident"):
+			fmt.Fprint(w, `{"fits":true,"decode_path":"metal-resident (int4)"}`)
+		default:
+			fmt.Fprint(w, `{"fits":null,"unknown":"the .giw is not built yet","decode_path":"unknown"}`)
+		}
+	})
 	admin.HandleFunc("POST /admin/models/load", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Name, Path string }
 		json.NewDecoder(r.Body).Decode(&req)
@@ -89,7 +110,11 @@ func fakeGoinfer(args []string) {
 		loaded[req.Name] = true
 		rep.Loads++
 		save()
-		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  decode path: cpu (int4)\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, *ctxN)
+		path := "cpu (int4)"
+		if strings.Contains(req.Path, "resident") {
+			path = "metal-resident (int4)"
+		}
+		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  decode path: %s\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, path, *ctxN)
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "loaded"})
 	})
 	admin.HandleFunc("POST /admin/models/unload", func(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +166,12 @@ func (c *clock) add(d time.Duration) {
 // and a controllable clock and memory pressure.
 func newSup(t *testing.T, modelPath string) (*Supervisor, *clock, *Pressure) {
 	t.Helper()
+	return newSupArgs(t, modelPath, []string{"-backend", "cpu"})
+}
+
+// newSupArgs is newSup with the child's extra flags.
+func newSupArgs(t *testing.T, modelPath string, args []string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
 	t.Setenv("TACK_FAKE_GOINFER", "1")
 	t.Setenv("GOINFER_API_KEY", "leaked-from-the-parent")
 	dir, err := os.MkdirTemp("/tmp", "tksup")
@@ -149,7 +180,7 @@ func newSup(t *testing.T, modelPath string) (*Supervisor, *clock, *Pressure) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	s, err := NewSupervisor(ChildConfig{Binary: os.Args[0], ModelPath: modelPath, Model: "m", Ctx: 8192,
-		Args: []string{"-backend", "cpu"}, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute})
+		Args: args, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,5 +385,57 @@ func TestRemote(t *testing.T) {
 	}
 	if _, err := NewRemote("nobara", ts.URL, "wrong", "qwen", nil).Ensure(ctx); err == nil {
 		t.Fatal("a bad token was accepted")
+	}
+}
+
+// TestFitDeclineRefusesTheLoad: before each load goinfer is asked whether it would fit (G2, POST /admin/models/fit,
+// p1-notes "P1's order and decisions"). fits:false is refused with goinfer's decline, and nothing loads; fits:null
+// loads, to find out; fits:false with a retry loads too, since goinfer's own load would not refuse it.
+func TestFitDeclineRefusesTheLoad(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newSup(t, "/m/nofit.gguf")
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "KV needs 9.0 GB") {
+		t.Fatalf("Ensure on a load that does not fit: %v, want goinfer's decline", err)
+	}
+	if r := report(t, s); r.Fits != 1 || r.Loads != 0 {
+		t.Fatalf("fit asked %d times, %d loads; want 1 and 0", r.Fits, r.Loads)
+	}
+	for _, path := range []string{"/m/notbuilt.gguf", "/m/streams.gguf"} {
+		s, _, _ := newSup(t, path)
+		if _, err := s.Ensure(ctx); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+		if r := report(t, s); r.Fits != 1 || r.Loads != 1 {
+			t.Errorf("%s: fit asked %d times, %d loads; want 1 and 1", path, r.Fits, r.Loads)
+		}
+	}
+}
+
+// TestDecodePathIsChecked: a load meant for the GPU that would decode on the CPU is refused. When fit already knows,
+// it is refused before the load; when only the load can tell, it is refused after, from goinfer's banner, and the
+// model is unloaded. A load that lands on the path its flags ask for is kept.
+func TestDecodePathIsChecked(t *testing.T) {
+	ctx := context.Background()
+	metal := []string{"-backend", "metal"}
+	s, _, _ := newSupArgs(t, "/m/cpufit.giw", metal)
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "cpu (int4)") || !strings.Contains(err.Error(), "metal-resident") {
+		t.Fatalf("fit says cpu for a metal load: %v, want refused before the load", err)
+	}
+	if r := report(t, s); r.Loads != 0 {
+		t.Fatalf("%d loads; want none", r.Loads)
+	}
+	s, _, _ = newSupArgs(t, "/m/fallsback.giw", metal)
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "banner") {
+		t.Fatalf("a metal load the banner puts on the cpu: %v, want refused after the load", err)
+	}
+	if r := report(t, s); r.Loads != 1 || r.Unloads != 1 {
+		t.Fatalf("%d loads, %d unloads; want the fallen-back load unloaded", r.Loads, r.Unloads)
+	}
+	if _, loaded := s.Running(); loaded {
+		t.Fatal("the supervisor counts the refused load as loaded")
+	}
+	s, _, _ = newSupArgs(t, "/m/resident.giw", metal)
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatalf("a load that lands on metal: %v", err)
 	}
 }

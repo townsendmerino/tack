@@ -228,6 +228,10 @@ func (s *Supervisor) waitReady(ctx context.Context, exited chan struct{}) error 
 }
 
 func (s *Supervisor) load(ctx context.Context) error {
+	want := DecodePathFor(s.cfg.Args)
+	if err := s.checkFit(ctx, want); err != nil {
+		return err
+	}
 	for len(s.fitLines) > 0 {
 		<-s.fitLines // lines from an earlier load
 	}
@@ -249,6 +253,7 @@ func (s *Supervisor) load(ctx context.Context) error {
 	}
 	// The banner prints "decode path:" then "fit:"; take whichever arrive within half a second.
 	deadline := time.After(500 * time.Millisecond)
+banner:
 	for s.plan.FitLine == "" || s.plan.DecodePath == "" {
 		select {
 		case line := <-s.fitLines:
@@ -258,8 +263,15 @@ func (s *Supervisor) load(ctx context.Context) error {
 				s.plan.FitLine = line
 			}
 		case <-deadline:
-			return nil
+			break banner
 		}
+	}
+	// goinfer declines a GPU quietly and serves on the CPU (eval.VoidPath); only the banner says so. Such a load is
+	// too slow to use, and is unloaded. A banner that gives no decode path cannot be checked, and the load stands.
+	if got := s.plan.DecodePath; want != "" && got != "" && !strings.HasPrefix(got, want) {
+		uerr := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil)
+		s.loaded, s.plan = false, Plan{}
+		return errors.Join(fmt.Errorf("models: goinfer loaded %s on %s, not %s (its banner); unloaded it", s.cfg.Model, got, want), uerr)
 	}
 	return nil
 }
@@ -433,4 +445,54 @@ func (s *Supervisor) PeakRSS() int64 {
 		return ru.Maxrss // bytes on Darwin
 	}
 	return ru.Maxrss * 1024 // KiB on Linux
+}
+
+// DecodePathFor is the decode path goinfer-serve's flags ask for: metal-resident or cuda-resident for a GPU backend
+// (goinfer has no staged GPU path), cpu for the CPU, and "" when the flags name no backend.
+func DecodePathFor(args []string) string {
+	backend := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-backend" || args[i] == "--backend" {
+			backend = args[i+1]
+		}
+	}
+	switch backend {
+	case "metal", "cuda":
+		return backend + "-resident"
+	case "cpu":
+		return "cpu"
+	}
+	return ""
+}
+
+// fitAnswer is what goinfer's POST /admin/models/fit says about a load, without loading (G2; goinfer docs/server.md,
+// "Admin: would this load fit?"). Fits is nil when only the load can tell, Unknown saying why; Retry is set when a
+// load that does not fit would retry another way instead of refusing; DecodePath is "unknown" when fit cannot tell.
+type fitAnswer struct {
+	Fits       *bool  `json:"fits"`
+	Unknown    string `json:"unknown"`
+	Decline    string `json:"decline"`
+	Retry      string `json:"retry"`
+	DecodePath string `json:"decode_path"`
+}
+
+// checkFit asks goinfer whether the load would fit, before it is made: a refusal the load itself would make is made
+// here, with goinfer's decline, and a load fit already places off want, the decode path the flags ask for, is refused
+// too. A goinfer without the route (404) leaves the load to decide.
+func (s *Supervisor) checkFit(ctx context.Context, want string) error {
+	var a fitAnswer
+	err := s.admin(ctx, "POST", "/admin/models/fit", map[string]string{"name": s.cfg.Model, "path": s.cfg.ModelPath}, &a)
+	if re, ok := errors.AsType[*RefusedError](err); ok && re.Status == http.StatusNotFound {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("models: goinfer refused to load %s at -ctx %d (its fit check): %w", s.cfg.Model, s.cfg.Ctx, err)
+	}
+	if a.Fits != nil && !*a.Fits && a.Retry == "" {
+		return fmt.Errorf("models: goinfer's fit check declines %s at -ctx %d: %s", s.cfg.Model, s.cfg.Ctx, a.Decline)
+	}
+	if want != "" && a.DecodePath != "" && a.DecodePath != "unknown" && !strings.HasPrefix(a.DecodePath, want) {
+		return fmt.Errorf("models: goinfer's fit check says %s would decode on %s, not %s; not loading it", s.cfg.Model, a.DecodePath, want)
+	}
+	return nil
 }
