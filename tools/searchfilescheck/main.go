@@ -14,10 +14,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -26,6 +29,7 @@ import (
 	"github.com/townsendmerino/aikit/chunk/treesitter"
 
 	"github.com/townsendmerino/tack/internal/kensearch"
+	"github.com/townsendmerino/tack/internal/tools"
 	"github.com/townsendmerino/tack/internal/window"
 	"github.com/townsendmerino/tack/tools/gate"
 )
@@ -47,6 +51,11 @@ var messages = []string{
 	"write the measurement record for this run",
 }
 
+// The tool registers the chunker as cmd/tack does, once.
+func init() {
+	chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(1_000_000)))
+}
+
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, w, logw io.Writer) int {
@@ -60,7 +69,6 @@ func run(args []string, w, logw io.Writer) int {
 		fmt.Fprintln(w, gate.Verdict(gate.Inconclusive, "searchfilescheck: usage: -root DIR [-files A,B] [-mode M] [-model-dir DIR]"))
 		return 2
 	}
-	chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(1_000_000)))
 	ctx := context.Background()
 	s, err := kensearch.Open(ctx, *root, kensearch.Options{Mode: *mode, ModelDir: *modelDir, Log: logw})
 	if err != nil {
@@ -70,12 +78,18 @@ func run(args []string, w, logw io.Writer) int {
 	defer s.Close()
 	n := s.Chunks()
 	fmt.Fprintf(w, "index: %d chunks, mode %s (SearchFiles is exact by construction up to 5000)\n", n, *mode)
-	checked, wrong := 0, 0
+	checked, wrong, inexact := 0, 0, 0
+	whole := map[string][]tools.Hit{} // each query's whole ranking, for every file and k
 	for f := range strings.SplitSeq(*files, ",") {
+		f = path.Clean(filepath.ToSlash(strings.TrimSpace(f)))
 		b, err := os.ReadFile(filepath.Join(*root, filepath.FromSlash(f)))
-		if err != nil {
-			fmt.Fprintf(w, "%s: skipped (%v)\n", f, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(w, "%s: skipped (not in the tree)\n", f)
 			continue
+		}
+		if err != nil {
+			fmt.Fprintln(w, gate.Verdict(gate.Fail, "searchfilescheck: "+err.Error()))
+			return 1
 		}
 		queries := slices.Clone(messages)
 		for _, sec := range window.ParseSections(string(b)) {
@@ -84,19 +98,23 @@ func run(args []string, w, logw io.Writer) int {
 			}
 		}
 		for _, k := range ks {
-			r, err := check(ctx, s, f, queries, k, n)
+			r, err := check(ctx, s, f, queries, k, n, whole)
 			if err != nil {
 				fmt.Fprintln(w, gate.Verdict(gate.Fail, fmt.Sprintf("searchfilescheck: %s: %v", f, err)))
 				return 1
 			}
 			checked += len(queries)
 			wrong += len(r.differs)
+			inexact += r.inexact
 			fmt.Fprintf(w, "%s k=%d: %d queries, %d differ, %d with no hit; %d of %d exact hits returned; deepest rank an exact "+
 				"answer needed: %d\n", f, k, len(queries), len(r.differs), r.empty, r.found, r.exact, r.deepest)
 			for _, d := range r.differs {
 				fmt.Fprintf(w, "  differs: %q\n", d)
 			}
 		}
+	}
+	if inexact > 0 {
+		fmt.Fprintf(w, "SearchFile said inexact for %d of %d answers (an index over 5000 chunks)\n", inexact, checked)
 	}
 	switch {
 	case checked == 0:
@@ -113,22 +131,30 @@ func run(args []string, w, logw io.Writer) int {
 type result struct {
 	differs []string
 	empty   int
+	inexact int // answers SearchFile itself said were inexact
 	exact   int // hits in the exact answers
 	found   int // of those, the ones SearchFile returned
 	deepest int // the deepest whole-ranking rank among the exact answers' hits
 }
 
-// check compares SearchFile with the whole ranking filtered to file, for each query at k.
-func check(ctx context.Context, s *kensearch.Searcher, file string, queries []string, k, n int) (result, error) {
+// check compares SearchFile with the whole ranking filtered to file, for each query at k. whole caches each query's
+// whole ranking (k = n) across calls.
+func check(ctx context.Context, s *kensearch.Searcher, file string, queries []string, k, n int, whole map[string][]tools.Hit) (result, error) {
 	var r result
 	for _, q := range queries {
-		got, err := s.SearchFile(ctx, q, k, file)
+		got, exact, err := s.SearchFile(ctx, q, k, file)
 		if err != nil {
 			return r, err
 		}
-		all, err := s.Search(ctx, q, n)
-		if err != nil {
-			return r, err
+		if !exact {
+			r.inexact++
+		}
+		all, ok := whole[q]
+		if !ok {
+			if all, err = s.Search(ctx, q, n); err != nil {
+				return r, err
+			}
+			whole[q] = all
 		}
 		var want []kensearch.SectionHit
 		for i, h := range all {

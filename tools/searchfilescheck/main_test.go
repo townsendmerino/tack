@@ -15,7 +15,19 @@ func TestCheckPassesOnASmallIndex(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n\n## Staging\n\nStage and commit.\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\n// run the tests\nfunc A() {}\n"), 0o644)
 	var out bytes.Buffer
-	if code := run([]string{"-root", dir, "-files", "CLAUDE.md"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") {
+	if code := run([]string{"-root", dir, "-files", "./CLAUDE.md"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") ||
+		strings.Contains(out.String(), "said inexact") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// TestCheckFailsOnAnUnreadableFile: a file that is there but cannot be read fails the check instead of being skipped.
+func TestCheckFailsOnAnUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "AGENTS.md"), 0o755)
+	var out bytes.Buffer
+	if code := run([]string{"-root", dir, "-files", "CLAUDE.md,AGENTS.md"}, &out, &bytes.Buffer{}); code != 1 || !strings.Contains(out.String(), "VERDICT: FAIL") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
@@ -31,7 +43,8 @@ func TestCheckFailsPastTheCap(t *testing.T) {
 	}
 	var out bytes.Buffer
 	code := run([]string{"-root", dir, "-files", "CLAUDE.md"}, &out, &bytes.Buffer{})
-	if code != 1 || !strings.Contains(out.String(), "VERDICT: FAIL") || !strings.Contains(out.String(), `differs: "Zebra"`) {
+	if code != 1 || !strings.Contains(out.String(), "VERDICT: FAIL") || !strings.Contains(out.String(), `differs: "Zebra"`) ||
+		!strings.Contains(out.String(), "SearchFile said inexact") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }

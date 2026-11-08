@@ -62,7 +62,8 @@ about it.
 
 - **ken change (brief in `~/goinfer-status/mbp2-tack-p1s5.md`, "Brief for ken"):** make `SearchFiles` exact at any
   index size, by scoring the requested files' chunks directly rather than filtering a capped list. Until it lands,
-  tack doesn't use `SearchFiles` for sections on an index over 5,000 chunks.
+  tack doesn't use `SearchFiles` for sections. `kensearch.Searcher.SearchFile` returns `exact = false` on an index over
+  5,000 chunks, so a caller can't take its answer as the file's best sections without seeing that.
 - **The night item, `SearchFiles`'s latency on goinfer:** its run spec is below. It isn't run here, and it isn't worth
   running on today's `SearchFiles`, whose answers are wrong at goinfer's size. It measures the exact version once ken
   ships it.
@@ -80,14 +81,20 @@ about it.
 - **Build:** a small `tools/searchfileslat` beside `searchfilescheck`, built at a pinned tack commit on the ken release
   that makes `SearchFiles` exact.
   - It opens the index once, from a ken snapshot built in an untimed step before the timed one.
-  - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it runs
-    the same 94 queries as `searchfilescheck`, 20 rounds each, interleaved A B B A across modes.
+  - **The snapshot step is gated like a cell.** It starts only at a load average of 2 or less, and builds with the
+    tree-sitter parse timeout off, as ken's CLI does, so the index doesn't depend on how busy the box is (the chunk
+    counts above differed under load). It is built twice, and the job stops unless both builds give the same chunk
+    count.
+  - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it makes
+    `searchfilescheck`'s 94 calls: 47 (file, query) pairs (25 for the root `CLAUDE.md`, 11 for each nested one) at
+    k=5 and at k=20. Each runs 20 rounds, interleaved A B B A across modes. p95 is taken over the k=5 calls, the size
+    ken's route asks for; k=20 is recorded beside it.
 - **Records:** per cell, the load average and free memory at its start, p50, p95 and max per call, and the index's
   chunk count. A cell started at a load average above 2 is void.
-- **Decision rule (pre-registered, proposed):**
+- **Decision rule (pre-registered; approved, as above):**
   - **p95 ≤ 100 ms** in hybrid: ken's route runs inline on every user message.
   - **100–400 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
   - **> 400 ms:** it runs off the critical path or not at all. The deterministic route stays.
   - The do-nothing arm is the deterministic route alone, which costs no search.
-- **Expected wall time:** about 15 minutes: index load about 1 minute, then 2 modes × 94 queries × 20 rounds, with
+- **Expected wall time:** about 15 minutes: index load about 1 minute, then 2 modes × 94 calls × 20 rounds, with
   hybrid well under 0.5 s a call.
