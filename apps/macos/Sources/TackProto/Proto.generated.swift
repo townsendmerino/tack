@@ -7,6 +7,8 @@ public enum TackProto {
 }
 
 public enum Method {
+    public static let daemonShutdown = "daemon/shutdown"
+    public static let daemonStatus = "daemon/status"
     public static let initialize = "initialize"
     public static let sessionEvent = "session/event"
     public static let sessionNew = "session/new"
@@ -157,6 +159,40 @@ public struct DaemonInfo: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version = "version"
+    }
+}
+
+public struct DaemonShutdownParams: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonShutdownResult: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonStatusParams: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonStatusResult: Codable, Equatable, Sendable {
+    public var version: String
+    public var `protocol`: Int
+    public var pid: Int
+    public var started: String
+    public var sessions: Int
+    public var running: Int
+    public var halted: Bool
+    public var draining: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case version = "version"
+        case `protocol` = "protocol"
+        case pid = "pid"
+        case started = "started"
+        case sessions = "sessions"
+        case running = "running"
+        case halted = "halted"
+        case draining = "draining"
     }
 }
 
