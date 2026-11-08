@@ -1,0 +1,464 @@
+package window
+
+import (
+	"encoding/json"
+	"fmt"
+	"path"
+	"regexp"
+	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
+)
+
+// Instruction files by section (DESIGN §2.3, §6.7). A file within the budget is loaded whole. Above it, the first
+// message gets the file's first section, every section marked <!-- tack:always -->, and an outline of the other
+// headings with their lines; the other sections arrive when the first tool call of a matching kind runs (ForCall), and
+// only if they are not in the window already. Every load counts against one budget, cumulative until the next
+// compaction; a compaction that stubs a result carrying sections returns their share (Masked).
+
+// SectionShare is the share of the served window the instruction file's sections may take, in percent, cumulative until
+// the next compaction (DESIGN §2.3, *proposed* 15%).
+const SectionShare = 15
+
+// Section is one heading-bounded part of an instruction file, in the shape of ken's engine.Section (K9): it runs from
+// its heading line to the line before the next heading, and the text before the first heading is a level-0 section
+// with no heading path. Lines are 1-based and inclusive.
+type Section struct {
+	HeadingPath []string
+	Level       int
+	StartLine   int
+	EndLine     int
+	Text        string
+	// Always is set by a <!-- tack:always --> marker in the section: it is loaded with the first message.
+	Always bool
+	// On is the section's <!-- tack:on KIND ... --> kinds, such as "bash:git", "bash:go test" or "edit:*_test.go". A
+	// section with any is matched by them alone, not by its heading.
+	On []string
+}
+
+// Heading is the section's own heading, "" for the preamble.
+func (s Section) Heading() string {
+	if len(s.HeadingPath) == 0 {
+		return ""
+	}
+	return s.HeadingPath[len(s.HeadingPath)-1]
+}
+
+var (
+	atxHeading = regexp.MustCompile(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$`)
+	atxClosing = regexp.MustCompile(`[ \t]+#+$`)
+	marker     = regexp.MustCompile(`<!--\s*tack:(always|on)\b([^>]*?)-->`)
+)
+
+// ParseSections splits content into its sections at ATX headings outside code fences, in file order. Its boundaries are
+// ken's for the instruction files tack reads (TestParseSectionsAgreesWithKen); ken also takes setext headings, which
+// those files do not use.
+func ParseSections(content string) []Section {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if content == "" {
+		return nil
+	}
+	var out []Section
+	var stack []struct {
+		level int
+		text  string
+	}
+	fence := ""
+	start := func(i, level int, path []string) {
+		if n := len(out); n > 0 {
+			out[n-1].EndLine = i
+		}
+		out = append(out, Section{HeadingPath: path, Level: level, StartLine: i + 1})
+	}
+	for i, l := range lines {
+		t := strings.TrimLeft(l, " ")
+		if fence != "" {
+			if strings.HasPrefix(t, fence) && strings.TrimSpace(strings.TrimLeft(t, fence[:1])) == "" {
+				fence = ""
+			}
+			continue
+		}
+		if len(l)-len(t) <= 3 && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")) {
+			fence = t[:3]
+			if i == 0 {
+				start(0, 0, nil)
+			}
+			continue
+		}
+		m := atxHeading.FindStringSubmatch(l)
+		if m == nil {
+			if i == 0 {
+				start(0, 0, nil)
+			}
+			continue
+		}
+		level := len(m[1])
+		text := strings.TrimSpace(atxClosing.ReplaceAllString(m[2], ""))
+		if strings.Trim(text, "#") == "" {
+			text = ""
+		}
+		for len(stack) > 0 && stack[len(stack)-1].level >= level {
+			stack = stack[:len(stack)-1]
+		}
+		stack = append(stack, struct {
+			level int
+			text  string
+		}{level, text})
+		path := make([]string, len(stack))
+		for j, s := range stack {
+			path[j] = s.text
+		}
+		start(i, level, path)
+	}
+	out[len(out)-1].EndLine = len(lines)
+	for i := range out {
+		out[i].Text = strings.Join(lines[out[i].StartLine-1:out[i].EndLine], "\n")
+		for _, m := range marker.FindAllStringSubmatch(out[i].Text, -1) {
+			if m[1] == "always" {
+				out[i].Always = true
+				continue
+			}
+			for k := range strings.SplitSeq(m[2], ",") {
+				if k = strings.Join(strings.Fields(k), " "); k != "" {
+					out[i].On = append(out[i].On, k)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// SectionTokens estimates a text's tokens as the injection does (InjectTokens).
+func SectionTokens(s string) int { return InjectTokens(s) }
+
+// Instructions is one instruction file's sections in one session, and which of them are in the window. It is not safe
+// for concurrent use; a session's loop calls it from its turn.
+type Instructions struct {
+	name   string
+	secs   []Section
+	whole  bool
+	budget int // tokens
+	used   int
+	in     []bool
+	cost   []int    // what each loaded section counts against the budget
+	by     []string // the tool call whose result carries each section ForCall loaded; "" for the messages'
+}
+
+// NewInstructions is name's content read by section for a window of window tokens. name is the file's path from the
+// workspace root, as the model's read tool takes it.
+func NewInstructions(name, content string, window int) *Instructions {
+	in := &Instructions{name: name, secs: ParseSections(content), budget: window * SectionShare / 100}
+	in.in, in.cost, in.by = make([]bool, len(in.secs)), make([]int, len(in.secs)), make([]string, len(in.secs))
+	in.whole = SectionTokens(content) <= in.budget
+	return in
+}
+
+// Used is the tokens the sections in the window take, of Budget.
+func (in *Instructions) Used() int { return in.used }
+
+// Budget is the sections' budget in tokens.
+func (in *Instructions) Budget() int { return in.budget }
+
+// firstSection is how many sections the opening takes: the preamble and the sections up to and including the first one
+// with text beyond its heading, so a file that opens with only its title takes in the section after it.
+func (in *Instructions) firstSection() int {
+	for i, s := range in.secs {
+		body := s.Text
+		if s.Level > 0 {
+			_, body, _ = strings.Cut(s.Text, "\n")
+		}
+		if strings.TrimSpace(marker.ReplaceAllString(body, "")) != "" {
+			return i + 1
+		}
+	}
+	return len(in.secs)
+}
+
+// Initial is the text the session's first message carries, framed as reference notes, and marks what it holds as in
+// the window. A file within the budget is whole. Otherwise it is the first section, the always sections, and an
+// outline of the rest with their lines; if those pass the budget, outline entries are dropped from the end first, then
+// always sections, then lines of the first section, and each cut is said. It is "" for an empty file.
+func (in *Instructions) Initial() string {
+	if len(in.secs) == 0 {
+		return ""
+	}
+	if in.whole {
+		var b strings.Builder
+		for i, s := range in.secs {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(s.Text)
+			in.in[i] = true
+		}
+		in.used = SectionTokens(b.String())
+		return "Project instructions, from " + in.name + ":\n\n" + b.String()
+	}
+	first := in.firstSection()
+	var always, rest []int
+	for i := first; i < len(in.secs); i++ {
+		if in.secs[i].Always {
+			always = append(always, i)
+		} else {
+			rest = append(rest, i)
+		}
+	}
+	firstLines := strings.Split(in.join(0, first), "\n")
+	build := func(firstLines []string, cutFirst bool, always []int, droppedAlways, outline []int, more int) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Project notes from %s, for reference:\n\n", in.name)
+		b.WriteString(strings.Join(firstLines, "\n"))
+		if cutFirst {
+			b.WriteString("\n[… the rest of this section is cut to fit the window; read " + in.name + " for it]")
+		}
+		for _, i := range always {
+			b.WriteString("\n\n" + in.secs[i].Text)
+		}
+		if len(outline) > 0 || more > 0 || len(droppedAlways) > 0 {
+			b.WriteString("\n\nOther sections of " + in.name + ", with their lines; their rules arrive when a tool call needs " +
+				"them, or read the lines:\n")
+			var entries []int
+			entries = append(entries, droppedAlways...)
+			entries = append(entries, outline...)
+			for _, i := range entries {
+				s := in.secs[i]
+				fmt.Fprintf(&b, "%s%s (lines %d–%d)\n", strings.Repeat("  ", max(0, s.Level-2)), s.Heading(), s.StartLine, s.EndLine)
+			}
+			if more > 0 {
+				fmt.Fprintf(&b, "[… %d more headings]\n", more)
+			}
+		}
+		return strings.TrimSuffix(b.String(), "\n")
+	}
+	outline, more, dropped, cut := rest, 0, []int(nil), false
+	fits := func() bool { return SectionTokens(build(firstLines, cut, always, dropped, outline, more)) <= in.budget }
+	for len(outline) > 0 && !fits() {
+		outline, more = outline[:len(outline)-1], more+1
+	}
+	for len(always) > 0 && !fits() {
+		dropped = append([]int{always[len(always)-1]}, dropped...)
+		always = always[:len(always)-1]
+	}
+	for len(firstLines) > 1 && !fits() {
+		firstLines, cut = firstLines[:len(firstLines)-1], true
+	}
+	text := build(firstLines, cut, always, dropped, outline, more)
+	if !cut {
+		for i := range first {
+			in.in[i] = true
+		}
+	}
+	for _, i := range always {
+		in.in[i] = true
+	}
+	in.used = SectionTokens(text)
+	return text
+}
+
+func (in *Instructions) join(from, to int) string {
+	parts := make([]string, 0, to-from)
+	for _, s := range in.secs[from:to] {
+		parts = append(parts, s.Text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// defaultWords are the heading words a call's kinds match in a section without markers: a git command brings in the
+// sections on git, staging and committing; go test, or an edit of a _test.go file, the sections on testing.
+var defaultWords = []struct {
+	kind  string
+	words []string
+}{
+	{"bash:git", []string{"git", "commit", "commits", "committing", "staging", "stage", "push", "pushing", "branch", "branches"}},
+	{"bash:go test", []string{"test", "tests", "testing"}},
+	{"edit:*_test.go", []string{"test", "tests", "testing"}},
+}
+
+// callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:<name>" and
+// "bash:<name> <first argument>", and an edit or write as "edit:<path>".
+func callKinds(tool string, input json.RawMessage) []string {
+	switch tool {
+	case "bash":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) != nil {
+			return nil
+		}
+		f, err := syntax.NewParser().Parse(strings.NewReader(in.Command), "")
+		if err != nil {
+			return nil
+		}
+		var out []string
+		syntax.Walk(f, func(n syntax.Node) bool {
+			call, ok := n.(*syntax.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			name := call.Args[0].Lit()
+			if name == "" {
+				return true
+			}
+			out = append(out, "bash:"+path.Base(name))
+			if len(call.Args) > 1 {
+				if a := call.Args[1].Lit(); a != "" {
+					out = append(out, "bash:"+path.Base(name)+" "+a)
+				}
+			}
+			return true
+		})
+		return out
+	case "edit", "write":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) != nil || in.Path == "" {
+			return nil
+		}
+		return []string{"edit:" + in.Path}
+	}
+	return nil
+}
+
+// kindMatches says whether a call kind matches a pattern kind: bash kinds by equality, edit kinds by path.Match of the
+// pattern against the path, or against its last element when the pattern has no slash.
+func kindMatches(pattern, kind string) bool {
+	if p, ok := strings.CutPrefix(pattern, "edit:"); ok {
+		k, ok := strings.CutPrefix(kind, "edit:")
+		if !ok {
+			return false
+		}
+		if !strings.Contains(p, "/") {
+			k = path.Base(k)
+		}
+		m, _ := path.Match(p, k)
+		return m
+	}
+	return pattern == kind
+}
+
+var nonWord = regexp.MustCompile(`[^a-z0-9]+`)
+
+// matches says whether section i is wanted for a call of these kinds: by its markers when it has any, else by a word of
+// its own heading.
+func (in *Instructions) matches(i int, kinds []string) bool {
+	s := in.secs[i]
+	if len(s.On) > 0 {
+		for _, p := range s.On {
+			for _, k := range kinds {
+				if kindMatches(p, k) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	words := map[string]bool{}
+	for _, w := range nonWord.Split(strings.ToLower(s.Heading()), -1) {
+		words[w] = true
+	}
+	for _, d := range defaultWords {
+		for _, k := range kinds {
+			if !kindMatches(d.kind, k) {
+				continue
+			}
+			for _, w := range d.words {
+				if words[w] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// within says whether section j sits under section i: after it, before the next section at i's level or above.
+func (in *Instructions) within(i, j int) bool {
+	if j <= i || in.secs[i].Level == 0 {
+		return false
+	}
+	for k := i + 1; k <= j; k++ {
+		if in.secs[k].Level <= in.secs[i].Level {
+			return false
+		}
+	}
+	return true
+}
+
+// ForCall is the sections tool call id brings in, as text to add to its result, and marks them in the window: those
+// matching the call (with the subsections of each) that are not in already, in file order, as many as the budget
+// leaves room for; the ones that do not fit are named with their lines. It is "" when nothing is wanted, and always ""
+// for a file loaded whole. A compaction that stubs id's result must call Masked.
+func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
+	if in.whole {
+		return ""
+	}
+	kinds := callKinds(tool, input)
+	if len(kinds) == 0 {
+		return ""
+	}
+	want := map[int]bool{}
+	for i := range in.secs {
+		if !in.matches(i, kinds) {
+			continue
+		}
+		want[i] = true
+		for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
+			want[j] = true
+		}
+	}
+	return in.load(want, "for this call", id)
+}
+
+// load adds the wanted sections that are not in, in file order, while the budget lasts; by is the call whose result
+// carries them, "" for a message.
+func (in *Instructions) load(want map[int]bool, why, by string) string {
+	var got, left []int
+	var b strings.Builder
+	for i := range in.secs {
+		if !want[i] || in.in[i] {
+			continue
+		}
+		cost := SectionTokens(in.secs[i].Text) + 1
+		if in.used+cost > in.budget {
+			left = append(left, i)
+			continue
+		}
+		in.used += cost
+		in.in[i], in.cost[i], in.by[i] = true, cost, by
+		got = append(got, i)
+		b.WriteString("\n\n" + in.secs[i].Text)
+	}
+	if len(got) == 0 && len(left) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "\n\n[Project rules from %s %s:]", in.name, why)
+	out.WriteString(b.String())
+	if len(left) > 0 {
+		out.WriteString("\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines")
+		for k, i := range left {
+			if k > 0 {
+				out.WriteString(",")
+			}
+			fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
+		}
+		out.WriteString(" for them.]")
+	}
+	return out.String()
+}
+
+// Masked tells the sections a compaction stubbed the results of these tool calls: the sections those results carried
+// are out of the window again, and their cost goes back to the budget.
+func (in *Instructions) Masked(ids []string) {
+	gone := map[string]bool{}
+	for _, id := range ids {
+		gone[id] = true
+	}
+	for i := range in.secs {
+		if in.in[i] && in.by[i] != "" && gone[in.by[i]] {
+			in.used -= in.cost[i]
+			in.in[i], in.cost[i], in.by[i] = false, 0, ""
+		}
+	}
+}

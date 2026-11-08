@@ -118,6 +118,10 @@ type Options struct {
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
 	WholeInstructions bool
+	// SectionInstructions reads the workspace's instruction file by section instead (window.Instructions; DESIGN §2.3):
+	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
+	// brings in to its result. WholeInstructions wins when both are set.
+	SectionInstructions bool
 }
 
 // EditKit is what an auto-mode session changes its workspace with.
@@ -155,8 +159,9 @@ type session struct {
 	subs    map[*subscriber]bool
 	target  sandbox.Target // what Halt sweeps for this session
 	kit     func() error   // the edit kit's Close, or nil
-	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been. notesFirst puts it
-	// before the prompt, which then follows under "Task:" (the budgeted head, instructions.go); else it follows the prompt.
+	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
+	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
+	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
 	prompted     bool
@@ -422,6 +427,12 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	} else if c.opt.WholeInstructions {
 		s.instructions = readInstructions(ws.Root())
+	} else if c.opt.SectionInstructions {
+		if name, content := readInstructionFile(ws.Root()); name != "" {
+			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
+			s.instructions, s.notesFirst = in.Initial(), true
+			cfg.Sections = in
+		}
 	}
 	s.loop = loop.New(cfg)
 	c.mu.Lock()

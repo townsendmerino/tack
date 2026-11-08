@@ -520,3 +520,49 @@ func TestCompactAtCliffThroughTheCore(t *testing.T) {
 		}
 	}
 }
+
+// TestSectionInstructionsThroughTheCore: with SectionInstructions, an instruction file over its budget gives the first
+// message its opening and an outline, before the task; the testing section arrives with the write of a _test.go file,
+// in that call's result, and not with the first message.
+func TestSectionInstructionsThroughTheCore(t *testing.T) {
+	f := newFixture(t,
+		goinfertest.Calls("", "w1", "write", `{"path":"b_test.go","content":"package a\n"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"added the test"}`))
+	md := "# notes\n\nIntro: read this first.\n\n## Testing\n\nRun go test with -v.\n\n## Filler\n\n" +
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300)
+	ws := gitWorkspace(t, md)
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	evs := f.waitTurnEnd(t)
+	var first string
+	var results []string
+	for _, ev := range evs {
+		switch v, _ := ev.Decode(); p := v.(type) {
+		case proto.UserMessage:
+			first = p.Content[0].Text
+		case proto.ToolFinished:
+			results = append(results, p.Result)
+		}
+	}
+	if !strings.HasPrefix(first, "Project notes from CLAUDE.md, for reference:\n\n# notes\n\nIntro: read this first.") ||
+		!strings.Contains(first, "Testing (lines 5–8)") || strings.Contains(first, "Run go test with -v.") ||
+		!strings.HasSuffix(first, "Task: Add a test.") {
+		t.Fatalf("first message %q", first)
+	}
+	if len(results) != 2 || !strings.Contains(results[0], "[Project rules from CLAUDE.md for this call:]\n\n## Testing\n\nRun go test with -v.") {
+		t.Fatalf("results %q", results)
+	}
+}
