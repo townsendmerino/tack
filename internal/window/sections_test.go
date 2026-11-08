@@ -61,7 +61,7 @@ func bigFile() string {
 
 func TestInstructionsWholeUnderBudget(t *testing.T) {
 	src := "# notes\n\n## Testing\n\nRun go test.\n"
-	in := NewInstructions("CLAUDE.md", src, 16384)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(16384))
 	got := in.Initial()
 	if !strings.Contains(got, "Run go test.") || !strings.HasPrefix(got, "Project instructions, from CLAUDE.md:") {
 		t.Fatalf("a file within the budget is whole:\n%s", got)
@@ -72,7 +72,7 @@ func TestInstructionsWholeUnderBudget(t *testing.T) {
 }
 
 func TestInstructionsInitialIsHeadAlwaysAndOutline(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	got := in.Initial()
 	for _, want := range []string{"Intro: read this first.", "Tag from main.", "Staging and committing (lines 5–8)",
 		"Testing (lines 9–12)", "  A skip is not a pass (lines 13–16)"} {
@@ -91,7 +91,7 @@ func TestInstructionsInitialIsHeadAlwaysAndOutline(t *testing.T) {
 }
 
 func TestInstructionsForCall(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	in.Initial()
 	git := in.ForCall("c1", "bash", bash("cd x && git commit -m y"))
 	if !strings.Contains(git, "Never git add -A.") || strings.Contains(git, "Run go test") {
@@ -133,7 +133,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 	for i := range 6 {
 		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n", i, strings.Repeat("rule text for this testing part. ", 40))
 	}
-	in := NewInstructions("CLAUDE.md", b.String(), 4096) // 614 tokens; each part is about 430
+	in := NewInstructions("CLAUDE.md", b.String(), NewBudget(4096)) // 614 tokens; each part is about 430
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(got, "## Testing part 0") || strings.Contains(got, "## Testing part 1\n") ||

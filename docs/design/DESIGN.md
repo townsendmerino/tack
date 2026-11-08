@@ -228,7 +228,7 @@ tickets and large unspecified features. On a local model, the app should help th
 
 **Where they are tracked.** The self-review and the staged plan are C6 screen candidates
 (`docs/measurements/e1-calibration-c6-status-2026-10-21.md`, "Candidates, not registered"); reading
-`.agents/knowledge/` is proposed for P1's instruction-file step (`docs/design/p1-notes.md`, step 5).
+`.agents/knowledge/` is **decided** for P1's instruction-file step (ADR-007, 2026-11-08; `docs/design/p1-notes.md`, step 5).
 
 ---
 
@@ -801,7 +801,7 @@ tool-use smoke set compares this merged set against the split one before it is f
 ### 6.7 Instructions and extensions
 
 - **Instruction files.** `AGENTS.md` and `CLAUDE.md` at the workspace root, and in a subdirectory once the session works
-  under it; a user-level `~/.config/tack/AGENTS.md`; *proposed* (§2.5), `.agents/knowledge/` files, read on demand.
+  under it; a user-level `~/.config/tack/AGENTS.md`; `.agents/knowledge/` files, read on demand (§2.5, **decided**: ADR-007).
   Long files are loaded by section (§2.3). The owner's repos depend on these: their `CLAUDE.md` files carry hard rules
   (the staticcheck canary, explicit-path staging, the night queue).
 - **Memory across sessions** (added 2026-11-07, from Anthropic's "The components of agent memory").

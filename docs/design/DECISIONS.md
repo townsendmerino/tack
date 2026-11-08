@@ -229,3 +229,30 @@ does. The eval should measure what ships, and users will run with snapshots on.
   says it should not move a pass count, and a setting that engages on some tasks only is a poor thing to hold fixed. The owner chose
   to match what ships.
 - **Done (2026-11-05).** The A1 pilot's config (`internal/eval/pilot/tack.go`) now sets `snapshots = true`, and `TestE1RunsWithSnapshots` asserts it.
+
+## ADR-007 — `.agents/knowledge/` pages, read on demand, off in measured runs
+
+**Decided by the owner (Francis, 2026-11-08, through the coordinator at 15:01):** build `.agents/knowledge/` in P1's
+instruction-file step (DESIGN §2.5, §6.7 "Memory across sessions"; `docs/design/p1-notes.md`, step 5), as the minimal
+slice `mbp2-tack-p1s5` proposed.
+
+- **The pages.** Markdown files under `.agents/knowledge/`, one page per file, package or subject. A page's frontmatter
+  names its title and its pins: each a file from the workspace root and the sha256 of that file's content (a prefix of
+  at least 12 hex digits). The page records the hash itself, the way ledger items are anchored (§7.5), so tack keeps no
+  state of its own about pages. A pin that leaves the workspace is dropped.
+- **The harness loads them; the model needn't ask.**
+  - The first message carries only a short index of titles, capped at 2% of the window.
+  - A page loads when a tool call reads or edits its pinned file, at the tail of that call's result. That's the same
+    hook as instruction sections (`loop.Config.Sections`), drawing on the same cumulative 15% budget, and a compaction
+    that stubs the result frees the page's share.
+- **A stale page isn't loaded as fact.** When a pinned file's hash no longer matches, or the pin records none, the page
+  is named as possibly out of date and its body stays out. No model call is involved.
+- **Off in measured runs.** It's `[run] knowledge`, default off, and it isn't a `pilot.RunSettings` name, so no E1 arm
+  can turn it on (`TestArmsRunWithKnowledgeOff`). One run's notes must never reach another.
+- **Not in this slice:**
+  - writing pages back, which waits for edit approval (p1-notes, step 5);
+  - pins to a symbol (`file#Symbol`);
+  - loading through ken from the user's message, which waits for ken's exact `SearchFiles`
+    (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`);
+  - a helper that writes a pin's hash. Until there is one, a pin's hash is `sha256sum`'s output, or a prefix of it.
+- **Code:** `internal/window/knowledge.go:Knowledge`, `internal/core/core.go:Options.Knowledge`.

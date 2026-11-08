@@ -134,30 +134,36 @@ func SectionTokens(s string) int { return InjectTokens(s) }
 // Instructions is one instruction file's sections in one session, and which of them are in the window. It is not safe
 // for concurrent use; a session's loop calls it from its turn.
 type Instructions struct {
-	name   string
-	secs   []Section
-	whole  bool
-	budget int // tokens
-	used   int
-	in     []bool
-	cost   []int    // what each loaded section counts against the budget
-	by     []string // the tool call whose result carries each section ForCall loaded; "" for the messages'
+	name  string
+	secs  []Section
+	whole bool
+	b     *Budget
+	in    []bool
+	cost  []int    // what each loaded section counts against the budget
+	by    []string // the tool call whose result carries each section ForCall loaded; "" for the messages'
 }
 
-// NewInstructions is name's content read by section for a window of window tokens. name is the file's path from the
-// workspace root, as the model's read tool takes it.
-func NewInstructions(name, content string, window int) *Instructions {
-	in := &Instructions{name: name, secs: ParseSections(content), budget: window * SectionShare / 100}
+// Budget is the share of the window that instruction sections and knowledge pages take together, in tokens: Limit is
+// SectionShare of the served window, and Used goes down when a compaction stubs a result that carried some.
+type Budget struct{ Limit, Used int }
+
+// NewBudget is the budget for a window of window tokens.
+func NewBudget(window int) *Budget { return &Budget{Limit: window * SectionShare / 100} }
+
+// NewInstructions is name's content read by section, drawing on b. name is the file's path from the workspace root, as
+// the model's read tool takes it. A file within b's limit is loaded whole.
+func NewInstructions(name, content string, b *Budget) *Instructions {
+	in := &Instructions{name: name, secs: ParseSections(content), b: b}
 	in.in, in.cost, in.by = make([]bool, len(in.secs)), make([]int, len(in.secs)), make([]string, len(in.secs))
-	in.whole = SectionTokens(content) <= in.budget
+	in.whole = SectionTokens(content) <= b.Limit
 	return in
 }
 
-// Used is the tokens the sections in the window take, of Budget.
-func (in *Instructions) Used() int { return in.used }
+// Used is the tokens the budget's loads take, of Budget.
+func (in *Instructions) Used() int { return in.b.Used }
 
-// Budget is the sections' budget in tokens.
-func (in *Instructions) Budget() int { return in.budget }
+// Budget is the budget's limit in tokens.
+func (in *Instructions) Budget() int { return in.b.Limit }
 
 // firstSection is how many sections the opening takes: the preamble and the sections up to and including the first one
 // with text beyond its heading, so a file that opens with only its title takes in the section after it.
@@ -191,7 +197,7 @@ func (in *Instructions) Initial() string {
 			b.WriteString(s.Text)
 			in.in[i] = true
 		}
-		in.used = SectionTokens(b.String())
+		in.b.Used += SectionTokens(b.String())
 		return "Project instructions, from " + in.name + ":\n\n" + b.String()
 	}
 	first := in.firstSection()
@@ -231,7 +237,9 @@ func (in *Instructions) Initial() string {
 		return strings.TrimSuffix(b.String(), "\n")
 	}
 	outline, more, dropped, cut := rest, 0, []int(nil), false
-	fits := func() bool { return SectionTokens(build(firstLines, cut, always, dropped, outline, more)) <= in.budget }
+	fits := func() bool {
+		return SectionTokens(build(firstLines, cut, always, dropped, outline, more)) <= in.b.Limit-in.b.Used
+	}
 	for len(outline) > 0 && !fits() {
 		outline, more = outline[:len(outline)-1], more+1
 	}
@@ -251,7 +259,7 @@ func (in *Instructions) Initial() string {
 	for _, i := range always {
 		in.in[i] = true
 	}
-	in.used = SectionTokens(text)
+	in.b.Used += SectionTokens(text)
 	return text
 }
 
@@ -275,7 +283,7 @@ var defaultWords = []struct {
 }
 
 // callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:<name>" and
-// "bash:<name> <first argument>", and an edit or write as "edit:<path>".
+// "bash:<name> <first argument>", an edit or write as "edit:<path>", and a read as "read:<path>". Paths are cleaned.
 func callKinds(tool string, input json.RawMessage) []string {
 	switch tool {
 	case "bash":
@@ -308,14 +316,18 @@ func callKinds(tool string, input json.RawMessage) []string {
 			return true
 		})
 		return out
-	case "edit", "write":
+	case "edit", "write", "read":
 		var in struct {
 			Path string `json:"path"`
 		}
 		if json.Unmarshal(input, &in) != nil || in.Path == "" {
 			return nil
 		}
-		return []string{"edit:" + in.Path}
+		kind := "edit:"
+		if tool == "read" {
+			kind = "read:"
+		}
+		return []string{kind + path.Clean(in.Path)}
 	}
 	return nil
 }
@@ -420,11 +432,11 @@ func (in *Instructions) load(want map[int]bool, why, by string) string {
 			continue
 		}
 		cost := SectionTokens(in.secs[i].Text) + 1
-		if in.used+cost > in.budget {
+		if in.b.Used+cost > in.b.Limit {
 			left = append(left, i)
 			continue
 		}
-		in.used += cost
+		in.b.Used += cost
 		in.in[i], in.cost[i], in.by[i] = true, cost, by
 		got = append(got, i)
 		b.WriteString("\n\n" + in.secs[i].Text)
@@ -457,7 +469,7 @@ func (in *Instructions) Masked(ids []string) {
 	}
 	for i := range in.secs {
 		if in.in[i] && in.by[i] != "" && gone[in.by[i]] {
-			in.used -= in.cost[i]
+			in.b.Used -= in.cost[i]
 			in.in[i], in.cost[i], in.by[i] = false, 0, ""
 		}
 	}

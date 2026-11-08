@@ -122,6 +122,11 @@ type Options struct {
 	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
 	// brings in to its result. WholeInstructions wins when both are set.
 	SectionInstructions bool
+	// Knowledge reads the workspace's .agents/knowledge/ pages (window.Knowledge; ADR-007): the first message carries
+	// their index, and a tool call that reads or edits a page's pinned file adds the page to its result, sharing
+	// SectionInstructions' budget. WholeInstructions turns it off, as it does SectionInstructions. Measured runs leave
+	// it off.
+	Knowledge bool
 }
 
 // EditKit is what an auto-mode session changes its workspace with.
@@ -427,11 +432,29 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 	} else if c.opt.WholeInstructions {
 		s.instructions = readInstructions(ws.Root())
-	} else if c.opt.SectionInstructions {
-		if name, content := readInstructionFile(ws.Root()); name != "" {
-			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
-			s.instructions, s.notesFirst = in.Initial(), true
-			cfg.Sections = in
+	} else if c.opt.SectionInstructions || c.opt.Knowledge {
+		w := servedWindow(c.ctx, src)
+		budget := window.NewBudget(w)
+		var parts []string
+		var loads multiSections
+		if name, content := readInstructionFile(ws.Root()); name != "" && c.opt.SectionInstructions {
+			in := window.NewInstructions(name, content, budget)
+			parts, loads = append(parts, in.Initial()), append(loads, in)
+		}
+		if c.opt.Knowledge {
+			pages, err := window.LoadPages(ws.Root())
+			if err != nil {
+				c.unregister(id)
+				return "", fmt.Errorf("knowledge pages: %w", err)
+			}
+			if len(pages) > 0 {
+				k := window.NewKnowledge(ws.Root(), pages, w, budget)
+				parts, loads = append(parts, k.Index()), append(loads, k)
+			}
+		}
+		if len(parts) > 0 {
+			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), true
+			cfg.Sections = loads
 		}
 	}
 	s.loop = loop.New(cfg)
@@ -675,6 +698,23 @@ func workspaceChanged(root string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// multiSections is several loop.Sections as one: each call's texts in order, and every compaction told to all.
+type multiSections []loop.Sections
+
+func (m multiSections) ForCall(id, tool string, input json.RawMessage) string {
+	var b strings.Builder
+	for _, s := range m {
+		b.WriteString(s.ForCall(id, tool, input))
+	}
+	return b.String()
+}
+
+func (m multiSections) Masked(ids []string) {
+	for _, s := range m {
+		s.Masked(ids)
+	}
 }
 
 // readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".
