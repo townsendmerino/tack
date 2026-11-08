@@ -234,7 +234,9 @@ const (
 	StopRepeatLoop = "repeat_loop"
 	// StopInterrupted: tack stopped inside the turn (a crash or a kill); recorded when the session is next opened (DESIGN §6.1).
 	StopInterrupted = "interrupted"
-	StopError       = "error"
+	// StopShutdown: the daemon shut down between the turn's steps (DESIGN §6.1, drain); the session can be continued.
+	StopShutdown = "shutdown"
+	StopError    = "error"
 )
 
 // TurnEnd closes a turn. The store fsyncs after it.
