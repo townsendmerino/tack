@@ -16,11 +16,19 @@ import (
 const edgeMarkdown = "\n# Title #\n\ntext\n\n```sh\n# a comment, not a heading\n```\n## Rules\n\n~~~\n## still code\n~~~\n" +
 	"#### Deep\n\nx\n\n### ###\n\n## Back up ##\n<!-- tack:on bash:git -->\nend\n"
 
+// fenceMarkdown has a four-backtick fence holding a three-backtick line and a heading, a fence closed by a longer run,
+// an indented heading, setext headings of both levels, and a list item over a dash line, which is no heading.
+const fenceMarkdown = "# Top\n\n" + "````md\n" + "```\n## inside the outer fence\n" + "```\n" + "````\n## After\n\n" +
+	"~~~\n# in tilde\n~~~~~\n    ## Indented heading\n\nSetext one\n==========\n\ntext\n\nSetext two\n----------\n\n- item\n---\n\n## End\n"
+
+// frontMarkdown opens with frontmatter whose lines look like headings.
+const frontMarkdown = "---\ntitle: x\n# not a heading\n---\n\n# Real\n\nbody\n"
+
 // TestParseSectionsAgreesWithKen: window.ParseSections splits tack's own instruction files and edgeMarkdown where ken's
 // Sections does, heading paths included, so a hit ken finds in a section names the section tack loads (K9).
 func TestParseSectionsAgreesWithKen(t *testing.T) {
 	dir := t.TempDir()
-	files := map[string]string{"edge.md": edgeMarkdown}
+	files := map[string]string{"edge.md": edgeMarkdown, "fences.md": fenceMarkdown, "front.md": frontMarkdown}
 	for _, p := range []string{"CLAUDE.md", "docs/design/p1-notes.md"} {
 		b, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(p)))
 		if err != nil {
