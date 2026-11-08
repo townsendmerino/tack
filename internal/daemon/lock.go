@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -67,6 +68,10 @@ func Acquire(stateDir, version string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.Chmod(0o600); err != nil { // a lock file left wider by hand
+		f.Close()
+		return nil, err
+	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
@@ -111,9 +116,9 @@ func ReadHolder(stateDir string) Holder {
 }
 
 // awaitHolder is ReadHolder for a start that just lost: the winner writes its record right after it takes the lock,
-// so an empty read is retried for a moment before the holder is reported unknown.
+// so an empty read is retried, for up to a second, before the holder is reported unknown.
 func awaitHolder(stateDir string) Holder {
-	for range 10 {
+	for range 100 {
 		if h := ReadHolder(stateDir); h.PID != 0 {
 			return h
 		}
@@ -122,10 +127,10 @@ func awaitHolder(stateDir string) Holder {
 	return Holder{}
 }
 
-// alive says whether pid names a running process (one this user may not signal counts).
+// alive says whether pid names a running process of this user's. EPERM, a process this user may not signal, is
+// another user's: a crashed daemon's pid reused, never the daemon, whose state directory is this user's alone.
 func alive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return syscall.Kill(pid, 0) == nil
 }
 
 // Dir is the state directory the lock is in.
@@ -158,28 +163,105 @@ func (l *Lock) Release() error {
 	return errors.Join(errs...)
 }
 
-// privateDir makes dir (0700) if it is missing, and makes it 0700 if it is wider. It refuses a directory another user
-// owns, changing nothing: tack's state is its user's alone.
+// privateDir makes dir (0700) if it is missing, and makes it 0700 if it is wider. It refuses, changing nothing, a
+// directory another user owns or could redirect (checkPath): tack's state is its user's alone.
 func privateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
 		return err
 	}
-	st, err := os.Stat(dir)
+	if err := checkPath(abs); err != nil { // before MkdirAll, which follows symlinks
+		return err
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return err
+	}
+	if err := checkPath(abs); err != nil { // and after, now that every component exists
+		return err
+	}
+	st, err := os.Stat(abs)
 	if err != nil {
 		return err
 	}
 	if !st.IsDir() {
 		return fmt.Errorf("daemon: %s is not a directory", dir)
 	}
-	sys, ok := st.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("daemon: cannot read the owner of %s", dir)
-	}
-	if int(sys.Uid) != currentUID() {
-		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, sys.Uid, currentUID())
+	if uid := ownerOf(abs, st); uid != currentUID() {
+		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, currentUID())
 	}
 	if st.Mode().Perm() != 0o700 {
-		return os.Chmod(dir, 0o700)
+		return os.Chmod(abs, 0o700)
 	}
 	return nil
+}
+
+// checkPath refuses a path another user could redirect to a directory of theirs. Every symlink on the path as written
+// must be this user's or root's, and every directory on the path resolved must be this user's or root's and not
+// writable by others unless it is sticky, as /tmp is (sshd's StrictModes is the model). Components that do not exist
+// yet end the walk: privateDir makes them, as this user's.
+func checkPath(abs string) error {
+	trusted := func(uid int) bool { return uid == currentUID() || uid == 0 }
+	for _, p := range prefixes(abs) {
+		fi, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 && !trusted(ownerOf(p, fi)) {
+			return fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", p, ownerOf(p, fi))
+		}
+	}
+	for _, p := range prefixes(resolveExisting(abs)) {
+		fi, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if !fi.IsDir() {
+			continue
+		}
+		if uid := ownerOf(p, fi); !trusted(uid) {
+			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
+		}
+		if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&fs.ModeSticky == 0 {
+			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it", p)
+		}
+	}
+	return nil
+}
+
+// prefixes is every path from / to abs: "/", "/a", "/a/b".
+func prefixes(abs string) []string {
+	out := []string{abs}
+	for p := abs; filepath.Dir(p) != p; {
+		p = filepath.Dir(p)
+		out = append(out, p)
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// resolveExisting is abs with the symlinks of its deepest existing ancestor resolved, and the rest kept.
+func resolveExisting(abs string) string {
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
+		return r
+	}
+	parent := filepath.Dir(abs)
+	if parent == abs {
+		return abs
+	}
+	return filepath.Join(resolveExisting(parent), filepath.Base(abs))
+}
+
+// ownerOf is the uid owning the file fi describes, -1 if the platform does not say; tests replace it, since a test
+// cannot make a file another user owns.
+var ownerOf = func(_ string, fi fs.FileInfo) int {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return int(st.Uid)
+	}
+	return -1
 }
