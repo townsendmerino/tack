@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -44,58 +45,42 @@ func (s Section) Heading() string {
 	return s.HeadingPath[len(s.HeadingPath)-1]
 }
 
+// marker is a tack marker comment; inlineCode is a code span, whose text is never a marker.
 var (
-	atxHeading = regexp.MustCompile(`^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$`)
-	atxClosing = regexp.MustCompile(`[ \t]+#+$`)
 	marker     = regexp.MustCompile(`<!--\s*tack:(always|on)\b([^>]*?)-->`)
+	inlineCode = regexp.MustCompile("(`+)[^`]*?(`+)")
 )
 
-// ParseSections splits content into its sections at ATX headings outside code fences, in file order. Its boundaries are
-// ken's for the instruction files tack reads (TestParseSectionsAgreesWithKen); ken also takes setext headings, which
-// those files do not use.
+// ParseSections splits content into its sections in file order, where ken's Workspace.Sections does
+// (TestParseSectionsAgreesWithKen): at ATX headings, and at setext headings (a text line over a line of = or -), but not
+// inside code fences or frontmatter. A section's markers are read from its text outside code: fenced blocks,
+// frontmatter and inline code spans can quote a marker without setting it.
 func ParseSections(content string) []Section {
-	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 	if content == "" {
 		return nil
 	}
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	kinds := mdLines(lines)
 	var out []Section
 	var stack []struct {
 		level int
 		text  string
 	}
-	fence := ""
-	start := func(i, level int, path []string) {
-		if n := len(out); n > 0 {
-			out[n-1].EndLine = i
-		}
-		out = append(out, Section{HeadingPath: path, Level: level, StartLine: i + 1})
-	}
-	for i, l := range lines {
-		t := strings.TrimLeft(l, " ")
-		if fence != "" {
-			if strings.HasPrefix(t, fence) && strings.TrimSpace(strings.TrimLeft(t, fence[:1])) == "" {
-				fence = ""
-			}
+	for i := range lines {
+		level, text := 0, ""
+		switch {
+		case i == 0 && kinds[0] != mdHeadingATX && !(kinds[0] == mdText && len(lines) > 1 && kinds[1] == mdSetextUnderline):
+			out = append(out, Section{StartLine: 1})
 			continue
-		}
-		if len(l)-len(t) <= 3 && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")) {
-			fence = t[:3]
-			if i == 0 {
-				start(0, 0, nil)
+		case kinds[i] == mdHeadingATX:
+			level, text = mdHeading(lines[i])
+		case kinds[i] == mdText && i+1 < len(lines) && kinds[i+1] == mdSetextUnderline:
+			level, text = 2, strings.TrimSpace(strings.TrimSuffix(lines[i], "\r"))
+			if strings.HasPrefix(strings.TrimLeft(lines[i+1], " \t"), "=") {
+				level = 1
 			}
+		default:
 			continue
-		}
-		m := atxHeading.FindStringSubmatch(l)
-		if m == nil {
-			if i == 0 {
-				start(0, 0, nil)
-			}
-			continue
-		}
-		level := len(m[1])
-		text := strings.TrimSpace(atxClosing.ReplaceAllString(m[2], ""))
-		if strings.Trim(text, "#") == "" {
-			text = ""
 		}
 		for len(stack) > 0 && stack[len(stack)-1].level >= level {
 			stack = stack[:len(stack)-1]
@@ -108,19 +93,31 @@ func ParseSections(content string) []Section {
 		for j, s := range stack {
 			path[j] = s.text
 		}
-		start(i, level, path)
+		if n := len(out); n > 0 {
+			out[n-1].EndLine = i
+		}
+		out = append(out, Section{HeadingPath: path, Level: level, StartLine: i + 1})
 	}
 	out[len(out)-1].EndLine = len(lines)
 	for i := range out {
-		out[i].Text = strings.Join(lines[out[i].StartLine-1:out[i].EndLine], "\n")
-		for _, m := range marker.FindAllStringSubmatch(out[i].Text, -1) {
+		s := &out[i]
+		s.Text = strings.Join(lines[s.StartLine-1:s.EndLine], "\n")
+		var prose []string
+		for j := s.StartLine - 1; j < s.EndLine; j++ {
+			switch kinds[j] {
+			case mdCodeFence, mdCodeInside, mdFrontmatterDelim, mdFrontmatterInside:
+			default:
+				prose = append(prose, inlineCode.ReplaceAllString(lines[j], ""))
+			}
+		}
+		for _, m := range marker.FindAllStringSubmatch(strings.Join(prose, "\n"), -1) {
 			if m[1] == "always" {
-				out[i].Always = true
+				s.Always = true
 				continue
 			}
 			for k := range strings.SplitSeq(m[2], ",") {
 				if k = strings.Join(strings.Fields(k), " "); k != "" {
-					out[i].On = append(out[i].On, k)
+					s.On = append(s.On, k)
 				}
 			}
 		}
@@ -134,21 +131,23 @@ func SectionTokens(s string) int { return InjectTokens(s) }
 // Instructions is one instruction file's sections in one session, and which of them are in the window. It is not safe
 // for concurrent use; a session's loop calls it from its turn.
 type Instructions struct {
-	name   string
-	secs   []Section
-	whole  bool
-	budget int // tokens
-	used   int
-	in     []bool
-	cost   []int    // what each loaded section counts against the budget
-	by     []string // the tool call whose result carries each section ForCall loaded; "" for the messages'
+	name    string
+	secs    []Section
+	whole   bool
+	budget  int // tokens
+	used    int
+	in      []bool         // the section's text is in the window
+	offered []bool         // a note in the window names the section as not loaded
+	by      []string       // the tool call whose result carries the section or names it; "" for the first message's
+	calls   map[string]int // what each call's note took of the budget
 }
 
 // NewInstructions is name's content read by section for a window of window tokens. name is the file's path from the
 // workspace root, as the model's read tool takes it.
 func NewInstructions(name, content string, window int) *Instructions {
 	in := &Instructions{name: name, secs: ParseSections(content), budget: window * SectionShare / 100}
-	in.in, in.cost, in.by = make([]bool, len(in.secs)), make([]int, len(in.secs)), make([]string, len(in.secs))
+	n := len(in.secs)
+	in.in, in.offered, in.by, in.calls = make([]bool, n), make([]bool, n), make([]string, n), map[string]int{}
 	in.whole = SectionTokens(content) <= in.budget
 	return in
 }
@@ -176,8 +175,10 @@ func (in *Instructions) firstSection() int {
 
 // Initial is the text the session's first message carries, framed as reference notes, and marks what it holds as in
 // the window. A file within the budget is whole. Otherwise it is the first section, the always sections, and an
-// outline of the rest with their lines; if those pass the budget, outline entries are dropped from the end first, then
-// always sections, then lines of the first section, and each cut is said. It is "" for an empty file.
+// outline of the rest with their lines, in file order. If those pass the budget, always sections give way first, from
+// the last, each leaving its outline entry; then outline entries, from the end; then lines of the first section; and
+// each cut is said. A first section that is cut does not count as in, so a matching call can still bring it whole. It
+// is "" for an empty file.
 func (in *Instructions) Initial() string {
 	if len(in.secs) == 0 {
 		return ""
@@ -217,9 +218,8 @@ func (in *Instructions) Initial() string {
 		if len(outline) > 0 || more > 0 || len(droppedAlways) > 0 {
 			b.WriteString("\n\nOther sections of " + in.name + ", with their lines; their rules arrive when a tool call needs " +
 				"them, or read the lines:\n")
-			var entries []int
-			entries = append(entries, droppedAlways...)
-			entries = append(entries, outline...)
+			entries := append(append([]int(nil), droppedAlways...), outline...)
+			slices.Sort(entries)
 			for _, i := range entries {
 				s := in.secs[i]
 				fmt.Fprintf(&b, "%s%s (lines %d–%d)\n", strings.Repeat("  ", max(0, s.Level-2)), s.Heading(), s.StartLine, s.EndLine)
@@ -232,12 +232,17 @@ func (in *Instructions) Initial() string {
 	}
 	outline, more, dropped, cut := rest, 0, []int(nil), false
 	fits := func() bool { return SectionTokens(build(firstLines, cut, always, dropped, outline, more)) <= in.budget }
-	for len(outline) > 0 && !fits() {
-		outline, more = outline[:len(outline)-1], more+1
-	}
 	for len(always) > 0 && !fits() {
 		dropped = append([]int{always[len(always)-1]}, dropped...)
 		always = always[:len(always)-1]
+	}
+	for len(outline)+len(dropped) > 0 && !fits() {
+		if len(outline) > 0 {
+			outline = outline[:len(outline)-1]
+		} else {
+			dropped = dropped[:len(dropped)-1]
+		}
+		more++
 	}
 	for len(firstLines) > 1 && !fits() {
 		firstLines, cut = firstLines[:len(firstLines)-1], true
@@ -315,19 +320,20 @@ func callKinds(tool string, input json.RawMessage) []string {
 		if json.Unmarshal(input, &in) != nil || in.Path == "" {
 			return nil
 		}
-		return []string{"edit:" + in.Path}
+		return []string{"edit:" + path.Clean(in.Path)}
 	}
 	return nil
 }
 
 // kindMatches says whether a call kind matches a pattern kind: bash kinds by equality, edit kinds by path.Match of the
-// pattern against the path, or against its last element when the pattern has no slash.
+// cleaned pattern against the cleaned path, or against its last element when the pattern has no slash.
 func kindMatches(pattern, kind string) bool {
 	if p, ok := strings.CutPrefix(pattern, "edit:"); ok {
 		k, ok := strings.CutPrefix(kind, "edit:")
 		if !ok {
 			return false
 		}
+		p, k = path.Clean(p), path.Clean(k)
 		if !strings.Contains(p, "/") {
 			k = path.Base(k)
 		}
@@ -385,10 +391,12 @@ func (in *Instructions) within(i, j int) bool {
 	return true
 }
 
-// ForCall is the sections tool call id brings in, as text to add to its result, and marks them in the window: those
-// matching the call (with the subsections of each) that are not in already, in file order, as many as the budget
-// leaves room for; the ones that do not fit are named with their lines. It is "" when nothing is wanted, and always ""
-// for a file loaded whole. A compaction that stubs id's result must call Masked.
+// ForCall is the sections tool call id brings in, as text to add to its result, and marks them in the window. The
+// sections it wants are those matching the call, each with its subsections that carry no tack:on marker of their own
+// (a level-1 section, a file's title, brings in only itself), less those already in or already named. They are loaded
+// in file order while the budget lasts, the note's framing counted; the ones that do not fit are named with their
+// lines, once. It is "" when nothing is wanted, and always "" for a file loaded whole. A compaction that stubs id's
+// result must call Masked.
 func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 	if in.whole {
 		return ""
@@ -403,62 +411,94 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 			continue
 		}
 		want[i] = true
-		for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
-			want[j] = true
-		}
-	}
-	return in.load(want, "for this call", id)
-}
-
-// load adds the wanted sections that are not in, in file order, while the budget lasts; by is the call whose result
-// carries them, "" for a message.
-func (in *Instructions) load(want map[int]bool, why, by string) string {
-	var got, left []int
-	var b strings.Builder
-	for i := range in.secs {
-		if !want[i] || in.in[i] {
+		if in.secs[i].Level < 2 {
 			continue
 		}
-		cost := SectionTokens(in.secs[i].Text) + 1
-		if in.used+cost > in.budget {
+		for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
+			if len(in.secs[j].On) == 0 {
+				want[j] = true
+			}
+		}
+	}
+	return in.load(want, id)
+}
+
+// load adds the wanted sections that are neither in nor named already, in file order, while the budget lasts, and
+// names the rest; the whole note is charged to call id.
+func (in *Instructions) load(want map[int]bool, id string) string {
+	header := "\n\n[Project rules from " + in.name + " for this call:]"
+	var got, left []int
+	body := "" // the loaded sections' text, to price the next
+	for i := range in.secs {
+		if !want[i] || in.in[i] || in.offered[i] {
+			continue
+		}
+		next := body + "\n\n" + in.secs[i].Text
+		if in.used+SectionTokens(header+next) > in.budget {
 			left = append(left, i)
 			continue
 		}
-		in.used += cost
-		in.in[i], in.cost[i], in.by[i] = true, cost, by
+		body = next
 		got = append(got, i)
-		b.WriteString("\n\n" + in.secs[i].Text)
 	}
 	if len(got) == 0 && len(left) == 0 {
 		return ""
 	}
-	var out strings.Builder
-	fmt.Fprintf(&out, "\n\n[Project rules from %s %s:]", in.name, why)
-	out.WriteString(b.String())
-	if len(left) > 0 {
-		out.WriteString("\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines")
-		for k, i := range left {
-			if k > 0 {
-				out.WriteString(",")
+	note := func() string {
+		var out strings.Builder
+		if len(got) > 0 {
+			out.WriteString(header)
+			for _, i := range got {
+				out.WriteString("\n\n" + in.secs[i].Text)
 			}
-			fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
 		}
-		out.WriteString(" for them.]")
+		if len(left) > 0 {
+			out.WriteString("\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines")
+			for k, i := range left {
+				if k > 0 {
+					out.WriteString(",")
+				}
+				fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
+			}
+			out.WriteString(" for the rules on this call.]")
+		}
+		return out.String()
 	}
-	return out.String()
+	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
+	// pass the budget, so the model always hears what it is missing.
+	for len(left) > 0 && len(got) > 0 && in.used+SectionTokens(note()) > in.budget {
+		last := got[len(got)-1]
+		got = got[:len(got)-1]
+		left = append(left, last)
+		slices.Sort(left)
+	}
+	text := note()
+	for _, i := range got {
+		in.in[i], in.by[i] = true, id
+	}
+	for _, i := range left {
+		in.offered[i], in.by[i] = true, id
+	}
+	cost := SectionTokens(text)
+	in.used += cost
+	in.calls[id] += cost
+	return text
 }
 
-// Masked tells the sections a compaction stubbed the results of these tool calls: the sections those results carried
-// are out of the window again, and their cost goes back to the budget.
+// Masked tells the sections a compaction stubbed the results of these tool calls: the sections those results carried,
+// or named, are out of the window again, and what the notes took goes back to the budget.
 func (in *Instructions) Masked(ids []string) {
-	gone := map[string]bool{}
 	for _, id := range ids {
-		gone[id] = true
-	}
-	for i := range in.secs {
-		if in.in[i] && in.by[i] != "" && gone[in.by[i]] {
-			in.used -= in.cost[i]
-			in.in[i], in.cost[i], in.by[i] = false, 0, ""
+		cost, ok := in.calls[id]
+		if !ok {
+			continue
+		}
+		in.used -= cost
+		delete(in.calls, id)
+		for i := range in.secs {
+			if in.by[i] == id {
+				in.in[i], in.offered[i], in.by[i] = false, false, ""
+			}
 		}
 	}
 }

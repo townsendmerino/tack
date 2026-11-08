@@ -17,6 +17,17 @@ func editOf(path string) json.RawMessage {
 	return b
 }
 
+// TestMarkersOutsideCodeOnly: a marker quoted in a fenced block, in a long fence, in inline code or in frontmatter
+// sets nothing; one in prose does.
+func TestMarkersOutsideCodeOnly(t *testing.T) {
+	src := "---\nx: <!-- tack:always -->\n---\n# A\n\nUse `<!-- tack:on bash:git -->` to mark one.\n\n" + "````\n" + "```\n<!-- tack:always -->\n" + "```\n" +
+		"````\n\n## B\n<!-- tack:on bash:make -->\n"
+	got := ParseSections(src)
+	if len(got) != 3 || got[0].Always || got[1].Always || len(got[1].On) != 0 || len(got[2].On) != 1 || got[2].On[0] != "bash:make" {
+		t.Fatalf("sections %+v", got)
+	}
+}
+
 func TestParseSections(t *testing.T) {
 	src := "intro\n\n# Title\n\ntext\n\n## Rules ##\n\n```\n# not a heading\n```\n<!-- tack:on bash:git, edit:*.md -->\n\n### Sub\n\nx\n\n## Tests\n<!-- tack:always -->\n"
 	got := ParseSections(src)
@@ -131,9 +142,9 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("# notes\n\nIntro.\n\n")
 	for i := range 6 {
-		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n", i, strings.Repeat("rule text for this testing part. ", 40))
+		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n", i, strings.Repeat("rule text for this testing part. ", 25))
 	}
-	in := NewInstructions("CLAUDE.md", b.String(), 4096) // 614 tokens; each part is about 430
+	in := NewInstructions("CLAUDE.md", b.String(), 4096) // 614 tokens; each part is about 270
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(got, "## Testing part 0") || strings.Contains(got, "## Testing part 1\n") ||
@@ -153,5 +164,79 @@ func TestCallKinds(t *testing.T) {
 	if !kindMatches("edit:*_test.go", "edit:a/b_test.go") || kindMatches("edit:*_test.go", "edit:a/b.go") ||
 		!kindMatches("edit:docs/*.md", "edit:docs/a.md") || kindMatches("edit:docs/*.md", "edit:a.md") {
 		t.Error("edit kinds match by base name, or by path when the pattern has a slash")
+	}
+}
+
+// filler pushes a file over a 4096 window's budget.
+var filler = "## Filler\n\n" + strings.Repeat("a line of filler text to push the file over its budget\n", 300)
+
+// TestForCallSubsectionsAndTitle: a matching section brings its subsections except one with its own tack:on marker;
+// a matching level-1 title brings in only itself, never the sections under it.
+func TestForCallSubsectionsAndTitle(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n### Flakes\n\nRetry once.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	got := in.ForCall("c1", "bash", bash("go test ./..."))
+	if !strings.Contains(got, "Run go test.") || !strings.Contains(got, "Retry once.") || strings.Contains(got, "Night only.") {
+		t.Errorf("Testing brings Flakes, not the marked Benchmarks:\n%s", got)
+	}
+	title := "# Testing guide\n\nIntro.\n\n## Releases\n\nTag from main.\n\n" + filler
+	in = NewInstructions("CLAUDE.md", title, 4096)
+	in.Initial()
+	if got := in.ForCall("c1", "bash", bash("go test ./...")); strings.Contains(got, "Tag from main.") || strings.Contains(got, "filler text") {
+		t.Errorf("a matching title pulled in the sections under it:\n%s", got)
+	}
+}
+
+// TestForCallNamesWhatDoesNotFitOnce: sections past the budget are named once, without an empty rules header, and a
+// later matching call says nothing more; every note is charged in full, framing included.
+func TestForCallNamesWhatDoesNotFitOnce(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\n" + strings.Repeat("a long testing rule that will not fit. ", 120) + "\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	initial := SectionTokens(in.Initial())
+	first := in.ForCall("c1", "bash", bash("go test ./..."))
+	if !strings.Contains(first, "Not loaded, the instruction budget is spent") || strings.Contains(first, "[Project rules from") {
+		t.Fatalf("a call whose sections all miss names them, with no empty header:\n%q", first)
+	}
+	if again := in.ForCall("c2", "bash", bash("go test ./x")); again != "" {
+		t.Errorf("a section already named is named again: %q", again)
+	}
+	if in.Used() != initial+SectionTokens(first) {
+		t.Errorf("used %d, want the first message's %d and the note's %d", in.Used(), initial, SectionTokens(first))
+	}
+	in.Masked([]string{"c1"})
+	if in.Used() != initial {
+		t.Errorf("after c1 is stubbed: used %d, want %d", in.Used(), initial)
+	}
+	if s := in.ForCall("c3", "bash", bash("go test ./...")); !strings.Contains(s, "Not loaded") {
+		t.Errorf("after c1 is stubbed the section is named again: %q", s)
+	}
+}
+
+// TestForCallChargesTheFraming: a note's whole text is charged, header included.
+func TestForCallChargesTheFraming(t *testing.T) {
+	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	initial := SectionTokens(in.Initial())
+	note := in.ForCall("c1", "bash", bash("git status"))
+	if note == "" || in.Used() != initial+SectionTokens(note) {
+		t.Errorf("used %d, want %d + %d", in.Used(), initial, SectionTokens(note))
+	}
+}
+
+// TestInitialKeepsTheOutlineBeforeAlways: an always section too big to fit gives way before the outline does, and keeps
+// its outline entry, in file order.
+func TestInitialKeepsTheOutlineBeforeAlways(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Alpha\n\na\n\n## Big\n<!-- tack:always -->\n" + strings.Repeat("always text that is too long. ", 150) +
+		"\n\n## Omega\n\no\n\n" + filler
+	got := NewInstructions("CLAUDE.md", src, 4096).Initial()
+	a, b, o := strings.Index(got, "Alpha (lines"), strings.Index(got, "Big (lines"), strings.Index(got, "Omega (lines")
+	if a < 0 || b < a || o < b || strings.Contains(got, "more headings") || strings.Contains(got, "always text") {
+		t.Errorf("the outline stays whole and in order, the big always section only named:\n%s", got)
+	}
+}
+
+func TestKindMatchesCleansPaths(t *testing.T) {
+	if !kindMatches("edit:docs/*.md", "edit:./docs/a.md") || !kindMatches("edit:./docs/*.md", "edit:docs/a.md") {
+		t.Error("edit kinds are cleaned before matching")
 	}
 }
