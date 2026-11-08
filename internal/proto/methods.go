@@ -20,10 +20,13 @@ type ClientInfo struct {
 	Version string `json:"version"`
 }
 
-// InitializeParams opens a connection.
+// InitializeParams opens a connection. Token is the daemon's client token, read from client.token in its state directory
+// by a client that can read it (an unsandboxed one, DESIGN §6.6). It is checked here, once per connection: one that
+// presents it is privileged, one that omits it is not, and a wrong one is refused. No other method carries it.
 type InitializeParams struct {
 	Client   ClientInfo `json:"client"`
 	Protocol int        `json:"protocol"`
+	Token    string     `json:"token,omitempty"`
 }
 
 // DaemonInfo identifies the daemon in initialize's result.
@@ -38,11 +41,14 @@ type Capabilities struct {
 	Servers []string `json:"servers"`
 }
 
-// InitializeResult answers initialize. Protocol is the version the daemon will speak on this connection.
+// InitializeResult answers initialize. Protocol is the version the daemon will speak on this connection. Privileged
+// says the connection presented the client token, so the methods that change permissions, mode, trust or halt state
+// are open to it (DESIGN §9.2).
 type InitializeResult struct {
 	Daemon       DaemonInfo   `json:"daemon"`
 	Protocol     int          `json:"protocol"`
 	Capabilities Capabilities `json:"capabilities"`
+	Privileged   bool         `json:"privileged,omitempty"`
 }
 
 // Mode is a session's permission mode (DESIGN §6.6).

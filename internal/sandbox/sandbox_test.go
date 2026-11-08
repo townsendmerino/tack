@@ -169,6 +169,56 @@ func TestEscapes(t *testing.T) {
 	}
 }
 
+// TestDaemonSocketIsOutOfReach: a command cannot connect to the daemon's socket, through which it could approve its own
+// requests or lift a halt (DESIGN §6.6, "tack itself is out of reach"). The socket is in tack's state directory, made
+// short under /tmp as a socket path must be (internal/daemon.MaxSocketPath). It gets out with no sandbox and is
+// stopped by the profile. Sections network and tack each stop it alone, so a loopback allowance in network cannot
+// reopen it; with both removed it gets out.
+func TestDaemonSocketIsOutOfReach(t *testing.T) {
+	f := setup(t)
+	state, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(state)
+	if state, err = filepath.EvalSymlinks(state); err != nil { // Seatbelt matches real paths: /tmp is /private/tmp
+		t.Fatal(err)
+	}
+	sock := filepath.Join(state, "daemon.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Write([]byte("ESCAPED-daemon-sock\n"))
+			c.Close()
+		}
+	}()
+	f.cfg.Tack = append(f.cfg.Tack, state)
+	script := `/usr/bin/nc -U ` + sock + ` </dev/null 2>&1`
+	const mark = "ESCAPED-daemon-sock"
+	if out := f.run(nil, script); !strings.Contains(out, mark) {
+		t.Fatalf("with no sandbox the connection did not get through, so this test cannot see it: %q", out)
+	}
+	if out := f.run(&f.cfg, script); strings.Contains(out, mark) {
+		t.Errorf("the profile let a command connect to the daemon's socket: %q", out)
+	}
+	for _, alone := range []string{SecNetwork, SecTack} {
+		if out := f.run(f.without(alone), script); strings.Contains(out, mark) {
+			t.Errorf("with only %s removed the connection got through, so the other does not stop it alone: %q", alone, out)
+		}
+	}
+	if out := f.run(f.without(SecNetwork, SecTack), script); !strings.Contains(out, mark) {
+		t.Errorf("with %s and %s removed the connection still did not get through, so they are not what stops it: %q", SecNetwork, SecTack, out)
+	}
+}
+
 // TestWorkStillRuns: what a coding session needs works inside the profile: go test with tack's own cache, git, and
 // writes to the workspace and the session's temp directory.
 func TestWorkStillRuns(t *testing.T) {

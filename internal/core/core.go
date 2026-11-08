@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ import (
 type Options struct {
 	Store   *store.Store
 	Version string
+	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
+	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
+	ClientToken string
 	// Servers names the configured model servers, for initialize's capabilities ("goinfer@nobara").
 	Servers []string
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
@@ -208,10 +212,12 @@ func (c *Core) Close() error {
 	return errors.Join(errs...)
 }
 
-// conn is one client connection.
+// conn is one client connection. privileged is set by an initialize that presented the client token; requests on a
+// connection are handled in order, so it needs no lock.
 type conn struct {
-	mu  sync.Mutex
-	enc *json.Encoder
+	mu         sync.Mutex
+	enc        *json.Encoder
+	privileged bool
 }
 
 func (cn *conn) send(v any) error {
@@ -289,12 +295,19 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
 				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
 		}
+		cn.privileged = false
+		if p.Token != "" {
+			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
+				return nil, &proto.Error{Code: proto.CodeUnauthorized, Message: "initialize: the client token is wrong; read it again from client.token"}
+			}
+			cn.privileged = true
+		}
 		ken := ""
 		if c.opt.OpenSearcher != nil {
 			ken = "engine"
 		}
 		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: proto.Version,
-			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}}, nil
+			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}, Privileged: cn.privileged}, nil
 	case proto.MethodSessionNew:
 		p, perr := params[proto.SessionNewParams](req)
 		if perr != nil {

@@ -49,7 +49,7 @@ const (
 	SecLaunch  = "launch"  // open, launchctl, osascript and LaunchServices: a program they start runs outside
 	SecMount   = "mount"   // mounting volumes: a mounted volume is another way out
 	SecNetwork = "network" // all network access
-	SecTack    = "tack"    // tack's own files: a command must not approve its own request or read transcripts
+	SecTack    = "tack"    // tack's own files and the daemon's socket: a command must not approve its own request or read transcripts
 	SecLater   = "later"   // workspace files that would run later, outside the sandbox: git hooks and config, agent config
 	SecSecrets = "secrets" // the secrets deny-list, enforced by the kernel
 	SecMark    = "mark"    // the names that let halt and cancel find every process inside, detached or not
@@ -142,11 +142,15 @@ func Profile(c Config) string {
 		sec(SecNetwork, "(deny network*)")
 	}
 	if len(c.Tack) > 0 {
-		var paths []string
+		var paths, socks []string
 		for _, p := range c.Tack {
 			paths = append(paths, fmt.Sprintf("(subpath %s)", q(p)))
+			socks = append(socks, fmt.Sprintf("(remote unix-socket (subpath %s))", q(p)))
 		}
-		sec(SecTack, fmt.Sprintf("(deny file-read* file-write* %s)", strings.Join(paths, " ")))
+		// Connecting to a Unix socket is a network operation, not a file one: the second rule keeps the daemon's socket
+		// out of reach even where section network allows more.
+		sec(SecTack, fmt.Sprintf("(deny file-read* file-write* %s)", strings.Join(paths, " ")),
+			fmt.Sprintf("(deny network-outbound %s)", strings.Join(socks, " ")))
 	}
 	ws := real(c.Workspace)
 	later := []string{
