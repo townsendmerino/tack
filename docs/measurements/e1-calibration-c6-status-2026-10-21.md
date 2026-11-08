@@ -153,6 +153,27 @@ Added 2026-11-07, from Pichay (arXiv 2603.09023), which treats the window as the
 
 Source: <https://arxiv.org/abs/2603.09023>.
 
+Added 2026-11-08, from an outside review of a tack binary built at `0f3c9b7` (2026-10-20). Counts are from the recorded
+runs under `~/tack-runs/e1/c*`.
+- **Several edits to one file in one call** (`multi_edit`: a list of replacements, applied together or not at all).
+  - The evidence: 636 of 2,127 successful edits came straight after a successful edit to the same file, in 118 runs.
+    Each one costs a request and a result in the window.
+  - The risk: Qwen3-8B may get a list of edits wrong more often than one edit. As a new tool, it needs a tier-1 live
+    check before any screen (§12.12).
+  - The mechanism metric: requests per run, and calls with a list where one edit's text is not in the file.
+- **Checked and not taken:**
+  - Compaction, and whitespace-tolerant edits: built since that binary (`mask_observations`, `compact_at_cliff`,
+    `edit_tolerances`).
+  - Rolling back bad edits: snapshots and `tack rewind` are built (DESIGN §6.8, 2026-11-03).
+  - Read state lost after a command such as `gofmt` changes a file: the refusal "changed since you last read it" never
+    appears in the recorded runs.
+  - A↔B loops: the repeat guard keeps the last result per call, so alternating unchanged calls are counted.
+  - A Linux sandbox, the daemon and instruction sections: already planned (DESIGN §18, §6.1, §2.3).
+  - opencode's large prompt at 32,768: by design. The pilot compares whole harnesses, prompt included (pilot
+    amendment 2).
+  - ken's three "BUG: … misaligned" lines are guards that log and fall back to BM25. A fallback in a measured run is a
+    real gap, so it became DESIGN §12's K19.
+
 ## The bundle night (§12.9)
 
 **Deferred (Francis, 2026-10-29)** until the model question that follows §12.24 was settled. It was settled on
