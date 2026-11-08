@@ -29,6 +29,14 @@ type Config struct {
 	StateDir string `toml:"state_dir"`
 	// Sandbox widens what sandboxed commands may read (DESIGN §6.6).
 	Sandbox Sandbox `toml:"sandbox"`
+	// Daemon configures `tack daemon` (DESIGN §6.1).
+	Daemon Daemon `toml:"daemon"`
+}
+
+// Daemon is [daemon].
+type Daemon struct {
+	// ShutdownGrace is how long a shutdown lets running tool calls finish before it cancels their turns (default 10s).
+	ShutdownGrace Duration `toml:"shutdown_grace"`
 }
 
 // Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
@@ -336,6 +344,12 @@ func (c *Config) validate() error {
 		if k.Mode != "bm25" && k.ModelDir == "" {
 			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
 		}
+	}
+	switch g := c.Daemon.ShutdownGrace.Duration; {
+	case g < 0:
+		return fmt.Errorf("daemon.shutdown_grace is %s; it must be positive", g)
+	case g == 0:
+		c.Daemon.ShutdownGrace.Duration = 10 * time.Second
 	}
 	c.StateDir = expand(c.StateDir)
 	return nil

@@ -203,3 +203,18 @@ func TestSnapshotSettings(t *testing.T) {
 		t.Errorf("negative: %v", err)
 	}
 }
+
+// TestDaemonSettings: [daemon] shutdown_grace defaults to 10s, is read as a duration, and must be positive.
+func TestDaemonSettings(t *testing.T) {
+	const server = "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n"
+	c, err := load(t, server)
+	if err != nil || c.Daemon.ShutdownGrace.Duration != 10*time.Second {
+		t.Fatalf("default: %+v, %v; want a 10s grace", c, err)
+	}
+	if c, err = load(t, server+"[daemon]\nshutdown_grace = \"3s\"\n"); err != nil || c.Daemon.ShutdownGrace.Duration != 3*time.Second {
+		t.Fatalf("set: %+v, %v; want 3s", c, err)
+	}
+	if _, err = load(t, server+"[daemon]\nshutdown_grace = \"-1s\"\n"); err == nil || !strings.Contains(err.Error(), "shutdown_grace") {
+		t.Fatalf("negative: %v, want refused", err)
+	}
+}

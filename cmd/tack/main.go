@@ -1,5 +1,4 @@
-// Command tack is the single binary for tack's CLI, TUI, daemon and ACP adapter (DESIGN §4.1, §10). P0 has `tack run`
-// with --no-daemon only.
+// Command tack is the single binary for tack's CLI, TUI, daemon and ACP adapter (DESIGN §4.1, §10).
 package main
 
 import (
@@ -27,6 +26,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return runCmd(args[1:], stdout, stderr)
 	case "eval":
 		return evalCmd(args[1:], stdout, stderr)
+	case "daemon":
+		return daemonCmd(args[1:], stdout, stderr)
 	case "halt":
 		return haltCmd(args[1:], stdout, stderr)
 	case "resume":
@@ -54,6 +55,8 @@ func usage(w io.Writer) {
   tack run [flags] "<question>"   answer a question about a repository (read-only tools)
   tack eval models -manifest FILE -out DIR [-arm NAME] [-fit-only]
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
+  tack daemon run|start|stop|status [-config FILE]
+                                  the daemon: in the foreground, started detached, stopped after a drain, or asked how it is
   tack halt [-reason TEXT]        stop every running turn and command; refuse new turns
   tack resume                     lift a halt
   tack rewind [-yes [-no-undo]] <session> [seq]
