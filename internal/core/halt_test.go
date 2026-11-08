@@ -109,6 +109,9 @@ func TestHaltRecordsARefusedSweep(t *testing.T) {
 	}
 	select {
 	case ev := <-f.events:
+		if ev.Type == proto.EvSessionCreated { // the subscription's replay
+			ev = <-f.events
+		}
 		v, _ := ev.Decode()
 		r, ok := v.(proto.DaemonHaltRefused)
 		if !ok || len(r.Processes) != 1 || r.Processes[0].PID != 4242 || !r.Processes[0].Start.Equal(old) || r.Reason == "" {

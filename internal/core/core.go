@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +142,8 @@ type Core struct {
 	opt Options
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
+	reopenMu sync.Mutex // held while a session is reopened from the store
+
 	mu        sync.Mutex
 	sessions  map[proto.SessionID]*session
 	sources   map[string]models.Source
@@ -183,7 +186,8 @@ func New(ctx context.Context, opt Options) *Core {
 		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}}
 }
 
-// Close releases the model sources (a supervised child is stopped) and each session's edit kit.
+// Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
+// another process may open it. No turn may be running.
 func (c *Core) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -203,6 +207,7 @@ func (c *Core) Close() error {
 		if s.kit != nil {
 			errs = append(errs, s.kit())
 		}
+		errs = append(errs, s.log.Close())
 	}
 	if c.opt.HaltDir != "" {
 		for id := range c.sessions {
@@ -338,13 +343,29 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 	return nil, &proto.Error{Code: proto.CodeMethodNotFound, Message: "method not found: " + req.Method}
 }
 
+// session returns the session named id, reopening it from the store when this Core does not hold it (reopen.go).
 func (c *Core) session(id proto.SessionID) (*session, *proto.Error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	s, ok := c.sessions[id]
-	if !ok {
-		return nil, &proto.Error{Code: proto.CodeUnknownSession, Message: "unknown session " + string(id)}
+	c.mu.Unlock()
+	if ok {
+		return s, nil
 	}
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
+	c.mu.Lock()
+	s, ok = c.sessions[id]
+	c.mu.Unlock()
+	if ok {
+		return s, nil // another connection reopened it while this one waited
+	}
+	s, perr := c.reopen(id)
+	if perr != nil {
+		return nil, perr
+	}
+	c.mu.Lock()
+	c.sessions[id] = s
+	c.mu.Unlock()
 	return s, nil
 }
 
@@ -377,12 +398,12 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
-	src, err := c.source(p.Model)
-	if err != nil {
+	// The source and ken are opened before the log, so a session that cannot run leaves no log behind; open finds them
+	// cached.
+	if _, err := c.source(p.Model); err != nil {
 		return "", err
 	}
-	searcher, err := c.searcher(ws.Root())
-	if err != nil {
+	if _, err := c.searcher(ws.Root()); err != nil {
 		return "", fmt.Errorf("ken: %w", err)
 	}
 	id := store.NewSessionID(time.Now())
@@ -390,16 +411,46 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
-	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()}}
+	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
+	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
+		log.Close()
+		return "", err
+	}
+	s, err := c.open(id, log, ws, created, nil)
+	if err != nil {
+		log.Close()
+		return "", err
+	}
+	c.mu.Lock()
+	c.sessions[id] = s
+	c.mu.Unlock()
+	return id, nil
+}
+
+// open makes the session over its log, as session/new does and a reopen does: the model source, ken, the tools, the
+// edit kit in auto mode, the sweep target, and the loop. history is a reopened session's events, nil for a new one;
+// a session whose log has a user.message has been prompted, so the first prompt's additions are not made again.
+func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event) (*session, error) {
+	src, err := c.source(created.Model)
+	if err != nil {
+		return nil, err
+	}
+	searcher, err := c.searcher(ws.Root())
+	if err != nil {
+		return nil, fmt.Errorf("ken: %w", err)
+	}
+	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
+	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
+		prompted: prompted}
 	if c.opt.HaltDir != "" {
 		if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	if c.opt.InjectContext && c.opt.OpenInject != nil {
+	if c.opt.InjectContext && c.opt.OpenInject != nil && !prompted {
 		s.injectRoot = ws.Root()
 	}
-	if c.opt.RepoMap && c.opt.OpenRepoMap != nil {
+	if c.opt.RepoMap && c.opt.OpenRepoMap != nil && !prompted {
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
@@ -407,20 +458,20 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
-	if p.Mode == proto.ModeAuto {
+	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)
-			return "", errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
+			return nil, errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
 		}
 		kit, err := c.opt.Edit(ws.Root(), s.target)
 		if err != nil {
 			c.unregister(id)
-			return "", fmt.Errorf("auto mode: %w", err)
+			return nil, fmt.Errorf("auto mode: %w", err)
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults})
-		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
+		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
 		root := ws.Root()
@@ -429,18 +480,27 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			cfg.Snapshots = snapshot.New(c.opt.Store.Root(), root, c.opt.SnapshotMaxBytes)
 		}
 	}
-	if c.opt.WholeInstructions && c.opt.InstructionsHead {
+	switch {
+	case prompted: // the instructions joined the first prompt, which the log holds
+	case c.opt.WholeInstructions && c.opt.InstructionsHead:
 		if name, content := readInstructionFile(ws.Root()); name != "" {
 			s.instructions, s.notesFirst = instructionHead(name, content, servedWindow(c.ctx, src)), true
 		}
-	} else if c.opt.WholeInstructions {
+	case c.opt.WholeInstructions:
 		s.instructions = readInstructions(ws.Root())
 	}
-	s.loop = loop.New(cfg)
-	c.mu.Lock()
-	c.sessions[id] = s
-	c.mu.Unlock()
-	return id, nil
+	if history == nil {
+		s.loop = loop.New(cfg)
+		return s, nil
+	}
+	if s.loop, err = loop.Resume(cfg, history); err != nil {
+		c.unregister(id)
+		if s.kit != nil {
+			s.kit()
+		}
+		return nil, err
+	}
+	return s, nil
 }
 
 // emit fans an event out to the session's subscribers.

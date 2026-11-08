@@ -182,8 +182,8 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
 - **Budgets** (`loop.Budget`, `config.toml` `[run]`). Per turn: requests, wall time, tool calls, tokens, failed calls in
   a row. Per session: tokens and tool calls. Tokens are what the server computed, prefilled plus output. A limit of zero
   is refused, not read as "no limit". The defaults are proposals (DESIGN §6.3).
-  - **Open:** the session counts start at zero when the loop is made. The daemon (step 4) rebuilds them from the log's
-    `usage` and `tool.finished` events when it reopens a session.
+  - **Done in step 4:** a session reopened from its log rebuilds its counts from the log: `request.sent`, `usage`, and
+    the tool calls that ran (`internal/loop/rebuild.go:Resume`).
   - **Open:** "asks the user" is only the stop for now; raising a budget mid-session comes with the TUI (step 8).
 - **Halt.** `tack halt` writes the HALT file, which a running `tack run` (and later the daemon) watches every 250 ms.
   Every running turn is cancelled, records `daemon.halted` and ends with stop reason `halted`; new prompts get

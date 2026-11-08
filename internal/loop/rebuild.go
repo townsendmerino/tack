@@ -1,11 +1,13 @@
 package loop
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 // Rebuild replays a session's persisted events into the conversation they describe (principle 4: the log is the
@@ -87,4 +89,48 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 		}
 	}
 	return conv, nil
+}
+
+// Resume returns the loop of a session reopened from its log (DESIGN §6.1): history is every persisted event so far,
+// and must not end inside a turn (a crash's open turn is closed first, by core's recovery). The conversation is
+// Rebuild's, so the next request keeps the cached prefix; the session's counts toward its budgets are the log's:
+// requests sent, tokens the server computed, and tool calls run, which leaves out calls answered "error: not run".
+//
+// What the live loop keeps only in memory starts empty: the files the model has seen, so edit asks for a fresh read
+// of a file first, and the observations masking reads, so results from before the resume are never masked.
+func Resume(cfg Config, history []proto.Event) (*Session, error) {
+	if st := store.Inspect(history); st.InTurn {
+		return nil, errors.New("loop: the log ends inside a turn; close it before resuming")
+	}
+	s := New(cfg)
+	conv, err := Rebuild(history, cfg.WS.Root(), *s.conv)
+	if err != nil {
+		return nil, err
+	}
+	s.conv = conv
+	for _, ev := range history {
+		v, err := ev.Decode()
+		if err != nil {
+			return nil, fmt.Errorf("resume: seq %d: %w", ev.Seq, err)
+		}
+		switch p := v.(type) {
+		case proto.UserMessage:
+			s.turns++
+		case proto.RequestSent:
+			s.requests++
+		case proto.Usage:
+			if p.Prefilled != nil {
+				s.tokens += *p.Prefilled + p.Output
+			} else {
+				s.tokens += p.Prompt + p.Output
+			}
+		case proto.ToolCall:
+			s.calls++
+		case proto.ToolFinished:
+			if p.Outcome == proto.OutcomeCancelled && strings.HasPrefix(p.Result, "error: not run: ") {
+				s.calls--
+			}
+		}
+	}
+	return s, nil
 }
