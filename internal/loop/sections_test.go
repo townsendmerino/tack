@@ -72,3 +72,32 @@ func TestSectionsOnlyForCallsThatRan(t *testing.T) {
 		t.Errorf("asked %q, want t1 alone", f.asked)
 	}
 }
+
+// bigSections brings in a note far bigger than any window's room.
+type bigSections struct{ fakeSections }
+
+func (f *bigSections) ForCall(id, tool string, _ json.RawMessage) string {
+	f.asked = append(f.asked, id+":"+tool)
+	return "\n\n[Project rules from CLAUDE.md for this call:]\n\n" + strings.Repeat("rule ", 200_000)
+}
+
+// TestSectionsThatDoNotFitTheRoomAreRolledBack: under fit_window, a note that does not fit the room left is not added,
+// and the loop tells the sections with Masked that the call's result does not carry it.
+func TestSectionsThatDoNotFitTheRoomAreRolledBack(t *testing.T) {
+	h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "read", `{"path":"mcp/token_budget.go","offset":3,"limit":1}`),
+		goinfertest.Says("ok"))
+	f := &bigSections{}
+	cfg := h.sess.cfg
+	cfg.Sections, cfg.FitWindow = f, true
+	h.sess = New(cfg)
+	if _, err := h.sess.Turn(context.Background(), "read it"); err != nil {
+		t.Fatal(err)
+	}
+	if r := doneResults(h); len(r) != 1 || strings.Contains(r[0], "rule rule") {
+		t.Fatalf("the oversized note reached the result: %.200q", r)
+	}
+	if !slices.Equal(f.masked, []string{"t1"}) {
+		t.Errorf("masked %q, want the rolled-back t1", f.masked)
+	}
+	h.checkRebuild(t)
+}

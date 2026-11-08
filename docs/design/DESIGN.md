@@ -1058,6 +1058,25 @@ Before a turn the daemon can run ken over the user's message (and the previous t
   would refuse most edits. The `old_string` must match exactly, and the spans of the file the model has seen must hold
   no external change it has not been shown. Otherwise `edit` refuses and returns the diff, so the model never overwrites
   a change it has not seen.
+- **Whitespace-tolerant matching** (`[run] edit_tolerances`, in the C6 bundle). Checked against the common
+  approach in other harnesses on 2026-11-08 (owner): exact match, then trailing whitespace, then indentation and
+  blank lines, with fuzzy matches only shown in the error and never applied.
+  - **Already covered:** "all whitespace ignored" covers the trailing-whitespace, indentation and blank-line steps in
+    one, in `.go` files, at exactly one place, and only when the file still parses. A failed edit already shows the
+    closest lines of the file. Fuzzy matching was replayed and dropped, because it applied wrong edits.
+  - **What it is worth:** the replay rescued 4 runs in 551 (`e1-calibration-c6-tolerances-2026-10-27.md`). Most edits
+    fail on text the model got wrong, not on whitespace. In markdown, the same tolerance would have rescued 1 edit in
+    1,655 runs (15 failed edits replayed, 2026-11-08), so it stays limited to `.go`.
+  - **To fix: string literals.** Ignoring all whitespace also ignores it inside a string or rune literal. An
+    `old_string` with `"foobar"` matches a file's `"foo bar"`, and the edit then quietly changes the string. The parse
+    guard does not catch this. The fix: compare Go tokens with `go/scanner`, so whitespace is ignored only between
+    tokens and every literal must match byte for byte. Replay the kept rescues to confirm they all still apply.
+  - **Proposed for P1, not C6: gofmt after an edit.** When a `.go` file was gofmt-clean before the edit, run
+    `go/format` on the result. Then only the edited region changes, and the model's indentation slips are fixed.
+    - Read state takes the formatted text, and the result says the file was formatted.
+    - A later edit that quotes the model's unformatted text still matches through the whitespace tolerance.
+    - It improves the diff a person reviews, not the pass rate. Re-indenting `new_string` to fit the file matters
+      for Python and YAML, so it waits until tack edits repos in those languages.
 
 ### 7.6 Compaction with re-retrieval
 
@@ -1498,6 +1517,7 @@ serving every other agent.
 | K16 | index memory composition table (`-tags=bench`): exact byte formulas and single-component heap deltas across tack, ken, aikit, goinfer, all four in one process (K7), and the 584k kernel checkout, before and after bumping aikit ≥ v1.71.0 | the memory half of K8; decides K17 (`docs/research/contextbench-leann-2026-10-28.md` §5) | P1 |
 | K17 | `WatchedIndex` keeps no retained `f32` vectors, recomputing from chunk text when needed | makes `FlatI8` save memory on the watched path tack uses (after K16) | P2 |
 | K18 | `bench/contextbench` (`-tags=bench`): retrieval-only (CB1) and optional agent-in-the-loop (CB2) ContextBench harness | outside retrieval benchmark against BM25, grep and LEANN | P1 |
+| K19 | `Status` says whether the dense arm is serving, and counts fallbacks to BM25 (today ken's three misalignment guards in `internal/search/corpus.go` only log one) | tack records a fallback as an event, and the cell check voids a ken-arm run whose index fell back, so a hybrid arm cannot quietly run as BM25 (added 2026-11-08, from an outside review) | P1 |
 
 - **ken-mcp moves onto `ken/engine` in the same release**, so the MCP face and the library face cannot drift. ken's
   `TestPublicSurfaceDocumented` pattern extends to the new package. A ken ADR records it ("public engine package;

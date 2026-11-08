@@ -78,9 +78,9 @@ func ParsePage(p, content string) Page {
 		}
 	}
 	if pg.Title == "" {
-		for l := range strings.SplitSeq(pg.Body, "\n") {
-			if m := atxHeading.FindStringSubmatch(l); m != nil && strings.TrimSpace(m[2]) != "" {
-				pg.Title = strings.TrimSpace(m[2])
+		for _, s := range ParseSections(pg.Body) {
+			if h := s.Heading(); h != "" {
+				pg.Title = h
 				break
 			}
 		}
