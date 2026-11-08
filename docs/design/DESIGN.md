@@ -1498,6 +1498,7 @@ serving every other agent.
 | K16 | index memory composition table (`-tags=bench`): exact byte formulas and single-component heap deltas across tack, ken, aikit, goinfer, all four in one process (K7), and the 584k kernel checkout, before and after bumping aikit ≥ v1.71.0 | the memory half of K8; decides K17 (`docs/research/contextbench-leann-2026-10-28.md` §5) | P1 |
 | K17 | `WatchedIndex` keeps no retained `f32` vectors, recomputing from chunk text when needed | makes `FlatI8` save memory on the watched path tack uses (after K16) | P2 |
 | K18 | `bench/contextbench` (`-tags=bench`): retrieval-only (CB1) and optional agent-in-the-loop (CB2) ContextBench harness | outside retrieval benchmark against BM25, grep and LEANN | P1 |
+| K19 | `Status` says whether the dense arm is serving, and counts fallbacks to BM25 (today ken's three misalignment guards in `internal/search/corpus.go` only log one) | tack records a fallback as an event, and the cell check voids a ken-arm run whose index fell back, so a hybrid arm cannot quietly run as BM25 (added 2026-11-08, from an outside review) | P1 |
 
 - **ken-mcp moves onto `ken/engine` in the same release**, so the MCP face and the library face cannot drift. ken's
   `TestPublicSurfaceDocumented` pattern extends to the new package. A ken ADR records it ("public engine package;
