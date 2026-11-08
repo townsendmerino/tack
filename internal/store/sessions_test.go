@@ -81,3 +81,20 @@ func TestSessionIDsCannotLeaveTheStore(t *testing.T) {
 		t.Errorf("ValidSessionID(%q) = false for a new id", id)
 	}
 }
+
+// TestReopenReadsUnderTheLock: Reopen returns the log's events with the writer's lock held, so they are the events
+// it will append after, and a second Reopen while it is held is ErrLogBusy.
+func TestReopenReadsUnderTheLock(t *testing.T) {
+	s := newStore(t)
+	l, _ := s.Create("s_1")
+	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn})
+	l.Close()
+	l, evs, err := s.Reopen("s_1")
+	if err != nil || len(evs) != 1 || l.Head() != 1 {
+		t.Fatalf("Reopen = %d events, head %d, %v; want the one event", len(evs), l.Head(), err)
+	}
+	defer l.Close()
+	if _, _, err := s.Reopen("s_1"); !errors.Is(err, ErrLogBusy) {
+		t.Fatalf("a second Reopen: %v, want ErrLogBusy", err)
+	}
+}

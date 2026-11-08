@@ -57,3 +57,25 @@ func TestRealResolvesAPathThatDoesNotExistYet(t *testing.T) {
 		}
 	}
 }
+
+// TestRealResolvesDotDotAfterTheLink: ".." after a symlink is the parent of the link's target, as the kernel resolves
+// it, not of the link: lexical cleaning first would name another directory.
+func TestRealResolvesDotDotAfterTheLink(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	resolved, _ := filepath.EvalSymlinks(dir)
+	os.MkdirAll(filepath.Join(dir, "target", "sub"), 0o700)
+	os.Symlink(filepath.Join(dir, "target", "sub"), filepath.Join(dir, "link"))
+	for _, c := range []struct{ in, want string }{
+		{dir + "/link/../x", filepath.Join(resolved, "target", "x")},        // x does not exist
+		{dir + "/link/../sub", filepath.Join(resolved, "target", "sub")},    // it does
+		{dir + "/link/../new/../x", filepath.Join(resolved, "target", "x")}, // a ".." past a missing name
+	} {
+		if got := real(c.in); got != c.want {
+			t.Errorf("real(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

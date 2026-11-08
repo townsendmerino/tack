@@ -25,32 +25,22 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if !store.ValidSessionID(id) {
 		return nil, unknown
 	}
-	evs, err := c.opt.Store.Events(id, 0)
-	if errors.Is(err, fs.ErrNotExist) {
+	log, evs, err := c.opt.Store.Reopen(id) // read once, under the writer's lock
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return nil, unknown
-	}
-	if err != nil {
-		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
-	}
-	created, ok := sessionCreated(evs)
-	if !ok {
-		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: fmt.Sprintf(
-			"session %s cannot be reopened: its log does not begin with session.created, so it predates tack's daemon", id)}
-	}
-	log, err := c.opt.Store.OpenLog(id)
-	if errors.Is(err, store.ErrLogBusy) {
+	case errors.Is(err, store.ErrLogBusy):
 		return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s is open in another tack process", id)}
-	}
-	if err != nil {
+	case err != nil:
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	fail := func(code int, err error) (*session, *proto.Error) {
 		log.Close()
 		return nil, &proto.Error{Code: code, Message: fmt.Sprintf("reopening session %s: %v", id, err)}
 	}
-	// Read again under the writer's lock: the process that held it may have appended before letting go.
-	if evs, err = c.opt.Store.Events(id, 0); err != nil {
-		return fail(proto.CodeInternalError, err)
+	created, ok := sessionCreated(evs)
+	if !ok {
+		return fail(proto.CodeInvalidParams, errors.New("its log does not begin with session.created, so it predates tack's daemon"))
 	}
 	closed, err := closeInterrupted(log, evs)
 	if err != nil {
@@ -84,18 +74,29 @@ func sessionCreated(evs []proto.Event) (proto.SessionCreated, bool) {
 // appended (none when the log is not inside a turn). Every call of the turn without a result gets one: outcome
 // unknown if it had started, never re-run; not run if it had not. Then turn.end records the turn as interrupted
 // (DESIGN §6.1). The model sees those results at the next prompt, and the user resumes, rewinds or forks.
+//
+// A call is its tool.call event: tool.started and tool.finished name it by seq, as their cause, so a server that
+// reuses a tool-call id across a turn's steps is told apart. An event without a cause (a log from before causes) is
+// matched to the latest open call with its id.
 func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) {
 	if !store.Inspect(evs).InTurn {
 		return nil, nil
 	}
-	var userSeq int64
 	type call struct {
-		id      string
-		seq     int64
-		started bool
+		id            string
+		seq           int64
+		started, done bool
 	}
+	var userSeq int64
 	var calls []*call
-	byID := map[string]*call{}
+	find := func(cause int64, id string) *call {
+		for i := len(calls) - 1; i >= 0; i-- {
+			if cl := calls[i]; cause != 0 && cl.seq == cause || cause == 0 && cl.id == id && !cl.done {
+				return cl
+			}
+		}
+		return nil
+	}
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
@@ -103,22 +104,23 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 		}
 		switch p := v.(type) {
 		case proto.UserMessage:
-			userSeq, calls, byID = ev.Seq, nil, map[string]*call{}
+			userSeq, calls = ev.Seq, nil
 		case proto.ToolCall:
-			cl := &call{id: p.ID, seq: ev.Seq}
-			calls, byID[p.ID] = append(calls, cl), cl
+			calls = append(calls, &call{id: p.ID, seq: ev.Seq})
 		case proto.ToolStarted:
-			if cl := byID[p.ID]; cl != nil {
+			if cl := find(ev.Cause, p.ID); cl != nil {
 				cl.started = true
 			}
 		case proto.ToolFinished:
-			delete(byID, p.ID)
+			if cl := find(ev.Cause, p.ID); cl != nil {
+				cl.done = true
+			}
 		}
 	}
 	var out []proto.Event
 	for _, cl := range calls {
-		if byID[cl.id] == nil {
-			continue // it has its result
+		if cl.done {
+			continue
 		}
 		fin := proto.ToolFinished{ID: cl.id, Outcome: proto.OutcomeCancelled, Result: notRunResult}
 		if cl.started {
@@ -139,9 +141,12 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 
 // Recover closes the turns a crash left open, in every session in the store that this Core does not hold and no
 // other process has open (DESIGN §6.1: on start, a session whose last event falls inside a turn is marked
-// interrupted). A daemon calls it at start, before it serves. It returns the sessions it closed; a log it could not
-// read is reported in the error and the rest are still recovered.
+// interrupted). A daemon calls it at start, before it serves; it holds the reopen lock, so no session is reopened
+// meanwhile. It returns the sessions it closed; each session it could not read or close is in the error, and the rest
+// are still recovered.
 func (c *Core) Recover() ([]proto.SessionID, error) {
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	ids, err := c.opt.Store.Sessions()
 	if err != nil {
 		return nil, err
@@ -155,13 +160,7 @@ func (c *Core) Recover() ([]proto.SessionID, error) {
 		if held {
 			continue
 		}
-		if evs, err := c.opt.Store.Events(id, 0); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", id, err))
-			continue
-		} else if !store.Inspect(evs).InTurn {
-			continue
-		}
-		log, err := c.opt.Store.OpenLog(id)
+		log, evs, err := c.opt.Store.Reopen(id)
 		if errors.Is(err, store.ErrLogBusy) {
 			continue // live in another process: its turn is not interrupted
 		}
@@ -169,18 +168,14 @@ func (c *Core) Recover() ([]proto.SessionID, error) {
 			errs = append(errs, fmt.Errorf("%s: %w", id, err))
 			continue
 		}
-		evs, err := c.opt.Store.Events(id, 0)
-		var closed []proto.Event
-		if err == nil {
-			closed, err = closeInterrupted(log, evs)
-		}
+		closed, err := closeInterrupted(log, evs)
 		if cerr := log.Close(); err == nil {
 			err = cerr
 		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", id, err))
-		}
-		if len(closed) > 0 {
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s: closing its interrupted turn: %w", id, err))
+		case len(closed) > 0:
 			out = append(out, id)
 		}
 	}

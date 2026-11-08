@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestReleaseClearsTheHolder: a released lock names no holder, so a daemon that starts later and finds the lock held
@@ -41,13 +42,13 @@ func TestAStaleHolderIsUnknown(t *testing.T) {
 	}
 	dead := cmd.Process.Pid
 	os.MkdirAll(dir, 0o700)
-	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","start":"2026-11-08T12:00:00Z"}`, dead), 0o600)
+	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`, dead), 0o600)
 	if h := ReadHolder(dir); h != (Holder{}) {
 		t.Fatalf("a dead daemon's record reads as %+v, want no holder", h)
 	}
 	// A pid reused by another user's process (pid 1 is root's) is not this user's daemon either.
 	if os.Getuid() != 0 {
-		os.WriteFile(filepath.Join(dir, HolderName), []byte(`{"pid":1,"version":"crashed","start":"2026-11-08T12:00:00Z"}`), 0o600)
+		os.WriteFile(filepath.Join(dir, HolderName), []byte(`{"pid":1,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`), 0o600)
 		if h := ReadHolder(dir); h != (Holder{}) {
 			t.Fatalf("a record naming another user's process reads as %+v, want no holder", h)
 		}
@@ -63,6 +64,11 @@ func TestLosersNameTheWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	old.Release()
+	// A crashed daemon's record whose pid now names a live process of this user's (this one), and a winner slow to
+	// write its own: losers must see past the first and wait for the second.
+	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","proc_start":"1.000000"}`, os.Getpid()), 0o600)
+	afterLock = func() { time.Sleep(50 * time.Millisecond) }
+	defer func() { afterLock = nil }()
 	const n = 8
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -174,6 +180,8 @@ func TestReleaseIsSafeBesideListenAndNewToken(t *testing.T) {
 // symlink's owner is reported as uid 4242 (ownerOf).
 func TestPrivateDirRefusesAPathOthersCanRedirect(t *testing.T) {
 	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base) // the walk names paths as the kernel resolves them
 	target, link := filepath.Join(base, "target"), filepath.Join(base, "link")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
@@ -223,4 +231,61 @@ func TestAcquireNarrowsAWideLockFile(t *testing.T) {
 	if st, _ := os.Stat(filepath.Join(dir, LockName)); st.Mode().Perm() != 0o600 {
 		t.Fatalf("daemon.lock is %v, want 0600", st.Mode().Perm())
 	}
+}
+
+// TestCheckPathWalksThePathAsWritten: the kernel resolves a path one component at a time, so the check does too. A
+// directory others can write is refused even when this user's symlink inside it leads elsewhere, and a chain of
+// symlinks is checked link by link: one owned by another user (reported as uid 4242, as above) anywhere in it is
+// refused.
+func TestCheckPathWalksThePathAsWritten(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base) // the walk names paths as the kernel resolves them
+	target := filepath.Join(base, "target")
+	shared := filepath.Join(base, "shared")
+	for _, d := range []string{target, shared} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.Chmod(shared, 0o777)
+	mine := filepath.Join(shared, "mine")
+	os.Symlink(target, mine)
+	if err := privateDir(filepath.Join(mine, "state")); err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Errorf("through this user's link inside a directory anyone can write: %v, want refused", err)
+	}
+	link1, link2 := filepath.Join(base, "link1"), filepath.Join(base, "link2")
+	os.Symlink(target, link2)
+	os.Symlink(link2, link1)
+	if err := privateDir(link1); err != nil {
+		t.Fatalf("a chain of this user's links: %v", err)
+	}
+	orig := ownerOf
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == link2 {
+			return 4242
+		}
+		return orig(path, fi)
+	}
+	defer func() { ownerOf = orig }()
+	if err := privateDir(link1); err == nil || !strings.Contains(err.Error(), "4242") {
+		t.Errorf("a chain through another user's link: %v, want refused", err)
+	}
+}
+
+// TestAReusedPidIsNotTheHolder: a record whose pid is alive and this user's, but is not the process that wrote it (a
+// crashed daemon's pid reused by another of this user's processes), names nobody: the record carries the process's
+// start time, and it must match.
+func TestAReusedPidIsNotTheHolder(t *testing.T) {
+	dir := shortDir(t)
+	os.MkdirAll(dir, 0o700)
+	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`, os.Getpid()), 0o600)
+	if h := ReadHolder(dir); h != (Holder{}) {
+		t.Fatalf("a stale record naming a live pid reads as %+v, want no holder", h)
+	}
+	l := acquire(t, dir)
+	if h := ReadHolder(dir); h.Version != "1.2.3" || h.PID != os.Getpid() {
+		t.Fatalf("this process's own record reads as %+v", h)
+	}
+	l.Release()
 }

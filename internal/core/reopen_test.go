@@ -34,6 +34,7 @@ func daemonOn(t *testing.T, st *store.Store, url string, set ...func(*Options)) 
 		f(&opt)
 	}
 	c := New(ctx, opt)
+	t.Cleanup(func() { c.Close() })
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	go c.Serve(ctx, b)
@@ -275,5 +276,74 @@ func TestReopenRefuses(t *testing.T) {
 	}
 	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: old}, nil); err == nil || !strings.Contains(err.Error(), "session.created") {
 		t.Errorf("subscribing to a P0 log: %v, want the reason", err)
+	}
+}
+
+// TestRecoverAnswersAReusedIDOnce: a server may reuse a tool-call id across a turn's steps. The call that finished in
+// the first step keeps its result; only the second, cut off by the crash, gets one, answering its own tool.call.
+func TestRecoverAnswersAReusedIDOnce(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	id := store.NewSessionID(time.Now())
+	log, _ := st.Create(id)
+	in := json.RawMessage(`{"pattern":"*.go"}`)
+	use := []proto.ModelBlock{{Type: "tool_use", ID: "t1", Name: "glob", Input: in}}
+	var secondCall int64
+	for i, e := range []struct {
+		typ     proto.EventType
+		cause   int64
+		payload any
+	}{
+		{proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws, Model: "main", Mode: proto.ModePlan}},
+		{proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("twice")}}},
+		{proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: use}},
+		{proto.EvToolCall, 0, proto.ToolCall{ID: "t1", Name: "glob", Input: in}}, // seq 4
+		{proto.EvToolStarted, 4, proto.ToolStarted{ID: "t1"}},                    // seq 5
+		{proto.EvToolFinished, 4, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeOK, Result: "a.go"}},
+		{proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 2, StopReason: "tool_use", Content: use}},
+		{proto.EvToolCall, 0, proto.ToolCall{ID: "t1", Name: "glob", Input: in}}, // seq 8
+		{proto.EvToolStarted, 8, proto.ToolStarted{ID: "t1"}},
+	} {
+		ev, err := log.Append(e.typ, e.cause, e.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 7 {
+			secondCall = ev.Seq
+		}
+	}
+	log.Close()
+	c, _, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	if _, err := c.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := st.Events(id, 0)
+	var fins []proto.Event
+	for _, ev := range evs[9:] {
+		if ev.Type == proto.EvToolFinished {
+			fins = append(fins, ev)
+		}
+	}
+	if len(fins) != 1 || fins[0].Cause != secondCall {
+		t.Fatalf("recovery answered %d calls (%v); want one, the second t1 (seq %d)", len(fins), fins, secondCall)
+	}
+}
+
+// TestAFailedSessionLeavesNoLog: a session/new that fails after its log was made (here: auto mode with no sandbox)
+// leaves no session behind in the store.
+func TestAFailedSessionLeavesNoLog(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cl, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModeAuto}, nil); err == nil {
+		t.Fatal("auto mode without a sandbox made a session")
+	}
+	if ids, err := st.Sessions(); err != nil || len(ids) != 0 {
+		t.Fatalf("the store holds %v (%v) after the failed session/new; want nothing", ids, err)
 	}
 }

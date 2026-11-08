@@ -441,12 +441,12 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	}
 	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
 	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
-		log.Close()
+		c.opt.Store.Discard(log)
 		return "", err
 	}
 	s, err := c.open(id, log, ws, created, nil)
 	if err != nil {
-		log.Close()
+		c.opt.Store.Discard(log) // a session that could not be made leaves no log
 		return "", err
 	}
 	c.mu.Lock()
