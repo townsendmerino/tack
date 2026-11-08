@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/townsendmerino/tack/internal/config"
 )
 
 // The supervisor's tests run this test binary as the child: with TACK_FAKE_GOINFER=1 it behaves as a small
@@ -180,7 +182,7 @@ func newSupArgs(t *testing.T, modelPath string, args []string) (*Supervisor, *cl
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	s, err := NewSupervisor(ChildConfig{Binary: os.Args[0], ModelPath: modelPath, Model: "m", Ctx: 8192,
-		Args: args, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute})
+		Args: args, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute, Admission: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,5 +439,35 @@ func TestDecodePathIsChecked(t *testing.T) {
 	s, _, _ = newSupArgs(t, "/m/resident.giw", metal)
 	if _, err := s.Ensure(ctx); err != nil {
 		t.Fatalf("a load that lands on metal: %v", err)
+	}
+}
+
+// TestWithoutAdmissionAFallbackIsKept: measurement (E0's runner) leaves admission off. A GPU load that falls back to
+// the CPU loads and is kept, its decode path in the plan for the arm to judge, and goinfer is not asked fit.
+func TestWithoutAdmissionAFallbackIsKept(t *testing.T) {
+	s, _, _ := newSupArgs(t, "/m/fallsback.giw", []string{"-backend", "metal"})
+	s.cfg.Admission = false
+	if _, err := s.Ensure(context.Background()); err != nil {
+		t.Fatalf("a fallback without admission: %v, want it loaded", err)
+	}
+	if p, _ := s.Plan(); !strings.HasPrefix(p.DecodePath, "cpu") {
+		t.Fatalf("plan %+v; want the banner's cpu decode path", p)
+	}
+	if r := report(t, s); r.Fits != 0 || r.Unloads != 0 {
+		t.Fatalf("fit asked %d times, %d unloads; want neither", r.Fits, r.Unloads)
+	}
+}
+
+// TestOpenAdmitsTacksOwnLoads: the child a session's config makes (Open) goes through admission; only measurement,
+// which makes its supervisor itself, leaves it off.
+func TestOpenAdmitsTacksOwnLoads(t *testing.T) {
+	cfg := &config.Config{Servers: map[string]config.Server{"mac": {Kind: config.KindChild, Binary: "/bin/goinfer-serve",
+		ModelPath: "/m/q.gguf", Model: "q", Ctx: 16384}}}
+	src, err := Open(cfg, "mac", "/tmp/tk", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := src.(*childSource); !ok || !c.sup.cfg.Admission {
+		t.Fatalf("Open made %T without admission", src)
 	}
 }

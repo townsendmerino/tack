@@ -24,11 +24,15 @@ import (
 
 var testClient = proto.ClientInfo{Name: "test", Version: "0"}
 
-// runOptions is a daemon over dir whose core keeps its sessions in dir and asks a scripted model.
-func runOptions(t *testing.T, dir string) RunOptions {
+// runOptions is a daemon over dir whose core keeps its sessions in dir and asks a scripted model, or the source given.
+func runOptions(t *testing.T, dir string, source ...func(string) (models.Source, error)) RunOptions {
 	t.Helper()
 	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
 	t.Cleanup(ts.Close)
+	src := func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil }
+	if len(source) > 0 {
+		src = source[0]
+	}
 	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(token string, shutdown func()) (*core.Core, error) {
 		st, err := store.Open(dir)
 		if err != nil {
@@ -39,7 +43,7 @@ func runOptions(t *testing.T, dir string) RunOptions {
 		return core.New(ctx, core.Options{Store: st, Version: "1.2.3", ClientToken: token, Shutdown: shutdown,
 			Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20, MaxErrors: 8,
 				SessionTokens: 1 << 20, SessionToolCalls: 100},
-			Source: func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil }}), nil
+			Source: src}), nil
 	}}
 }
 
@@ -259,5 +263,39 @@ func TestSpawnDetached(t *testing.T) {
 	}
 	if st, _ := os.Stat(logPath); st.Mode().Perm() != 0o600 {
 		t.Errorf("the log is %v, want 0600", st.Mode().Perm())
+	}
+}
+
+// tickingSource is a remote source that counts the idle ticks it is given, as a supervised child would apply them.
+type tickingSource struct {
+	*models.Remote
+	ticks *atomic.Int32
+}
+
+func (s tickingSource) Tick(context.Context) error { s.ticks.Add(1); return nil }
+
+// TestRunTicksTheCore: the daemon applies its model sources' idle rules on an interval, so a supervised child unloads
+// and exits when idle (DESIGN §8.1).
+func TestRunTicksTheCore(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384))
+	t.Cleanup(ts.Close)
+	var ticks atomic.Int32
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return tickingSource{models.NewRemote("local", ts.URL, "", "", nil), &ticks}, nil
+	})
+	o.TickEvery = 10 * time.Millisecond
+	start(t, o)
+	c := dialSoon(t, dir)
+	ws := t.TempDir()
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for ticks.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d ticks in 5s at a 10ms interval", ticks.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

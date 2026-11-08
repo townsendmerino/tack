@@ -53,6 +53,11 @@ type ChildConfig struct {
 	IdleExit   time.Duration
 	// HTTPClient, when set, carries the API requests (a cassette recorder in a test or a recording run).
 	HTTPClient *http.Client
+	// Admission makes each load go through tack's own admission (DESIGN §8.1, G2): goinfer's fit plan is asked first and
+	// its decline refused, and a load off the decode path the flags ask for is refused (before the load when fit can
+	// tell, unloaded after it otherwise). tack's sessions set it (Open). Measurement leaves it off: there a fallback is
+	// what an arm records, and the fit call would add its own footprint.
+	Admission bool
 	// Pressure is the memory-pressure reading Ensure's load guard uses; nil means MemoryPressure. A caller that reads
 	// pressure itself passes the same function, so its tests do not depend on the machine running them.
 	Pressure func() (Pressure, error)
@@ -228,9 +233,12 @@ func (s *Supervisor) waitReady(ctx context.Context, exited chan struct{}) error 
 }
 
 func (s *Supervisor) load(ctx context.Context) error {
-	want := DecodePathFor(s.cfg.Args)
-	if err := s.checkFit(ctx, want); err != nil {
-		return err
+	want := ""
+	if s.cfg.Admission {
+		want = DecodePathFor(s.cfg.Args)
+		if err := s.checkFit(ctx, want); err != nil {
+			return err
+		}
 	}
 	for len(s.fitLines) > 0 {
 		<-s.fitLines // lines from an earlier load

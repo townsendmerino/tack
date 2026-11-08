@@ -22,11 +22,13 @@ type RunOptions struct {
 	NewCore func(token string, shutdown func()) (*core.Core, error)
 	// Log is told what the daemon does: what it recovered, refused connections, the drain. nil discards it.
 	Log io.Writer
+	// TickEvery is how often the core's model sources apply their idle rules (core.Core.Tick); 0 means 30s.
+	TickEvery time.Duration
 }
 
 // Run is the daemon (DESIGN §6.1). It takes the lock, or returns a *HeldError naming the daemon that has it; makes a
 // fresh client token; makes the core and recovers the turns a crash left open; binds the socket; and serves until ctx
-// ends or a privileged client asks daemon/shutdown. Then it drains the core within Grace, closes the connections and
+// ends or a privileged client asks daemon/shutdown, applying the model sources' idle rules every TickEvery. Then it drains the core within Grace, closes the connections and
 // the core, and releases the lock (closing the socket first).
 func Run(ctx context.Context, o RunOptions) error {
 	log := o.Log
@@ -66,6 +68,24 @@ func Run(ctx context.Context, o RunOptions) error {
 	defer cancel()
 	served := make(chan error, 1)
 	go func() { served <- Serve(sctx, ln, c) }()
+	every := o.TickEvery
+	if every == 0 {
+		every = 30 * time.Second
+	}
+	go func() { // the model sources' idle rules: a supervised child unloads, then exits, when idle (DESIGN §8.1)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-sctx.Done():
+				return
+			case <-t.C:
+				if err := c.Tick(sctx); err != nil {
+					fmt.Fprintln(log, "tack daemon: idle rules:", err)
+				}
+			}
+		}
+	}()
 	fmt.Fprintf(log, "tack daemon %s: serving on %s\n", o.Version, SocketPath(o.StateDir))
 
 	var serveErr error
