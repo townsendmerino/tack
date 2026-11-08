@@ -3,8 +3,12 @@ package window
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/proto"
 )
 
 func bash(cmd string) json.RawMessage {
@@ -238,5 +242,66 @@ func TestInitialKeepsTheOutlineBeforeAlways(t *testing.T) {
 func TestKindMatchesCleansPaths(t *testing.T) {
 	if !kindMatches("edit:docs/*.md", "edit:./docs/a.md") || !kindMatches("edit:./docs/*.md", "edit:docs/a.md") {
 		t.Error("edit kinds are cleaned before matching")
+	}
+}
+
+// replayLog runs calls through a live tracker as the loop does, each result the tool's own output, then the note, then
+// an unrelated note after it (edit's current-symbol note sits there), and returns the events the log holds.
+func replayLog(t *testing.T, live *Instructions, calls []struct{ id, cmd string }, masked map[int][]string) []proto.Event {
+	t.Helper()
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, err := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial() + "\n\nTask: x")}})
+	for n, c := range calls {
+		result := "output of " + c.cmd + live.ForCall(c.id, "bash", bash(c.cmd)) + "\n\n[the current text of F: …]"
+		add(proto.EvToolFinished, proto.ToolFinished{ID: c.id, Outcome: proto.OutcomeOK, Result: result})
+		if ids := masked[n]; ids != nil {
+			ms := make([]proto.MaskedResult, len(ids))
+			for i, id := range ids {
+				ms[i] = proto.MaskedResult{ID: id, Stub: "[masked]"}
+			}
+			live.Masked(ids)
+			add(proto.EvCompaction, proto.Compaction{Masked: ms})
+		}
+	}
+	return evs
+}
+
+// TestReplayRebuildsTheLiveTracker: a tracker rebuilt from the log equals the live one, sections in, named and charged,
+// through loads, a notice of what did not fit, a compaction and a call with no note; and the two answer the next call
+// alike.
+func TestReplayRebuildsTheLiveTracker(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("# notes\n\nIntro.\n\n## Staging and committing\n\nNever git add -A.\n\n")
+	for i := range 4 {
+		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n\n", i, strings.Repeat("rule text for this testing part. ", 25))
+	}
+	b.WriteString(filler)
+	src := b.String()
+	live := NewInstructions("CLAUDE.md", src, 4096)
+	evs := replayLog(t, live, []struct{ id, cmd string }{{"c1", "git status"}, {"c2", "go test ./..."}, {"c3", "ls"},
+		{"c4", "go test ./x"}, {"c5", "git diff"}}, map[int][]string{3: {"c1"}})
+	re := NewInstructions("CLAUDE.md", src, 4096)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lb, lu := live.Loaded()
+	ri, ro, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru {
+		t.Fatalf("rebuilt differs:\nlive    in %v offered %v by %q used %d\nrebuilt in %v offered %v by %q used %d", li, lo, lb, lu, ri, ro, rb, ru)
+	}
+	if !slices.Contains(lo, true) || !slices.Contains(lb, "c5") {
+		t.Fatalf("the log should hold a notice and c5's reload: offered %v by %q", lo, lb)
+	}
+	live.Masked([]string{"c2"})
+	re.Masked([]string{"c2"})
+	if a, b := live.ForCall("c6", "bash", bash("go test ./...")), re.ForCall("c6", "bash", bash("go test ./...")); a != b || a == "" {
+		t.Errorf("the next call differs:\nlive    %q\nrebuilt %q", a, b)
 	}
 }

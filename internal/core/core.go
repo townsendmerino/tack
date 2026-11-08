@@ -164,7 +164,10 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
-	prompted     bool
+	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
+	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
+	sections *window.Instructions
+	prompted bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
 	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
@@ -431,7 +434,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		if name, content := readInstructionFile(ws.Root()); name != "" {
 			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
 			s.instructions, s.notesFirst = in.Initial(), true
-			cfg.Sections = in
+			cfg.Sections, s.sections = in, in
 		}
 	}
 	s.loop = loop.New(cfg)

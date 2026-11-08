@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/townsendmerino/tack/internal/proto"
 )
 
 // Instruction files by section (DESIGN §2.3, §6.7). A file within the budget is loaded whole. Above it, the first
@@ -426,7 +428,7 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 // load adds the wanted sections that are neither in nor named already, in file order, while the budget lasts, and
 // names the rest; the whole note is charged to call id.
 func (in *Instructions) load(want map[int]bool, id string) string {
-	header := "\n\n[Project rules from " + in.name + " for this call:]"
+	header := in.header()
 	var got, left []int
 	body := "" // the loaded sections' text, to price the next
 	for i := range in.secs {
@@ -444,26 +446,7 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 	if len(got) == 0 && len(left) == 0 {
 		return ""
 	}
-	note := func() string {
-		var out strings.Builder
-		if len(got) > 0 {
-			out.WriteString(header)
-			for _, i := range got {
-				out.WriteString("\n\n" + in.secs[i].Text)
-			}
-		}
-		if len(left) > 0 {
-			out.WriteString("\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines")
-			for k, i := range left {
-				if k > 0 {
-					out.WriteString(",")
-				}
-				fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
-			}
-			out.WriteString(" for the rules on this call.]")
-		}
-		return out.String()
-	}
+	note := func() string { return in.render(got, left) }
 	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
 	// pass the budget, so the model always hears what it is missing.
 	for len(left) > 0 && len(got) > 0 && in.used+SectionTokens(note()) > in.budget {
@@ -473,6 +456,44 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 		slices.Sort(left)
 	}
 	text := note()
+	in.record(id, got, left, text)
+	return text
+}
+
+// header opens a call's note of loaded sections.
+func (in *Instructions) header() string {
+	return "\n\n[Project rules from " + in.name + " for this call:]"
+}
+
+// notLoaded opens a call's notice of the sections it names but does not load.
+func (in *Instructions) notLoaded() string {
+	return "\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines"
+}
+
+// render is a call's note: the loaded sections got under the header, then the notice naming left.
+func (in *Instructions) render(got, left []int) string {
+	var out strings.Builder
+	if len(got) > 0 {
+		out.WriteString(in.header())
+		for _, i := range got {
+			out.WriteString("\n\n" + in.secs[i].Text)
+		}
+	}
+	if len(left) > 0 {
+		out.WriteString(in.notLoaded())
+		for k, i := range left {
+			if k > 0 {
+				out.WriteString(",")
+			}
+			fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
+		}
+		out.WriteString(" for the rules on this call.]")
+	}
+	return out.String()
+}
+
+// record marks call id's note: got in the window, left named, and the note's tokens charged to id.
+func (in *Instructions) record(id string, got, left []int, text string) {
 	for _, i := range got {
 		in.in[i], in.by[i] = true, id
 	}
@@ -482,7 +503,72 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 	cost := SectionTokens(text)
 	in.used += cost
 	in.calls[id] += cost
-	return text
+}
+
+// Replay rebuilds which sections are in the window from a session's log, for a session resumed after loop.Rebuild. It
+// starts over from Initial, then for each tool.finished result in log order takes the note load wrote there: the
+// sections under its header and those its notice names, re-rendered by render and found in the result as written, and
+// charged as load charged them. Each compaction's stubbed results are taken out with Masked. The tracker must be built
+// from the instruction file as the session read it: a section whose text has changed since is not recognised, and its
+// call's note is skipped.
+func (in *Instructions) Replay(evs []proto.Event) error {
+	for i := range in.secs {
+		in.in[i], in.offered[i], in.by[i] = false, false, ""
+	}
+	in.used, in.calls = 0, map[string]int{}
+	in.Initial()
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		switch p := v.(type) {
+		case proto.ToolFinished:
+			got, left := in.noteIn(p.Result)
+			if len(got)+len(left) == 0 {
+				continue
+			}
+			if text := in.render(got, left); strings.Contains(p.Result, text) {
+				in.record(p.ID, got, left, text)
+			}
+		case proto.Compaction:
+			ids := make([]string, len(p.Masked))
+			for i, m := range p.Masked {
+				ids[i] = m.ID
+			}
+			in.Masked(ids)
+		}
+	}
+	return nil
+}
+
+// noteIn is the sections a result's note loads and names: those whose text follows the header, and those whose lines
+// the notice lists.
+func (in *Instructions) noteIn(result string) (got, left []int) {
+	if _, after, ok := strings.Cut(result, in.header()); ok {
+		after, _, _ = strings.Cut(after, in.notLoaded())
+		for i, s := range in.secs {
+			if !in.in[i] && !in.offered[i] && strings.Contains(after+"\n\n", "\n\n"+s.Text+"\n\n") {
+				got = append(got, i)
+			}
+		}
+	}
+	if _, after, ok := strings.Cut(result, in.notLoaded()); ok {
+		list, _, _ := strings.Cut(after, " for the rules on this call.]")
+		for i, s := range in.secs {
+			if !in.in[i] && !in.offered[i] && !slices.Contains(got, i) &&
+				strings.Contains(list+",", fmt.Sprintf(" %d–%d (%s),", s.StartLine, s.EndLine, s.Heading())) {
+				left = append(left, i)
+			}
+		}
+	}
+	return got, left
+}
+
+// Loaded is which sections are in the window and which are named as not loaded, by index into the file's sections; the
+// call whose result carries or names each, "" for the first message's; and the tokens the notes take.
+func (in *Instructions) Loaded() (loaded, offered []bool, by []string, used int) {
+	return slices.Clone(in.in), slices.Clone(in.offered), slices.Clone(in.by), in.used
 }
 
 // Masked tells the sections a compaction stubbed the results of these tool calls: the sections those results carried,
