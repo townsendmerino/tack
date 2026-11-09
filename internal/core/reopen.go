@@ -209,7 +209,7 @@ func (c *Core) Recover() ([]proto.SessionID, error) {
 }
 
 // errClosed answers a request for a session once the Core is closed.
-var errClosed = &proto.Error{Code: proto.CodeInternalError, Message: "the daemon is closing"}
+var errClosed = &proto.Error{Code: proto.CodeShuttingDown, Message: "the daemon is closing"}
 
 // discard undoes a session made while the Core was closing: its edit kit, its sweep target, and its log, which it
 // removes, since nothing will ever reopen it.
