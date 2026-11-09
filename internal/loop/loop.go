@@ -92,6 +92,10 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
+	// Summarize adds compaction's summarizing step (DESIGN §7.6; summarize.go, Session.summarize): when the last prompt
+	// has reached 75% of the window and masking cannot bring it under, the oldest half of the turns before the last 3
+	// requests become one summary message, written by the model's thinking-off alias. Off, no summary is made.
+	Summarize bool
 	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
 	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
 	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
@@ -167,6 +171,15 @@ type Session struct {
 	cliffDone  bool       // a cliff compaction masked something this turn
 	stuckDone  int        // stuck compactions this turn (stuckMax)
 	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
+	// What summarizing reads (Config.Summarize, summarize.go): every persisted event, where the assistant messages are,
+	// the last seq a summary covered and that summary's body; freed is what this request's masking freed, in bytes.
+	events       []proto.Event
+	cuts         summaryCuts
+	summarizedTo int64
+	body         string
+	freed        int
+	fast         string // the summarizing model (fastModel), once fastKnown
+	fastKnown    bool
 }
 
 // New returns a session's loop.
@@ -213,6 +226,9 @@ func (s *Session) append(typ proto.EventType, cause int64, payload any) (proto.E
 	ev, err := s.cfg.Log.Append(typ, cause, payload)
 	if err != nil {
 		return ev, err
+	}
+	if s.cfg.Summarize && ev.Seq != 0 {
+		s.events = append(s.events, ev) // what a summary reads: persisted events, as a resume has them
 	}
 	s.cfg.Emit(ev)
 	return ev, nil
@@ -347,8 +363,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		requests++
 		s.requests++
 		n := s.requests
+		summarize := s.cfg.Summarize && s.due(s.cfg.Source.Window()) // read before masking moves the floor
+		s.freed = 0
 		if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
 			if err := s.compact(n, cause); err != nil {
+				return proto.StopError, err
+			}
+		}
+		if summarize {
+			if err := s.summarizeDue(ctx, srv, n, cause); err != nil {
 				return proto.StopError, err
 			}
 		}
@@ -411,6 +434,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				room = &r
 			}
 		}
+		s.cuts.add(msgEv.Seq, len(s.conv.Messages()))
 		if err := s.conv.AddResponse(resp.Content); err != nil {
 			return fail("internal", err)
 		}

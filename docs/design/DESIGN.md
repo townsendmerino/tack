@@ -1135,7 +1135,11 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
     chain.
   - Francis split it from `compact_at_cliff` on 2026-11-01. The data put the repeat loops at the cliff, where widening
     does not apply.
-- **Not yet built:** the summarizing and re-retrieval steps above.
+- **The summarizing step is built** behind `[run] summarize`, off by default and not an E1 arm setting (P1 step 6;
+  `internal/loop/summarize.go`, `summarize_live.go`). It runs when masking cannot bring a prompt past 75% of the window
+  back under it, and summarizes the oldest half of the turns before the last 3 requests. The `compaction` event logs
+  the summary word for word, so `loop.Rebuild` replays it. **Not yet built:** re-retrieval (step 3), and the dead-weight
+  trigger, which waits for P2's ledger.
 - **How the summary is written, when the summarizing step is built** (from Hermes Agent's compaction, 2026-11-08):
   - **Fixed headings:** goal, constraints, done, in progress, decisions, files, next steps.
   - **An anchor list taken mechanically, with no model call:** paths, symbols, commit hashes and error strings,
