@@ -28,7 +28,7 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 		servers = append(servers, "goinfer@"+n)
 	}
 	sort.Strings(servers)
-	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, MaskObservations: cfg.Run.MaskObservations, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead,
+	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, MaskObservations: cfg.Run.MaskObservations, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead, RecentlyChanged: cfg.Run.RecentlyChanged,
 		RefuseDuplicateEdits: cfg.Run.RefuseDuplicateEdits,
 		VerifyDone:           cfg.Run.VerifyDone,
 		BuildAfterEdit:       cfg.Run.BuildAfterEdit,

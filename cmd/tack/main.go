@@ -34,6 +34,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return haltCmd(args[1:], stdout, stderr)
 	case "resume":
 		return resumeCmd(args[1:], stdout, stderr)
+	case "usage":
+		return usageCmd(args[1:], stdout, stderr)
 	case "rewind":
 		return rewindCmd(args[1:], stdout, stderr)
 	case "shell":
@@ -63,6 +65,8 @@ func usage(w io.Writer) {
                                   the on-demand model server, on the box with the GPU ([serve] in the config)
   tack halt [-reason TEXT]        stop every running turn and command; refuse new turns
   tack resume                     lift a halt
+  tack usage [-since 7d|DATE|all] [-utc] [-config PATH]
+                                  the usage table: requests and tokens by day and model server
   tack rewind [-yes [-no-undo]] <session> [seq]
                                   list a session's checkpoints, or put the files back as they were at one
   tack version

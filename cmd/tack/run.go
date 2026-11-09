@@ -56,7 +56,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "stream every event as one JSON line on stdout")
 	edit := fs.Bool("edit", false, "an edit task: auto mode in the sandbox, edit, write and bash, every turn a tool call, ended by done (macOS)")
 	preflight := fs.String("preflight", "", "with --edit: run this command in the sandbox, as bash would, before the model starts; exit 8 if it fails")
-	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question")
+	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question; "+
+		"\"sections\": add it by section, within 15% of the window, its other sections arriving with the tool calls they bear on")
 	fs.Bool("no-daemon", true, "run the core in this process (the default)")
 	viaDaemon := fs.Bool("daemon", false, "ask through the daemon, starting it if none is running: plan mode, on its main server")
 	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
@@ -64,8 +65,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if *instructions != "" && *instructions != "whole" {
-		fmt.Fprintln(stderr, `tack run: --instructions takes "whole" (section loading is not built yet)`)
+	if *instructions != "" && *instructions != "whole" && *instructions != "sections" {
+		fmt.Fprintln(stderr, `tack run: --instructions takes "whole" or "sections"`)
 		return exitUsage
 	}
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
@@ -86,9 +87,10 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "tack run: --daemon asks the daemon's main server in plan mode; --edit, --instructions, --server, --record and --replay run in this process only")
 			return exitUsage
 		}
-		ws := *wsFlag
-		if ws == "" {
-			ws = gitRoot()
+		ws, err := clientWorkspace(*wsFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
 		}
 		return runViaDaemon(*cfgPath, ws, question, *jsonOut, stdout, stderr)
 	}
@@ -155,6 +157,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	opts := coreOptions(cfg, name, stateDir, st, hc, stderr)
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
+	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true
@@ -246,12 +249,12 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 
 // runViaDaemon asks question through the daemon (tack run --daemon), starting it if none is running.
 func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.Writer) int {
-	_, path, stateDir, err := loadConfig(cfgPath)
+	cfg, path, stateDir, err := loadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWait)
+	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
@@ -337,6 +340,13 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 	var reason string
 	select {
 	case reason = <-done:
+	case <-cl.Done():
+		select {
+		case reason = <-done: // the turn.end came before the connection closed
+		default:
+			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended\n", sess.Session)
+			return exitError
+		}
 	case <-ctx.Done():
 		if detached {
 			fmt.Fprintf(stderr, "tack run: left session %s running in the daemon\n", sess.Session)
@@ -369,4 +379,13 @@ func gitRoot() string {
 	}
 	wd, _ := os.Getwd()
 	return filepath.Clean(wd)
+}
+
+// clientWorkspace is the workspace a --daemon run asks for: --workspace made absolute in this process's directory, or
+// the git root of it. The daemon runs in another directory, where a relative path would name something else.
+func clientWorkspace(flag string) (string, error) {
+	if flag == "" {
+		return gitRoot(), nil
+	}
+	return filepath.Abs(flag)
 }

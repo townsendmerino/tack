@@ -1,15 +1,19 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -35,13 +39,11 @@ func runOptions(t *testing.T, dir string, source ...func(string) (models.Source,
 	if len(source) > 0 {
 		src = source[0]
 	}
-	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(token string, shutdown func()) (*core.Core, error) {
+	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(ctx context.Context, token string, shutdown func()) (*core.Core, error) {
 		st, err := store.Open(dir)
 		if err != nil {
 			return nil, err
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
 		return core.New(ctx, core.Options{Store: st, Version: "1.2.3", ClientToken: token, Shutdown: shutdown,
 			Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20, MaxErrors: 8,
 				SessionTokens: 1 << 20, SessionToolCalls: 100},
@@ -357,6 +359,10 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	// The stopping record says how long the drain may take, so the next daemon waits that long.
+	if h := ReadHolder(dir); !h.Stopping || time.Until(h.Until) < o.Grace {
+		t.Fatalf("the record while it drains: %+v; want it stopping, with an Until past the grace window", h)
+	}
 	next := make(chan error, 1)
 	go func() { // a client found the socket gone and started the next daemon
 		l, err := Acquire(dir, "next")
@@ -380,5 +386,166 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 	}
 	if err := <-next; err != nil {
 		t.Fatalf("the daemon started during the shutdown: %v, want it to wait and take the lock", err)
+	}
+}
+
+// closeWatch is a model source that records when the core closes it, which the core does as it closes.
+type closeWatch struct {
+	models.Source
+	closed *atomic.Bool
+}
+
+func (s closeWatch) Close() error { s.closed.Store(true); return s.Source.Close() }
+
+// TestRunEndsItsWatcherBeforeLettingGo: Run waits for its watcher to return before it closes the core and releases
+// the lock, so a watcher ending slowly still sees an open core (its model source not yet closed) and the lock held.
+func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var coreClosed atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return closeWatch{models.NewRemote("local", ts.URL, "", "", nil), &coreClosed}, nil
+	})
+	var ended, heldAtEnd, openAtEnd atomic.Bool
+	o.Watch = func(ctx context.Context, _ *core.Core) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
+		heldAtEnd.Store(ReadHolder(dir).PID == os.Getpid())
+		openAtEnd.Store(!coreClosed.Load())
+		ended.Store(true)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens its model source, which it closes as it closes
+	}
+	c.Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !ended.Load() {
+		t.Fatal("Run returned while the watcher beside the core still ran")
+	}
+	if !coreClosed.Load() {
+		t.Fatal("Run returned with the core's source open; the check below would prove nothing")
+	}
+	if !openAtEnd.Load() {
+		t.Fatal("the core was closed before the watcher beside it ended")
+	}
+	if !heldAtEnd.Load() {
+		t.Fatal("the lock was released before the watcher beside the core ended")
+	}
+}
+
+// TestTheDaemonsLogTakesWritesAtOnce: Run, its serve loop's refusals, its idle ticks and the core's callbacks all write
+// the one log; SyncWriter serializes them, so the writer need not be safe itself (run under -race).
+func TestTheDaemonsLogTakesWritesAtOnce(t *testing.T) {
+	var buf bytes.Buffer
+	w := SyncWriter(&buf)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 100 {
+				fmt.Fprintln(w, "tack daemon: a line")
+			}
+		})
+	}
+	wg.Wait()
+	if n := strings.Count(buf.String(), "\n"); n != 800 {
+		t.Fatalf("%d lines; want 800, none torn", n)
+	}
+	if SyncWriter(w) != w {
+		t.Fatal("SyncWriter wrapped a writer it had made already")
+	}
+}
+
+// TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting: a connection the daemon accepted just before its shutdown
+// cannot be initialized in the moment between the listener closing and the drain: the core refuses it from before
+// the listener closes, so the client goes on to the next daemon instead of starting work on this one.
+func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
+	dir := shortDir(t)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, runOptions(t, dir)) }()
+	dialSoon(t, dir).Close()
+	nc, err := net.Dial("unix", SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	late := core.NewClient(nc)
+	if err := late.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); err != nil {
+		t.Fatal(err) // the daemon has accepted it and serves it
+	}
+	var initErr error
+	stopHook = func() { // the listener has just closed; the drain has not begun
+		initErr = late.Call(proto.MethodInitialize, proto.InitializeParams{Client: testClient, Protocol: proto.Version}, nil)
+	}
+	t.Cleanup(func() { stopHook = nil })
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if !errors.As(initErr, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("an initialize as the daemon stopped accepting: %v; want code %d", initErr, proto.CodeShuttingDown)
+	}
+}
+
+// slowTicker is a model source whose idle rules take a while to apply, and which records a Close that comes while
+// they are being applied.
+type slowTicker struct {
+	models.Source
+	ticking, closedMidTick *atomic.Bool
+}
+
+func (s slowTicker) Tick(context.Context) error {
+	s.ticking.Store(true)
+	time.Sleep(100 * time.Millisecond)
+	s.ticking.Store(false)
+	return nil
+}
+
+func (s slowTicker) Close() error {
+	if s.ticking.Load() {
+		s.closedMidTick.Store(true)
+	}
+	return s.Source.Close()
+}
+
+// TestRunEndsItsTicksBeforeClosingTheCore: a tick of the model sources' idle rules still running when the daemon shuts
+// down ends before the core closes those sources (Run waits for its ticker as for its watcher).
+func TestRunEndsItsTicksBeforeClosingTheCore(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var ticking, closedMidTick atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return slowTicker{models.NewRemote("local", ts.URL, "", "", nil), &ticking, &closedMidTick}, nil
+	})
+	o.TickEvery = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens the source, which it ticks from now on
+	}
+	c.Close()
+	for deadline := time.Now().Add(5 * time.Second); !ticking.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never ticked its model source")
+		}
+	}
+	cancel() // mid-tick
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if closedMidTick.Load() {
+		t.Fatal("the core closed its model source while a tick of its idle rules still ran")
 	}
 }

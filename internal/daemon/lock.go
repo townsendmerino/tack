@@ -35,6 +35,7 @@ type Lock struct {
 	// holderMu guards the record: rec is what was written, gone that Release removed it.
 	holderMu sync.Mutex
 	rec      Holder
+	stopFor  time.Duration // under holderMu: SetShutdown
 	gone     bool
 	// step, when set (tests), is told each of Release's steps as it completes: "holder removed", "socket closed",
 	// then "unlocking", just before the flock is dropped.
@@ -52,6 +53,9 @@ type Holder struct {
 	// Stopping says the daemon is shutting down: its socket is gone or going, and the lock will follow. A start that
 	// finds it waits for the lock instead of giving up (takeLock).
 	Stopping bool `json:"stopping,omitempty"`
+	// Until, while stopping, is when the daemon expects to have let go of the lock: when its listener closed, plus its
+	// shutdown's grace and the time to record and close (DrainWait). A start waits for it that long (takeLock).
+	Until time.Time `json:"until,omitempty"`
 }
 
 // HeldError is Acquire finding another daemon holding the lock. Holder is that daemon's record, zero when it is not
@@ -64,7 +68,7 @@ func (e *HeldError) Error() string {
 		return "another tack daemon holds the lock (it has not said which)"
 	}
 	if h.Stopping {
-		return fmt.Sprintf("tack daemon %s (pid %d) is shutting down and still holds the lock after %s", h.Version, h.PID, stopWait)
+		return fmt.Sprintf("tack daemon %s (pid %d) is shutting down and still holds the lock, past the time it said it needed", h.Version, h.PID)
 	}
 	return fmt.Sprintf("tack daemon %s (pid %d, since %s) holds the lock", h.Version, h.PID, h.Start.Local().Format(time.DateTime))
 }
@@ -142,8 +146,8 @@ func ReadHolder(stateDir string) Holder {
 // takeLock takes the exclusive flock on f, the lock file in stateDir, without blocking, and tries again while the
 // holder may let go soon:
 //   - held by a daemon whose record says it is running, it is a *HeldError naming that daemon at once;
-//   - held by one whose record says it is stopping (its listener has closed, Listener.Close), it is tried again for up
-//     to stopWait, the drain's grace window and then some, and taken once released;
+//   - held by one whose record says it is stopping (its listener has closed, Listener.Close), it is tried again until
+//     the record's Until, when that daemon expects to be done, and for stopWait at least; taken once released;
 //   - held with no valid record, the holder is starting (it records itself right after taking the lock) or nearly
 //     done stopping (Release removed the record), so it is tried again for up to a second.
 //
@@ -169,8 +173,11 @@ func takeLock(f *os.File, stateDir string) error {
 		switch {
 		case h.PID != 0 && !h.Stopping:
 			return &HeldError{Holder: h}
-		case h.Stopping && !last.Stopping: // a shutdown: wait for it, through its drain
+		case h.Stopping && !last.Stopping: // a shutdown: wait for it, through its drain, as long as it said
 			deadline = start.Add(stopWait)
+			if h.Until.After(deadline) {
+				deadline = h.Until
+			}
 		}
 		if h.PID != 0 {
 			last = h
@@ -185,9 +192,21 @@ func takeLock(f *os.File, stateDir string) error {
 // lockBusy, when set (tests), is told the first time a takeLock finds the lock held.
 var lockBusy func()
 
-// stopWait is how long a start waits for a stopping daemon to release the lock: its drain's grace window and then
-// some.
-const stopWait = time.Minute
+// stopWait is the least a start waits for a stopping daemon to release the lock, however soon its record said; a
+// variable so tests can shorten it.
+var stopWait = time.Minute
+
+// DrainWait is how long a daemon shutting down with grace may take to let go of the lock: the grace window, then
+// time to record the turns it cancels (core.Drain gives that 5s), close the core and release.
+func DrainWait(grace time.Duration) time.Duration { return grace + 15*time.Second }
+
+// SetShutdown says how long this daemon's shutdown may take, from its listener closing to its releasing the lock;
+// the stopping record carries it as Until.
+func (l *Lock) SetShutdown(d time.Duration) {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	l.stopFor = d
+}
 
 // Dir is the state directory the lock is in.
 func (l *Lock) Dir() string { return l.dir }
@@ -237,6 +256,9 @@ func (l *Lock) markStopping() {
 		return
 	}
 	l.rec.Stopping = true
+	if l.stopFor > 0 {
+		l.rec.Until = time.Now().Add(l.stopFor)
+	}
 	_ = writeHolder(l.dir, l.rec) // at worst a start sees the record as running and names it
 }
 
@@ -250,6 +272,10 @@ func (l *Lock) tell(step string) {
 // privateDir makes dir (0700) if it is missing, and narrows it to 0700 if others may read or search it. It refuses,
 // changing nothing, a directory others own or may write, or one under a path they could redirect (checkPath): what
 // they may already have put there is not tack's to trust, so it is not narrowed. tack's state is its user's alone.
+//
+// What is missing is made where the path resolves, through a symlink whose target does not exist yet too, one
+// directory at a time (makeDirs), so a directory planted meanwhile in a shared parent is refused before anything is
+// made in it.
 func privateDir(dir string) error {
 	if slices.Contains(strings.Split(dir, string(filepath.Separator)), "..") {
 		return fmt.Errorf("daemon: the state directory %s holds \"..\"; name it without: after a symlink the kernel and a path cleaned as text resolve \"..\" differently", dir)
@@ -258,21 +284,22 @@ func privateDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkPath(abs); err != nil { // before MkdirAll, which follows symlinks
-		return err
-	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return err
-	}
-	if err := checkPath(abs); err != nil { // and after, now that every component exists
-		return err
-	}
-	st, err := os.Stat(abs) // a directory: MkdirAll fails on anything else
+	resolved, err := checkPath(abs)
 	if err != nil {
 		return err
 	}
-	if uid := ownerOf(abs, st); uid != os.Getuid() {
-		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, os.Getuid())
+	if afterCheck != nil {
+		afterCheck()
+	}
+	if err := makeDirs(resolved); err != nil {
+		return err
+	}
+	if _, err := checkPath(abs); err != nil { // now that every directory exists, the state directory's own rules apply
+		return err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return err
 	}
 	if st.Mode().Perm() != 0o700 {
 		return os.Chmod(abs, 0o700)
@@ -280,58 +307,107 @@ func privateDir(dir string) error {
 	return nil
 }
 
-// checkPath refuses a path another user could redirect to a directory of theirs. It walks the path as the kernel
-// resolves it, one component at a time from /, following each symlink where it is met: every directory passed through
-// must be this user's or root's and not writable by others unless it is sticky, as /tmp is (sshd's StrictModes is the
-// model), and every symlink must be this user's or root's. A component that does not exist yet ends the walk:
-// privateDir makes the rest, as this user's.
-func checkPath(abs string) error {
-	trusted := func(uid int) bool { return uid == os.Getuid() || uid == 0 }
-	checkDir := func(p string, fi fs.FileInfo, leaf bool) error {
-		if uid := ownerOf(p, fi); !trusted(uid) {
-			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
-		}
-		// The sticky bit keeps others from replacing what is in a shared directory, so it may hold the state directory;
-		// it does not keep them from adding files, so the state directory itself may not be one.
-		if fi.Mode().Perm()&0o022 != 0 && (leaf || fi.Mode()&fs.ModeSticky == 0) {
-			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
-		}
-		return nil
-	}
-	root, err := os.Lstat("/")
-	if err != nil {
-		return err
-	}
-	if err := checkDir("/", root, false); err != nil {
-		return err
-	}
-	cur, rest, links := "/", components(abs), 0
-	for len(rest) > 0 {
-		name := rest[0]
-		rest = rest[1:]
-		if name == ".." {
-			cur = filepath.Dir(cur) // cur is resolved, so its parent is the physical one
-			continue
-		}
+// afterCheck, when set (tests), runs in privateDir between the first check and the making of what is missing.
+var afterCheck func()
+
+// mkdir is os.Mkdir; tests replace it to see which directories privateDir makes.
+var mkdir = os.Mkdir
+
+// makeDirs makes the directories of p, a path checkPath resolved, that do not exist yet, one at a time, and calls mkdir
+// on no other: an existing ancestor may be on a read-only mount, or outside what a sandbox lets tack create. Each is
+// Lstat'ed first, and made with Mkdir, which never follows a symlink already there, only if it is missing; so a
+// symlink or another user's directory planted after checkPath is refused before anything is made in it.
+func makeDirs(p string) error {
+	cur := "/"
+	for _, name := range components(p) {
 		next := filepath.Join(cur, name)
 		fi, err := os.Lstat(next)
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			if err := mkdir(next, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			fi, err = os.Lstat(next)
 		}
 		if err != nil {
 			return err
 		}
 		switch {
+		case fi.Mode()&fs.ModeSymlink != 0: // checkPath resolved every link on p, so this one came after it
+			return fmt.Errorf("daemon: %s became a symlink, owned by uid %d, while tack made its state directory", next, ownerOf(next, fi))
+		case !fi.IsDir():
+			return fmt.Errorf("daemon: %s is not a directory", next)
+		}
+		if err := checkDir(next, fi, false); err != nil {
+			return err
+		}
+		cur = next
+	}
+	return nil
+}
+
+// checkDir refuses a directory another user could use to replace tack's state. One on the way to the state directory
+// must be this user's or root's, and not writable by others unless it is sticky; the state directory itself (leaf)
+// must be this user's, and not writable by others even if sticky: the sticky bit keeps others from replacing what a
+// shared directory holds, so it may hold the state directory, but not from adding files, so it may not be one.
+func checkDir(p string, fi fs.FileInfo, leaf bool) error {
+	if uid := ownerOf(p, fi); uid != os.Getuid() && (leaf || uid != 0) {
+		return fmt.Errorf("daemon: %s belongs to uid %d; tack's state must be this user's, under this user's or root's directories", p, uid)
+	}
+	if fi.Mode().Perm()&0o022 != 0 && (leaf || fi.Mode()&fs.ModeSticky == 0) {
+		return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
+	}
+	return nil
+}
+
+// checkPath refuses a path another user could redirect to a directory of theirs, and returns it resolved: the part
+// that exists with its symlinks followed, and the names that do not exist yet after it. It walks the path as the
+// kernel resolves it, one name at a time from /, following each symlink where it is met, one whose target does not
+// exist yet too: every directory passed through is checked (checkDir), and every symlink must be this user's or
+// root's. Once every name exists, the directory the path resolves to is checked as the state directory itself,
+// however it was reached (a link to "." or ".." ends the walk on a directory first passed through).
+func checkPath(abs string) (string, error) {
+	root, err := os.Lstat("/")
+	if err != nil {
+		return "", err
+	}
+	if err := checkDir("/", root, false); err != nil {
+		return "", err
+	}
+	cur, rest, links := "/", components(abs), 0
+	var missing []string // names past the first that does not exist: none of them can be a link yet
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		switch {
+		case name == ".." && len(missing) > 0: // the kernel resolves it only through a directory that exists
+			return "", fmt.Errorf("daemon: %s climbs out of %s with \"..\" before that exists; name the state directory without it", abs, filepath.Join(append([]string{cur}, missing...)...))
+		case name == "..":
+			cur = filepath.Dir(cur) // cur is resolved, so its parent is the physical one
+			continue
+		case len(missing) > 0:
+			missing = append(missing, name)
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			missing = append(missing, name)
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		switch {
 		case fi.Mode()&fs.ModeSymlink != 0:
-			if uid := ownerOf(next, fi); !trusted(uid) {
-				return fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", next, uid)
+			if uid := ownerOf(next, fi); uid != os.Getuid() && uid != 0 {
+				return "", fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", next, uid)
 			}
 			if links++; links > 40 {
-				return fmt.Errorf("daemon: %s: too many levels of symlinks", abs)
+				return "", fmt.Errorf("daemon: %s: too many levels of symlinks", abs)
 			}
 			target, err := os.Readlink(next)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if filepath.IsAbs(target) {
 				cur = "/"
@@ -339,22 +415,21 @@ func checkPath(abs string) error {
 			rest = append(components(target), rest...)
 		case fi.IsDir():
 			if err := checkDir(next, fi, false); err != nil {
-				return err
+				return "", err
 			}
 			cur = next
-		case len(rest) > 0:
-			return fmt.Errorf("daemon: %s is not a directory", next)
 		default:
-			return nil // the last component is a file; privateDir says so
+			return "", fmt.Errorf("daemon: %s is not a directory", next)
 		}
 	}
-	// Every name existed: cur is the state directory itself, however it was reached (a link to "." or ".." ends the walk
-	// on a directory first passed through), and it is checked as one.
+	if len(missing) > 0 {
+		return filepath.Join(append([]string{cur}, missing...)...), nil
+	}
 	fi, err := os.Lstat(cur)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return checkDir(cur, fi, true)
+	return cur, checkDir(cur, fi, true)
 }
 
 // components splits a path into its names, dropping empty ones and ".", keeping "..".
@@ -375,4 +450,22 @@ var ownerOf = func(_ string, fi fs.FileInfo) int {
 		return int(st.Uid)
 	}
 	return -1
+}
+
+// LockFree says whether no daemon holds stateDir's lock now. It takes the lock for a moment to see, so a daemon that
+// starts in that moment finds it held with no record, and tries again (takeLock).
+func LockFree(stateDir string) bool {
+	f, err := os.OpenFile(filepath.Join(stateDir, LockName), os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return false
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return true
 }
