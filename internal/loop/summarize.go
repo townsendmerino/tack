@@ -49,10 +49,21 @@ type Summary struct {
 	Reason   string
 }
 
+// SummarySend sends one summarizer request and returns the reply: a server's Stream, or the live loop's, which logs
+// the request and its usage (Session.summarize).
+type SummarySend func(ctx context.Context, req server.Request) (*server.Response, error)
+
+// StreamTo is the SummarySend of srv alone, with nothing logged.
+func StreamTo(srv server.Server) SummarySend {
+	return func(ctx context.Context, req server.Request) (*server.Response, error) {
+		return srv.Stream(ctx, req, func(server.Delta) {})
+	}
+}
+
 // Summarize is the summary after stretch, the turns now compacted, given prior, the turns compacted before, and
 // previous, the body of the summary that covered them. model is the summarizing model (the thinking-off alias); ""
-// means none is served, and the previous body is kept with no call.
-func Summarize(ctx context.Context, srv server.Server, model string, prior, stretch []proto.Event, previous string) Summary {
+// means none is served, and the previous body is kept with no call. Each request goes through send.
+func Summarize(ctx context.Context, send SummarySend, model string, prior, stretch []proto.Event, previous string) Summary {
 	all := append(append([]proto.Event(nil), prior...), stretch...)
 	keep := func(reason string) Summary {
 		return Summary{Text: summaryText(all, previous), Body: previous, FellBack: true, Reason: reason}
@@ -62,7 +73,7 @@ func Summarize(ctx context.Context, srv server.Server, model string, prior, stre
 	}
 	body := previous
 	for i, chunk := range summaryChunks(stretch) {
-		resp, err := srv.Stream(ctx, summaryRequest(model, body, chunk), func(server.Delta) {})
+		resp, err := send(ctx, summaryRequest(model, body, chunk))
 		if err != nil {
 			return keep(fmt.Sprintf("chunk %d: %v", i+1, err))
 		}

@@ -171,9 +171,10 @@ type Session struct {
 	cliffDone  bool       // a cliff compaction masked something this turn
 	stuckDone  int        // stuck compactions this turn (stuckMax)
 	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
-	// What summarizing reads (Config.Summarize, summarize.go): every persisted event, where the assistant messages are,
-	// the last seq a summary covered and that summary's body; freed is what this request's masking freed, in bytes.
-	events       []proto.Event
+	// What summarizing reads (Config.Summarize, summarize_live.go): where the assistant messages are, the last seq a
+	// summary covered and that summary's body; freed is what this request's masking freed, in bytes; sumFloor is the
+	// prompt at the last summary attempt that changed nothing, 0 if none (summarizeDue backs off from it).
+	sumFloor     int
 	cuts         summaryCuts
 	summarizedTo int64
 	body         string
@@ -226,9 +227,6 @@ func (s *Session) append(typ proto.EventType, cause int64, payload any) (proto.E
 	ev, err := s.cfg.Log.Append(typ, cause, payload)
 	if err != nil {
 		return ev, err
-	}
-	if s.cfg.Summarize && ev.Seq != 0 {
-		s.events = append(s.events, ev) // what a summary reads: persisted events, as a resume has them
 	}
 	s.cfg.Emit(ev)
 	return ev, nil
@@ -371,8 +369,13 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 		}
 		if summarize {
-			if err := s.summarizeDue(ctx, srv, n, cause); err != nil {
+			spent, err := s.summarizeDue(ctx, srv, n, cause)
+			tokens += spent
+			if err != nil {
 				return proto.StopError, err
+			}
+			if ctx.Err() != nil { // halted or cancelled during the summarizer's call: no request goes out
+				return stopped()
 			}
 		}
 		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
@@ -408,24 +411,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if err != nil {
 			return proto.StopError, err
 		}
-		// Prompt is the whole prompt: InputTokens plus Reused when the server reports reuse (server.Usage), and then
-		// InputTokens is the prefilled share. A server that does not report reuse leaves Reused and Prefilled nil.
-		reused, prefilled := 0, (*int)(nil)
-		if resp.Usage.Reused != nil {
-			reused = *resp.Usage.Reused
-			p := resp.Usage.InputTokens
-			prefilled = &p
-		}
-		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused, Prefilled: prefilled,
-			Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
+		u := usageOf(n, srv.Name(), resp)
 		s.noteUsage(u.Prompt)
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}
-		computed := u.Prompt + u.Output
-		if u.Prefilled != nil {
-			computed = *u.Prefilled + u.Output
-		}
+		computed := computedTokens(u)
 		tokens += computed
 		s.tokens += computed
 		room = nil
@@ -945,4 +936,27 @@ func (s *Session) endSnapshot() {
 	if s.cfg.Perms != nil {
 		s.cfg.Perms.Snapshotted, s.cfg.Perms.Staged = false, false
 	}
+}
+
+// usageOf is the usage event of request n's response from server. Prompt is the whole prompt: InputTokens plus Reused
+// when the server reports reuse (server.Usage), and then InputTokens is the prefilled share. A server that does not
+// report reuse leaves Reused and Prefilled nil.
+func usageOf(n int, srvName string, resp *server.Response) proto.Usage {
+	reused, prefilled := 0, (*int)(nil)
+	if resp.Usage.Reused != nil {
+		reused = *resp.Usage.Reused
+		p := resp.Usage.InputTokens
+		prefilled = &p
+	}
+	return proto.Usage{Request: n, Server: srvName, Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused,
+		Prefilled: prefilled, Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
+}
+
+// computedTokens is what the server computed for u: its prefilled share and output when it reports reuse, else the
+// whole prompt and output. Budgets count this.
+func computedTokens(u proto.Usage) int {
+	if u.Prefilled != nil {
+		return *u.Prefilled + u.Output
+	}
+	return u.Prompt + u.Output
 }

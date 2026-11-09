@@ -149,9 +149,6 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 		return nil, err
 	}
 	s.conv, s.cuts, s.summarizedTo, s.body = conv, st.cuts, st.to, st.body
-	if cfg.Summarize {
-		s.events = append(s.events, history...)
-	}
 	for _, ev := range history {
 		v, err := ev.Decode()
 		if err != nil {
@@ -161,13 +158,11 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 		case proto.UserMessage:
 			s.turns++
 		case proto.RequestSent:
-			s.requests++
-		case proto.Usage:
-			if p.Prefilled != nil {
-				s.tokens += *p.Prefilled + p.Output
-			} else {
-				s.tokens += p.Prompt + p.Output
+			if p.Request != 0 { // 0: the summarizer's, outside the conversation's numbering
+				s.requests++
 			}
+		case proto.Usage:
+			s.tokens += computedTokens(p) // the summarizer's too, as the live loop counts them
 		}
 	}
 	s.calls = callsRan(history)

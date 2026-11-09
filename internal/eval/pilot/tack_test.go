@@ -47,9 +47,10 @@ func TestSummarizeTack(t *testing.T) {
 		`{"seq":2,"time":"2026-10-17T12:00:00Z","type":"request.sent","cause":1,"payload":{"request":1,"server":"goinfer@pilot","model":"qwen"}}`,
 		`{"seq":3,"time":"2026-10-17T12:00:01Z","type":"tool.call","cause":2,"payload":{"id":"a","name":"done","input":{"reason":"x"}}}`,
 		`{"seq":4,"time":"2026-10-17T12:00:01Z","type":"tool.finished","cause":3,"payload":{"id":"a","outcome":"ok","result":"` + loop.DoneNoChange + `","truncated":false}}`,
-		`{"seq":5,"time":"2026-10-17T12:00:02Z","type":"request.sent","cause":1,"payload":{"request":2,"server":"goinfer@pilot","model":"qwen"}}`,
-		`{"seq":6,"time":"2026-10-17T12:00:03Z","type":"tool.call","cause":5,"payload":{"id":"b","name":"done","input":{"reason":"y"}}}`,
-		`{"seq":7,"time":"2026-10-17T12:00:03Z","type":"turn.end","cause":1,"payload":{"stop_reason":"done"}}`,
+		`{"seq":5,"time":"2026-10-17T12:00:01Z","type":"request.sent","cause":1,"payload":{"request":0,"server":"goinfer@pilot","model":"qwen-fast"}}`, // the summarizer's: not counted
+		`{"seq":6,"time":"2026-10-17T12:00:02Z","type":"request.sent","cause":1,"payload":{"request":2,"server":"goinfer@pilot","model":"qwen"}}`,
+		`{"seq":7,"time":"2026-10-17T12:00:03Z","type":"tool.call","cause":6,"payload":{"id":"b","name":"done","input":{"reason":"y"}}}`,
+		`{"seq":8,"time":"2026-10-17T12:00:03Z","type":"turn.end","cause":1,"payload":{"stop_reason":"done"}}`,
 	}
 	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 	s := SummarizeTack(p)
