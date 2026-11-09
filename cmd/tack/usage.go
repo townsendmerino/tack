@@ -158,6 +158,7 @@ func localUsage(dir string, since time.Time, loc *time.Location) ([]usagetable.R
 // (the OS's variable, which time.Local itself reads; empty means UTC), else what /etc/localtime links to under
 // zoneinfo/. It is "" when neither names one; the daemon then counts its own days, which on this machine are the same.
 func localZoneName() string {
+	// TZ is the OS's own variable, read only to name the zone time.Local already uses; it is not a tack setting.
 	if tz, ok := os.LookupEnv("TZ"); ok {
 		if tz = strings.TrimPrefix(tz, ":"); tz == "" {
 			return "UTC"
