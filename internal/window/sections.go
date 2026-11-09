@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Instruction files by section (DESIGN §2.3, §6.7). A file within the budget is loaded whole. Above it, the first
@@ -615,7 +618,7 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 // load adds the wanted sections that are neither in nor named already, in file order, while the budget lasts, and
 // names the rest; the whole note is charged to call id.
 func (in *Instructions) load(want map[int]bool, id string) string {
-	header := "\n\n[Project rules from " + in.name + " for this call:]"
+	header := in.header()
 	var got, left []int
 	body := "" // the loaded sections' text, to price the next
 	for i := range in.secs {
@@ -633,26 +636,7 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 	if len(got) == 0 && len(left) == 0 {
 		return ""
 	}
-	note := func() string {
-		var out strings.Builder
-		if len(got) > 0 {
-			out.WriteString(header)
-			for _, i := range got {
-				out.WriteString("\n\n" + in.secs[i].Text)
-			}
-		}
-		if len(left) > 0 {
-			out.WriteString("\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines")
-			for k, i := range left {
-				if k > 0 {
-					out.WriteString(",")
-				}
-				fmt.Fprintf(&out, " %d–%d (%s)", in.secs[i].StartLine, in.secs[i].EndLine, in.secs[i].Heading())
-			}
-			out.WriteString(" for the rules on this call.]")
-		}
-		return out.String()
-	}
+	note := func() string { return in.render(got, left) }
 	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
 	// pass the budget, so the model always hears what it is missing.
 	for len(left) > 0 && len(got) > 0 && in.used+SectionTokens(note()) > in.budget {
@@ -662,6 +646,52 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 		slices.Sort(left)
 	}
 	text := note()
+	in.record(id, got, left, text)
+	return text
+}
+
+// header opens a call's note of loaded sections; notLoaded opens its notice of the sections it names instead, and
+// notLoadedEnd closes that notice.
+func (in *Instructions) header() string {
+	return "\n\n[Project rules from " + in.name + " for this call:]"
+}
+
+func (in *Instructions) notLoaded() string {
+	return "\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines"
+}
+
+const notLoadedEnd = " for the rules on this call.]"
+
+// entry is how the notice names a section.
+func (in *Instructions) entry(i int) string {
+	s := in.secs[i]
+	return fmt.Sprintf(" %d–%d (%s)", s.StartLine, s.EndLine, s.Heading())
+}
+
+// render is a call's note: the loaded sections got under the header, then the notice naming left.
+func (in *Instructions) render(got, left []int) string {
+	var out strings.Builder
+	if len(got) > 0 {
+		out.WriteString(in.header())
+		for _, i := range got {
+			out.WriteString("\n\n" + in.secs[i].Text)
+		}
+	}
+	if len(left) > 0 {
+		out.WriteString(in.notLoaded())
+		for k, i := range left {
+			if k > 0 {
+				out.WriteString(",")
+			}
+			out.WriteString(in.entry(i))
+		}
+		out.WriteString(notLoadedEnd)
+	}
+	return out.String()
+}
+
+// record makes call id's note a new note in the window: got in, left named, its text's tokens charged.
+func (in *Instructions) record(id string, got, left []int, text string) {
 	k := len(in.notes)
 	for _, i := range got {
 		in.in[i], in.by[i] = true, k
@@ -672,7 +702,189 @@ func (in *Instructions) load(want map[int]bool, id string) string {
 	cost := SectionTokens(text)
 	in.used += cost
 	in.notes = append(in.notes, callNote{id: id, cost: cost, live: true})
-	return text
+}
+
+// Replay rebuilds which sections are in the window from a session's log, for a session resumed after loop.Rebuild
+// (core's open calls it before loop.Resume, with the log from seq 1). It starts over from Initial, then takes each
+// tool.finished result's note in log order, and each compaction's stubbed ids through Masked.
+//
+// A note is taken only when it can be read back exactly. That means: the sections that follow the header, one after
+// another, each a section that is neither in nor named; then the notice's entries, in order; and re-rendering those
+// with render gives the result's note byte for byte, up to its end or edit's current-symbol note
+// (tools.CurrentSymbolOpen). A note that does not read back is skipped whole, never recorded in part; that happens
+// when the file changed since the session read it, and the skipped sections come in again at their next matching call.
+// The tracker must be built from the instruction file as the session read it.
+func (in *Instructions) Replay(evs []proto.Event) error {
+	for i := range in.secs {
+		in.in[i], in.offered[i], in.by[i] = false, false, -1
+	}
+	in.used, in.notes = 0, nil
+	// The first message is read from the log, as the session sent it; the file may have changed since. Only a log
+	// with no first message falls back to Initial over the file as it is now.
+	read := false
+	for _, ev := range evs {
+		if ev.Type != proto.EvUserMessage {
+			continue
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		var text strings.Builder
+		for _, c := range v.(proto.UserMessage).Content {
+			text.WriteString(c.Text)
+		}
+		read = in.firstFrom(text.String())
+		break
+	}
+	if !read {
+		in.Initial()
+	}
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		switch p := v.(type) {
+		case proto.ToolFinished:
+			if got, left, text, ok := in.noteIn(p.Result); ok {
+				in.record(p.ID, got, left, text)
+			}
+		case proto.Compaction:
+			ids := make([]string, len(p.Masked))
+			for i, m := range p.Masked {
+				ids[i] = m.ID
+			}
+			in.Masked(ids)
+		}
+	}
+	return nil
+}
+
+// firstFrom sets what the first message holds from that message as logged: its instruction text runs from Initial's
+// opening line to the first part the message adds after it (a repository map, injected code, a message's sections,
+// or the task), or to its end for a whole file, which follows the task. The sections whose text it holds whole are in,
+// and so is a cut opening, which counts as in; its tokens are the first message's charge. It is false when the message
+// holds no instruction text.
+func (in *Instructions) firstFrom(msg string) bool {
+	for _, open := range []string{"Project notes from " + in.name + ", for reference:", "Project instructions, from " + in.name + ":"} {
+		k := strings.Index(msg, open)
+		if k < 0 {
+			continue
+		}
+		part := msg[k:]
+		for _, end := range []string{"\n\nTask: ", "\n\n" + RepoMapTitle, "\n\nCode that may be relevant", "\n\n[Project rules from"} {
+			if e := strings.Index(part, end); e >= 0 {
+				part = part[:e]
+			}
+		}
+		for i, s := range in.secs {
+			in.in[i] = strings.Contains(part, s.Text)
+		}
+		if strings.Contains(part, "[… the rest of this section is cut to fit the window;") {
+			for i := range in.firstSection() {
+				in.in[i] = true
+			}
+		}
+		in.used = SectionTokens(part)
+		return true
+	}
+	return false
+}
+
+// noteIn reads load's note back from a result, as Replay describes: its sections, those it names, and its text, or
+// false when the result holds no note that reads back exactly.
+func (in *Instructions) noteIn(result string) (got, left []int, text string, ok bool) {
+	// The note sits at the result's end, after the tool's own output, which can hold text like a header (a read of the
+	// instruction file, say): each place a header opens is tried, from the last back. A note with sections holds its
+	// notice after them, so a notice alone is tried only in a result with no header: one whose header does not read
+	// back is skipped whole, never taken for its notice.
+	opens := []string{in.header()}
+	if !strings.Contains(result, in.header()) {
+		opens = []string{in.notLoaded()}
+	}
+	for _, open := range opens {
+		for end := len(result); ; {
+			k := strings.LastIndex(result[:end], open)
+			if k < 0 {
+				break
+			}
+			note := result[k:]
+			if c := strings.Index(note, tools.CurrentSymbolOpen); c >= 0 {
+				note = note[:c]
+			}
+			if got, left, text, ok := in.noteAt(note); ok {
+				return got, left, text, true
+			}
+			end = k
+		}
+	}
+	return nil, nil, "", false
+}
+
+// noteAt reads a note back from note, which must begin with it and hold nothing after it.
+func (in *Instructions) noteAt(note string) (got, left []int, text string, ok bool) {
+	free := func(i int) bool {
+		return !in.in[i] && !in.offered[i] && !slices.Contains(got, i) && !slices.Contains(left, i)
+	}
+	rest, isLoad := strings.CutPrefix(note, in.header())
+	for isLoad {
+		next := -1
+		for i := range in.secs {
+			if free(i) && strings.HasPrefix(rest, "\n\n"+in.secs[i].Text) {
+				r := rest[len(in.secs[i].Text)+2:]
+				if r == "" || strings.HasPrefix(r, "\n\n") {
+					next = i
+					break
+				}
+			}
+		}
+		if next < 0 {
+			break
+		}
+		got = append(got, next)
+		rest = rest[len(in.secs[next].Text)+2:]
+	}
+	if !isLoad {
+		rest = note
+	}
+	if list, isNotice := strings.CutPrefix(rest, in.notLoaded()); isNotice {
+		list, closed := strings.CutSuffix(list, notLoadedEnd)
+		if !closed {
+			return nil, nil, "", false
+		}
+		for list != "" {
+			next := -1
+			for i := range in.secs {
+				if e := in.entry(i); free(i) && (list == e || strings.HasPrefix(list, e+",")) {
+					next = i
+					break
+				}
+			}
+			if next < 0 {
+				return nil, nil, "", false
+			}
+			left = append(left, next)
+			list = strings.TrimPrefix(strings.TrimPrefix(list, in.entry(next)), ",")
+		}
+	}
+	text = in.render(got, left)
+	if len(got)+len(left) == 0 || text != note {
+		return nil, nil, "", false
+	}
+	return got, left, text, true
+}
+
+// Loaded is which sections are in the window and which are named as not loaded, by index into the file's sections;
+// the id of the call whose note carries or names each, "" for the first message's; and the tokens the notes take.
+func (in *Instructions) Loaded() (loaded, offered []bool, by []string, used int) {
+	by = make([]string, len(in.by))
+	for i, k := range in.by {
+		if k >= 0 {
+			by[i] = in.notes[k].id
+		}
+	}
+	return slices.Clone(in.in), slices.Clone(in.offered), by, in.used
 }
 
 // Masked tells the sections a compaction stubbed the results of these tool calls: for each id, the oldest note still

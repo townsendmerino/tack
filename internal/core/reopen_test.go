@@ -16,7 +16,9 @@ import (
 
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/window"
@@ -961,5 +963,56 @@ func TestRecoverMatchesARepeatedIDInOrder(t *testing.T) {
 	}
 	if outcome[first.Seq] != proto.OutcomeUnknown || outcome[second.Seq] != proto.OutcomeCancelled {
 		t.Fatalf("results by call: %v; want the first (seq %d) unknown and the second (seq %d) not run", outcome, first.Seq, second.Seq)
+	}
+}
+
+// TestAReopenedSessionKeepsItsSections: a session reopened by a new daemon rebuilds its section tracker from its log
+// (Instructions.Replay, before loop.Resume), so a section its first daemon loaded is not loaded again.
+func TestAReopenedSessionKeepsItsSections(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384,
+		goinfertest.Calls("", "w1", "write", `{"path":"b_test.go","content":"package a\n"}`), goinfertest.Says("one"),
+		goinfertest.Calls("", "w2", "write", `{"path":"c_test.go","content":"package a\n"}`), goinfertest.Says("two"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	sections := func(o *Options) {
+		o.SectionInstructions = true
+		o.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+			return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+		}
+	}
+	first, cl, events := daemonOn(t, st, ts.URL, sections)
+	ws := repo(t)
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\nIntro.\n\n## Testing\n\nRun go test with -v.\n\n## Filler\n\n"+
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300)), 0o644)
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModeAuto}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil)
+	results := func(evs []proto.Event) []string {
+		var out []string
+		for _, ev := range evs {
+			if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+				out = append(out, v.(proto.ToolFinished).Result)
+			}
+		}
+		return out
+	}
+	if r := results(untilTurnEnd(t, events)); len(r) != 1 || !strings.Contains(r[0], "Run go test with -v.") {
+		t.Fatalf("the first daemon's write should bring the testing section: %q", r)
+	}
+	first.Close()
+	_, cl2, events2 := daemonOn(t, st, ts.URL, sections)
+	cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	untilTurnEnd(t, events2) // the replay
+	cl2.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil)
+	r := results(untilTurnEnd(t, events2))
+	if len(r) == 0 || strings.Contains(r[len(r)-1], "[Project rules from") {
+		t.Errorf("the reopened session loaded the testing section again: %q", r)
 	}
 }
