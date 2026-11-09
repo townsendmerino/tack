@@ -238,9 +238,11 @@ func TestALongRequestCountsAsUseUntilItEnds(t *testing.T) {
 	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
 	get(t, ts, "POST", "/tack/start", key)
 	waitState(t, f, Ready)
+	began := time.Now()
 	if code, body := get(t, ts, "POST", "/v1/messages", key); code != http.StatusOK {
 		t.Fatalf("the proxied request: %d %s", code, body)
 	}
+	waitRequestEnd(t, f, began, 600*time.Millisecond)
 	f.Tick(context.Background())
 	if child, loaded := f.sup.Running(); !child || !loaded || f.Status().State != Ready {
 		t.Fatalf("a tick just after a long request: child %v, loaded %v, state %+v; want the model kept", child, loaded, f.Status())
@@ -311,6 +313,7 @@ func TestARequestTheClientDropsStillCountsAsUse(t *testing.T) {
 	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
 	get(t, ts, "POST", "/tack/start", key)
 	waitState(t, f, Ready)
+	began := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/v1/messages", nil)
 	req.Header.Set("x-api-key", key)
@@ -323,9 +326,20 @@ func TestARequestTheClientDropsStillCountsAsUse(t *testing.T) {
 	time.Sleep(600 * time.Millisecond)
 	cancel() // the client hangs up, past the idle timeout from the request's start
 	resp.Body.Close()
-	time.Sleep(200 * time.Millisecond) // the proxy notices, and its handler ends
+	waitRequestEnd(t, f, began, 600*time.Millisecond) // the proxy notices, and its handler ends
 	f.Tick(context.Background())
 	if child, loaded := f.sup.Running(); !child || !loaded {
 		t.Fatalf("a tick just after a dropped request: child %v, loaded %v; want the model kept", child, loaded)
+	}
+}
+
+// waitRequestEnd waits until the front has recorded a request's end, at least d after began: the client can have the
+// whole response before the proxy's handler returns, so what the handler does at the end is not done when Do returns.
+func waitRequestEnd(t *testing.T, f *Front, began time.Time, d time.Duration) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); f.activeAt().Sub(began) < d; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the front never recorded the request's end: active %s after it began", f.activeAt().Sub(began))
+		}
 	}
 }
