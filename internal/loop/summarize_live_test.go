@@ -449,3 +449,30 @@ func TestAMaskingCompactionClearsTheSummaryFloor(t *testing.T) {
 		t.Errorf("the summary floor is %d after a masking compaction, want 0", h.sess.sumFloor)
 	}
 }
+
+// TestATaskWithItsOwnHeadingsKeepsTheBody: a task written in markdown, with its own "## Goal", does not shift the body:
+// the summary's body, live and on a resume, is the summarizer's, not a span starting inside the user's text.
+func TestATaskWithItsOwnHeadingsKeepsTheBody(t *testing.T) {
+	h := maskHarness(t, false, 120,
+		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "read", bigRead),
+		goinfertest.Calls("", "t3", "read", bigRead), goinfertest.Calls("", "t4", "read", bigRead),
+		goinfertest.Says(body("read big.txt")), goinfertest.Calls("", "t5", "read", bigRead), goinfertest.Says("done"))
+	h.sess.cfg.Summarize = true
+	h.sess = New(h.sess.cfg)
+	task := "Make the reader faster.\n\n## Goal\n\nHalve the time of a whole read.\n\n## Constraints\n\nNo new dependency."
+	if _, err := h.sess.Turn(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.payloads(proto.EvCompaction)) != 1 {
+		t.Fatalf("%d compactions", len(h.payloads(proto.EvCompaction)))
+	}
+	want := body("read big.txt")
+	if h.sess.body != want {
+		t.Errorf("live body:\n%s\nwant the summarizer's:\n%s", h.sess.body, want)
+	}
+	evs, _ := h.st.Events("s_test", 0)
+	r, err := Resume(h.sess.cfg, evs)
+	if err != nil || r.body != want {
+		t.Errorf("resumed body:\n%s\n%v", r.body, err)
+	}
+}

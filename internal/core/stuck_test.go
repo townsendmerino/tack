@@ -663,3 +663,34 @@ func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 		t.Errorf("a live event waited %v; catching up had 300 ms left", took)
 	}
 }
+
+// TestAReaderPastItsCatchUpTimeFallsBack: when catching up runs out on a client that is still reading, a live event gets
+// the ordinary fanOutWait, not a drop: a message finishing just after the deadline still goes through.
+func TestAReaderPastItsCatchUpTimeFallsBack(t *testing.T) {
+	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
+	sendQueue, fanOutWait, catchUpWait, sendTimeout = 1, 600*time.Millisecond, 3*time.Second, 300*time.Millisecond
+	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+	go func() { // reads 64 KB every 50 ms: the 512 KB message takes about 400 ms, past the 300 ms of catching up
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := io.ReadFull(a, buf); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	cn := newConn(b, nil)
+	cn.send(strings.Repeat("x", 512<<10))
+	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the large message never started")
+		}
+	}
+	cn.send("filler")
+	cn.catchUp(0)
+	if err := cn.fanOut("live"); err != nil {
+		t.Errorf("a client still reading when catching up ran out was dropped: %v", err)
+	}
+}
