@@ -361,3 +361,33 @@ func TestRecentlyChangedReadsALinkedWorktree(t *testing.T) {
 		t.Errorf("a linked worktree: %+v", r)
 	}
 }
+
+// TestRecentlyChangedHonoursExcludes: a file .git/info/exclude names, and one the user's global excludes file names
+// (core.excludesfile in ~/.gitconfig), are not listed as untracked, as git status leaves them out.
+func TestRecentlyChangedHonoursExcludes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.WriteFile(filepath.Join(home, "ignore"), []byte("global.txt\n"), 0o644)
+	os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[core]\n\texcludesfile = "+filepath.Join(home, "ignore")+"\n"), 0o644)
+	root := gitRepo(t)
+	os.WriteFile(filepath.Join(root, ".git", "info", "exclude"), []byte("local.txt\n"), 0o644)
+	for _, f := range []string{"local.txt", "global.txt", "kept.txt"} {
+		os.WriteFile(filepath.Join(root, f), []byte("x\n"), 0o644)
+	}
+	r := recent(t, root, `{}`)
+	if strings.Contains(r.Text, "local.txt") || strings.Contains(r.Text, "global.txt") || !strings.Contains(r.Text, "?? kept.txt") {
+		t.Errorf("excluded files listed:\n%s", r.Text)
+	}
+}
+
+// TestRecentlyChangedRefusesAGitFileToNoRepository: a .git file whose gitdir: names a directory that is not a git
+// directory is refused, rather than read as one.
+func TestRecentlyChangedRefusesAGitFileToNoRepository(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	os.WriteFile(filepath.Join(elsewhere, "notes.txt"), []byte("not a repository\n"), 0o644)
+	os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: "+elsewhere+"\n"), 0o644)
+	if r := recent(t, root, `{}`); !r.IsError || !strings.Contains(r.Text, "not a git repository") {
+		t.Errorf("%+v", r)
+	}
+}
