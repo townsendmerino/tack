@@ -223,6 +223,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
 	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
 	opts.Knowledge = cfg.Run.Knowledge && !cfg.Run.NoInstructions
+	opts.SectionSearch = cfg.Run.SectionSearch
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true

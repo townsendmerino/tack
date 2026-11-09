@@ -87,3 +87,10 @@ func TestArmsRunWithKnowledgeOff(t *testing.T) {
 		t.Fatalf("an arm's config: knowledge %v, %v", c.Run.Knowledge, err)
 	}
 }
+
+// TestSectionSearchIsNotAnArmSetting: no E1 arm asks ken for instruction sections before its latency is measured.
+func TestSectionSearchIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["section_search"] {
+		t.Fatal("section_search is an arm setting")
+	}
+}

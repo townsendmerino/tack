@@ -127,6 +127,10 @@ type Options struct {
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
 	WholeInstructions bool
+	// SectionSearch adds ken's route to SectionInstructions: before each prompt, ken's hits for the message in the
+	// instruction file bring their sections into it (window.Instructions.ForHits). It needs a searcher that is a
+	// window.SectionSearcher, and does nothing for a file loaded whole.
+	SectionSearch bool
 	// SectionInstructions reads the workspace's instruction file by section instead (window.Instructions; DESIGN §2.3):
 	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
 	// brings in to its result. WholeInstructions wins when both are set.
@@ -750,7 +754,7 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
 	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
 	var paths [][]string
-	if s.sections != nil && s.sectionSearch != nil {
+	if c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
 		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
 	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.

@@ -138,6 +138,11 @@ type Run struct {
 	// Knowledge reads the workspace's .agents/knowledge/ pages on demand (core.Options.Knowledge; ADR-007). Default off,
 	// and no E1 arm may turn it on (pilot.RunSettings leaves it out): one run's notes must never reach another.
 	Knowledge bool `toml:"knowledge"`
+	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
+	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
+	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
+	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
+	SectionSearch bool `toml:"section_search"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`

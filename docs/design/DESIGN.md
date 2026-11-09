@@ -1583,7 +1583,8 @@ serving every other agent.
   route to sections waits for a ken change that makes `SearchFiles` exact at any size.
 - **ken v1.13.0 (2026-11-09): exact at any size.** tack pins it. The same check gives 94 of 94 answers exact, and
   ken's route is wired: a user message's best hits in the instruction file bring their sections into that message,
-  before the task (`window.Instructions.ForHits`).
+  before the task (`window.Instructions.ForHits`). It is behind `[run] section_search`, default off, until the night
+  latency run reads against its registered rule.
 
 **Delivered in ken v1.11.0** (2026-10-22, ken ADR-048; tagged at `5ab3888`). The brief is
 `docs/briefs/ken-k10-k15-structural.md`, and ken's note on it is `~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`. The

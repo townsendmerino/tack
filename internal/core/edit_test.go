@@ -683,7 +683,7 @@ func TestSectionsForAMessageThroughTheCore(t *testing.T) {
 	ws := gitWorkspace(t, "# notes\n\nIntro.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n## Filler\n\n"+
 		strings.Repeat("a line of filler text to push the file over its budget\n", 300))
 	ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
-	f.core.opt.SectionInstructions = true
+	f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, true
 	f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
 	sid, err := f.sessionIn(t, ws, proto.ModePlan)
 	if err != nil {
@@ -713,5 +713,30 @@ func TestSectionsForAMessageThroughTheCore(t *testing.T) {
 	}
 	if len(ps.asked) != 2 || ps.asked[0] != "CLAUDE.md: How do I test?" {
 		t.Errorf("asked %q", ps.asked)
+	}
+}
+
+// TestSectionSearchIsOffByDefaultAndSkipsAWholeFile: without SectionSearch ken is not asked; with it, a file loaded
+// whole is not searched either, since nothing could load.
+func TestSectionSearchIsOffByDefaultAndSkipsAWholeFile(t *testing.T) {
+	for name, c := range map[string]struct {
+		search bool
+		md     string
+	}{"off": {false, "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Filler\n\n" + strings.Repeat("filler line of text\n", 400)},
+		"whole": {true, "# notes\n\n## Testing\n\nRun go test.\n"}} {
+		f := newFixture(t, goinfertest.Says("one"))
+		ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+		f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, c.search
+		f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+		sid, err := f.sessionIn(t, gitWorkspace(t, c.md), proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+		f.waitTurnEnd(t)
+		if len(ps.asked) != 0 {
+			t.Errorf("%s: ken was asked %q", name, ps.asked)
+		}
 	}
 }

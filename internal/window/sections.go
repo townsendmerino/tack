@@ -800,10 +800,36 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 	for i := range in.secs {
 		in.offered[i], in.by[i] = false, -1
 	}
-	if in.initIn == nil {
+	// The first message is read from the log, as the session sent it; the file may have changed since. Its share of
+	// the budget is taken back and charged again as logged. Only a log with no first message keeps what Initial made
+	// (or runs it, when it has not run).
+	prev := in.initial
+	in.b.Used -= prev
+	in.initial = 0
+	read := false
+	for _, ev := range evs {
+		if ev.Type != proto.EvUserMessage {
+			continue
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		var text strings.Builder
+		for _, c := range v.(proto.UserMessage).Content {
+			text.WriteString(c.Text)
+		}
+		read = in.firstFrom(text.String())
+		break
+	}
+	switch {
+	case read:
+	case in.initIn == nil:
 		in.Initial()
-	} else {
+	default:
 		copy(in.in, in.initIn)
+		in.initial = prev
+		in.b.Used += prev
 	}
 	calls := map[string]proto.ToolCall{}
 	for _, ev := range evs {
@@ -844,6 +870,40 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 		}
 	}
 	return nil
+}
+
+// firstFrom sets what the first message holds from that message as logged: its instruction text runs from Initial's
+// opening line to the first part the message adds after it (the knowledge index, a repository map, injected code, a
+// message's sections,
+// or the task), or to its end for a whole file, which follows the task. The sections whose text it holds whole are in,
+// and so is a cut opening, which counts as in; its tokens are the first message's charge. It is false when the message
+// holds no instruction text.
+func (in *Instructions) firstFrom(msg string) bool {
+	for _, open := range []string{"Project notes from " + in.name + ", for reference:", "Project instructions, from " + in.name + ":"} {
+		k := strings.Index(msg, open)
+		if k < 0 {
+			continue
+		}
+		part := msg[k:]
+		for _, end := range []string{"\n\nTask: ", "\n\n" + RepoMapTitle, "\n\nCode that may be relevant", "\n\n[Project rules from",
+			"\n\nKnowledge pages in "} {
+			if e := strings.Index(part, end); e >= 0 {
+				part = part[:e]
+			}
+		}
+		for i, s := range in.secs {
+			in.in[i] = strings.Contains(part, s.Text)
+		}
+		if strings.Contains(part, "[… the rest of this section is cut to fit the window;") {
+			for i := range in.firstSection() {
+				in.in[i] = true
+			}
+		}
+		in.initial = SectionTokens(part)
+		in.b.Used += in.initial
+		return true
+	}
+	return false
 }
 
 // noteIn reads load's note back from a result, as Replay describes: its sections, those it names, and its text, or
