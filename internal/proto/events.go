@@ -117,7 +117,8 @@ type ContextAssembled struct {
 
 // RequestSent records a request to the model server. Request counts the conversation's requests from 1; it is 0 for a
 // request made on the session's behalf outside the conversation (compaction's summarizer), which no request number
-// counts but whose usage the budgets do.
+// counts but whose usage the budgets do. A summarizer request that fails leaves its request.sent with no usage after
+// it.
 type RequestSent struct {
 	Request int    `json:"request"`
 	Server  string `json:"server"`
