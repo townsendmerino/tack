@@ -24,7 +24,7 @@ args = ["-backend", "cuda"]
 
 [serve]
 server = "local"
-listen = "100.64.0.2:8091"            # used only without socket activation (tack serve -detach)
+listen = "100.125.33.107:8091"            # used only without socket activation (tack serve -detach)
 key_file = "~/.config/tack/serve-api-key"
 # idle_unload = "15m"
 # timing_lock = "~/.goinfer-timing.lock"
