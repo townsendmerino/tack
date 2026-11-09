@@ -6,6 +6,15 @@ import "encoding/json"
 // previous one (DESIGN §6.1).
 const Version = 1
 
+// Negotiate is the version a daemon speaking daemon answers a client asking for client, and false when they share
+// none. Each side speaks its own version and the one before (DESIGN §6.1), so the answer is the older of the two when
+// they are at most one apart: a client one newer than the daemon is answered with the daemon's, which it speaks, and
+// warns.
+func Negotiate(client, daemon int) (int, bool) {
+	v := min(client, daemon)
+	return v, v >= 1 && max(client, daemon)-v <= 1
+}
+
 // Request is a JSON-RPC 2.0 request, or a notification when ID is empty. Messages are newline-delimited (DESIGN §9.1).
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -43,4 +52,5 @@ const (
 	CodeHalted         = -32002 // the daemon is halted; no new turns until daemon/resume
 	CodeBusy           = -32003 // the session already has a running turn
 	CodeUnauthorized   = -32004 // a wrong client token, or a method that needs the token on a connection without it
+	CodeShuttingDown   = -32005 // the daemon is draining for a shutdown; no new turns
 )

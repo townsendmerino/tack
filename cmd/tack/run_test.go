@@ -251,7 +251,7 @@ func TestRunNoInstructionsOverridesWhole(t *testing.T) {
 		if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
 			t.Fatalf("no_instructions %v: exit %d: %s", none, code, stderr.String())
 		}
-		return strings.SplitN(stdout.String(), "\n", 2)[0]
+		return userMessageLine(stdout.String())
 	}
 	if l := first(false); !strings.Contains(l, "Rule: stage explicit paths.") {
 		t.Errorf("whole: the first message lacks CLAUDE.md: %s", l)
@@ -297,7 +297,7 @@ func TestRunInstructionsHead(t *testing.T) {
 	if code := dispatch([]string{"run", "--json", "--instructions", "whole", "--config", cfg, "--workspace", ws, "hi"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	first, _, _ := strings.Cut(stdout.String(), "\n")
+	first := userMessageLine(stdout.String())
 	if !strings.Contains(first, "Stage explicit paths.") || strings.Contains(first, "Run the canary.") || !strings.Contains(first, "## Tests") {
 		t.Fatalf("the first message is not the head: %s", first)
 	}
@@ -339,7 +339,7 @@ func TestRunInjectContext(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first, _, _ := strings.Cut(stdout.String(), "\n")
+		first := userMessageLine(stdout.String())
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}
@@ -381,7 +381,7 @@ func TestRunRepoMap(t *testing.T) {
 				Content []struct{ Text string }
 			}
 		}
-		first, _, _ := strings.Cut(stdout.String(), "\n")
+		first := userMessageLine(stdout.String())
 		if err := json.Unmarshal([]byte(first), &ev); err != nil || len(ev.Payload.Content) != 1 {
 			t.Fatalf("first event: %v %s", err, first)
 		}
@@ -400,4 +400,15 @@ func TestRunRepoMap(t *testing.T) {
 	if msg := firstMessage(""); strings.Contains(msg, "Repository map (") {
 		t.Fatalf("repo_map off still maps:\n%s", msg)
 	}
+}
+
+// userMessageLine is the first user.message line of tack run --json's output: the session's first message as the
+// model was sent it. The log's first event is session.created.
+func userMessageLine(out string) string {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.Contains(line, `"type":"user.message"`) {
+			return line
+		}
+	}
+	return ""
 }

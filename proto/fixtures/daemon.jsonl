@@ -1,0 +1,14 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.2.0"},"protocol":2,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"daemon/status","params":{}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"version":"0.1.0","protocol":1,"pid":4242,"started":"2026-11-08T12:00:00Z","sessions":3,"running":1,"halted":false,"draining":false}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"daemon/shutdown","params":{}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"session":"s_01JAFIXTURE0000000000000006","content":[{"type":"text","text":"one more"}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":4,"error":{"code":-32005,"message":"the daemon is shutting down; prompt again once it has restarted"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000006","event":{"seq":9,"time":"2026-11-08T12:00:02Z","type":"tool.finished","cause":7,"payload":{"id":"toolu_31","outcome":"cancelled","result":"error: not run: the daemon is shutting down","truncated":false}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000006","event":{"seq":10,"time":"2026-11-08T12:00:02Z","type":"turn.end","cause":2,"payload":{"stop_reason":"shutdown"}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.1.0"},"protocol":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":5,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"","servers":["goinfer@local"]}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":6,"method":"daemon/shutdown","params":{}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":6,"error":{"code":-32004,"message":"daemon/shutdown needs the client token: connect as an unsandboxed client that reads client.token"}}}

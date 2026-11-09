@@ -90,7 +90,7 @@ func TestReopenContinuesAndRepairsTornTail(t *testing.T) {
 	l.Close()
 
 	// A crash mid-append leaves half a line with no newline.
-	p := s.logPath("s_1")
+	p, _ := s.logPath("s_1")
 	f, _ := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
 	f.WriteString(`{"seq":4,"time":"2026-10-16T12:00:00Z","ty`)
 	f.Close()
@@ -120,7 +120,7 @@ func TestCorruptLineInsideTheLogIsAnError(t *testing.T) {
 	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn})
 	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn})
 	l.Close()
-	p := s.logPath("s_1")
+	p, _ := s.logPath("s_1")
 	data, _ := os.ReadFile(p)
 	lines := strings.SplitAfter(string(data), "\n")
 	for name, mutated := range map[string]string{

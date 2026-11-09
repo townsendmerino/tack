@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,10 @@ type Options struct {
 	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
 	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
 	ClientToken string
+	// Shutdown, when set, is what a privileged daemon/shutdown asks for: the daemon drains (Drain) and exits. It is called
+	// once, after the request is answered, and must not block. Without it, daemon/shutdown is refused: no daemon hosts
+	// this Core.
+	Shutdown func()
 	// Servers names the configured model servers, for initialize's capabilities ("goinfer@nobara").
 	Servers []string
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
@@ -143,18 +148,30 @@ type Core struct {
 	opt Options
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
+	reopenMu sync.Mutex // held while a session is reopened from the store
+	closed   bool       // under mu: Close has run; nothing is reopened or made
+
 	mu        sync.Mutex
 	sessions  map[proto.SessionID]*session
 	sources   map[string]models.Source
 	searchers map[string]tools.Searcher // by workspace root
 	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
 	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
+	draining  bool                      // Drain has begun: no new turns
+	started   time.Time
+
+	shutdown sync.Once // Options.Shutdown is called once
 }
 
 type session struct {
+	// wmu is held from taking the log back to appending to it, by a turn's start and by Halt, and around a turn's
+	// end giving it up. So a log taken back is not given up before its append, and what another process wrote while
+	// it was idle reaches subscribers before anything appended after it. Taken before mu.
+	wmu     sync.Mutex
 	mu      sync.Mutex
 	id      proto.SessionID
 	log     *store.Log
+	hold    *store.Hold // this Core's claim on the session while it has it in memory; released by Close
 	loop    *loop.Session
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
@@ -182,13 +199,21 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}}
+		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
 }
 
-// Close releases the model sources (a supervised child is stopped) and each session's edit kit.
+// Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
+// another process may open it. No turn may be running. It is final: it waits for a reopen in progress, and after it
+// no session is reopened or made, so none is left open behind it. Closing again is a no-op.
 func (c *Core) Close() error {
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
 	var errs []error
 	for _, s := range c.sources {
 		errs = append(errs, s.Close())
@@ -205,12 +230,14 @@ func (c *Core) Close() error {
 		if s.kit != nil {
 			errs = append(errs, s.kit())
 		}
+		errs = append(errs, s.log.Close(), s.hold.Release())
 	}
 	if c.opt.HaltDir != "" {
 		for id := range c.sessions {
 			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
+	c.sessions, c.sources, c.searchers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
 	return errors.Join(errs...)
 }
 
@@ -264,6 +291,9 @@ func (c *Core) Serve(ctx context.Context, rw io.ReadWriter) error {
 		if req.Method == proto.MethodSessionSubscribe && perr == nil {
 			c.replay(cn, req)
 		}
+		if req.Method == proto.MethodDaemonShutdown && perr == nil {
+			c.shutdown.Do(func() { go c.opt.Shutdown() }) // answered first: the shutdown closes this connection
+		}
 	}
 	return sc.Err()
 }
@@ -294,9 +324,10 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if perr != nil {
 			return nil, perr
 		}
-		if p.Protocol != proto.Version {
+		version, ok := proto.Negotiate(p.Protocol, proto.Version)
+		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
-				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
+				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %s", p.Protocol, spoken())}
 		}
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
@@ -308,7 +339,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if c.opt.OpenSearcher != nil {
 			ken = "engine"
 		}
-		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: proto.Version,
+		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: version,
 			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}, Privileged: cn.privileged}, nil
 	case proto.MethodSessionNew:
 		p, perr := params[proto.SessionNewParams](req)
@@ -316,7 +347,11 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		id, err := c.newSession(p)
-		if err != nil {
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe):
+			return nil, pe // errClosed
+		case err != nil:
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: err.Error()}
 		}
 		return proto.SessionNewResult{Session: id}, nil
@@ -336,17 +371,53 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		return c.prompt(p)
+	case proto.MethodDaemonStatus:
+		if _, perr := params[proto.DaemonStatusParams](req); perr != nil {
+			return nil, perr
+		}
+		return c.status(), nil
+	case proto.MethodDaemonShutdown:
+		if _, perr := params[proto.DaemonShutdownParams](req); perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		if c.opt.Shutdown == nil {
+			return nil, &proto.Error{Code: proto.CodeInvalidRequest, Message: "daemon/shutdown: no daemon hosts this session core (tack run without --daemon)"}
+		}
+		return proto.DaemonShutdownResult{}, nil
 	}
 	return nil, &proto.Error{Code: proto.CodeMethodNotFound, Message: "method not found: " + req.Method}
 }
 
+// session returns the session named id, reopening it from the store when this Core does not hold it (reopen.go).
 func (c *Core) session(id proto.SessionID) (*session, *proto.Error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	s, ok := c.sessions[id]
-	if !ok {
-		return nil, &proto.Error{Code: proto.CodeUnknownSession, Message: "unknown session " + string(id)}
+	c.mu.Unlock()
+	if ok {
+		return s, nil
 	}
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
+	c.mu.Lock()
+	s, ok = c.sessions[id]
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return nil, errClosed
+	}
+	if ok {
+		return s, nil // another connection reopened it while this one waited
+	}
+	s, perr := c.reopen(id)
+	if perr != nil {
+		return nil, perr
+	}
+	c.mu.Lock()
+	c.sessions[id] = s
+	c.mu.Unlock()
 	return s, nil
 }
 
@@ -365,6 +436,18 @@ func (c *Core) source(model string) (models.Source, error) {
 }
 
 func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
+	// Held throughout, as a reopen holds it, so a Close waits for the session being made and closes it with the rest.
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return "", errClosed
+	}
+	if madeHook != nil {
+		madeHook()
+	}
 	switch p.Mode {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
@@ -379,29 +462,65 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
-	src, err := c.source(p.Model)
-	if err != nil {
+	// The source and ken are opened before the log, so a session that cannot run leaves no log behind; open finds them
+	// cached.
+	if _, err := c.source(p.Model); err != nil {
 		return "", err
 	}
-	searcher, err := c.searcher(ws.Root())
-	if err != nil {
+	if _, err := c.searcher(ws.Root()); err != nil {
 		return "", fmt.Errorf("ken: %w", err)
 	}
 	id := store.NewSessionID(time.Now())
-	log, err := c.opt.Store.Create(id)
+	log, hold, err := c.opt.Store.CreateHeld(id)
 	if err != nil {
 		return "", err
 	}
-	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()}}
+	discard := func() {
+		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		hold.Release()
+	}
+	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
+	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
+		discard()
+		return "", err
+	}
+	s, err := c.open(id, log, ws, created, nil)
+	if err != nil {
+		discard()
+		return "", err
+	}
+	s.hold = hold
+	c.mu.Lock() // Close waits for the reopen lock this holds, so it has not run
+	c.sessions[id] = s
+	c.mu.Unlock()
+	_ = s.log.Idle() // until its first prompt: another process may write it meanwhile
+	return id, nil
+}
+
+// open makes the session over its log, as session/new does and a reopen does: the model source, ken, the tools, the
+// edit kit in auto mode, the sweep target, and the loop. history is a reopened session's events, nil for a new one;
+// a session whose log has a user.message has been prompted, so the first prompt's additions are not made again.
+func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event) (*session, error) {
+	src, err := c.source(created.Model)
+	if err != nil {
+		return nil, err
+	}
+	searcher, err := c.searcher(ws.Root())
+	if err != nil {
+		return nil, fmt.Errorf("ken: %w", err)
+	}
+	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
+	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
+		prompted: prompted}
 	if c.opt.HaltDir != "" {
 		if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	if c.opt.InjectContext && c.opt.OpenInject != nil {
+	if c.opt.InjectContext && c.opt.OpenInject != nil && !prompted {
 		s.injectRoot = ws.Root()
 	}
-	if c.opt.RepoMap && c.opt.OpenRepoMap != nil {
+	if c.opt.RepoMap && c.opt.OpenRepoMap != nil && !prompted {
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
@@ -409,21 +528,21 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
-	if p.Mode == proto.ModeAuto {
+	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)
-			return "", errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
+			return nil, errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
 		}
 		kit, err := c.opt.Edit(ws.Root(), s.target)
 		if err != nil {
 			c.unregister(id)
-			return "", fmt.Errorf("auto mode: %w", err)
+			return nil, fmt.Errorf("auto mode: %w", err)
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
 			RecentlyChanged: c.opt.RecentlyChanged})
-		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
+		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
 		root := ws.Root()
@@ -432,18 +551,27 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			cfg.Snapshots = snapshot.New(c.opt.Store.Root(), root, c.opt.SnapshotMaxBytes)
 		}
 	}
-	if c.opt.WholeInstructions && c.opt.InstructionsHead {
+	switch {
+	case prompted: // the instructions joined the first prompt, which the log holds
+	case c.opt.WholeInstructions && c.opt.InstructionsHead:
 		if name, content := readInstructionFile(ws.Root()); name != "" {
 			s.instructions, s.notesFirst = instructionHead(name, content, servedWindow(c.ctx, src)), true
 		}
-	} else if c.opt.WholeInstructions {
+	case c.opt.WholeInstructions:
 		s.instructions = readInstructions(ws.Root())
 	}
-	s.loop = loop.New(cfg)
-	c.mu.Lock()
-	c.sessions[id] = s
-	c.mu.Unlock()
-	return id, nil
+	if history == nil {
+		s.loop = loop.New(cfg)
+		return s, nil
+	}
+	if s.loop, err = loop.Resume(cfg, history); err != nil {
+		c.unregister(id)
+		if s.kit != nil {
+			s.kit()
+		}
+		return nil, err
+	}
+	return s, nil
 }
 
 // emit fans an event out to the session's subscribers.
@@ -476,7 +604,7 @@ func (c *Core) replay(cn *conn, req proto.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := &subscriber{conn: cn}
+	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
 		_ = cn.send(notification(s.id, ev))
@@ -542,6 +670,10 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		c.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeHalted, Message: (&halt.Halted{DaemonHalted: *h}).Error() + "; run tack resume"}
 	}
+	if c.draining {
+		c.mu.Unlock()
+		return nil, &proto.Error{Code: proto.CodeShuttingDown, Message: "the daemon is shutting down; prompt again once it has restarted"}
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -578,23 +710,54 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.instructions != "":
 		text.WriteString("\n\n" + s.instructions)
 	}
-	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
-	seq, err := s.loop.Start(text.String())
+	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
+	// subscribers see it before this turn's own events. The loop needs nothing from it: a rewind changes files, and
+	// edit checks a file's current text against what the model saw.
+	s.wmu.Lock()
+	foreign, err := s.log.Wake()
+	if err == nil {
+		for _, ev := range foreign {
+			s.emit(ev)
+		}
+	}
+	var seq int64
+	if err == nil {
+		seq, err = s.loop.Start(text.String())
+	}
+	s.mu.Lock()
+	if err != nil {
+		s.running, s.cancel = false, nil
+		_ = s.log.Idle()
+	} else {
+		// Only once the user.message is logged: a prompt refused here added nothing, so the next one is still the
+		// first. s.running kept any other prompt out until now.
+		s.prompted = true
+	}
+	s.mu.Unlock()
+	s.wmu.Unlock()
 	if err != nil {
 		cancel(nil)
-		s.mu.Lock()
-		s.running, s.cancel = false, nil
-		s.mu.Unlock()
+		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
+			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
+		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
+		if h := turnEndHook.Load(); h != nil {
+			(*h)()
+		}
+		// Under wmu, so not between a Halt's wake and append; and under s.mu with the end of running, so a Halt never
+		// sees a turn that has let its log go, nor idles one that has not.
+		s.wmu.Lock()
 		s.mu.Lock()
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
+		s.wmu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
 }
@@ -652,10 +815,35 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		for _, p := range listed {
 			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
 		}
-		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
-			s.emit(e)
-		}
+		s.recordAside(proto.EvDaemonHaltRefused, ev)
 	}
+}
+
+// recordAside appends an event to the session's log from outside a turn's own writes (Halt's daemon.halt_refused) and
+// passes it on, after what another process wrote while the log was idle. While another process is writing the log
+// the event goes unrecorded: appending would take the log back and swallow what that process wrote. A running turn
+// keeps its log; an idle session's is given up again.
+func (s *session) recordAside(typ proto.EventType, payload any) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	foreign, err := s.log.Wake()
+	if err != nil {
+		return
+	}
+	for _, ev := range foreign {
+		s.emit(ev)
+	}
+	if haltHook != nil {
+		haltHook()
+	}
+	if e, err := s.log.Append(typ, 0, payload); err == nil {
+		s.emit(e)
+	}
+	s.mu.Lock() // the check and the idle together, as a turn's end does them
+	if !s.running {
+		_ = s.log.Idle() // the append took the lock back; a running turn keeps it
+	}
+	s.mu.Unlock()
 }
 
 // Resume lets new turns start again.

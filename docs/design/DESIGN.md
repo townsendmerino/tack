@@ -773,6 +773,18 @@ tool-use smoke set compares this merged set against the split one before it is f
   compiled into the sandbox profile as `file-read*` denials, so `cat .env` in a shell command is stopped by the kernel,
   not only by tack's own file tools; plus a redaction pass over tool output for well-known key formats before it
   reaches the model, logged when it fires.
+  - **Commands get a short environment, not tack's** (added 2026-11-08, owner, after Hermes Agent's security docs).
+    Today `internal/shell` passes `os.Environ()` whole, so one `env` puts a token such as `GH_TOKEN` into the
+    model's context and the event log, and later into the transcripts corpus (§7.6). Commands are denied the
+    network, so it cannot leave the machine, and the redaction pass knows only well-known key formats.
+  - The fix: an allowlist (`PATH`, `HOME`, `USER`, `LANG` and `LC_*`, `TMPDIR`, `TERM`, and Go's `GO*` settings such
+    as `GOPATH`, `GOCACHE`, `GOFLAGS`), plus what a trusted repo's config adds. Nothing named like a secret (`*TOKEN*`,
+    `*KEY*`, `*SECRET*`, `*PASSWORD*`) passes, even from config.
+- **Text loaded into the prompt is scanned first** (added 2026-11-08, after Hermes Agent). Instruction files,
+  `.agents/knowledge/` pages and skills are checked before loading for invisible Unicode (zero-width characters, and
+  bidirectional overrides such as U+202E) and for text that tells the model to send files or secrets out. A flagged
+  file is shown with the characters escaped and a warning, and the owner decides. §9.3's escaping covers control
+  characters in tool output; these characters are not control characters, so they pass it.
 - **No sandbox inside the sandbox.** macOS refuses `sandbox-exec` inside an already sandboxed process. Tests that start
   `sandbox-exec` (the profile and escape tests) therefore cannot run from tack's own `bash` tool when tack is used to
   develop tack; they carry a build tag and run from the day-loop checker or CI, outside tack's sandbox.
@@ -822,6 +834,9 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **The harness loads the notes; the model doesn't have to ask.**
     - Auto-context (§7.4) brings in the pages for the files and names in the task, through ken, within its budget.
     - Every session gets only a short index of page titles, sized for the 16k window.
+    - **The loaded notes stay fixed for the session** (after Hermes Agent, 2026-11-08). A page changed mid-session,
+      by the owner or by dreaming, reaches the prompt in the next session, so the cached prefix (§7.2) is not
+      rewritten. The index has a hard size cap: a change that would pass it is refused and says so, never cut short.
   - **Past sessions are searchable memory** (P2, with the transcripts corpus). ken indexes tack's own event logs, so
     "the last edit to `banner.go` failed this way" can surface without anyone writing a note.
   - **Dreaming: consolidation, on demand or overnight.** A job reads sessions and proposes changes to
@@ -1121,6 +1136,18 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   - Francis split it from `compact_at_cliff` on 2026-11-01. The data put the repeat loops at the cliff, where widening
     does not apply.
 - **Not yet built:** the summarizing and re-retrieval steps above.
+- **How the summary is written, when the summarizing step is built** (from Hermes Agent's compaction, 2026-11-08):
+  - **Fixed headings:** goal, constraints, done, in progress, decisions, files, next steps.
+  - **An anchor list taken mechanically, with no model call:** paths, symbols, commit hashes and error strings,
+    found by pattern in the turns being compacted and copied exactly, never paraphrased.
+  - **Every user message kept word for word,** the task statement first.
+  - **Updated, not rewritten:** a later compaction gives the summarizer the previous summary to update.
+  - **A fallback when the summarizer fails** or returns something without the headings: a summary built from the
+    anchor list and the user messages alone, so the step never drops turns with nothing in their place. A local
+    `-fast` model is more likely to return junk than the hosted models Hermes uses.
+  - **Not taken: summarizing every turn** (Hermes's opt-in "micro-compaction"). It rewrites history each turn, so the
+    prefix breaks each turn. Hermes's own docs say it may cost more than it saves, and its passes took a median of
+    about 31 s on a small local model.
 - **Proposed: pinning what faults** (`[run] pin_faulted`, off by default; from Pichay, arXiv 2603.09023, which treats
   the window as the top of a memory hierarchy). Added 2026-11-07 (owner).
   - **A fault** is the model asking again for a result a compaction stubbed: a read of the same path, a grep or glob
@@ -1912,6 +1939,7 @@ App Store.
 
 | type | persisted | payload |
 |---|---|---|
+| `session.created` | yes (fsync), always the first | workspace (resolved), model, mode: enough to reopen the session from its log |
 | `user.message` | yes | content blocks, attachments |
 | `context.assembled` | yes | composition by kind, items added, items now stale |
 | `request.sent` | yes | server, model, request seq |
