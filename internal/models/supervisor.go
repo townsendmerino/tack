@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/proc"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
@@ -53,6 +54,12 @@ type ChildConfig struct {
 	IdleExit   time.Duration
 	// HTTPClient, when set, carries the API requests (a cassette recorder in a test or a recording run).
 	HTTPClient *http.Client
+	// Admission makes each load go through tack's own admission (DESIGN §8.1, G2): goinfer's fit plan is asked first and
+	// its decline refused, and a load off the decode path the flags ask for is refused (before the load when fit can
+	// tell, unloaded after it otherwise); at critical memory pressure the model is unloaded (Tick). tack's sessions set
+	// it (Open). Measurement leaves it off: there a fallback is what an arm records, and the fit call would add its own
+	// footprint.
+	Admission bool
 	// Pressure is the memory-pressure reading Ensure's load guard uses; nil means MemoryPressure. A caller that reads
 	// pressure itself passes the same function, so its tests do not depend on the machine running them.
 	Pressure func() (Pressure, error)
@@ -157,6 +164,9 @@ func (s *Supervisor) start(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Join(s.cfg.Dir, "sessions"), 0o700); err != nil {
 		return err
 	}
+	if err := stopStaleChild(s.cfg.Dir); err != nil {
+		return err
+	}
 	_ = os.Remove(s.adminSock()) // a stale socket from a crashed child; only this supervisor uses the path
 	port, err := freePort()
 	if err != nil {
@@ -191,10 +201,15 @@ func (s *Supervisor) start(ctx context.Context) error {
 		pw.Close()
 		return fmt.Errorf("models: starting %s: %w", s.cfg.Binary, err)
 	}
+	pid := cmd.Process.Pid
+	if ps, _, err := proc.Info(pid); err == nil {
+		_ = writeChildRecord(s.cfg.Dir, childRecord{PID: pid, ProcStart: ps, Port: port})
+	}
 	s.cmd, s.exited, s.loaded = cmd, make(chan struct{}), false
 	exited := s.exited
 	go func() {
 		err := cmd.Wait()
+		removeChildRecord(s.cfg.Dir, pid)
 		logf.Close()
 		pw.Close()
 		// Not under s.mu: Stop holds it while it waits for this close. Readers read exitErr only after <-exited.
@@ -228,6 +243,13 @@ func (s *Supervisor) waitReady(ctx context.Context, exited chan struct{}) error 
 }
 
 func (s *Supervisor) load(ctx context.Context) error {
+	want := ""
+	if s.cfg.Admission {
+		want = DecodePathFor(s.cfg.Args)
+		if err := s.checkFit(ctx, want); err != nil {
+			return err
+		}
+	}
 	for len(s.fitLines) > 0 {
 		<-s.fitLines // lines from an earlier load
 	}
@@ -249,6 +271,7 @@ func (s *Supervisor) load(ctx context.Context) error {
 	}
 	// The banner prints "decode path:" then "fit:"; take whichever arrive within half a second.
 	deadline := time.After(500 * time.Millisecond)
+banner:
 	for s.plan.FitLine == "" || s.plan.DecodePath == "" {
 		select {
 		case line := <-s.fitLines:
@@ -258,14 +281,22 @@ func (s *Supervisor) load(ctx context.Context) error {
 				s.plan.FitLine = line
 			}
 		case <-deadline:
-			return nil
+			break banner
 		}
+	}
+	// goinfer declines a GPU quietly and serves on the CPU (eval.VoidPath); only the banner says so. Such a load is
+	// too slow to use, and is unloaded. A banner that gives no decode path cannot be checked, and the load stands.
+	if got := s.plan.DecodePath; want != "" && got != "" && !strings.HasPrefix(got, want) {
+		uerr := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil)
+		s.loaded, s.plan = false, Plan{}
+		return errors.Join(fmt.Errorf("models: goinfer loaded %s on %s, not %s (its banner); unloaded it", s.cfg.Model, got, want), uerr)
 	}
 	return nil
 }
 
-// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit. A
-// daemon calls it periodically; nothing is unloaded while a generation is in flight.
+// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit; nothing
+// is unloaded for idleness while a generation is in flight. With Admission it also applies the memory guard: at
+// critical pressure the model unloads at once, and Tick reports that as its error. A daemon calls it periodically.
 func (s *Supervisor) Tick(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -275,6 +306,17 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	idle := s.now().Sub(s.lastUse)
 	if idle >= s.cfg.IdleExit {
 		return s.stopLocked()
+	}
+	if s.cfg.Admission && s.loaded {
+		// At critical memory pressure the model unloads, generating or not: the Mac needs the memory more than the turn
+		// (DESIGN §8.1). The next load waits for the pressure to fall (Ensure).
+		if p, err := s.pressure(); err == nil && p >= PressureCritical {
+			if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
+				return err
+			}
+			s.loaded = false
+			return fmt.Errorf("models: unloaded %s: memory pressure is %s", s.cfg.Model, p)
+		}
 	}
 	if s.loaded && idle >= s.cfg.IdleUnload {
 		var st struct {
@@ -433,4 +475,54 @@ func (s *Supervisor) PeakRSS() int64 {
 		return ru.Maxrss // bytes on Darwin
 	}
 	return ru.Maxrss * 1024 // KiB on Linux
+}
+
+// DecodePathFor is the decode path goinfer-serve's flags ask for: metal-resident or cuda-resident for a GPU backend
+// (goinfer has no staged GPU path), cpu for the CPU, and "" when the flags name no backend.
+func DecodePathFor(args []string) string {
+	backend := ""
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-backend" || args[i] == "--backend" {
+			backend = args[i+1]
+		}
+	}
+	switch backend {
+	case "metal", "cuda":
+		return backend + "-resident"
+	case "cpu":
+		return "cpu"
+	}
+	return ""
+}
+
+// fitAnswer is what goinfer's POST /admin/models/fit says about a load, without loading (G2; goinfer docs/server.md,
+// "Admin: would this load fit?"). Fits is nil when only the load can tell, Unknown saying why; Retry is set when a
+// load that does not fit would retry another way instead of refusing; DecodePath is "unknown" when fit cannot tell.
+type fitAnswer struct {
+	Fits       *bool  `json:"fits"`
+	Unknown    string `json:"unknown"`
+	Decline    string `json:"decline"`
+	Retry      string `json:"retry"`
+	DecodePath string `json:"decode_path"`
+}
+
+// checkFit asks goinfer whether the load would fit, before it is made: a refusal the load itself would make is made
+// here, with goinfer's decline, and a load fit already places off want, the decode path the flags ask for, is refused
+// too. A goinfer without the route (404) leaves the load to decide.
+func (s *Supervisor) checkFit(ctx context.Context, want string) error {
+	var a fitAnswer
+	err := s.admin(ctx, "POST", "/admin/models/fit", map[string]string{"name": s.cfg.Model, "path": s.cfg.ModelPath}, &a)
+	if re, ok := errors.AsType[*RefusedError](err); ok && re.Status == http.StatusNotFound {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("models: goinfer refused to load %s at -ctx %d (its fit check): %w", s.cfg.Model, s.cfg.Ctx, err)
+	}
+	if a.Fits != nil && !*a.Fits && a.Retry == "" {
+		return fmt.Errorf("models: goinfer's fit check declines %s at -ctx %d: %s", s.cfg.Model, s.cfg.Ctx, a.Decline)
+	}
+	if want != "" && a.DecodePath != "" && a.DecodePath != "unknown" && !strings.HasPrefix(a.DecodePath, want) {
+		return fmt.Errorf("models: goinfer's fit check says %s would decode on %s, not %s; not loading it", s.cfg.Model, a.DecodePath, want)
+	}
+	return nil
 }

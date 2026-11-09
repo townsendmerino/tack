@@ -74,6 +74,11 @@ The order the owner approved, each step with its exit check:
         nobara, 91 of 118. `decode_path` is `unknown` on every model on both boxes.
       - **Step 4 therefore:** asks `fit` before a load; refuses on `fits: false` with `decline`; treats null as "load
         to find out"; and keeps the decode-path check after the load.
+      - **Built in step 4** (`internal/models/supervisor.go:checkFit`, `load`), for tack's own sessions
+        (`ChildConfig.Admission`; measurement leaves it off, since a fallback is what an arm records).
+        - A `fits: false` that goinfer's load would retry (`retry`, weight streaming) still loads.
+        - A decode path `fit` already knows, off the one the flags ask for, is refused before the load; a banner off it
+          after the load is unloaded and refused.
       - **Not settled by `fit`:** on Metal the served context can differ from the `ctx` that `fit` priced, so the
         banner remains the authority.
       - **Stage 2,** after G6, settles the decode path and the Metal or CUDA residency before the load.

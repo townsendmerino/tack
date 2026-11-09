@@ -1,12 +1,15 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -92,6 +95,24 @@ func (c *Core) status() proto.DaemonStatusResult {
 func unprivileged(method string) *proto.Error {
 	return &proto.Error{Code: proto.CodeUnauthorized,
 		Message: method + " needs the client token: connect as an unsandboxed client that reads client.token"}
+}
+
+// Tick applies the idle rules of every model source the Core holds that has them (models.Ticker): a supervised child
+// unloads its model, and later exits, after its idle times (DESIGN §8.1). A daemon calls it periodically.
+func (c *Core) Tick(ctx context.Context) error {
+	c.mu.Lock()
+	var ts []models.Ticker
+	for _, s := range c.sources {
+		if t, ok := s.(models.Ticker); ok {
+			ts = append(ts, t)
+		}
+	}
+	c.mu.Unlock()
+	var errs []error
+	for _, t := range ts {
+		errs = append(errs, t.Tick(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 // spoken names the protocol versions this daemon answers with, for initialize's refusal: those a client at that

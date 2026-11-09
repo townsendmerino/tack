@@ -25,12 +25,15 @@ type RunOptions struct {
 	Watch func(ctx context.Context, c *core.Core)
 	// Log is told what the daemon does: what it recovered, refused connections, the drain. nil discards it.
 	Log io.Writer
+	// TickEvery is how often the core's model sources apply their idle rules (core.Core.Tick); 0 means 30s.
+	TickEvery time.Duration
 }
 
 // Run is the daemon (DESIGN §6.1). It takes the lock, or returns a *HeldError naming the daemon that has it; makes a
 // fresh client token; makes the core and recovers the turns a crash left open; binds the socket; and serves until ctx
-// ends or a privileged client asks daemon/shutdown. Then it stops accepting, drains the core within
-// Grace, closes the connections, ends the core's context and its watcher, closes the core, and releases the lock.
+// ends or a privileged client asks daemon/shutdown, applying the model sources' idle rules every TickEvery. Then it stops
+// accepting, drains the core within Grace, closes the connections, ends the core's context and its watcher, closes the
+// core, and releases the lock.
 func Run(ctx context.Context, o RunOptions) error {
 	log := SyncWriter(o.Log)
 	l, err := Acquire(o.StateDir, o.Version)
@@ -78,6 +81,26 @@ func Run(ctx context.Context, o RunOptions) error {
 	defer cancel()
 	served := make(chan error, 1)
 	go func() { served <- Serve(sctx, ln, c) }()
+	every := o.TickEvery
+	if every == 0 {
+		every = 30 * time.Second
+	}
+	// The model sources' idle rules: a supervised child unloads, then exits, when idle (DESIGN §8.1). In the watcher
+	// group under the core's context, so a tick is over before the core closes its sources.
+	watching.Go(func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-cctx.Done():
+				return
+			case <-t.C:
+				if err := c.Tick(cctx); err != nil {
+					fmt.Fprintln(log, "tack daemon: idle rules:", err)
+				}
+			}
+		}
+	})
 	fmt.Fprintf(log, "tack daemon %s: serving on %s\n", o.Version, SocketPath(o.StateDir))
 
 	var serveErr error
