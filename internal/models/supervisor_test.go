@@ -471,3 +471,34 @@ func TestOpenAdmitsTacksOwnLoads(t *testing.T) {
 		t.Fatalf("Open made %T without admission", src)
 	}
 }
+
+// TestCriticalPressureUnloads: at critical memory pressure the idle tick unloads the model, generating or not, and the
+// next load waits for the pressure to fall (DESIGN §8.1, memory guard: at critical the model unloads). Measurement,
+// with admission off, is left alone.
+func TestCriticalPressureUnloads(t *testing.T) {
+	ctx := context.Background()
+	s, _, p := newSup(t, "/m/busy.gguf") // busy: a generation is in flight
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*p = PressureCritical
+	if err := s.Tick(ctx); err == nil || !strings.Contains(err.Error(), "critical") {
+		t.Fatalf("Tick at critical pressure: %v, want the unload reported", err)
+	}
+	if _, loaded := s.Running(); loaded || report(t, s).Unloads != 1 {
+		t.Fatalf("loaded %v, %d unloads; want the model unloaded", loaded, report(t, s).Unloads)
+	}
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "memory pressure") {
+		t.Fatalf("a load at critical pressure: %v, want refused", err)
+	}
+
+	m, _, mp := newSup(t, "/m/busy.gguf")
+	m.cfg.Admission = false
+	if _, err := m.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*mp = PressureCritical
+	if err := m.Tick(ctx); err != nil || report(t, m).Unloads != 0 {
+		t.Fatalf("measurement at critical pressure: %v, %d unloads; want it left alone", err, report(t, m).Unloads)
+	}
+}

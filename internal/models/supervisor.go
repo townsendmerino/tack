@@ -55,8 +55,9 @@ type ChildConfig struct {
 	HTTPClient *http.Client
 	// Admission makes each load go through tack's own admission (DESIGN §8.1, G2): goinfer's fit plan is asked first and
 	// its decline refused, and a load off the decode path the flags ask for is refused (before the load when fit can
-	// tell, unloaded after it otherwise). tack's sessions set it (Open). Measurement leaves it off: there a fallback is
-	// what an arm records, and the fit call would add its own footprint.
+	// tell, unloaded after it otherwise); at critical memory pressure the model is unloaded (Tick). tack's sessions set
+	// it (Open). Measurement leaves it off: there a fallback is what an arm records, and the fit call would add its own
+	// footprint.
 	Admission bool
 	// Pressure is the memory-pressure reading Ensure's load guard uses; nil means MemoryPressure. A caller that reads
 	// pressure itself passes the same function, so its tests do not depend on the machine running them.
@@ -284,8 +285,9 @@ banner:
 	return nil
 }
 
-// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit. A
-// daemon calls it periodically; nothing is unloaded while a generation is in flight.
+// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit; nothing
+// is unloaded for idleness while a generation is in flight. With Admission it also applies the memory guard: at
+// critical pressure the model unloads at once, and Tick reports that as its error. A daemon calls it periodically.
 func (s *Supervisor) Tick(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,6 +297,17 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	idle := s.now().Sub(s.lastUse)
 	if idle >= s.cfg.IdleExit {
 		return s.stopLocked()
+	}
+	if s.cfg.Admission && s.loaded {
+		// At critical memory pressure the model unloads, generating or not: the Mac needs the memory more than the turn
+		// (DESIGN §8.1). The next load waits for the pressure to fall (Ensure).
+		if p, err := s.pressure(); err == nil && p >= PressureCritical {
+			if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
+				return err
+			}
+			s.loaded = false
+			return fmt.Errorf("models: unloaded %s: memory pressure is %s", s.cfg.Model, p)
+		}
 	}
 	if s.loaded && idle >= s.cfg.IdleUnload {
 		var st struct {
