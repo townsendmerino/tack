@@ -45,8 +45,9 @@ The order the owner approved, each step with its exit check:
      - **The record:** `proto.Compaction` gains `Summary` and `Summarized` (the seqs replaced), fields added only.
      - **The place:** the summary is the first user message after the system prompt, with the task word for word in
        it; the system prompt stays byte-identical.
-     - **Built so far:** the anchor list, the fallback summary and the headings check (`internal/loop/summary.go`), with
-       no model call and nothing wired.
+     - **Built so far:** the anchor list, the fallback summary and the headings check (`internal/loop/summary.go`); the
+       summarizer call (`loop.Summarize`): the thinking-off alias the server lists, in chunks of about 4,000 tokens, each
+       updating the last body, any failure keeping the previous body. Nothing is wired yet.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
