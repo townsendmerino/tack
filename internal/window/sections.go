@@ -744,17 +744,35 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 // noteIn reads load's note back from a result, as Replay describes: its sections, those it names, and its text, or
 // false when the result holds no note that reads back exactly.
 func (in *Instructions) noteIn(result string) (got, left []int, text string, ok bool) {
-	start := strings.Index(result, in.header())
-	if start < 0 {
-		start = strings.Index(result, in.notLoaded())
+	// The note sits at the result's end, after the tool's own output, which can hold text like a header (a read of the
+	// instruction file, say): each place a header opens is tried, from the last back. A note with sections holds its
+	// notice after them, so a notice alone is tried only in a result with no header: one whose header does not read
+	// back is skipped whole, never taken for its notice.
+	opens := []string{in.header()}
+	if !strings.Contains(result, in.header()) {
+		opens = []string{in.notLoaded()}
 	}
-	if start < 0 {
-		return nil, nil, "", false
+	for _, open := range opens {
+		for end := len(result); ; {
+			k := strings.LastIndex(result[:end], open)
+			if k < 0 {
+				break
+			}
+			note := result[k:]
+			if c := strings.Index(note, tools.CurrentSymbolOpen); c >= 0 {
+				note = note[:c]
+			}
+			if got, left, text, ok := in.noteAt(note); ok {
+				return got, left, text, true
+			}
+			end = k
+		}
 	}
-	note := result[start:]
-	if k := strings.Index(note, tools.CurrentSymbolOpen); k >= 0 {
-		note = note[:k]
-	}
+	return nil, nil, "", false
+}
+
+// noteAt reads a note back from note, which must begin with it and hold nothing after it.
+func (in *Instructions) noteAt(note string) (got, left []int, text string, ok bool) {
 	free := func(i int) bool {
 		return !in.in[i] && !in.offered[i] && !slices.Contains(got, i) && !slices.Contains(left, i)
 	}

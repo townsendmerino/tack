@@ -565,3 +565,26 @@ func TestMarkedTitleBringsItsSubtree(t *testing.T) {
 		t.Errorf("the marked title should bring its subsection:\n%s", s)
 	}
 }
+
+// TestReplayFindsTheNoteAtTheEnd: a result whose tool output holds text like a note's header, a read of the
+// instruction file say, still reads its own note back from its end.
+func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial())}})
+	quoted := "a file that quotes a note:\n\n[Project rules from CLAUDE.md for this call:]\n\nnot a section\n"
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c1", "bash", bash("git status"))})
+	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+}
