@@ -173,7 +173,8 @@ type Session struct {
 	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
 	// What summarizing reads (Config.Summarize, summarize_live.go): where the assistant messages are, the last seq a
 	// summary covered and that summary's body; freed is what this request's masking freed, in bytes; sumFloor is the
-	// prompt at the last summary attempt that changed nothing, 0 if none (summarizeDue backs off from it).
+	// prompt at the last summary attempt that changed nothing, 0 if none (summarizeDue backs off from it). It is not
+	// rebuilt on resume: a resumed session's next request opens a new turn, which clears it.
 	sumFloor     int
 	cuts         summaryCuts
 	summarizedTo int64
@@ -332,6 +333,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	var stopKeys []string                                   // this response's calls that reached RepeatLimit answered with the nearly-full note
 	stopAway := false                                       // a call of this response reached RepeatLimit away from the cliff
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
+	s.sumFloor = 0                                          // a new turn may summarize again (summarizeDue)
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
 	// The snapshot reset on every other way out, an error's too.

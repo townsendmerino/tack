@@ -351,3 +351,21 @@ func TestRuleShortArmNearTheEdge(t *testing.T) {
 		t.Errorf("want d in full and parked:\n%s", s[strings.Index(s, "## The registered rule"):])
 	}
 }
+
+// TestReadStepsSkipsTheSummarizersRequests: a request.sent numbered 0 (compaction's summarizer) is not one of the run's
+// requests, so a step's request number and the run's count are the conversation's.
+func TestReadStepsSkipsTheSummarizersRequests(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "events.jsonl")
+	os.WriteFile(p, []byte(strings.Join([]string{
+		`{"seq":1,"type":"request.sent","payload":{"request":1}}`,
+		`{"seq":2,"type":"request.sent","payload":{"request":0}}`,
+		`{"seq":3,"type":"request.sent","payload":{"request":2}}`,
+		`{"seq":4,"type":"tool.call","payload":{"id":"a","name":"read","input":{}}}`,
+		`{"seq":5,"type":"tool.finished","payload":{"id":"a","outcome":"ok","result":"x"}}`,
+		`{"seq":6,"type":"turn.end","payload":{"stop_reason":"end_turn"}}`,
+	}, "\n")+"\n"), 0o644)
+	steps, requests, _, err := readSteps(p)
+	if err != nil || requests != 2 || len(steps) != 1 || steps[0].req != 2 {
+		t.Fatalf("requests %d, steps %+v, %v; want 2 requests and the step at request 2", requests, steps, err)
+	}
+}

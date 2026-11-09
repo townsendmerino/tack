@@ -98,7 +98,7 @@ type Supervisor struct {
 	plan     Plan
 	lastUse  time.Time
 	fitLines chan string
-	checked  bool // checkVersion passed for this binary
+	checked  os.FileInfo // the binary checkVersion last passed, as stat saw it; nil before
 }
 
 // NewSupervisor validates cfg and returns a supervisor; nothing starts until Ensure.
@@ -124,13 +124,12 @@ func (s *Supervisor) adminSock() string { return filepath.Join(s.cfg.Dir, "admin
 func (s *Supervisor) Ensure(ctx context.Context) (server.Server, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cfg.Admission && !s.checked {
-		if err := s.checkVersion(ctx); err != nil {
-			return nil, err
-		}
-		s.checked = true
-	}
 	if s.cmd == nil || s.dead() {
+		if s.cfg.Admission {
+			if err := s.checkBinary(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.start(ctx); err != nil {
 			return nil, err
 		}
@@ -314,15 +313,24 @@ banner:
 	return nil
 }
 
-// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit; nothing
-// is unloaded or stopped for idleness while a generation is in flight. With Admission it also applies the memory guard: at
-// critical pressure the model unloads at once, and Tick reports that as its error. A daemon calls it periodically.
+// Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit. Nothing is
+// unloaded or stopped for idleness while a generation is in flight, except that a child whose admin status does not
+// answer within tickAdminTimeout is stopped once past IdleExit. With Admission it also applies the memory guard: at
+// critical pressure the model unloads at once, and Tick reports that as its error. A tick that finds an Ensure under
+// way does nothing. A daemon calls it periodically.
 func (s *Supervisor) Tick(ctx context.Context) error {
-	s.mu.Lock()
+	// An Ensure holds the lock while it checks, starts and loads, which is use, not idleness: this tick skips rather
+	// than hold up the daemon's ticker behind it, and the next one applies the rules.
+	if !s.mu.TryLock() {
+		return nil
+	}
 	defer s.mu.Unlock()
 	if s.cmd == nil || s.dead() {
 		return nil
 	}
+	// Each admin call is bounded: a child whose admin socket hangs must not hold the lock, and so every Ensure, with it.
+	ctx, cancel := context.WithTimeout(ctx, tickAdminTimeout)
+	defer cancel()
 	if s.cfg.Admission && s.loaded {
 		// At critical memory pressure the model unloads, generating or not: the Mac needs the memory more than the turn
 		// (DESIGN §8.1). The next load waits for the pressure to fall (Ensure).
@@ -344,6 +352,9 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 			Inflight int `json:"generations_inflight"`
 		}
 		if err := s.admin(ctx, "GET", "/admin/status", nil, &st); err != nil {
+			if idle >= s.cfg.IdleExit { // it cannot say what it is doing, and nothing has used it for idle_exit
+				return errors.Join(fmt.Errorf("models: stopping %s: its admin status did not answer: %w", s.cfg.Binary, err), s.stopLocked())
+			}
 			return err
 		}
 		if st.Inflight > 0 {
@@ -358,6 +369,9 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	}
 	return nil
 }
+
+// tickAdminTimeout bounds Tick's call to the child's admin status; a variable so tests can shorten it.
+var tickAdminTimeout = 5 * time.Second
 
 // unloadLocked unloads the model, and forgets the plan it was loaded under.
 func (s *Supervisor) unloadLocked(ctx context.Context) error {
@@ -563,6 +577,24 @@ func (s *Supervisor) checkFit(ctx context.Context, want string) error {
 // one goinfer version, and the daemon refuses a mismatched helper). A tack release that moves to a new goinfer
 // release changes it.
 const GoinferVersion = "v0.24.1"
+
+// checkBinary runs checkVersion before a child starts, unless it already passed for this very file: the same file
+// (os.SameFile), unchanged in size and modification time. A goinfer-serve replaced on disk is checked again.
+func (s *Supervisor) checkBinary(ctx context.Context) error {
+	fi, err := os.Stat(s.cfg.Binary)
+	if err == nil && s.checked != nil && os.SameFile(fi, s.checked) && fi.Size() == s.checked.Size() &&
+		fi.ModTime().Equal(s.checked.ModTime()) {
+		return nil
+	}
+	s.checked = nil
+	if verr := s.checkVersion(ctx); verr != nil {
+		return verr
+	}
+	if err == nil { // a binary stat could not see is checked again next time
+		s.checked = fi
+	}
+	return nil
+}
 
 // checkVersion runs the child's --version and refuses a goinfer-serve that is not GoinferVersion. Its first line is
 // "<prog> <version>[ (<revision>)]" (goinfer's serveapp/version.go). A release build gives its tag. A build from a
