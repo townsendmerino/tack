@@ -47,7 +47,10 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
     `session/cancel`, or for the last such client to leave. Each of the last two ends it as a deny.
   - With no privileged subscriber when the question is asked, it is today's immediate `no_user` deny, so a turn
     never waits on nobody.
-  - The question is the `permission.requested` event the subscribers already receive.
+  - The question is the `permission.requested` event the subscribers already receive, and it stays the question's
+    only source. A client that attaches, or re-attaches with `session/subscribe {from_seq}`, finds an open question
+    as a `permission.requested` with no `permission.resolved` after it, and offers its keys. So subscribe's result
+    gains no "pending questions" field.
 
 ## 2. `session/cancel`
 
