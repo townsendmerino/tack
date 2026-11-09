@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/townsendmerino/tack/internal/proto"
 )
 
 // Knowledge pages (DESIGN §2.5, §6.7 "Memory across sessions"; ADR-007): markdown files under .agents/knowledge/, one
@@ -53,7 +55,7 @@ type Page struct {
 }
 
 // ParsePage reads a page's frontmatter: its title (else its first heading, else its file name) and its pins. A pin
-// whose file leaves the workspace (absolute, or through "..") is dropped.
+// whose file leaves the workspace (absolute, or through "..") or names the root itself is dropped.
 func ParsePage(p, content string) Page {
 	pg := Page{Path: p, Body: content}
 	if rest, ok := strings.CutPrefix(content, "---\n"); ok {
@@ -98,7 +100,7 @@ func (pg *Page) addPin(v string) {
 		return
 	}
 	file := path.Clean(f[0])
-	if path.IsAbs(file) || file == ".." || strings.HasPrefix(file, "../") {
+	if path.IsAbs(file) || file == "." || file == ".." || strings.HasPrefix(file, "../") {
 		return
 	}
 	pin := Pin{File: file}
@@ -148,6 +150,8 @@ type Knowledge struct {
 	note   []int       // the note that carries or names each page: an index into notes
 	named  []int       // for a page loaded after a notice named it for want of room, that notice's note, else -1
 	notes  []knowNote
+	// indexCost is what the first message's index took of the budget.
+	indexCost int
 }
 
 type pageState int
@@ -186,8 +190,11 @@ func NewKnowledge(root string, pages []Page, window int, b *Budget) *Knowledge {
 // matches says whether every pin of the page matches its file now.
 func (k *Knowledge) matches(pg Page) bool {
 	for _, p := range pg.Pins {
+		if p.Hash == "" {
+			return false // a pin without a hash never matches; its file is not read
+		}
 		b, err := os.ReadFile(filepath.Join(k.root, filepath.FromSlash(p.File)))
-		if err != nil || p.Hash == "" {
+		if err != nil {
 			return false
 		}
 		sum := sha256.Sum256(b)
@@ -207,16 +214,8 @@ func (k *Knowledge) Index() string {
 	capTokens := min(k.window*IndexShare/100, k.b.Limit-k.b.Used)
 	head := "Knowledge pages in " + KnowledgeDir + "/, notes on this code; one loads when a call reads or edits the file it is pinned to:\n"
 	var lines []string
-	for _, pg := range k.pages {
-		l := "- " + pg.Title + " (" + pg.Path
-		if len(pg.Pins) > 0 {
-			files := make([]string, len(pg.Pins))
-			for i, p := range pg.Pins {
-				files[i] = p.File
-			}
-			l += "; pinned to " + strings.Join(files, ", ")
-		}
-		lines = append(lines, l+")")
+	for i := range k.pages {
+		lines = append(lines, k.indexLine(i))
 	}
 	build := func(lines []string, more int) string {
 		s := head + strings.Join(lines, "\n")
@@ -233,8 +232,27 @@ func (k *Knowledge) Index() string {
 	if len(lines) == 0 || SectionTokens(text) > capTokens {
 		return "" // not one page line fits: no index rather than a header over "[… N more pages]"
 	}
-	k.b.Used += SectionTokens(text)
+	k.indexCost = SectionTokens(text)
+	k.b.Used += k.indexCost
 	return text
+}
+
+// indexLine is a page's line in the index; a page whose pins did not match as the session began says so, which also
+// lets Replay read its freshness back from the logged index.
+func (k *Knowledge) indexLine(i int) string {
+	pg := k.pages[i]
+	l := "- " + pg.Title + " (" + pg.Path
+	if len(pg.Pins) > 0 {
+		files := make([]string, len(pg.Pins))
+		for j, p := range pg.Pins {
+			files[j] = p.File
+		}
+		l += "; pinned to " + strings.Join(files, ", ")
+	}
+	if !k.fresh[i] {
+		l += "; possibly out of date"
+	}
+	return l + ")"
 }
 
 // ForCall is the pages tool call id brings in, as text to add to its result: each page pinned to a file the call reads
@@ -251,20 +269,16 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 			}
 		}
 	}
-	if len(files) == 0 {
-		return ""
-	}
 	var out strings.Builder
 	var touched []int
 	for i, pg := range k.pages {
 		if !pinnedTo(pg, files) || k.state[i] == pageIn || k.state[i] == pageStale {
 			continue
 		}
-		body := "\n\n[Knowledge page " + pg.Path + ", " + pg.Title + ":]\n\n" + strings.TrimSpace(pg.Body)
+		body, stale, notice := k.texts(i)
 		fits := func(add string) bool { return k.b.Used+SectionTokens(out.String()+add) <= k.b.Limit }
 		// A notice that does not fit what is left is not given either; it is tried again at the next matching call.
-		switch stale := "\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed " +
-			"since it was written, so it was not loaded. Read it only to check it against the code.]"; {
+		switch {
 		case !k.fresh[i]:
 			if !fits(stale) {
 				continue
@@ -280,7 +294,6 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 		case k.state[i] == pageNoRoom:
 			continue // named already; it waits for room
 		default:
-			notice := "\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]"
 			if !fits(notice) {
 				continue
 			}
@@ -289,17 +302,168 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 		}
 		touched = append(touched, i)
 	}
-	if len(touched) == 0 {
-		return ""
-	}
 	text := out.String()
+	k.record(id, touched, text)
+	return text
+}
+
+// texts are what a page can add to a result: its body, framed; the notice that it is possibly out of date; and the
+// notice that it is not loaded for want of room.
+func (k *Knowledge) texts(i int) (body, stale, noRoom string) {
+	pg := k.pages[i]
+	body = "\n\n[Knowledge page " + pg.Path + ", " + pg.Title + ":]\n\n" + strings.TrimSpace(pg.Body)
+	stale = "\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed since it " +
+		"was written, so it was not loaded. Read it only to check it against the code.]"
+	noRoom = "\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]"
+	return body, stale, noRoom
+}
+
+// record makes call id's note, which carries touched: every call that ran gets one, empty when it brought nothing, so
+// a model's reused or empty ids still pair each compaction with the right call.
+func (k *Knowledge) record(id string, touched []int, text string) {
 	n := len(k.notes)
 	for _, i := range touched {
 		k.note[i] = n
 	}
-	k.notes = append(k.notes, knowNote{id: id, cost: SectionTokens(text), live: true})
+	cost := 0
+	if text != "" {
+		cost = SectionTokens(text)
+	}
+	k.notes = append(k.notes, knowNote{id: id, cost: cost, live: true})
 	k.b.Used += k.notes[n].cost
-	return text
+}
+
+// Replay rebuilds the pages' places in the window from a session's log, for a reopened session (core's open, before
+// loop.Resume), keeping the index the first message carries. For each tool.finished result of a call that ran, it
+// finds the texts ForCall gave, in page order and together as ForCall wrote them, and records that call's note
+// (empty when there are none); each compaction's stubbed ids go through Masked. Only this tracker's own notes' share
+// of the shared budget is taken back first.
+func (k *Knowledge) Replay(evs []proto.Event) error {
+	for _, n := range k.notes {
+		if n.live {
+			k.b.Used -= n.cost
+		}
+	}
+	k.freshFromLog(evs)
+	k.notes = nil
+	for i := range k.pages {
+		k.state[i], k.note[i], k.named[i] = pageOut, 0, -1
+	}
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		switch p := v.(type) {
+		case proto.ToolFinished:
+			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
+				continue // the loop asks only about calls that ran
+			}
+			k.replayResult(p.ID, p.Result)
+		case proto.Compaction:
+			ids := make([]string, len(p.Masked))
+			for i, m := range p.Masked {
+				ids[i] = m.ID
+			}
+			k.Masked(ids)
+		}
+	}
+	return nil
+}
+
+// freshFromLog sets each page's freshness to what the session judged as it began, which the log holds: in the first
+// message's index (a stale page's line says so), and in the notes of the calls that ran (a page's text, or its stale
+// notice). The pages the log does not mention keep the judgment made over the tree as it is now. Judging again over
+// the tree would make every page whose file the session edited stale on its resume.
+func (k *Knowledge) freshFromLog(evs []proto.Event) {
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		var text string
+		switch p := v.(type) {
+		case proto.UserMessage:
+			for _, c := range p.Content {
+				text += c.Text
+			}
+			for i := range k.pages {
+				was := k.fresh[i]
+				k.fresh[i] = true
+				fresh := strings.Contains(text, k.indexLine(i))
+				k.fresh[i] = false
+				stale := strings.Contains(text, k.indexLine(i))
+				switch {
+				case fresh:
+					k.fresh[i] = true
+				case stale:
+					k.fresh[i] = false
+				default:
+					k.fresh[i] = was
+				}
+			}
+		case proto.ToolFinished:
+			for i := range k.pages {
+				body, stale, _ := k.texts(i)
+				switch {
+				case strings.Contains(p.Result, body):
+					k.fresh[i] = true
+				case strings.Contains(p.Result, stale):
+					k.fresh[i] = false
+				}
+			}
+		}
+	}
+}
+
+// replayResult records the note one result holds: each page's text that ForCall could have given then and that the
+// result holds, when together, in page order, they are in the result as one run; otherwise an empty note.
+func (k *Knowledge) replayResult(id, result string) {
+	var out strings.Builder
+	var touched []int
+	var states []pageState
+	for i := range k.pages {
+		if k.state[i] == pageIn || k.state[i] == pageStale {
+			continue
+		}
+		body, stale, notice := k.texts(i)
+		switch {
+		case !k.fresh[i] && strings.Contains(result, stale):
+			out.WriteString(stale)
+			states = append(states, pageStale)
+		case k.fresh[i] && strings.Contains(result, body):
+			out.WriteString(body)
+			states = append(states, pageIn)
+		case k.fresh[i] && k.state[i] != pageNoRoom && strings.Contains(result, notice):
+			out.WriteString(notice)
+			states = append(states, pageNoRoom)
+		default:
+			continue
+		}
+		touched = append(touched, i)
+	}
+	text := out.String()
+	if text != "" && !strings.Contains(result, text) {
+		touched, states, text = nil, nil, ""
+	}
+	for j, i := range touched {
+		if states[j] == pageIn && k.state[i] == pageNoRoom {
+			k.named[i] = k.note[i]
+		}
+		k.state[i] = states[j]
+	}
+	k.record(id, touched, text)
+}
+
+// Own is what this tracker's texts take of the budget: its index's and its live notes'.
+func (k *Knowledge) Own() int {
+	n := k.indexCost
+	for _, c := range k.notes {
+		if c.live {
+			n += c.cost
+		}
+	}
+	return n
 }
 
 func pinnedTo(pg Page, files map[string]bool) bool {

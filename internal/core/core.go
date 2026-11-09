@@ -190,7 +190,9 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
-	prompted     bool
+	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it.
+	know     *window.Knowledge
+	prompted bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
 	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
@@ -603,6 +605,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 				parts = append(parts, index)
 			}
 			loads = append(loads, know)
+			s.know = know
 		}
 		if len(parts) > 0 && !prompted {
 			// A whole file alone follows the task, as WholeInstructions puts it; sections and the knowledge index are notes
@@ -616,6 +619,17 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	if history == nil {
 		s.loop = loop.New(cfg)
 		return s, nil
+	}
+	// A reopened session's knowledge tracker is rebuilt from its log: what it loaded, and each page's freshness as
+	// the session judged it, not as the tree, edited since, would judge it now.
+	if s.know != nil {
+		if err = s.know.Replay(history); err != nil {
+			c.unregister(id)
+			if s.kit != nil {
+				s.kit()
+			}
+			return nil, err
+		}
 	}
 	if s.loop, err = loop.Resume(cfg, history); err != nil {
 		c.unregister(id)

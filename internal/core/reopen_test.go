@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -903,5 +905,56 @@ func TestRecoverLocksOnlyWhatItCloses(t *testing.T) {
 	}
 	if !slices.Equal(locked, []proto.SessionID{crashed}) {
 		t.Fatalf("Recover locked %v; want only %s, the session it closes (%s has no open turn)", locked, crashed, done.Session)
+	}
+}
+
+// TestAReopenedSessionKeepsItsPages: a page loaded before the daemon closed is still in the reopened session's window,
+// and still fresh, though the session's own edit has changed its pinned file since.
+func TestAReopenedSessionKeepsItsPages(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384,
+		goinfertest.Calls("", "r1", "read", `{"path":"a.go"}`), goinfertest.Says("one"),
+		goinfertest.Calls("", "r2", "read", `{"path":"a.go"}`), goinfertest.Says("two"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	know := func(o *Options) { o.Knowledge = true }
+	first, cl, events := daemonOn(t, st, ts.URL, know)
+	ws := repo(t)
+	code := "package a\n"
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte(code), 0o644)
+	sum := sha256.Sum256([]byte(code))
+	os.MkdirAll(filepath.Join(ws, ".agents", "knowledge"), 0o755)
+	os.WriteFile(filepath.Join(ws, ".agents", "knowledge", "a.md"), []byte("---\ntitle: Package a\npins: a.go sha256:"+
+		hex.EncodeToString(sum[:])[:16]+"\n---\nA is empty on purpose.\n"), 0o644)
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil)
+	results := func(evs []proto.Event) []string {
+		var out []string
+		for _, ev := range evs {
+			if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+				out = append(out, v.(proto.ToolFinished).Result)
+			}
+		}
+		return out
+	}
+	if r := results(untilTurnEnd(t, events)); len(r) != 1 || !strings.Contains(r[0], "A is empty on purpose.") {
+		t.Fatalf("the first daemon's read should load the page: %q", r)
+	}
+	first.Close()
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644) // the session's edit, say
+	_, cl2, events2 := daemonOn(t, st, ts.URL, know)
+	cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	untilTurnEnd(t, events2) // the replay
+	cl2.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil)
+	r := results(untilTurnEnd(t, events2))
+	if len(r) == 0 || strings.Contains(r[len(r)-1], "Knowledge page") {
+		t.Errorf("the reopened session loaded or flagged the page again: %q", r)
 	}
 }
