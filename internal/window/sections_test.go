@@ -639,3 +639,37 @@ func TestOneSectionFileIsNotHalved(t *testing.T) {
 		t.Errorf("used %d of %d: a lone opening was halved", in.Used(), in.Budget())
 	}
 }
+
+// TestReplayTellsIdenticalSectionsApart: two subsections with the same text under differently marked parents; a note
+// carrying the second is read as the second when the log holds the call (its own matches decide), and a section whose
+// text begins another's does not stop the second being read.
+func TestReplayTellsIdenticalSectionsApart(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Bench\n<!-- tack:on bash:bench -->\nb\n\n### Notes\n\nSame rule.\n\n" +
+		"## Night\n<!-- tack:on bash:night -->\nn\n\n### Notes\n\nSame rule.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	night := in.wantFor(callKinds("bash", bash("night x")))
+	second := -1
+	for i, s := range in.secs {
+		if s.Heading() == "Notes" && night[i] {
+			second = i
+		}
+	}
+	note := in.render([]int{second}, nil, "call")
+	if got, _, _, ok := in.noteIn("output"+note, map[int]bool{second: true}); !ok || !slices.Equal(got, []int{second}) {
+		t.Errorf("with the call's matches: got %v ok %v, want [%d]", got, ok, second)
+	}
+	prefix := "# notes\n\nIntro.\n\n## A\n<!-- tack:on bash:a -->\na\n\n### T\n\nFirst part.\n## B\n<!-- tack:on bash:b -->\nb\n\n" +
+		"### T\n\nFirst part.\n\nSecond part.\n\n" + filler
+	in = NewInstructions("CLAUDE.md", prefix, NewBudget(4096))
+	in.Initial()
+	long := -1
+	for i, s := range in.secs {
+		if strings.Contains(s.Text, "Second part.") {
+			long = i
+		}
+	}
+	if got, _, _, ok := in.noteIn("output"+in.render([]int{long}, nil, "call"), nil); !ok || !slices.Equal(got, []int{long}) {
+		t.Errorf("a prefix section: got %v ok %v, want [%d]", got, ok, long)
+	}
+}

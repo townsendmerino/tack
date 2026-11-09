@@ -74,3 +74,15 @@ func TestCheckWithNoFileIsInconclusive(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
+
+// TestCheckSkipsEmptyEntriesAndRepeats: an empty -files entry names no file, and a heading the file repeats is queried
+// once.
+func TestCheckSkipsEmptyEntriesAndRepeats(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n\n## Testing\n\nAgain.\n"), 0o644)
+	var out bytes.Buffer
+	if code := run([]string{"-root", dir, "-files", "CLAUDE.md,,"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") ||
+		!strings.Contains(out.String(), "CLAUDE.md k=5: 12 queries") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}

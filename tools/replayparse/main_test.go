@@ -30,7 +30,14 @@ func TestReplayCountsNewUnparseableFiles(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "events.jsonl")
 	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 	ro := replay(p, map[string]string{"old.go": "package x\n"}, "job", "run", true)
-	if ro.newUnparseable != 1 || len(ro.breaks) != 1 || ro.breaks[0].File != "old.go" {
-		t.Fatalf("new unparseable %d, breaks %+v", ro.newUnparseable, ro.breaks)
+	if ro.newUnparseable != 1 || len(ro.breaks) != 1 || ro.breaks[0].File != "old.go" || !ro.endNew {
+		t.Fatalf("new unparseable %d (at the end %v), breaks %+v", ro.newUnparseable, ro.endNew, ro.breaks)
+	}
+	// A later write that makes the new file parse ends the run without one.
+	add(5, proto.EvToolCall, proto.ToolCall{ID: "w3", Name: "write", Input: []byte(`{"path":"new.go","content":"package x\n"}`)})
+	add(6, proto.EvToolFinished, proto.ToolFinished{ID: "w3", Outcome: proto.OutcomeOK})
+	os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	if ro := replay(p, map[string]string{"old.go": "package x\n"}, "job", "run", true); ro.endNew {
+		t.Error("a new file made to parse still counts at the run's end")
 	}
 }

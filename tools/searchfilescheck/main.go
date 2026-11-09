@@ -98,6 +98,9 @@ func run(args []string, w, logw io.Writer) int {
 	src := wrap(s)
 	whole := map[string][]tools.Hit{} // each query's whole ranking, for every file and k
 	for f := range strings.SplitSeq(*files, ",") {
+		if strings.TrimSpace(f) == "" {
+			continue // an empty entry ("a,,b") names no file
+		}
 		f = path.Clean(filepath.ToSlash(strings.TrimSpace(f)))
 		b, err := os.ReadFile(filepath.Join(*root, filepath.FromSlash(f)))
 		if errors.Is(err, fs.ErrNotExist) {
@@ -110,7 +113,7 @@ func run(args []string, w, logw io.Writer) int {
 		}
 		queries := slices.Clone(messages)
 		for _, sec := range window.ParseSections(string(b)) {
-			if h := sec.Heading(); h != "" {
+			if h := sec.Heading(); h != "" && !slices.Contains(queries, h) { // a repeated heading is one query
 				queries = append(queries, h)
 			}
 		}

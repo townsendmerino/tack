@@ -611,6 +611,12 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 		in.record(id, nil, nil, "") // every call that ran gets a note, empty here, so reused ids pair right (record)
 		return ""
 	}
+	return in.load(in.wantFor(kinds), id, "call")
+}
+
+// wantFor is the sections a call of these kinds matches, each with its subsections that carry no tack:on marker of
+// their own (a level-1 section matched on a word brings only itself).
+func (in *Instructions) wantFor(kinds []string) map[int]bool {
 	want := map[int]bool{}
 	for i := range in.secs {
 		if !in.matches(i, kinds) {
@@ -630,7 +636,7 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 			}
 		}
 	}
-	return in.load(want, id, "call")
+	return want
 }
 
 // SectionSearcher finds the sections of an instruction file that match a user message: the heading paths of its best
@@ -799,6 +805,7 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 	} else {
 		copy(in.in, in.initIn)
 	}
+	calls := map[string]proto.ToolCall{}
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
@@ -813,11 +820,17 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 			if got, left, note, ok := in.noteInMessage(text.String()); ok {
 				in.record(MessageID, got, left, note)
 			}
+		case proto.ToolCall:
+			calls[p.ID] = p
 		case proto.ToolFinished:
 			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
 				continue // the loop asks only about calls that ran
 			}
-			if got, left, text, ok := in.noteIn(p.Result); ok {
+			var want map[int]bool // the call's own matches, when the log holds the call
+			if c, ok := calls[p.ID]; ok {
+				want = in.wantFor(callKinds(c.Name, c.Input))
+			}
+			if got, left, text, ok := in.noteIn(p.Result, want); ok {
 				in.record(p.ID, got, left, text)
 			} else {
 				in.record(p.ID, nil, nil, "")
@@ -835,7 +848,7 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 
 // noteIn reads load's note back from a result, as Replay describes: its sections, those it names, and its text, or
 // false when the result holds no note that reads back exactly.
-func (in *Instructions) noteIn(result string) (got, left []int, text string, ok bool) {
+func (in *Instructions) noteIn(result string, want map[int]bool) (got, left []int, text string, ok bool) {
 	// The note sits at the result's end, after the tool's own output, which can hold text like a header (a read of the
 	// instruction file, say): each place a header opens is tried, from the last back. A note with sections holds its
 	// notice after them, so a notice alone is tried only in a result with no header: one whose header does not read
@@ -854,7 +867,7 @@ func (in *Instructions) noteIn(result string) (got, left []int, text string, ok 
 			if c := strings.Index(note, tools.CurrentSymbolOpen); c >= 0 {
 				note = note[:c]
 			}
-			if got, left, text, ok := in.noteAt(note, "call"); ok {
+			if got, left, text, ok := in.noteAt(note, "call", want); ok {
 				return got, left, text, true
 			}
 			end = k
@@ -880,7 +893,7 @@ func (in *Instructions) noteInMessage(msg string) (got, left []int, text string,
 			if k < 0 {
 				break
 			}
-			if got, left, text, ok := in.noteAt(msg[start:from+k], "message"); ok {
+			if got, left, text, ok := in.noteAt(msg[start:from+k], "message", nil); ok {
 				return got, left, text, true
 			}
 			from += k + 1
@@ -890,56 +903,67 @@ func (in *Instructions) noteInMessage(msg string) (got, left []int, text string,
 }
 
 // noteAt reads a note back from note, which must begin with it and hold nothing after it.
-func (in *Instructions) noteAt(note, what string) (got, left []int, text string, ok bool) {
-	free := func(i int) bool {
-		return !in.in[i] && !in.offered[i] && !slices.Contains(got, i) && !slices.Contains(left, i)
+func (in *Instructions) noteAt(note, what string, want map[int]bool) (got, left []int, text string, ok bool) {
+	// A section is a candidate when it is neither in nor named, and, when want is known (the call's own matches),
+	// wanted. load takes sections in file order, so each is tried after the last one taken, and a wrong guess (a
+	// section whose text is a prefix of another's) is backed out of.
+	cand := func(i int, taken []int) bool {
+		return !in.in[i] && !in.offered[i] && !slices.Contains(taken, i) && (want == nil || want[i])
 	}
-	rest, isLoad := strings.CutPrefix(note, in.header(what))
-	for isLoad {
-		next := -1
-		for i := range in.secs {
-			if free(i) && strings.HasPrefix(rest, "\n\n"+in.secs[i].Text) {
-				r := rest[len(in.secs[i].Text)+2:]
-				if r == "" || strings.HasPrefix(r, "\n\n") {
-					next = i
-					break
-				}
-			}
-		}
-		if next < 0 {
-			break
-		}
-		got = append(got, next)
-		rest = rest[len(in.secs[next].Text)+2:]
-	}
-	if !isLoad {
-		rest = note
-	}
-	if list, isNotice := strings.CutPrefix(rest, in.notLoaded()); isNotice {
-		list, closed := strings.CutSuffix(list, notLoadedEnd(what))
-		if !closed {
-			return nil, nil, "", false
-		}
-		for list != "" {
-			next := -1
-			for i := range in.secs {
-				if e := in.entry(i); free(i) && (list == e || strings.HasPrefix(list, e+",")) {
-					next = i
-					break
-				}
-			}
-			if next < 0 {
+	finish := func(rest string, got []int) ([]int, []int, string, bool) {
+		var left []int
+		if rest != "" {
+			list, isNotice := strings.CutPrefix(rest, in.notLoaded())
+			if !isNotice {
 				return nil, nil, "", false
 			}
-			left = append(left, next)
-			list = strings.TrimPrefix(strings.TrimPrefix(list, in.entry(next)), ",")
+			list, closed := strings.CutSuffix(list, notLoadedEnd(what))
+			if !closed {
+				return nil, nil, "", false
+			}
+			for list != "" {
+				next := -1
+				for i := range in.secs {
+					if e := in.entry(i); cand(i, append(slices.Clone(got), left...)) && (list == e || strings.HasPrefix(list, e+",")) {
+						next = i
+						break
+					}
+				}
+				if next < 0 {
+					return nil, nil, "", false
+				}
+				left = append(left, next)
+				list = strings.TrimPrefix(strings.TrimPrefix(list, in.entry(next)), ",")
+			}
 		}
+		text := in.render(got, left, what)
+		if len(got)+len(left) == 0 || text != note {
+			return nil, nil, "", false
+		}
+		return got, left, text, true
 	}
-	text = in.render(got, left, what)
-	if len(got)+len(left) == 0 || text != note {
+	var try func(rest string, from int, got []int) ([]int, []int, string, bool)
+	try = func(rest string, from int, got []int) ([]int, []int, string, bool) {
+		if g, l, t, ok := finish(rest, got); ok {
+			return g, l, t, true
+		}
+		for i := from; i < len(in.secs); i++ {
+			p := "\n\n" + in.secs[i].Text
+			if !cand(i, got) || !strings.HasPrefix(rest, p) {
+				continue
+			}
+			if r := rest[len(p):]; r == "" || strings.HasPrefix(r, "\n\n") {
+				if g, l, t, ok := try(r, i+1, append(slices.Clone(got), i)); ok {
+					return g, l, t, true
+				}
+			}
+		}
 		return nil, nil, "", false
 	}
-	return got, left, text, true
+	if rest, isLoad := strings.CutPrefix(note, in.header(what)); isLoad {
+		return try(rest, 0, nil)
+	}
+	return finish(note, nil)
 }
 
 // Loaded is which sections are in the window and which are named as not loaded, by index into the file's sections;
