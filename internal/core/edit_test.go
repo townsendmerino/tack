@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 type noShell struct{}
@@ -518,5 +520,101 @@ func TestCompactAtCliffThroughTheCore(t *testing.T) {
 		if !note || got != want {
 			t.Errorf("CompactAtCliff %v: the note given %v, %d cliff compactions of the grep, want %d", on, note, got, want)
 		}
+	}
+}
+
+// TestSectionInstructionsThroughTheCore: with SectionInstructions, an instruction file over its budget gives the first
+// message its opening and an outline, before the task; the testing section arrives with the write of a _test.go file,
+// in that call's result, and not with the first message.
+func TestSectionInstructionsThroughTheCore(t *testing.T) {
+	f := newFixture(t,
+		goinfertest.Calls("", "w1", "write", `{"path":"b_test.go","content":"package a\n"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"added the test"}`))
+	md := "# notes\n\nIntro: read this first.\n\n## Testing\n\nRun go test with -v.\n\n## Filler\n\n" +
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300)
+	ws := gitWorkspace(t, md)
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	evs := f.waitTurnEnd(t)
+	var first string
+	var results []string
+	for _, ev := range evs {
+		switch v, _ := ev.Decode(); p := v.(type) {
+		case proto.UserMessage:
+			first = p.Content[0].Text
+		case proto.ToolFinished:
+			results = append(results, p.Result)
+		}
+	}
+	if !strings.HasPrefix(first, "Project notes from CLAUDE.md, for reference:\n\n# notes\n\nIntro: read this first.") ||
+		!strings.Contains(first, "Testing (lines 5–8)") || strings.Contains(first, "Run go test with -v.") ||
+		!strings.HasSuffix(first, "Task: Add a test.") {
+		t.Fatalf("first message %q", first)
+	}
+	if len(results) != 2 || !strings.Contains(results[0], "[Project rules from CLAUDE.md for this call:]\n\n## Testing\n\nRun go test with -v.") {
+		t.Fatalf("results %q", results)
+	}
+	// The session's tracker rebuilt from its log, as a resumed session's is, equals the live one.
+	f.core.mu.Lock()
+	live := f.core.sessions[sid].sections
+	f.core.mu.Unlock()
+	logged, err := f.core.opt.Store.Events(sid, 0)
+	if err != nil || live == nil {
+		t.Fatalf("events %v, tracker %v", err, live)
+	}
+	re := window.NewInstructions("CLAUDE.md", md, 16384)
+	if err := re.Replay(logged); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lb, lu := live.Loaded()
+	ri, ro, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru || !slices.Contains(lb, "w1") {
+		t.Fatalf("rebuilt tracker differs:\nlive    %v %v %q %d\nrebuilt %v %v %q %d", li, lo, lb, lu, ri, ro, rb, ru)
+	}
+}
+
+// TestSectionInstructionsWholeFileFollowsTheTask: under SectionInstructions, a file within the budget is loaded whole
+// after the task, where WholeInstructions puts it.
+func TestSectionInstructionsWholeFileFollowsTheTask(t *testing.T) {
+	f := newFixture(t, goinfertest.Calls("", "d1", "done", `{"reason":"nothing to do"}`), goinfertest.Calls("", "d2", "done", `{"reason":"none"}`))
+	ws := gitWorkspace(t, "# notes\n\nRun go test.\n")
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for _, ev := range f.waitTurnEnd(t) {
+		if v, _ := ev.Decode(); first == "" {
+			if m, ok := v.(proto.UserMessage); ok {
+				first = m.Content[0].Text
+			}
+		}
+	}
+	if !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
+		t.Fatalf("first message %q", first)
 	}
 }

@@ -17,9 +17,12 @@ type RunOptions struct {
 	Version  string
 	// Grace is how long a shutdown lets running tool calls finish before it cancels their turns (core.Drain).
 	Grace time.Duration
-	// NewCore makes the daemon's core. It must set core.Options.ClientToken to token and core.Options.Shutdown to
-	// shutdown, and it owns the core's context: the core's turns run under it until Run returns.
-	NewCore func(token string, shutdown func()) (*core.Core, error)
+	// NewCore makes the daemon's core under ctx. It must set core.Options.ClientToken to token and
+	// core.Options.Shutdown to shutdown. Run ends ctx once the drain is over, and before it closes the core.
+	NewCore func(ctx context.Context, token string, shutdown func()) (*core.Core, error)
+	// Watch, when set, runs beside the core from before it serves (halt.Watch) until ctx ends; Run waits for it to
+	// return before it closes the core and releases the lock.
+	Watch func(ctx context.Context, c *core.Core)
 	// Log is told what the daemon does: what it recovered, refused connections, the drain. nil discards it.
 	Log io.Writer
 	// TickEvery is how often the core's model sources apply their idle rules (core.Core.Tick); 0 means 30s.
@@ -28,29 +31,39 @@ type RunOptions struct {
 
 // Run is the daemon (DESIGN §6.1). It takes the lock, or returns a *HeldError naming the daemon that has it; makes a
 // fresh client token; makes the core and recovers the turns a crash left open; binds the socket; and serves until ctx
-// ends or a privileged client asks daemon/shutdown, applying the model sources' idle rules every TickEvery. Then it drains the core within Grace, closes the connections and
-// the core, and releases the lock (closing the socket first).
+// ends or a privileged client asks daemon/shutdown, applying the model sources' idle rules every TickEvery. Then it stops
+// accepting, drains the core within Grace, closes the connections, ends the core's context and its watcher, closes the
+// core, and releases the lock.
 func Run(ctx context.Context, o RunOptions) error {
-	log := o.Log
-	if log == nil {
-		log = io.Discard
-	}
+	log := SyncWriter(o.Log)
 	l, err := Acquire(o.StateDir, o.Version)
 	if err != nil {
 		return err
 	}
 	defer l.Release()
+	l.SetShutdown(DrainWait(o.Grace)) // the stopping record says so, and a start waits that long for the lock
 	tok, err := l.NewToken()
 	if err != nil {
 		return err
 	}
 	stop := make(chan struct{})
 	var once sync.Once
-	c, err := o.NewCore(tok, func() { once.Do(func() { close(stop) }) })
+	cctx, ccancel := context.WithCancel(context.Background())
+	defer ccancel()
+	c, err := o.NewCore(cctx, tok, func() { once.Do(func() { close(stop) }) })
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	// Deferred after Close, so it runs first: the core's context and its watcher end before the core closes.
+	var watching sync.WaitGroup
+	defer func() {
+		ccancel()
+		watching.Wait()
+	}()
+	if o.Watch != nil {
+		watching.Go(func() { o.Watch(cctx, c) })
+	}
 	ids, err := c.Recover()
 	for _, id := range ids {
 		fmt.Fprintf(log, "tack daemon: %s was inside a turn when tack stopped; it is marked interrupted\n", id)
@@ -95,10 +108,19 @@ func Run(ctx context.Context, o RunOptions) error {
 	case serveErr = <-served:
 		served = nil
 	}
-	// Stop accepting first: closing the listener marks the record stopping, then unlinks the socket, so a new client
-	// starts the next daemon, which waits for this one's lock (takeLock), instead of reaching one that refuses it. The
-	// connections already open stay, and see their turns drain.
+	// Refuse new work, then stop accepting. The core refuses initialize and new turns from the first step, so a
+	// connection the listener accepted just before it closes goes on to the next daemon (Dial) instead of starting
+	// work here. Closing the listener marks the record stopping, then unlinks the socket, so a new client starts the
+	// next daemon, which waits for this one's lock (takeLock). The connections already open stay, and see their turns
+	// drain.
+	c.BeginDrain()
+	if drainHook != nil {
+		drainHook()
+	}
 	ln.Close()
+	if stopHook != nil {
+		stopHook()
+	}
 	fmt.Fprintf(log, "tack daemon: shutting down; no new connections; running tool calls have %s to finish\n", o.Grace)
 	if cancelled := c.Drain(o.Grace); len(cancelled) > 0 {
 		fmt.Fprintf(log, "tack daemon: cancelled the turns of %v after the grace window\n", cancelled)
@@ -112,3 +134,33 @@ func Run(ctx context.Context, o RunOptions) error {
 	}
 	return nil
 }
+
+// SyncWriter returns w made safe for the daemon's goroutines to write at once (Run, its serve loop's refusals, its idle
+// ticks, the core's callbacks): writes are serialized. nil is io.Discard; a writer SyncWriter made is returned as is.
+func SyncWriter(w io.Writer) io.Writer {
+	switch w.(type) {
+	case nil:
+		return io.Discard
+	case *syncWriter:
+		return w
+	}
+	return &syncWriter{w: w}
+}
+
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+// stopHook, when set (tests), runs in Run's shutdown once it has stopped accepting, before the drain.
+var stopHook func()
+
+// drainHook, when set (tests), runs in Run's shutdown once the core refuses new work, before the listener closes: the
+// socket is still bound and accepting.
+var drainHook func()

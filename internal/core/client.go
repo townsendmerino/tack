@@ -12,6 +12,9 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
+// ErrClosed is a call on a connection that has closed: the other end went away, or writing to it failed.
+var ErrClosed = errors.New("core: connection closed")
+
 // Client speaks the protocol to a Core (in-process over a pipe, or a daemon over its socket). Calls may be made from
 // any goroutine; session/event notifications go to OnEvent, called from the reading goroutine in arrival order.
 type Client struct {
@@ -20,13 +23,14 @@ type Client struct {
 	next    int
 	pending map[string]chan proto.Response
 	closed  error
+	done    chan struct{} // closed when the connection is
 
 	OnEvent func(proto.SessionEventParams)
 }
 
 // NewClient starts reading rw. Set OnEvent before the first call that can produce events.
 func NewClient(rw io.ReadWriter) *Client {
-	c := &Client{enc: json.NewEncoder(rw), pending: map[string]chan proto.Response{}}
+	c := &Client{enc: json.NewEncoder(rw), pending: map[string]chan proto.Response{}, done: make(chan struct{})}
 	go c.read(rw)
 	return c
 }
@@ -63,13 +67,18 @@ func (c *Client) read(r io.Reader) {
 		}
 	}
 	c.mu.Lock()
-	c.closed = errors.New("core: connection closed")
+	c.closed = ErrClosed
 	for id, ch := range c.pending {
 		close(ch)
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	close(c.done)
 }
+
+// Done is closed once the connection has closed (the other end went away, or the read failed), after the last event
+// it carried has gone to OnEvent.
+func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Call sends a request and decodes its result into result (which may be nil).
 func (c *Client) Call(method string, params, result any) error {
@@ -87,13 +96,16 @@ func (c *Client) Call(method string, params, result any) error {
 	ch := make(chan proto.Response, 1)
 	c.pending[string(id)] = ch
 	err = c.enc.Encode(proto.Request{JSONRPC: "2.0", ID: id, Method: method, Params: p})
+	if err != nil {
+		delete(c.pending, string(id))
+	}
 	c.mu.Unlock()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrClosed, err)
 	}
 	resp, ok := <-ch
 	if !ok {
-		return errors.New("core: connection closed")
+		return ErrClosed
 	}
 	if resp.Error != nil {
 		return fmt.Errorf("%s: %w", method, resp.Error)

@@ -1,15 +1,19 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -35,13 +39,11 @@ func runOptions(t *testing.T, dir string, source ...func(string) (models.Source,
 	if len(source) > 0 {
 		src = source[0]
 	}
-	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(token string, shutdown func()) (*core.Core, error) {
+	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(ctx context.Context, token string, shutdown func()) (*core.Core, error) {
 		st, err := store.Open(dir)
 		if err != nil {
 			return nil, err
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
 		return core.New(ctx, core.Options{Store: st, Version: "1.2.3", ClientToken: token, Shutdown: shutdown,
 			Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20, MaxErrors: 8,
 				SessionTokens: 1 << 20, SessionToolCalls: 100},
@@ -357,6 +359,10 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	// The stopping record says how long the drain may take, so the next daemon waits that long.
+	if h := ReadHolder(dir); !h.Stopping || time.Until(h.Until) < o.Grace {
+		t.Fatalf("the record while it drains: %+v; want it stopping, with an Until past the grace window", h)
+	}
 	next := make(chan error, 1)
 	go func() { // a client found the socket gone and started the next daemon
 		l, err := Acquire(dir, "next")
@@ -380,5 +386,88 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 	}
 	if err := <-next; err != nil {
 		t.Fatalf("the daemon started during the shutdown: %v, want it to wait and take the lock", err)
+	}
+}
+
+// TestRunEndsItsWatcherBeforeLettingGo: the core's context ends, and Run waits for the watcher beside the core to
+// return, before it closes the core and releases the lock; nothing of the daemon's runs on after Run returns.
+func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
+	dir := shortDir(t)
+	o := runOptions(t, dir)
+	var ended, heldAtEnd atomic.Bool
+	o.Watch = func(ctx context.Context, _ *core.Core) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
+		heldAtEnd.Store(ReadHolder(dir).PID == os.Getpid())
+		ended.Store(true)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	dialSoon(t, dir).Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !ended.Load() {
+		t.Fatal("Run returned while the watcher beside the core still ran")
+	}
+	if !heldAtEnd.Load() {
+		t.Fatal("the lock was released before the watcher beside the core ended")
+	}
+}
+
+// TestTheDaemonsLogTakesWritesAtOnce: Run, its serve loop's refusals, its idle ticks and the core's callbacks all write
+// the one log; SyncWriter serializes them, so the writer need not be safe itself (run under -race).
+func TestTheDaemonsLogTakesWritesAtOnce(t *testing.T) {
+	var buf bytes.Buffer
+	w := SyncWriter(&buf)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 100 {
+				fmt.Fprintln(w, "tack daemon: a line")
+			}
+		})
+	}
+	wg.Wait()
+	if n := strings.Count(buf.String(), "\n"); n != 800 {
+		t.Fatalf("%d lines; want 800, none torn", n)
+	}
+	if SyncWriter(w) != w {
+		t.Fatal("SyncWriter wrapped a writer it had made already")
+	}
+}
+
+// TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting: a connection the daemon accepted just before its shutdown
+// cannot be initialized in the moment between the listener closing and the drain: the core refuses it from before
+// the listener closes, so the client goes on to the next daemon instead of starting work on this one.
+func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
+	dir := shortDir(t)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, runOptions(t, dir)) }()
+	dialSoon(t, dir).Close()
+	nc, err := net.Dial("unix", SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	late := core.NewClient(nc)
+	if err := late.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); err != nil {
+		t.Fatal(err) // the daemon has accepted it and serves it
+	}
+	var initErr error
+	stopHook = func() { // the listener has just closed; the drain has not begun
+		initErr = late.Call(proto.MethodInitialize, proto.InitializeParams{Client: testClient, Protocol: proto.Version}, nil)
+	}
+	t.Cleanup(func() { stopHook = nil })
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if !errors.As(initErr, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("an initialize as the daemon stopped accepting: %v; want code %d", initErr, proto.CodeShuttingDown)
 	}
 }
