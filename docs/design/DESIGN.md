@@ -1571,11 +1571,16 @@ serving every other agent.
   Level, StartLine, EndLine, ApproxTokens}`, the text before the first heading as a level-0 section), and
   `Workspace.SearchFiles(ctx, query, k, mode, files)` (`SearchMode` restricted to those files). Sections and hits share
   one boundary, so a hit never straddles two of tack's sections.
-- **Pinned when P1's instruction-file work starts, not before**; tack stays on v1.9.0 until then.
+- **Pinned when P1's instruction-file work starts, not before**; tack stays on v1.9.0 until then. (By then tack was on
+  v1.12.1, which carries K9, and step 5 began there on 2026-11-08.)
 - **On adoption:** `SearchFiles` over-fetches `min(index size, 5000)` candidates and then filters, so it is exact only
   on repositories of up to 5,000 chunks; measure its latency on goinfer, the largest. A path that is not in the index
   silently returns no hits, so check a file with `Sections` (which errors on an unindexed path) before trusting a
   search over it.
+- **Measured 2026-11-08: not exact on goinfer.** goinfer's index is about 80,000 chunks, and 63 of 94 checked answers
+  differ from the exact ranking. At k=5, `SearchFiles` returned 87 of 117 exact hits in the root `CLAUDE.md`, and
+  2 of 9 and 2 of 11 in the two nested ones (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). ken's
+  route to sections waits for a ken change that makes `SearchFiles` exact at any size.
 
 **Delivered in ken v1.11.0** (2026-10-22, ken ADR-048; tagged at `5ab3888`). The brief is
 `docs/briefs/ken-k10-k15-structural.md`, and ken's note on it is `~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`. The
