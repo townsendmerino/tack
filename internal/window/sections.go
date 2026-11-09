@@ -623,7 +623,14 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 		in.record(id, nil, nil, "") // every call that ran gets a note, empty here, so reused ids pair right (record)
 		return ""
 	}
-	return in.load(in.wantFor(kinds), id, "call")
+	want := in.wantFor(kinds)
+	var order []int // a call's sections are taken in file order
+	for i := range in.secs {
+		if want[i] {
+			order = append(order, i)
+		}
+	}
+	return in.load(order, id, "call")
 }
 
 // wantFor is the sections a call of these kinds matches, each with its subsections that carry no tack:on marker of
@@ -668,16 +675,29 @@ func (in *Instructions) ForHits(paths [][]string) string {
 	if in.whole {
 		return ""
 	}
-	want := map[int]bool{}
+	// Ken's order is kept: each hit's section, then its unmarked subsections, best hit first; the budget cuts from
+	// the tail. A hit in a level-1 section (a file's title and introduction) brings only that section: its subtree is
+	// the whole file.
+	var order []int
+	seen := map[int]bool{}
+	add := func(i int) {
+		if !seen[i] {
+			seen[i] = true
+			order = append(order, i)
+		}
+	}
 	for _, p := range paths {
 		for i, s := range in.secs {
 			if len(p) == 0 || !slices.Equal(s.HeadingPath, p) {
 				continue
 			}
-			want[i] = true
+			add(i)
+			if s.Level < 2 && len(s.On) == 0 {
+				continue
+			}
 			for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
 				if len(in.secs[j].On) == 0 {
-					want[j] = true
+					add(j)
 					continue
 				}
 				for j+1 < len(in.secs) && in.within(j, j+1) {
@@ -686,46 +706,51 @@ func (in *Instructions) ForHits(paths [][]string) string {
 			}
 		}
 	}
-	return in.load(want, MessageID, "message")
+	return in.load(order, MessageID, "message")
 }
 
 // Name is the instruction file's path from the workspace root.
 func (in *Instructions) Name() string { return in.name }
 
-// load adds the wanted sections that are neither in nor named already, in file order, while the budget lasts, and
-// names the rest; the whole note is charged to call id.
-func (in *Instructions) load(want map[int]bool, id, what string) string {
-	header := in.header(what)
-	var got, left []int
-	body := "" // the loaded sections' text, to price the next
-	for i := range in.secs {
-		if !want[i] || in.in[i] || in.offered[i] {
+// load adds the sections of order that are neither in nor named already, taken in that order while the budget
+// lasts, and names the rest; the note shows them in file order, and the whole of it is charged to call id. When the
+// notice of what is left out does not fit, the last taken give way to it. A call that brings nothing still gets an
+// empty note (record).
+func (in *Instructions) load(order []int, id, what string) string {
+	var taken, left []int // taken in order's order
+	for _, i := range order {
+		if in.in[i] || in.offered[i] || slices.Contains(taken, i) || slices.Contains(left, i) {
 			continue
 		}
-		next := body + "\n\n" + in.secs[i].Text
-		if in.b.Used+SectionTokens(header+next) > in.b.Limit {
+		trial := append(slices.Clone(taken), i)
+		slices.Sort(trial)
+		if in.b.Used+SectionTokens(in.render(trial, nil, what)) > in.b.Limit {
 			left = append(left, i)
 			continue
 		}
-		body = next
-		got = append(got, i)
+		taken = append(taken, i)
 	}
-	if len(got) == 0 && len(left) == 0 {
+	if len(taken) == 0 && len(left) == 0 {
 		if what == "call" {
 			in.record(id, nil, nil, "")
 		}
 		return ""
 	}
-	note := func() string { return in.render(got, left, what) }
-	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
-	// pass the budget, so the model always hears what it is missing.
-	for len(left) > 0 && len(got) > 0 && in.b.Used+SectionTokens(note()) > in.b.Limit {
-		last := got[len(got)-1]
-		got = got[:len(got)-1]
-		left = append(left, last)
-		slices.Sort(left)
+	note := func() string {
+		got, l := slices.Clone(taken), slices.Clone(left)
+		slices.Sort(got)
+		slices.Sort(l)
+		return in.render(got, l, what)
+	}
+	// A notice alone may pass the budget, so the model always hears what it is missing.
+	for len(left) > 0 && len(taken) > 0 && in.b.Used+SectionTokens(note()) > in.b.Limit {
+		left = append(left, taken[len(taken)-1])
+		taken = taken[:len(taken)-1]
 	}
 	text := note()
+	got := slices.Clone(taken)
+	slices.Sort(got)
+	slices.Sort(left)
 	in.record(id, got, left, text)
 	return text
 }

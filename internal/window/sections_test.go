@@ -768,3 +768,27 @@ func TestReplayPairsAReusedIDInOneTurn(t *testing.T) {
 		t.Errorf("live in %v used %d; rebuilt in %v used %d", li, lu, ri, ru)
 	}
 }
+
+// TestForHitsAnIntroHitBringsOnlyTheIntro: a hit in the file's level-1 title section brings that section, not every
+// section under it.
+func TestForHitsAnIntroHitBringsOnlyTheIntro(t *testing.T) {
+	src := "# notes\n\nIntro: about this repo.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	if s := in.ForHits([][]string{{"notes"}}); strings.Contains(s, "Run go test") || strings.Contains(s, "Tag from main") {
+		t.Errorf("an intro hit pulled in the file:\n%s", s)
+	}
+}
+
+// TestForHitsKeepsKensOrder: when the budget holds only one of two hits, the better-ranked one loads, though it comes
+// later in the file, and the other is named.
+func TestForHitsKeepsKensOrder(t *testing.T) {
+	part := strings.Repeat("a rule of some length. ", 40)
+	src := "# notes\n\nIntro.\n\n## Early\n\n" + part + "\n\n## Late\n\n" + part + "late.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	s := in.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}})
+	if !strings.Contains(s, "late.") || !strings.Contains(s, "(Early)") {
+		t.Errorf("ken's best hit should load and the other be named:\n%s", s)
+	}
+}
