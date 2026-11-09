@@ -1,12 +1,14 @@
 package usage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"math"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // index.db's driver: pure Go, no cgo (DESIGN §5.3)
@@ -31,13 +33,20 @@ type Cache struct {
 	st *store.Store
 }
 
-// OpenCache opens (or makes) index.db in stateDir for the sessions in st.
+// OpenCache opens (or makes) index.db in stateDir for the sessions in st. Several processes may open a new one at
+// once: the schema is made in one immediate transaction, whose winner makes it and whose others find it made.
 func OpenCache(stateDir string, st *store.Store) (*Cache, error) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(stateDir, IndexName)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(wal)")
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(stateDir, IndexName)+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
 	c := &Cache{db: db, st: st}
+	// WAL lets readers go on beside a writer. Switching to it takes the file for a moment, and does not wait out the
+	// busy timeout, so it is tried again; once set, it stays set in the file.
+	if err := retryBusy(func() error { _, err := db.Exec(`PRAGMA journal_mode=wal`); return err }); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("usage: %s: %w", IndexName, err)
+	}
 	if err := c.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("usage: %s: %w", IndexName, err)
@@ -45,18 +54,50 @@ func OpenCache(stateDir string, st *store.Store) (*Cache, error) {
 	return c, nil
 }
 
+// retryBusy runs f until it does not fail with SQLite's busy or locked, for up to 10 seconds.
+func retryBusy(f func() error) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := f()
+		if err == nil || !busy(err) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func busy(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "database is locked") || strings.Contains(s, "SQLITE_BUSY") || strings.Contains(s, "database table is locked")
+}
+
 // Close closes the database.
 func (c *Cache) Close() error { return c.db.Close() }
 
+// migrate makes the tables at cacheSchema, unless they are made already: in one BEGIN IMMEDIATE transaction on one
+// connection, with the version read inside it, so of several processes opening a new index.db one makes them.
 func (c *Cache) migrate() error {
-	var v int
-	if err := c.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+	ctx := context.Background()
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
 		return err
 	}
-	if v == cacheSchema {
-		return nil
+	defer conn.Close()
+	if err := retryBusy(func() error { _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); return err }); err != nil {
+		return err
 	}
-	_, err := c.db.Exec(`
+	committed := false
+	defer func() {
+		if !committed {
+			conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+	var v int
+	if err := conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v != cacheSchema {
+		if _, err := conn.ExecContext(ctx, `
 DROP TABLE IF EXISTS usage_read;
 DROP TABLE IF EXISTS usage_events;
 CREATE TABLE usage_read (session TEXT PRIMARY KEY, offset INTEGER NOT NULL, next_seq INTEGER NOT NULL);
@@ -66,8 +107,15 @@ CREATE TABLE usage_events (
 	wall_ms INTEGER NOT NULL,
 	PRIMARY KEY (session, seq));
 CREATE INDEX usage_events_at ON usage_events (at);
-PRAGMA user_version = ` + fmt.Sprint(cacheSchema))
-	return err
+PRAGMA user_version = `+fmt.Sprint(cacheSchema)); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // scanned, when set (tests), is told how many events each catch-up read from a log.
@@ -198,7 +246,9 @@ func (c *Cache) catchUpSession(id proto.SessionID) error {
 		return err
 	}
 	end, nextSeq, err := c.st.ScanFrom(id, off, next, read)
+	reread := false
 	if err != nil && off > 0 { // what was read no longer matches the log: read it again, whole
+		reread = true
 		if _, derr := tx.Exec(`DELETE FROM usage_events WHERE session = ?`, string(id)); derr != nil {
 			return derr
 		}
@@ -211,7 +261,7 @@ func (c *Cache) catchUpSession(id proto.SessionID) error {
 	if scanned != nil {
 		scanned(n)
 	}
-	if end == off {
+	if end == off && !reread { // nothing new; a re-read commits even when it ends where the last read did
 		return nil
 	}
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO usage_read VALUES (?, ?, ?)`, string(id), end, nextSeq); err != nil {

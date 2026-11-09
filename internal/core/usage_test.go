@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -67,5 +68,34 @@ func TestUsageSummaryComesFromTheIndexWhenTheCoreHasOne(t *testing.T) {
 	var got proto.UsageSummaryResult
 	if err := cl.Call(proto.MethodUsageSummary, proto.UsageSummaryParams{}, &got); err != nil || len(got.Rows) != 1 || got.Rows[0].Server != "from-the-index" {
 		t.Fatalf("usage/summary with an index: %+v, %v; want the index's row", got.Rows, err)
+	}
+}
+
+// failingUsage is a usage table that cannot give its rows.
+type failingUsage struct{}
+
+func (failingUsage) Table(time.Time, *time.Location) ([]proto.UsageRow, error) {
+	return nil, errors.New("database is locked")
+}
+
+// TestUsageSummaryReadsTheLogsWhenTheIndexFails: an index that fails (a lock held past its timeout) does not fail
+// usage/summary: the core reads the logs.
+func TestUsageSummaryReadsTheLogsWhenTheIndexFails(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Create("s_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(proto.EvUsage, 0, proto.Usage{Request: 1, Server: "from-the-logs", Prompt: 5})
+	l.Close()
+	ts := httptest.NewServer(stuckModel())
+	t.Cleanup(ts.Close)
+	_, cl, _ := daemonOn(t, st, ts.URL, func(o *Options) { o.Usage = failingUsage{} })
+	var got proto.UsageSummaryResult
+	if err := cl.Call(proto.MethodUsageSummary, proto.UsageSummaryParams{}, &got); err != nil || len(got.Rows) != 1 || got.Rows[0].Server != "from-the-logs" {
+		t.Fatalf("usage/summary with a failing index: %+v, %v; want the logs' row", got.Rows, err)
 	}
 }

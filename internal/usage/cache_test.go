@@ -217,3 +217,38 @@ func TestTablesAtOnce(t *testing.T) {
 		t.Fatalf("after tables at once: %+v (%v); want the logs' %+v", got, err, want)
 	}
 }
+
+// TestANewIndexOpenedAtOnce: several processes (the daemon, tack usage) may open a new index.db at the same moment;
+// each makes the tables or finds them made, and reads the table, with no "database is locked" or half-made schema.
+func TestANewIndexOpenedAtOnce(t *testing.T) {
+	for round := range 10 {
+		dir := t.TempDir()
+		st, err := store.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		appendUsage(t, st, "s_a", 1, "goinfer@local")
+		const n = 20
+		errs := make(chan error, n)
+		start := make(chan struct{})
+		for range n {
+			go func() {
+				<-start
+				c, err := OpenCache(dir, st)
+				if err != nil {
+					errs <- err
+					return
+				}
+				defer c.Close()
+				_, err = c.Table(time.Time{}, time.UTC)
+				errs <- err
+			}()
+		}
+		close(start)
+		for range n {
+			if err := <-errs; err != nil {
+				t.Fatalf("round %d: a handle opening a new index.db with %d others: %v", round, n-1, err)
+			}
+		}
+	}
+}

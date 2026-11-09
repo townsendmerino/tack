@@ -146,7 +146,8 @@ func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResul
 	var err error
 	if c.opt.Usage != nil {
 		rows, err = c.opt.Usage.Table(since, loc)
-	} else {
+	}
+	if c.opt.Usage == nil || err != nil { // no index, or it failed (a lock held past its timeout): the logs are the truth
 		rows, err = usage.FromStore(c.opt.Store, since, loc)
 	}
 	if err != nil {

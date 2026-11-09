@@ -140,7 +140,7 @@ func usageStateDir(cfgPath string) (string, error) {
 }
 
 // localUsage is the table read in this process: from index.db, caught up from the logs (usage.Cache), or from the
-// logs alone when index.db cannot be opened. Deleting index.db loses nothing; the next read rebuilds it.
+// logs alone when index.db cannot be opened or cannot give the table. Deleting index.db loses nothing; the next read rebuilds it.
 func localUsage(dir string, since time.Time, loc *time.Location) ([]usagetable.Row, error) {
 	st, err := store.Open(dir)
 	if err != nil {
@@ -151,5 +151,8 @@ func localUsage(dir string, since time.Time, loc *time.Location) ([]usagetable.R
 		return usagetable.FromStore(st, since, loc)
 	}
 	defer c.Close()
-	return c.Table(since, loc)
+	if rows, err := c.Table(since, loc); err == nil {
+		return rows, nil
+	}
+	return usagetable.FromStore(st, since, loc) // the index failed (a lock held past its timeout, say); the logs are the truth
 }
