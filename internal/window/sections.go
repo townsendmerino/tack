@@ -231,8 +231,8 @@ func (in *Instructions) Budget() int { return in.b.Limit }
 // with text beyond its heading, so a file that opens with only its title takes in the section after it.
 func (in *Instructions) firstSection() int {
 	for i, s := range in.secs {
-		if i > 0 && len(s.On) > 0 {
-			return i // a marked section waits for its call, even after a bare title
+		if len(s.On) > 0 {
+			return i // a marked section waits for its call, even after a bare title or as the first section
 		}
 		if s.body {
 			return i + 1
@@ -366,13 +366,41 @@ var defaultWords = []struct {
 	{"edit:*_test.go", []string{"test", "tests", "testing"}},
 }
 
+// wordText is a shell word's text when it is plain or quoted text, and "?" when part of it is only known when it runs.
+func wordText(w *syntax.Word) string {
+	var b strings.Builder
+	for _, p := range w.Parts {
+		switch pt := p.(type) {
+		case *syntax.Lit:
+			b.WriteString(pt.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(pt.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range pt.Parts {
+				lit, ok := dp.(*syntax.Lit)
+				if !ok {
+					return "?"
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return "?"
+		}
+	}
+	if b.Len() == 0 {
+		return "?"
+	}
+	return b.String()
+}
+
 // valueFlags are the flags, before a subcommand, that take the next word as their value: git -C dir, git -c k=v,
 // go -C dir.
 var valueFlags = map[string]map[string]bool{"git": {"-C": true, "-c": true}, "go": {"-C": true}}
 
 // callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:" and its words
 // (name first, as its base name), once as written and once without its flags, so "go -C pkg test" is also
-// "bash:go test"; an edit or write as "edit:<path>"; and a read as "read:<path>". A word that is not a plain literal ends the command's words.
+// "bash:go test"; an edit or write as "edit:<path>"; and a read as "read:<path>". A quoted word is its text; a word
+// whose text is not known before it runs ($VAR, $(cmd)) is "?".
 func callKinds(tool string, input json.RawMessage) []string {
 	switch tool {
 	case "bash":
@@ -400,10 +428,7 @@ func callKinds(tool string, input json.RawMessage) []string {
 			words, bare := []string{name}, []string{name}
 			skip := false
 			for _, a := range call.Args[1:] {
-				w := a.Lit()
-				if w == "" {
-					break
-				}
+				w := wordText(a)
 				words = append(words, w)
 				switch {
 				case skip:
@@ -438,14 +463,30 @@ func callKinds(tool string, input json.RawMessage) []string {
 	return nil
 }
 
-// kindMatches says whether a call kind matches a pattern kind. A bash pattern matches a command whose words begin with
-// its words ("bash:git commit" matches "git commit -m x"). An edit pattern matches the cleaned path segment by segment
+// kindMatches says whether a call kind matches a pattern kind. A bash pattern's words up to its first flag must begin
+// the command's words, and each of its flags must be among the rest: "bash:git commit --amend" matches
+// "git commit -m x --amend", and not "git commit -m x". An edit pattern matches the cleaned path segment by segment
 // with path.Match, "**" standing for any number of segments, or matches the path's last element when it has no slash.
 func kindMatches(pattern, kind string) bool {
 	if p, ok := strings.CutPrefix(pattern, "bash:"); ok {
 		k, ok := strings.CutPrefix(kind, "bash:")
 		pw, kw := strings.Fields(p), strings.Fields(k)
-		return ok && len(pw) > 0 && len(pw) <= len(kw) && slices.Equal(pw, kw[:len(pw)])
+		head := len(pw)
+		for i, w := range pw {
+			if strings.HasPrefix(w, "-") {
+				head = i
+				break
+			}
+		}
+		if !ok || head == 0 || head > len(kw) || !slices.Equal(pw[:head], kw[:head]) {
+			return false
+		}
+		for _, f := range pw[head:] {
+			if !slices.Contains(kw[head:], f) {
+				return false
+			}
+		}
+		return true
 	}
 	if p, ok := strings.CutPrefix(pattern, "edit:"); ok {
 		k, ok := strings.CutPrefix(kind, "edit:")
@@ -567,7 +608,7 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 			continue
 		}
 		want[i] = true
-		if in.secs[i].Level < 2 {
+		if in.secs[i].Level < 2 && len(in.secs[i].On) == 0 { // an unmarked title matched on a word brings only itself
 			continue
 		}
 		for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {

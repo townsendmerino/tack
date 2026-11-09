@@ -86,3 +86,12 @@ func TestNewEventRejectsWrongPayloadType(t *testing.T) {
 		t.Fatalf("Decode = %#v, %v", v, err)
 	}
 }
+
+func TestNegotiate(t *testing.T) {
+	for _, c := range []struct{ client, daemon, want int }{{1, 1, 1}, {2, 1, 1}, {1, 2, 1}, {3, 3, 3}, {3, 1, 0}, {1, 3, 0}, {0, 1, 0}, {0, 0, 0}} {
+		got, ok := proto.Negotiate(c.client, c.daemon)
+		if ok != (c.want != 0) || ok && got != c.want {
+			t.Errorf("Negotiate(%d, %d) = %d, %v; want %d", c.client, c.daemon, got, ok, c.want)
+		}
+	}
+}

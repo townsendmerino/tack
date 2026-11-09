@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/halt"
@@ -137,9 +138,10 @@ type Config struct {
 	Sleep func(context.Context, time.Duration) error
 }
 
-// Session is one session's loop. Turns run one at a time; it is not safe for concurrent use.
+// Session is one session's loop. Turns run one at a time; it is not safe for concurrent use, except Drain.
 type Session struct {
-	pruned   bool // Config.Snapshots has pruned its old checkpoints for this session
+	pruned   bool        // Config.Snapshots has pruned its old checkpoints for this session
+	draining atomic.Bool // Drain was called: the running turn stops between steps
 	cfg      Config
 	conv     *server.Conversation
 	requests int // requests sent in the session so far
@@ -249,6 +251,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 
 	// stopped ends a turn whose context was cancelled: by the user, or by tack's halt, which the log records first.
 	stopped := func() (string, error) {
+		if errors.Is(context.Cause(ctx), ErrShutdown) {
+			return end(proto.StopShutdown)
+		}
 		var h *halt.Halted
 		if !errors.As(context.Cause(ctx), &h) {
 			return end(proto.StopCancelled)
@@ -290,6 +295,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
+		if s.draining.Load() {
+			return end(proto.StopShutdown)
+		}
 		switch el := s.cfg.Now().Sub(start); {
 		case requests >= bud.MaxRequests:
 			return trip("requests", float64(bud.MaxRequests), float64(requests))
@@ -405,6 +413,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeError, Result: RepeatedCall}
 			case ctx.Err() != nil:
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled, Result: "error: not run: " + notRun(ctx)}
+			case s.draining.Load():
+				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled, Result: "error: not run: " + ErrShutdown.Error()}
 			case calls >= bud.MaxToolCalls:
 				over = &proto.BudgetExceeded{Budget: "tool_calls", Limit: float64(bud.MaxToolCalls), Value: float64(calls + 1)}
 				fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeCancelled,
@@ -808,8 +818,20 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// ErrShutdown is the cause a turn's context is cancelled with when the daemon shuts down before the turn drained
+// (core's Drain): its commands are killed, and the turn ends with stop reason shutdown.
+var ErrShutdown = errors.New("the daemon is shutting down")
+
+// Drain asks the session's turn to stop between steps, for a shutdown (DESIGN §6.1): the tool call running finishes, no
+// other starts (each is answered not run), and the turn ends before its next request with stop reason shutdown. It
+// lasts for the session's life, and may be called from any goroutine.
+func (s *Session) Drain() { s.draining.Store(true) }
+
 // notRun says why a call was not run once the turn's context is cancelled.
 func notRun(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), ErrShutdown) {
+		return ErrShutdown.Error()
+	}
 	if h, ok := errors.AsType[*halt.Halted](context.Cause(ctx)); ok {
 		return h.Error()
 	}
