@@ -7,6 +7,8 @@ public enum TackProto {
 }
 
 public enum Method {
+    public static let daemonShutdown = "daemon/shutdown"
+    public static let daemonStatus = "daemon/status"
     public static let initialize = "initialize"
     public static let sessionEvent = "session/event"
     public static let sessionNew = "session/new"
@@ -157,6 +159,40 @@ public struct DaemonInfo: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version = "version"
+    }
+}
+
+public struct DaemonShutdownParams: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonShutdownResult: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonStatusParams: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct DaemonStatusResult: Codable, Equatable, Sendable {
+    public var version: String
+    public var `protocol`: Int
+    public var pid: Int
+    public var started: String
+    public var sessions: Int
+    public var running: Int
+    public var halted: Bool
+    public var draining: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case version = "version"
+        case `protocol` = "protocol"
+        case pid = "pid"
+        case started = "started"
+        case sessions = "sessions"
+        case running = "running"
+        case halted = "halted"
+        case draining = "draining"
     }
 }
 
@@ -320,6 +356,18 @@ public struct Rewind: Codable, Equatable, Sendable {
     }
 }
 
+public struct SessionCreated: Codable, Equatable, Sendable {
+    public var workspace: String
+    public var model: String
+    public var mode: Mode
+
+    enum CodingKeys: String, CodingKey {
+        case workspace = "workspace"
+        case model = "model"
+        case mode = "mode"
+    }
+}
+
 public struct SessionEventParams: Codable, Equatable, Sendable {
     public var session: SessionID
     public var event: Event
@@ -478,6 +526,7 @@ public enum EventPayload: Equatable, Sendable {
     case permissionResolved(PermissionResolved)
     case requestSent(RequestSent)
     case rewind(Rewind)
+    case sessionCreated(SessionCreated)
     case toolCall(ToolCall)
     case toolFinished(ToolFinished)
     case toolStarted(ToolStarted)
@@ -522,6 +571,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
         case "request.sent": payload = .requestSent(try c.decode(RequestSent.self, forKey: .payload))
         case "rewind": payload = .rewind(try c.decode(Rewind.self, forKey: .payload))
+        case "session.created": payload = .sessionCreated(try c.decode(SessionCreated.self, forKey: .payload))
         case "tool.call": payload = .toolCall(try c.decode(ToolCall.self, forKey: .payload))
         case "tool.finished": payload = .toolFinished(try c.decode(ToolFinished.self, forKey: .payload))
         case "tool.started": payload = .toolStarted(try c.decode(ToolStarted.self, forKey: .payload))
@@ -552,6 +602,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .permissionResolved(let p): try c.encode(p, forKey: .payload)
         case .requestSent(let p): try c.encode(p, forKey: .payload)
         case .rewind(let p): try c.encode(p, forKey: .payload)
+        case .sessionCreated(let p): try c.encode(p, forKey: .payload)
         case .toolCall(let p): try c.encode(p, forKey: .payload)
         case .toolFinished(let p): try c.encode(p, forKey: .payload)
         case .toolStarted(let p): try c.encode(p, forKey: .payload)
