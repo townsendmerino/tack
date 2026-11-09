@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,9 @@ func TestReleaseClearsTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := l.Listen(); err != nil { // closing it marks the record stopping: Release must still leave none
+		t.Fatal(err)
+	}
 	if h := ReadHolder(dir); h.Version != "old" || h.PID != os.Getpid() {
 		t.Fatalf("while held: %+v, want this process at version old", h)
 	}
@@ -32,26 +36,48 @@ func TestReleaseClearsTheHolder(t *testing.T) {
 	}
 }
 
-// TestAStaleHolderIsUnknown: the record of a daemon that died without releasing names nobody, whether its pid is
-// gone or now another user's process.
+// TestAStaleHolderIsUnknown: a record names its process by pid and start time, both real here. A running process's
+// own record names it; once the process has exited, as a zombie not yet reaped and then reaped, the same record names
+// nobody: a daemon that died without releasing left it.
 func TestAStaleHolderIsUnknown(t *testing.T) {
 	dir := shortDir(t)
-	cmd := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := cmd.Run(); err != nil {
+	os.MkdirAll(dir, 0o700)
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	dead := cmd.Process.Pid
-	os.MkdirAll(dir, 0o700)
-	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`, dead), 0o600)
-	if h := ReadHolder(dir); h != (Holder{}) {
-		t.Fatalf("a dead daemon's record reads as %+v, want no holder", h)
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() }) // the pid this test started
+	start, live, err := procInfo(pid)
+	if err != nil || !live || start == "" {
+		t.Fatalf("procInfo(%d) = %q, %v, %v; want a running process's start", pid, start, live, err)
 	}
-	// A pid reused by another user's process (pid 1 is root's) is not this user's daemon either.
-	if os.Getuid() != 0 {
-		os.WriteFile(filepath.Join(dir, HolderName), []byte(`{"pid":1,"version":"crashed","start":"2026-11-08T12:00:00Z","proc_start":"1.000000"}`), 0o600)
-		if h := ReadHolder(dir); h != (Holder{}) {
-			t.Fatalf("a record naming another user's process reads as %+v, want no holder", h)
+	os.WriteFile(filepath.Join(dir, HolderName), fmt.Appendf(nil, `{"pid":%d,"version":"crashed","proc_start":%q}`, pid, start), 0o600)
+	if h := ReadHolder(dir); h.PID != pid || h.Version != "crashed" {
+		t.Fatalf("a running process's own record reads as %+v, want it named", h)
+	}
+	cmd.Process.Kill() // it exits, and stays a zombie until Wait reaps it
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if out, _ := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output(); strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+			break // ps, not procInfo, says when: the test is of procInfo
 		}
+		if time.Now().After(deadline) {
+			t.Fatal("the killed process never showed as a zombie")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// procInfo itself must say so: on some kernels a zombie's start time changes too, which would hide a missing
+	// state check behind the start-time comparison.
+	if _, live, err := procInfo(pid); err == nil && live {
+		t.Fatal("procInfo reports the zombie as running")
+	}
+	if h := ReadHolder(dir); h != (Holder{}) {
+		t.Fatalf("a zombie's record reads as %+v, want no holder", h)
+	}
+	cmd.Wait()
+	if h := ReadHolder(dir); h != (Holder{}) {
+		t.Fatalf("a reaped process's record reads as %+v, want no holder", h)
 	}
 }
 
@@ -103,24 +129,37 @@ func TestLosersNameTheWinner(t *testing.T) {
 	}
 }
 
-// TestPrivateDirRefusesAnotherUsersDirectory: a state directory that belongs to another user is refused, and left as
-// it was.
+// TestPrivateDirRefusesAnotherUsersDirectory: a state directory that belongs to another user, or to root, is refused
+// and left as it was.
 func TestPrivateDirRefusesAnotherUsersDirectory(t *testing.T) {
-	dir := shortDir(t)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base) // the walk names paths as the kernel resolves them
+	dir := filepath.Join(base, "state")
+	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	me := currentUID
-	currentUID = func() int { return me() + 1 } // as if the directory were another user's
-	defer func() { currentUID = me }()
-	if _, err := Acquire(dir, "1"); err == nil || !strings.Contains(err.Error(), "belongs to uid") {
-		t.Fatalf("Acquire in another user's directory: %v, want a refusal naming the uid", err)
-	}
-	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o755 {
-		t.Fatalf("the refused directory became %v; it must be left as it was", st.Mode().Perm())
-	}
-	if _, err := os.Stat(filepath.Join(dir, LockName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a lock file was made in another user's directory: %v", err)
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	// The test cannot make a directory another user owns, so the state directory alone is reported as one: its parent
+	// stays this user's, and the refusal must be of the directory under test.
+	for _, owner := range []int{4242, 0} { // another user's; root's, which the walk trusts and the leaf check does not
+		ownerOf = func(path string, fi fs.FileInfo) int {
+			if path == dir {
+				return owner
+			}
+			return orig(path, fi)
+		}
+		_, err := Acquire(dir, "1")
+		if err == nil || !strings.Contains(err.Error(), dir+" belongs to uid "+strconv.Itoa(owner)) {
+			t.Errorf("a state directory owned by uid %d: %v, want it refused, naming it", owner, err)
+		}
+		if st, _ := os.Stat(dir); st.Mode().Perm() != 0o755 {
+			t.Errorf("uid %d: the refused directory became %v; it must be left as it was", owner, st.Mode().Perm())
+		}
+		if _, err := os.Stat(filepath.Join(dir, LockName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("uid %d: a lock file was made in the refused directory: %v", owner, err)
+		}
 	}
 }
 
@@ -133,7 +172,11 @@ func TestReleaseClosesTheSocketBeforeDroppingTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	var atUnlock error
-	l.beforeUnlock = func() { _, atUnlock = os.Stat(SocketPath(dir)) }
+	l.step = func(s string) {
+		if s == "unlocking" {
+			_, atUnlock = os.Stat(SocketPath(dir))
+		}
+	}
 	if err := l.Release(); err != nil {
 		t.Fatal(err)
 	}
@@ -288,4 +331,114 @@ func TestAReusedPidIsNotTheHolder(t *testing.T) {
 		t.Fatalf("this process's own record reads as %+v", h)
 	}
 	l.Release()
+}
+
+// TestAStartRacingAReleaseWins: a daemon starting while the last one releases finds the lock held and no holder
+// record (Release removes it before it unlocks). It keeps trying the lock, and takes it once it is dropped, instead
+// of reporting a holder that has gone.
+func TestAStartRacingAReleaseWins(t *testing.T) {
+	dir := shortDir(t)
+	old, err := Acquire(dir, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	old.step = func(s string) {
+		if s != "unlocking" { // the record is gone and the lock still held: start the next daemon now
+			return
+		}
+		go func() {
+			l, err := Acquire(dir, "next")
+			if err == nil {
+				defer l.Release()
+			}
+			got <- err
+		}()
+		time.Sleep(100 * time.Millisecond) // it finds the lock held, and must not give up
+	}
+	start := time.Now()
+	if err := old.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-got; err != nil {
+		t.Fatalf("a start racing the release: %v, want it to take the lock", err)
+	}
+	if took := time.Since(start); took > 900*time.Millisecond {
+		t.Fatalf("the racing start took %s; it should take the lock as soon as it is dropped", took)
+	}
+}
+
+// TestAStartOnceTheSocketIsGoneWins: a client that finds the socket gone starts a daemon; if that happens while the
+// last one is still releasing, the new one must not find the old one's record and give up: Release removes the
+// record before it closes the socket, so the start waits for the lock and takes it.
+func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
+	dir := shortDir(t)
+	old, err := Acquire(dir, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	old.step = func(s string) {
+		if s != "socket closed" {
+			return
+		}
+		if h := ReadHolder(dir); h.PID != 0 && !h.Stopping {
+			t.Errorf("the socket is gone and the record still names %+v as running", h)
+		}
+		go func() { // as a client that just failed to dial would start one
+			l, err := Acquire(dir, "next")
+			if err == nil {
+				defer l.Release()
+			}
+			got <- err
+		}()
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := old.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-got; err != nil {
+		t.Fatalf("a start once the socket was gone: %v, want it to take the lock", err)
+	}
+}
+
+// TestAStateDirWithDotDotIsRefused: ".." in the state directory is refused. After a symlink, the kernel takes it as
+// the parent of the link's target, and a path cleaned as text (filepath.Join) as the parent of the link, so the daemon
+// and the sandbox's profile would name different directories.
+func TestAStateDirWithDotDotIsRefused(t *testing.T) {
+	base := shortDir(t)
+	if _, err := Acquire(base+"/x/../state", "1"); err == nil || !strings.Contains(err.Error(), `".."`) {
+		t.Fatalf("a state directory with ..: %v, want it refused", err)
+	}
+}
+
+// TestAWritableStateDirIsRefusedEvenSticky: the sticky bit makes a shared directory safe to hold tack's state
+// directory (others cannot replace it), not to be it: others may still have put files in it. A state directory others
+// may write is refused, sticky or not, and left as it was.
+func TestAWritableStateDirIsRefusedEvenSticky(t *testing.T) {
+	dir := shortDir(t)
+	if err := os.Mkdir(filepath.Dir(dir), 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(dir, 0o777|fs.ModeSticky)
+	if _, err := Acquire(dir, "1"); err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Fatalf("a sticky state directory anyone can write: %v, want refused", err)
+	}
+	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o777 {
+		t.Fatalf("the refused directory became %v; it must be left as it was", st.Mode().Perm())
+	}
+}
+
+// TestAStoppingHolderIsNamed: a start that waited out stopWait on a daemon that is shutting down says so.
+func TestAStoppingHolderIsNamed(t *testing.T) {
+	err := &HeldError{Holder: Holder{PID: 7, Version: "1.2.3", Stopping: true}}
+	if !strings.Contains(err.Error(), "shutting down") || !strings.Contains(err.Error(), "pid 7") {
+		t.Fatalf("%q; want the stopping daemon named as stopping", err)
+	}
 }

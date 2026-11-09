@@ -52,7 +52,7 @@ func (l *Lock) Listen() (*Listener, error) {
 		ul.Close()
 		return nil, err
 	}
-	l.ln = &Listener{ul: ul, uid: os.Getuid(), peer: peerUID}
+	l.ln = &Listener{ul: ul, uid: os.Getuid(), peer: peerUID, closing: l.markStopping}
 	return l.ln, nil
 }
 
@@ -62,6 +62,8 @@ type Listener struct {
 	ul   *net.UnixListener
 	uid  int
 	peer func(*net.UnixConn) (int, error)
+	// closing is called before the socket is closed and unlinked: the lock's record then says the daemon is stopping.
+	closing func()
 	// Refused, when set, is told of each connection closed because its peer is another user or could not be read. Set
 	// it before the first Accept.
 	Refused func(error)
@@ -90,8 +92,13 @@ func (l *Listener) Accept() (net.Conn, error) {
 	}
 }
 
-// Close stops listening and unlinks the socket.
-func (l *Listener) Close() error { return l.ul.Close() }
+// Close marks the daemon stopping, then stops listening and unlinks the socket.
+func (l *Listener) Close() error {
+	if l.closing != nil {
+		l.closing()
+	}
+	return l.ul.Close()
+}
 
 // Addr is the socket's address.
 func (l *Listener) Addr() net.Addr { return l.ul.Addr() }
