@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -206,5 +207,138 @@ func TestStatusAndStopSeeADrainingDaemon(t *testing.T) {
 	case <-ran:
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon run did not return")
+	}
+}
+
+// TestTheDaemonsStderrTakesItsGoroutinesWrites: the daemon writes stderr from Run (serving, shutting down) and from
+// the core's callbacks on each connection's goroutine (here ken opening for a new session), unordered with each other;
+// daemon run serializes them, so a stderr that is not safe for that, as this buffer, is not raced (run under -race).
+func TestTheDaemonsStderrTakesItsGoroutinesWrites(t *testing.T) {
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384))
+	defer ts.Close()
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	stateDir := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	body := "state_dir = \"" + stateDir + "\"\n[daemon]\nshutdown_grace = \"1s\"\n[ken]\nmode = \"bm25\"\n" +
+		"[servers.local]\nkind = \"goinfer-remote\"\nurl = \"" + ts.URL + "\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	ran := make(chan int, 1)
+	go func() { ran <- dispatch([]string{"daemon", "run", "-config", cfg}, &bytes.Buffer{}, &stderr) }()
+	var c *daemon.Conn
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if c, err = daemon.Dial(stateDir, cliClient, nil, 0); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon never served: %v", err)
+		}
+	}
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n"), 0o644)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon run did not return")
+	}
+	if out := stderr.String(); !strings.Contains(out, "serving on") || !strings.Contains(out, "opening ken") {
+		t.Fatalf("stderr %q; want Run's lines and the core's", out)
+	}
+}
+
+// TestStatusAndStopAfterTheDaemonDies: a daemon killed outright (a second signal, a crash) leaves its holder record and
+// its socket behind, but not its lock, which the kernel drops with the process. Its record names a process that is
+// gone, whether it was serving or draining, so status says no daemon is running and stop has nothing to wait for.
+func TestStatusAndStopAfterTheDaemonDies(t *testing.T) {
+	for _, draining := range []bool{false, true} {
+		t.Run(map[bool]string{false: "killed while serving", true: "killed while draining"}[draining], func(t *testing.T) {
+			inRequest := make(chan struct{}, 1)
+			models := goinfertest.NewScripted("m", 16384)
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/messages" {
+					models.ServeHTTP(w, r)
+					return
+				}
+				io.Copy(io.Discard, r.Body)
+				select {
+				case inRequest <- struct{}{}:
+				default:
+				}
+				<-r.Context().Done()
+			}))
+			defer ts.Close()
+			dir, err := os.MkdirTemp("/tmp", "tack-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.RemoveAll(dir)
+			stateDir := filepath.Join(dir, "s")
+			cfg := filepath.Join(dir, "config.toml")
+			body := "state_dir = \"" + stateDir + "\"\n[daemon]\nshutdown_grace = \"30s\"\n" +
+				"[servers.local]\nkind = \"goinfer-remote\"\nurl = \"" + ts.URL + "\"\n"
+			if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(os.Args[0], "daemon", "run", "-config", cfg) // this binary, standing in for tack (TestMain)
+			cmd.Env = append(os.Environ(), "TACK_TEST_AS_TACK=1")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan struct{})
+			go func() { cmd.Wait(); close(exited) }()
+			t.Cleanup(func() { cmd.Process.Kill(); <-exited })
+			var c *daemon.Conn
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				if c, err = daemon.Dial(stateDir, cliClient, nil, 0); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the daemon never served: %v", err)
+				}
+			}
+			if draining {
+				var sess proto.SessionNewResult
+				if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("q")}}, nil); err != nil {
+					t.Fatal(err)
+				}
+				<-inRequest
+				if err := c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil); err != nil {
+					t.Fatal(err)
+				}
+				for deadline := time.Now().Add(5 * time.Second); !daemon.ReadHolder(stateDir).Stopping; time.Sleep(10 * time.Millisecond) {
+					if time.Now().After(deadline) {
+						t.Fatal("the record never said stopping")
+					}
+				}
+			}
+			c.Close()
+			cmd.Process.Kill()
+			<-exited
+			var out, errb bytes.Buffer
+			if code := dispatch([]string{"daemon", "status", "-config", cfg}, &out, &errb); code != exitNotRunning || !strings.Contains(out.String(), "not running") {
+				t.Fatalf("status after the daemon died: exit %d, %q %q; want %d, not running", code, out.String(), errb.String(), exitNotRunning)
+			}
+			out.Reset()
+			began := time.Now()
+			if code := dispatch([]string{"daemon", "stop", "-config", cfg}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "not running") || time.Since(began) > 2*time.Second {
+				t.Fatalf("stop after the daemon died: exit %d in %s, %q %q; want 0 at once, not running", code, time.Since(began), out.String(), errb.String())
+			}
+		})
 	}
 }
