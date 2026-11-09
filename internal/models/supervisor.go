@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/proc"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
@@ -163,6 +164,9 @@ func (s *Supervisor) start(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Join(s.cfg.Dir, "sessions"), 0o700); err != nil {
 		return err
 	}
+	if err := stopStaleChild(s.cfg.Dir); err != nil {
+		return err
+	}
 	_ = os.Remove(s.adminSock()) // a stale socket from a crashed child; only this supervisor uses the path
 	port, err := freePort()
 	if err != nil {
@@ -197,10 +201,15 @@ func (s *Supervisor) start(ctx context.Context) error {
 		pw.Close()
 		return fmt.Errorf("models: starting %s: %w", s.cfg.Binary, err)
 	}
+	pid := cmd.Process.Pid
+	if ps, _, err := proc.Info(pid); err == nil {
+		_ = writeChildRecord(s.cfg.Dir, childRecord{PID: pid, ProcStart: ps, Port: port})
+	}
 	s.cmd, s.exited, s.loaded = cmd, make(chan struct{}), false
 	exited := s.exited
 	go func() {
 		err := cmd.Wait()
+		removeChildRecord(s.cfg.Dir, pid)
 		logf.Close()
 		pw.Close()
 		// Not under s.mu: Stop holds it while it waits for this close. Readers read exitErr only after <-exited.
