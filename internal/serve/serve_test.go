@@ -20,6 +20,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/eval"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
 
 // The tests run this binary as goinfer-serve: with TACK_FAKE_GOINFER=1 it serves the flags, auth and admin routes the
@@ -54,7 +55,9 @@ func fakeGoinfer(args []string) {
 		}
 		data := []map[string]any{}
 		if loaded != "" {
-			data = append(data, map[string]any{"id": loaded, "context_window": *ctxN})
+			// fast_model as goinfer v0.24.1 advertises it, with -fast-alias on by default: the thinking-off alias the
+			// summarizer asks for.
+			data = append(data, map[string]any{"id": loaded, "context_window": *ctxN, "fast_model": loaded + "-fast"})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
@@ -341,5 +344,21 @@ func waitRequestEnd(t *testing.T, f *Front, began time.Time, d time.Duration) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the front never recorded the request's end: active %s after it began", f.activeAt().Sub(began))
 		}
+	}
+}
+
+// TestTheFastAliasReachesTheMac: the summarizer asks for the model's thinking-off alias, which goinfer lists as
+// fast_model in /v1/models (on by default since v0.24.0). Through tack serve, tack's own client still reads it: the
+// proxy passes the child's answer through as it is.
+func TestTheFastAliasReachesTheMac(t *testing.T) {
+	f, ts := front(t, time.Minute, func() error { return nil })
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	ms, err := goinfer.New("goinfer@nobara", ts.URL, key, nil).Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 1 || ms[0].ID != "q" || ms[0].FastModel != "q-fast" {
+		t.Fatalf("/v1/models through tack serve: %+v; want q with its fast alias q-fast", ms)
 	}
 }
