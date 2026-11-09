@@ -115,7 +115,9 @@ type ContextAssembled struct {
 	Exact  bool           `json:"exact"`
 }
 
-// RequestSent records a request to the model server. Request counts the session's requests from 1.
+// RequestSent records a request to the model server. Request counts the conversation's requests from 1; it is 0 for a
+// request made on the session's behalf outside the conversation (compaction's summarizer), which no request number
+// counts but whose usage the budgets do.
 type RequestSent struct {
 	Request int    `json:"request"`
 	Server  string `json:"server"`
@@ -210,7 +212,7 @@ type ToolFinished struct {
 }
 
 // Usage is a request's measured cost. A nil field is one the server did not report; it is never shown as zero
-// (DESIGN principle 6, "measured or labelled").
+// (DESIGN principle 6, "measured or labelled"). Request is its request.sent's, 0 for the summarizer's.
 type Usage struct {
 	Request   int      `json:"request"`
 	Server    string   `json:"server"`

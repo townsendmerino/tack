@@ -29,7 +29,7 @@ func TestStatusLineShowsAFirstLoad(t *testing.T) {
 	s.Apply(event(t, proto.EvModelStatus, proto.ModelStatus{Server: "nobara", State: "ready"}))
 	reused := 9860
 	s.Window = 16384
-	s.Apply(event(t, proto.EvUsage, proto.Usage{Server: "goinfer@nobara", Prompt: 11240, Reused: &reused}))
+	s.Apply(event(t, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@nobara", Prompt: 11240, Reused: &reused}))
 	line := s.Line()
 	if strings.Contains(line, "loading") || !strings.Contains(line, "11.2k/16.4k") || !strings.Contains(line, "88% reused") {
 		t.Fatalf("once serving: %q; want no load, and the window's fill with its reused share", line)
@@ -55,8 +55,22 @@ func TestStatusLineShowsAMove(t *testing.T) {
 func TestStatusLineDropsAMoveOnceARequestGoesOut(t *testing.T) {
 	var s Status
 	s.Apply(event(t, proto.EvModelStatus, proto.ModelStatus{Server: "nobara", State: "moved", Message: "memory pressure is warning on this machine; using nobara"}))
-	s.Apply(event(t, proto.EvRequestSent, proto.RequestSent{Model: "q", Server: "goinfer@local"}))
+	s.Apply(event(t, proto.EvRequestSent, proto.RequestSent{Request: 1, Model: "q", Server: "goinfer@local"}))
 	if line := s.Line(); strings.Contains(line, "using nobara") || !strings.Contains(line, "goinfer@local") {
 		t.Fatalf("a turn back on this machine: %q; want the move gone and the local server named", line)
+	}
+}
+
+// TestStatusLineIgnoresTheSummarizer: the summarizer's request (request 0, outside the conversation) changes neither the
+// model nor the prompt the line shows.
+func TestStatusLineIgnoresTheSummarizer(t *testing.T) {
+	var s Status
+	s.Apply(event(t, proto.EvRequestSent, proto.RequestSent{Request: 1, Model: "q", Server: "goinfer@local"}))
+	s.Apply(event(t, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: 9000}))
+	before := s.Line()
+	s.Apply(event(t, proto.EvRequestSent, proto.RequestSent{Request: 0, Model: "q-fast", Server: "goinfer@local"}))
+	s.Apply(event(t, proto.EvUsage, proto.Usage{Request: 0, Server: "goinfer@local", Prompt: 3000}))
+	if after := s.Line(); after != before || strings.Contains(after, "q-fast") {
+		t.Errorf("the summarizer moved the line: %q, was %q", after, before)
 	}
 }

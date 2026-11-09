@@ -35,8 +35,14 @@ func (s *Status) Apply(ev proto.Event) {
 			s.Load = e.Message
 		}
 	case proto.RequestSent: // a server is serving: what a load or a move said is over
+		if e.Request == 0 { // compaction's summarizer, outside the conversation: not its model or prompt
+			break
+		}
 		s.Model, s.Server, s.Load = e.Model, e.Server, ""
 	case proto.Usage:
+		if e.Request == 0 {
+			break
+		}
 		s.Server, s.Prompt, s.Reused = e.Server, e.Prompt, 0
 		if e.Reused != nil {
 			s.Reused = *e.Reused

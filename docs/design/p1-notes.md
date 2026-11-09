@@ -49,8 +49,9 @@ The order the owner approved, each step with its exit check:
        summarizer call (`loop.Summarize`): the thinking-off alias the server lists, in chunks of about 4,000 tokens, each
        updating the last body, any failure keeping the previous body; the record and its replay
        (`proto.Compaction`'s `Summary` and `Summarized`, `server.Conversation.Summarize`, `loop.Rebuild`); and the live
-       step behind `[run] summarize` (`loop.Session.summarize`). The summarizer's own requests are not logged as
-       `request.sent` or `usage` events yet, so the usage table leaves them out. Re-retrieval (S4) is not built.
+       step behind `[run] summarize` (`loop.Session.summarize`). The summarizer's requests are logged as request 0
+       (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval (S4) is
+       not built.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's

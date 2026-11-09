@@ -303,6 +303,20 @@ func (l *Log) Head() int64 {
 	return l.lastSeq
 }
 
+// Events reads every persisted event back from the file, in order: what a summary of the history reads, so the loop
+// keeps no copy of the payloads. A torn last line is ignored, as Store.Events ignores it.
+func (l *Log) Events() ([]proto.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, err := os.Open(l.path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	evs, _, err := readEvents(f)
+	return evs, err
+}
+
 // ID is the session the log belongs to.
 func (l *Log) ID() proto.SessionID { return l.id }
 

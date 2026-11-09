@@ -50,7 +50,7 @@ func TestASummaryUpdatesThePreviousOne(t *testing.T) {
 	srv := &fakeSummarizer{replies: []string{body("read edit.go; the test fails")}}
 	prior := summaryLog(t, proto.EvUserMessage, user("Fix the rename bug."))
 	stretch := session(t)[1:]
-	s := Summarize(context.Background(), srv, "qwen-fast", prior, stretch, body("nothing yet"))
+	s := Summarize(context.Background(), StreamTo(srv), "qwen-fast", prior, stretch, body("nothing yet"))
 	if s.FellBack || s.Body != body("read edit.go; the test fails") {
 		t.Fatalf("summary %+v", s)
 	}
@@ -78,7 +78,7 @@ func TestALongStretchIsSummarizedInChunks(t *testing.T) {
 	}
 	stretch := summaryLog(t, pairs...)
 	srv := &fakeSummarizer{replies: []string{body("one"), body("two")}}
-	s := Summarize(context.Background(), srv, "m-fast", nil, stretch, "")
+	s := Summarize(context.Background(), StreamTo(srv), "m-fast", nil, stretch, "")
 	if len(srv.sent) != 2 || s.FellBack || s.Body != body("two") {
 		t.Fatalf("%d calls, summary %+v", len(srv.sent), s)
 	}
@@ -106,7 +106,7 @@ func TestASummarizerFailureKeepsThePreviousBody(t *testing.T) {
 		"no fast model":    {&fakeSummarizer{}, "", 0},
 		"headings dropped": {&fakeSummarizer{replies: []string{strings.Replace(body("x"), "## Decisions", "Decisions", 1)}}, "m-fast", 1},
 	} {
-		s := Summarize(context.Background(), c.srv, c.model, nil, session(t), body("before"))
+		s := Summarize(context.Background(), StreamTo(c.srv), c.model, nil, session(t), body("before"))
 		if !s.FellBack || s.Reason == "" || s.Body != body("before") || len(c.srv.sent) != c.calls ||
 			!strings.Contains(s.Text, "Keep the fix inside renameFile.") || !strings.Contains(s.Text, body("before")) ||
 			!strings.Contains(s.Text, "## Anchors (exact)") {
@@ -118,7 +118,7 @@ func TestASummarizerFailureKeepsThePreviousBody(t *testing.T) {
 // TestTheFirstSummaryFallsBackToNoBody: with no previous body, a failure leaves the user messages and anchors alone,
 // the fallback summary.
 func TestTheFirstSummaryFallsBackToNoBody(t *testing.T) {
-	s := Summarize(context.Background(), &fakeSummarizer{err: errors.New("x")}, "m-fast", nil, session(t), "")
+	s := Summarize(context.Background(), StreamTo(&fakeSummarizer{err: errors.New("x")}), "m-fast", nil, session(t), "")
 	if !s.FellBack || s.Body != "" || s.Text != FallbackSummary(session(t)) {
 		t.Errorf("summary %+v", s)
 	}
