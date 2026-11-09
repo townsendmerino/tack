@@ -397,11 +397,17 @@ func (c *Core) source(model string) (models.Source, error) {
 }
 
 func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
+	// Held throughout, as a reopen holds it, so a Close waits for the session being made and closes it with the rest.
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
 		return "", errors.New("the daemon is closing")
+	}
+	if madeHook != nil {
+		madeHook()
 	}
 	switch p.Mode {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
@@ -448,6 +454,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	}
 	c.sessions[id] = s
 	c.mu.Unlock()
+	_ = s.log.Idle() // until its first prompt: another process may write it meanwhile
 	return id, nil
 }
 
@@ -668,11 +675,15 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		s.mu.Lock()
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
+		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
+			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
+		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.mu.Lock()
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
@@ -735,6 +746,12 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		}
 		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
 			s.emit(e)
+		}
+		s.mu.Lock()
+		idle := !s.running
+		s.mu.Unlock()
+		if idle {
+			_ = s.log.Idle() // the append took the lock back; a running turn keeps it
 		}
 	}
 }

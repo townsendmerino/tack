@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/store"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // daemonOn is one daemon's Core over st, its model the scripted server at url, with one initialized client whose
@@ -138,7 +140,7 @@ func TestASessionOutlivesItsDaemon(t *testing.T) {
 
 // crashedLog writes a session's log as a crash during a tool would leave it: the model called glob twice, the first
 // call started, and nothing more was written. It returns the session's id and the two calls' tool.call seqs.
-func crashedLog(t *testing.T, st *store.Store, ws string) proto.SessionID {
+func crashedLog(t *testing.T, st *store.Store, ws string, causes bool) proto.SessionID {
 	t.Helper()
 	id := store.NewSessionID(time.Now())
 	log, err := st.Create(id)
@@ -173,6 +175,11 @@ func crashedLog(t *testing.T, st *store.Store, ws string) proto.SessionID {
 // without one (outcome unknown for the call that had started, not run for the other) and a turn.end saying it was
 // interrupted (DESIGN §6.1). The next prompt sends the model those results and runs neither call again.
 func TestRecoverClosesAnInterruptedTurn(t *testing.T) {
+	t.Run("with causes, as the loop writes them", func(t *testing.T) { recoverClosesAnInterruptedTurn(t, true) })
+	t.Run("without causes, as a log from before them", func(t *testing.T) { recoverClosesAnInterruptedTurn(t, false) })
+}
+
+func recoverClosesAnInterruptedTurn(t *testing.T, causes bool) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +188,7 @@ func TestRecoverClosesAnInterruptedTurn(t *testing.T) {
 	ts := httptest.NewServer(script)
 	t.Cleanup(ts.Close)
 	ws := repo(t)
-	id := crashedLog(t, st, ws)
+	id := crashedLog(t, st, ws, causes)
 
 	c, cl, events := daemonOn(t, st, ts.URL)
 	got, err := c.Recover()
@@ -445,4 +452,218 @@ func TestCloseIsFinal(t *testing.T) {
 		t.Fatalf("the session's log after Close: %v, want it free", err)
 	}
 	l.Close()
+}
+
+// TestAnIdleSessionsLogIsFree: between turns the daemon holds no lock on a session's log, so tack rewind, another
+// process, can write it (here it appends its rewind event); the next turn takes the lock back and continues the log
+// past what rewind wrote.
+func TestAnIdleSessionsLogIsFree(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("one"), goinfertest.Says("two"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	_, cl, events := daemonOn(t, st, ts.URL)
+	ws := repo(t)
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	untilTurnEnd(t, events)
+	// The client hears turn.end as the loop records it; the core lets the log go as the loop returns, just after.
+	var rw *store.Log
+	deadline := time.Now().Add(2 * time.Second)
+	for rw, err = st.OpenLog(sess.Session); errors.Is(err, store.ErrLogBusy) && time.Now().Before(deadline); rw, err = st.OpenLog(sess.Session) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("the idle session's log: %v, want it free for tack rewind", err)
+	}
+	ev, err := rw.Append(proto.EvRewind, 1, proto.Rewind{To: 1, Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw.Close()
+	var pr proto.SessionPromptResult
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, &pr); err != nil {
+		t.Fatal(err)
+	}
+	if pr.Seq != ev.Seq+1 {
+		t.Fatalf("the next prompt is seq %d; want %d, after rewind's", pr.Seq, ev.Seq+1)
+	}
+	untilTurnEnd(t, events)
+	if _, err := st.Events(sess.Session, 0); err != nil {
+		t.Fatalf("the log after both writers: %v", err)
+	}
+}
+
+// closingSource counts how often it is closed.
+type closingSource struct {
+	*models.Remote
+	closes *atomic.Int32
+}
+
+func (s closingSource) Close() error { s.closes.Add(1); return nil }
+
+// TestCloseWaitsForASessionBeingMade: a Close that comes while session/new is making a session waits for it, so the
+// source, ken and log the new session opened are closed with the rest, not left open behind a closed Core.
+func TestCloseWaitsForASessionBeingMade(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opened, closes atomic.Int32
+	c, cl, _ := daemonOn(t, st, "http://127.0.0.1:1", func(o *Options) {
+		o.Source = func(string) (models.Source, error) {
+			opened.Add(1)
+			return closingSource{models.NewRemote("local", "http://127.0.0.1:1", "", "", nil), &closes}, nil
+		}
+	})
+	closed := make(chan error, 1)
+	madeHook = func() { // session/new has passed its closed check; Close comes now
+		go func() { closed <- c.Close() }()
+		select {
+		case <-closed:
+			closed <- nil // Close did not wait
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	defer func() { madeHook = nil }()
+	var sess proto.SessionNewResult
+	cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModePlan}, &sess)
+	<-closed
+	if o, cs := opened.Load(), closes.Load(); o != cs {
+		t.Fatalf("%d sources opened and %d closed; a Close during session/new left one open", o, cs)
+	}
+	if sess.Session != "" {
+		if l, err := st.OpenLog(sess.Session); err != nil {
+			t.Fatalf("the new session's log after Close: %v, want it free", err)
+		} else {
+			l.Close()
+		}
+	}
+}
+
+// TestRecoverKeepsADuplicateToolUse: a response may carry two tool_use blocks with one id; recording the first's
+// tool.call accounts for that block alone, so the second, cut off by the crash, is still recorded and answered.
+func TestRecoverKeepsADuplicateToolUse(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	id := store.NewSessionID(time.Now())
+	log, _ := st.Create(id)
+	in := json.RawMessage(`{"pattern":"*.go"}`)
+	log.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws, Model: "main", Mode: proto.ModePlan})
+	log.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("twice")}})
+	msg, _ := log.Append(proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{
+		{Type: "tool_use", ID: "t1", Name: "glob", Input: in}, {Type: "tool_use", ID: "t1", Name: "glob", Input: in}}})
+	log.Append(proto.EvToolCall, msg.Seq, proto.ToolCall{ID: "t1", Name: "glob", Input: in})
+	log.Close()
+	c, _, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	if _, err := c.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := st.Events(id, 0)
+	calls, fins := 0, 0
+	for _, ev := range evs {
+		switch ev.Type {
+		case proto.EvToolCall:
+			calls++
+		case proto.EvToolFinished:
+			fins++
+		}
+	}
+	if calls != 2 || fins != 2 {
+		t.Fatalf("after recovery: %d tool.calls and %d results; want both blocks recorded and answered", calls, fins)
+	}
+}
+
+// TestARewoundSessionKeepsItsFirstTurn: rewind (P1 step 3) restores files and records a rewind event; it leaves the
+// conversation whole, so a session reopened after it still holds its first message, instructions and all, and is
+// rightly prompted: the next turn is a later one, and nothing is added to it again.
+func TestARewoundSessionKeepsItsFirstTurn(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("one"), goinfertest.Says("two"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	whole := func(o *Options) { o.WholeInstructions = true }
+	first, cl, events := daemonOn(t, st, ts.URL, whole)
+	ws := repo(t)
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("Rule: stage explicit paths.\n"), 0o644)
+	var sess proto.SessionNewResult
+	cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess)
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil)
+	untilTurnEnd(t, events)
+	first.Close()
+	rw, err := st.OpenLog(sess.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw.Append(proto.EvRewind, 2, proto.Rewind{To: 2, Workspace: ws}) // back to before the first turn's changes
+	rw.Close()
+	_, cl2, events2 := daemonOn(t, st, ts.URL, whole)
+	cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	untilTurnEnd(t, events2) // the replay
+	cl2.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil)
+	var prompt string
+	for _, ev := range untilTurnEnd(t, events2) { // the replayed rewind event comes first
+		if ev.Type == proto.EvUserMessage {
+			v, _ := ev.Decode()
+			prompt = v.(proto.UserMessage).Content[0].Text
+		}
+	}
+	if prompt != "two" {
+		t.Fatalf("the next prompt was sent as %q; want the bare text of a later turn", prompt)
+	}
+	if !strings.Contains(string(script.Requests[1]), "stage explicit paths") {
+		t.Fatal("after the rewind the conversation lacks its first message")
+	}
+}
+
+// TestAReopenedSessionAddsNoFirstPromptContext: the first prompt's injection and repository map are not made again for
+// a reopened session that was prompted already.
+func TestAReopenedSessionAddsNoFirstPromptContext(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("one"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	first, cl, events := daemonOn(t, st, ts.URL)
+	var sess proto.SessionNewResult
+	cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModePlan}, &sess)
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil)
+	untilTurnEnd(t, events)
+	first.Close()
+	refuse := errors.New("not again")
+	c2, cl2, _ := daemonOn(t, st, ts.URL, func(o *Options) {
+		o.InjectContext, o.RepoMap = true, true
+		o.OpenInject = func(context.Context, string) (window.InjectIndex, error) { return nil, refuse }
+		o.OpenRepoMap = func(context.Context, string) (window.MapIndex, error) { return nil, refuse }
+	})
+	if err := cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	c2.mu.Lock()
+	s := c2.sessions[sess.Session]
+	c2.mu.Unlock()
+	if s.injectRoot != "" || s.mapRoot != "" {
+		t.Fatalf("a reopened, prompted session would add injection %q and map %q to its next prompt", s.injectRoot, s.mapRoot)
+	}
 }

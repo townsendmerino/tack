@@ -115,3 +115,43 @@ func TestResumeCountsCallsWithoutCause(t *testing.T) {
 		t.Fatalf("callsRan = %d; want the started call counted", n)
 	}
 }
+
+// TestResumeCountsSessionTokens: the tokens a resumed session has used are the server's computation, as the live loop
+// counts them: prefilled plus output where the server said what it prefilled, else the whole prompt plus output; and
+// a session that has used its budget is stopped before its next request.
+func TestResumeCountsSessionTokens(t *testing.T) {
+	h := newHarness(t, Budget{})
+	prefilled := 100
+	ev := func(seq int64, typ proto.EventType, payload any) proto.Event {
+		e, err := proto.NewEvent(seq, time.Now(), typ, 0, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	text := []proto.ModelBlock{{Type: "text", Text: "a"}}
+	history := []proto.Event{
+		ev(1, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("x")}}),
+		ev(2, proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "s", Model: "m"}),
+		ev(3, proto.EvUsage, proto.Usage{Request: 1, Server: "s", Prompt: 900, Prefilled: &prefilled, Output: 10}), // 110
+		ev(4, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: text, StopReason: "end_turn"}),
+		ev(5, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}),
+		ev(6, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("y")}}),
+		ev(7, proto.EvRequestSent, proto.RequestSent{Request: 2, Server: "s", Model: "m"}),
+		ev(8, proto.EvUsage, proto.Usage{Request: 2, Server: "s", Prompt: 50, Output: 5}), // 55
+		ev(9, proto.EvAssistantMessage, proto.AssistantMessage{Request: 2, Content: text, StopReason: "end_turn"}),
+		ev(10, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}),
+	}
+	cfg := h.sess.cfg
+	cfg.Budget.SessionTokens = 165
+	r, err := Resume(cfg, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.tokens != 165 || r.requests != 2 || r.turns != 2 {
+		t.Fatalf("resumed tokens %d, requests %d, turns %d; want 165 (110 + 55), 2, 2", r.tokens, r.requests, r.turns)
+	}
+	if stop, err := r.Turn(context.Background(), "z"); err != nil || stop != proto.StopBudget {
+		t.Fatalf("a turn past the session's token budget: %q, %v; want stopped", stop, err)
+	}
+}

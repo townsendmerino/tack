@@ -56,6 +56,7 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if err != nil { // ken, the sandbox, halt's registration or the rebuild: not the client's params
 		return fail(proto.CodeInternalError, err)
 	}
+	_ = log.Idle() // until its next prompt
 	return s, nil
 }
 
@@ -120,7 +121,9 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 			}
 		case proto.ToolCall:
 			calls = append(calls, &call{id: p.ID, seq: ev.Seq})
-			uses = slices.DeleteFunc(uses, func(b proto.ModelBlock) bool { return b.ID == p.ID })
+			if i := slices.IndexFunc(uses, func(b proto.ModelBlock) bool { return b.ID == p.ID }); i >= 0 {
+				uses = slices.Delete(uses, i, i+1) // this block only: a response may repeat an id
+			}
 		case proto.ToolStarted:
 			if cl := find(ev.Cause, p.ID); cl != nil {
 				cl.started = true
@@ -220,3 +223,6 @@ func (c *Core) discard(s *session) {
 	c.unregister(s.id)
 	c.opt.Store.Discard(s.log)
 }
+
+// madeHook, when set (tests), runs in newSession after its closed check.
+var madeHook func()
