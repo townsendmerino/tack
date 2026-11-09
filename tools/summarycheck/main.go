@@ -2,6 +2,8 @@
 // §18.2): does a server's thinking-off alias, asked as a live summary asks it, write the seven summary headings? For
 // each of the n largest logged sessions under -logs that have a compaction, it takes the cut the live loop would make
 // (loop.FirstSummary) and runs the summarizer (loop.Summarize) on it against -server, on the alias the server lists.
+// The cut is the one a first summary would make had it run after the log's last event. A live session would have
+// summarized earlier, at the first request past the trigger, so this is a stretch of the same kind, not that one.
 //
 //	go run ./tools/summarycheck -server URL [-key FILE] [-model ID] -logs DIR [-n 5] [-out FILE]
 //
@@ -78,12 +80,16 @@ func run(args []string, w io.Writer) int {
 	if err != nil {
 		return inconclusive("listing the server's models: " + err.Error())
 	}
-	fast := ""
+	fast, found := "", false
+	var listed []string
 	for _, m := range ms {
-		if *model == "" || m.ID == *model {
-			fast = m.FastModel
-			break
+		listed = append(listed, m.ID)
+		if !found && (*model == "" || m.ID == *model) {
+			fast, found = m.FastModel, true
 		}
+	}
+	if !found {
+		return inconclusive(fmt.Sprintf("model %q not listed: the server lists %s", *model, strings.Join(listed, ", ")))
 	}
 	if fast == "" {
 		return inconclusive("the server lists no thinking-off alias: start it with -fast-alias")
