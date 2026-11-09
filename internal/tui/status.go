@@ -13,7 +13,7 @@ import (
 type Status struct {
 	Model  string
 	Server string
-	Load   string // a load in progress or a move, as model.status says it; "" once the server serves
+	Load   string // a load in progress or a move, as model.status says it; "" once ready, or once a request goes out
 	Mode   proto.Mode
 	Prompt int // the last request's prompt tokens
 	Reused int // of them, the ones the server reused from its cache
@@ -34,8 +34,8 @@ func (s *Status) Apply(ev proto.Event) {
 		if e.State != "ready" { // loading, or moved to another server under memory pressure
 			s.Load = e.Message
 		}
-	case proto.RequestSent:
-		s.Model, s.Server = e.Model, e.Server
+	case proto.RequestSent: // a server is serving: what a load or a move said is over
+		s.Model, s.Server, s.Load = e.Model, e.Server, ""
 	case proto.Usage:
 		s.Server, s.Prompt, s.Reused = e.Server, e.Prompt, 0
 		if e.Reused != nil {
