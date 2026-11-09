@@ -103,3 +103,40 @@ func (s *Searcher) Close() error {
 }
 
 var _ tools.Searcher = (*Searcher)(nil)
+
+// SectionHit is a hit inside one markdown file, with its section's heading path (K9's Hit.HeadingPath).
+type SectionHit struct {
+	StartLine, EndLine int
+	Score              float64
+	HeadingPath        []string
+}
+
+// searchFilesCap is how many candidates ken's SearchFiles takes from the whole ranking before it keeps the files' hits
+// (ken v1.12.1's searchFilesOverfetchCap): up to this many chunks, its answer is exact.
+const searchFilesCap = 5000
+
+// SearchFile is the top k hits for query inside file, a path from the workspace root, in the workspace's mode, ranked as
+// the whole repository's search ranks them (ken's SearchFiles). It errors when file is not in the index: ken's search
+// alone would answer an unindexed path with no hits (DESIGN §12, K9 "On adoption").
+//
+// exact is false on an index of more than 5,000 chunks. Then ken can drop the file's hits that rank below its cap, and
+// on goinfer it drops most of them (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md): a caller must not
+// treat an inexact answer as the file's best sections. tack's sections do not call it until ken's SearchFiles is
+// exact at any size.
+func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file string) (hits []SectionHit, exact bool, err error) {
+	if _, err := s.ws.Sections(ctx, file); err != nil {
+		return nil, false, err
+	}
+	found, _, err := s.ws.SearchFiles(ctx, query, k, s.ws.Status().Mode, []string{file})
+	if err != nil {
+		return nil, false, err
+	}
+	hits = make([]SectionHit, len(found))
+	for i, h := range found {
+		hits[i] = SectionHit{StartLine: h.StartLine, EndLine: h.EndLine, Score: h.Score, HeadingPath: h.HeadingPath}
+	}
+	return hits, s.Chunks() <= searchFilesCap, nil
+}
+
+// Chunks is the number of chunks in the index.
+func (s *Searcher) Chunks() int { return s.ws.Status().ChunkCount }
