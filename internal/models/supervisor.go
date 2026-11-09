@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -60,8 +61,8 @@ type ChildConfig struct {
 	// it (Open). Measurement leaves it off: there a fallback is what an arm records, and the fit call would add its own
 	// footprint.
 	Admission bool
-	// AllowDevel lets admission run a goinfer-serve built from a checkout, which reports (devel) and so cannot be held to
-	// GoinferVersion (checkVersion).
+	// AllowDevel lets admission run a goinfer-serve that is not GoinferVersion: one built from a checkout, which reports a
+	// pseudo-version (or +dirty, or (devel)) no pin can check (checkVersion).
 	AllowDevel bool
 	// Pressure is the memory-pressure reading Ensure's load guard uses; nil means MemoryPressure. A caller that reads
 	// pressure itself passes the same function, so its tests do not depend on the machine running them.
@@ -543,9 +544,10 @@ func (s *Supervisor) checkFit(ctx context.Context, want string) error {
 const GoinferVersion = "v0.24.1"
 
 // checkVersion runs the child's --version and refuses a goinfer-serve that is not GoinferVersion. Its first line is
-// "<prog> <version>[ (<revision>)]" (goinfer's serveapp/version.go): a release build gives its tag, and a build
-// from a checkout gives "(devel)" (or "(unknown)"), which no pin can check. Such a build is refused unless the server
-// allows it (ChildConfig.AllowDevel, config.toml's allow_devel).
+// "<prog> <version>[ (<revision>)]" (goinfer's serveapp/version.go). A release build gives its tag. A build from a
+// checkout gives what Go stamps: a pseudo-version (v0.23.1-0.20261102005220-51dd5dc4523f), with +dirty for a modified
+// tree, or "(devel)" where there is no VCS information. With the server's allow_devel (ChildConfig.AllowDevel) any
+// version runs; without it, anything but GoinferVersion is refused.
 func (s *Supervisor) checkVersion(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -554,15 +556,16 @@ func (s *Supervisor) checkVersion(ctx context.Context) error {
 	if err != nil || len(f) < 2 {
 		return fmt.Errorf("models: %s --version did not say its version (%v); this tack is pinned to goinfer %s", s.cfg.Binary, err, GoinferVersion)
 	}
-	switch v := f[1]; {
-	case v == GoinferVersion:
+	v := f[1]
+	switch {
+	case v == GoinferVersion, s.cfg.AllowDevel:
 		return nil
-	case v == "(devel)" || v == "(unknown)":
-		if s.cfg.AllowDevel {
-			return nil
-		}
-		return fmt.Errorf("models: %s is a development build of goinfer-serve (%s), which the pin to goinfer %s cannot check: build it from the %s tag, or set allow_devel = true for this server in config.toml", s.cfg.Binary, strings.Join(f[1:], " "), GoinferVersion, GoinferVersion)
-	default:
+	case releaseTag.MatchString(v):
 		return fmt.Errorf("models: %s is goinfer-serve %s; this tack is pinned to goinfer %s (DESIGN §8.1)", s.cfg.Binary, v, GoinferVersion)
+	default:
+		return fmt.Errorf("models: %s is a development build of goinfer-serve (%s), which the pin to goinfer %s cannot check: use the %s release's goinfer-serve, or set allow_devel = true for this server in config.toml", s.cfg.Binary, strings.Join(f[1:], " "), GoinferVersion, GoinferVersion)
 	}
 }
+
+// releaseTag is a goinfer release's version as --version prints it: the tag alone, no pseudo-version or +dirty.
+var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)

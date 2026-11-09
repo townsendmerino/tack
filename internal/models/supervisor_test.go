@@ -532,7 +532,8 @@ func TestCriticalPressureUnloads(t *testing.T) {
 
 // TestTheGoinferVersionIsPinned: with admission, the child must be the goinfer release this tack pins (GoinferVersion,
 // DESIGN §8.1), as its --version says. Another release is refused, naming both, and nothing starts. A development
-// build, which reports (devel) and so cannot be checked, is refused unless the server allows it (allow_devel).
+// build, which reports a pseudo-version (or +dirty, or (devel)) and so cannot be checked, is refused unless the server
+// allows it (allow_devel).
 // Measurement, with admission off, runs whatever it was given.
 func TestTheGoinferVersionIsPinned(t *testing.T) {
 	ctx := context.Background()
@@ -548,15 +549,19 @@ func TestTheGoinferVersionIsPinned(t *testing.T) {
 	if child, _ := s.Running(); child {
 		t.Fatal("another release was started")
 	}
-	t.Setenv("TACK_FAKE_GOINFER_VERSION", "(devel)")
-	s, _, _ = newSup(t, "/m/model.gguf")
-	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "allow_devel") {
-		t.Fatalf("a development build: %v, want refused, naming allow_devel", err)
-	}
-	s, _, _ = newSup(t, "/m/model.gguf")
-	s.cfg.AllowDevel = true
-	if _, err := s.Ensure(ctx); err != nil {
-		t.Fatalf("a development build the server allows: %v", err)
+	// What builds from a checkout print: Go stamps a pseudo-version from the VCS, +dirty for a modified tree, and
+	// (devel) only where it has no VCS information.
+	for _, v := range []string{"v0.23.1-0.20261102005220-51dd5dc4523f", "v0.24.2-0.20261109101500-7f19e161c4f1+dirty", "(devel)"} {
+		t.Setenv("TACK_FAKE_GOINFER_VERSION", v)
+		s, _, _ = newSup(t, "/m/model.gguf")
+		if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "allow_devel") {
+			t.Fatalf("a development build (%s): %v, want refused, naming allow_devel", v, err)
+		}
+		s, _, _ = newSup(t, "/m/model.gguf")
+		s.cfg.AllowDevel = true
+		if _, err := s.Ensure(ctx); err != nil {
+			t.Fatalf("a development build (%s) the server allows: %v", v, err)
+		}
 	}
 	t.Setenv("TACK_FAKE_GOINFER_VERSION", "v0.23.0")
 	s, _, _ = newSup(t, "/m/model.gguf")

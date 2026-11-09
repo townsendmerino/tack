@@ -89,8 +89,9 @@ type Server struct {
 	// Fallback names another machine's server (nobara's) that this child's sessions move to while this machine's
 	// memory pressure is warning or worse (DESIGN §8.1); empty means they wait for it to fall.
 	Fallback string `toml:"fallback"`
-	// AllowDevel lets this child be a goinfer-serve built from a checkout, which reports (devel) and so cannot be held to
-	// the goinfer release this tack pins (models.GoinferVersion); without it such a build is refused.
+	// AllowDevel lets this child be a goinfer-serve other than the release this tack pins (models.GoinferVersion): one built
+	// from a checkout, which reports a pseudo-version (or +dirty, or (devel)) that no pin can check. Without it any other
+	// version is refused.
 	AllowDevel bool `toml:"allow_devel"`
 
 	// goinfer-remote
