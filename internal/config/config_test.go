@@ -203,3 +203,21 @@ func TestSnapshotSettings(t *testing.T) {
 		t.Errorf("negative: %v", err)
 	}
 }
+
+// TestStateDirWithDotDotIsRefused: state_dir may not hold "..", which the daemon and the sandbox would resolve
+// differently after a symlink.
+func TestStateDirWithDotDotIsRefused(t *testing.T) {
+	_, err := load(t, "state_dir = \"/tmp/a/../b\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n")
+	if err == nil || !strings.Contains(err.Error(), "state_dir") {
+		t.Fatalf("state_dir with ..: %v, want refused", err)
+	}
+}
+
+// TestStateDirWithDotDotUnderHomeIsRefused: the ".." check sees state_dir as written, before ~/ is expanded (which
+// cleans the path as text and would drop the "..").
+func TestStateDirWithDotDotUnderHomeIsRefused(t *testing.T) {
+	_, err := load(t, "state_dir = \"~/a/../b\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n")
+	if err == nil || !strings.Contains(err.Error(), "state_dir") {
+		t.Fatalf("state_dir ~/a/../b: %v, want refused", err)
+	}
+}
