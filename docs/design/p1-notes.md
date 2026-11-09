@@ -29,8 +29,9 @@ The order the owner approved, each step with its exit check:
    - The TUI's status shows the first request's load ("loading model on nobara").
    - Until this step, nothing runs on nobara by day.
 5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
-   - By day: an exactness check of `SearchFiles` on goinfer.
-   - At night: `SearchFiles`'s latency on goinfer.
+   - By day: an exactness check of `SearchFiles` on goinfer. **Done 2026-11-08: not exact.** 63 of 94 answers differ
+     over about 80,000 chunks (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`).
+   - At night: `SearchFiles`'s latency on goinfer. Its run spec is in the same record; it waits for the exact version.
    - **Decided** (ADR-007, 2026-11-08; proposed in DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
