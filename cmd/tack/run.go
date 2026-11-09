@@ -317,10 +317,24 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 				answer.WriteString(e.Text)
 			}
 		case proto.AssistantMessage:
-			if !jsonOut && answer.Len() > 0 && !strings.HasSuffix(answer.String(), "\n") {
-				fmt.Fprintln(stdout)
-				answer.Reset()
+			if jsonOut {
+				break
 			}
+			// The deltas may not have carried all of it: text streamed while the connection was gone is never replayed.
+			var full strings.Builder
+			for _, b := range e.Content {
+				if b.Type == "text" {
+					full.WriteString(b.Text)
+				}
+			}
+			if rest, ok := strings.CutPrefix(full.String(), answer.String()); ok && rest != "" {
+				fmt.Fprint(stdout, rest)
+				answer.WriteString(rest)
+			}
+			if answer.Len() > 0 && !strings.HasSuffix(answer.String(), "\n") {
+				fmt.Fprintln(stdout)
+			}
+			answer.Reset()
 		case proto.ToolCall:
 			fmt.Fprintf(stderr, "· %s %s\n", e.Name, e.Input)
 		case proto.ToolFinished:

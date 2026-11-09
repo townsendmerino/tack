@@ -334,3 +334,34 @@ func TestAskGivesUpAfterItsRedials(t *testing.T) {
 		t.Fatalf("ask = %d after %d redials; stderr %q", c, redials, stderr.String())
 	}
 }
+
+// TestAskPrintsWhatTheGapMissed: text streamed while the connection was gone is never replayed (assistant.delta is not
+// persisted), so the assistant.message that follows prints the part of its text not yet printed: the answer is whole.
+func TestAskPrintsWhatTheGapMissed(t *testing.T) {
+	var evs []proto.Event
+	for _, p := range []struct {
+		seq     int64
+		typ     proto.EventType
+		payload any
+	}{
+		{1, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}}},
+		{0, proto.EvAssistantDelta, proto.AssistantDelta{Kind: "text", Text: "Hel"}}, // heard before the drop
+		{2, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{{Type: "text", Text: "Hello, world"}}}},
+		{3, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}},
+	} {
+		ev, err := proto.NewEvent(p.seq, time.Unix(0, 0), p.typ, 0, p.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	first := fakeDaemon(t, evs, 1, true, nil) // hears seq 1 and the first delta, then is dropped
+	redial := func() (*core.Client, error) { return fakeDaemon(t, evs, 0, false, nil), nil }
+	var stdout, stderr bytes.Buffer
+	if c := ask(context.Background(), first, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial); c != exitOK {
+		t.Fatalf("ask = %d; stderr %q", c, stderr.String())
+	}
+	if stdout.String() != "Hello, world\n" {
+		t.Errorf("stdout %q, want the whole answer once", stdout.String())
+	}
+}
