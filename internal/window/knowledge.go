@@ -346,27 +346,47 @@ func (k *Knowledge) record(id string, touched []int, text string) {
 // Pages the log never mentions keep the judgment made over the tree as it is now. Only this tracker's own share of the
 // shared budget is taken back first.
 func (k *Knowledge) Replay(evs []proto.Event) error {
+	if err := k.ReplayIndex(evs); err != nil {
+		return err
+	}
+	return k.ReplayNotes(evs)
+}
+
+// ReplayIndex is Replay's first half: it takes back this tracker's share of the budget, and prices the logged index
+// and reads its freshness. With the instruction file on too, core sizes the file after this and before ReplayNotes,
+// against the budget a new session's file saw: the index's share alone.
+func (k *Knowledge) ReplayIndex(evs []proto.Event) error {
 	k.b.Used -= k.Own()
 	k.indexCost, k.notes = 0, nil
 	for i := range k.pages {
 		k.state[i], k.note[i], k.named[i] = pageOut, 0, -1
 	}
-	first := true
+	for _, ev := range evs {
+		if ev.Type != proto.EvUserMessage {
+			continue
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
+		}
+		var text strings.Builder
+		for _, c := range v.(proto.UserMessage).Content {
+			text.WriteString(c.Text)
+		}
+		k.indexFrom(text.String())
+		break
+	}
+	return nil
+}
+
+// ReplayNotes is Replay's second half: the notes of the calls that ran, in log order, and the compactions.
+func (k *Knowledge) ReplayNotes(evs []proto.Event) error {
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
 			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
 		}
 		switch p := v.(type) {
-		case proto.UserMessage:
-			if first {
-				first = false
-				var text strings.Builder
-				for _, c := range p.Content {
-					text.WriteString(c.Text)
-				}
-				k.indexFrom(text.String())
-			}
 		case proto.ToolFinished:
 			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
 				continue // the loop asks only about calls that ran
