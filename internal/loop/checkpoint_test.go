@@ -649,3 +649,26 @@ func TestAWriteOutOfTheWorkspaceDuringTheQuestionAsksAgain(t *testing.T) {
 		t.Errorf("it ran: %q", sh.ran)
 	}
 }
+
+// TestTheSnapshotResetsBeforeTurnEnd: a turn's snapshot flags are cleared before its turn.end is recorded, since the
+// session may start its next turn as turn.end goes out (Config.EndTurn) and nothing of this turn may write them after.
+func TestTheSnapshotResetsBeforeTurnEnd(t *testing.T) {
+	h, _ := checkpointHarness(t, &approver{answer: Approval{Allow: true}}, true, goinfertest.Says("done"))
+	cfg := h.sess.cfg
+	var atEnd []bool
+	ended := 0
+	cfg.EndTurn = func(record func() error) error {
+		atEnd = []bool{cfg.Perms.Snapshotted, cfg.Perms.Staged}
+		err := record()
+		ended++
+		return err
+	}
+	h.sess = New(cfg)
+	cfg.Perms.Snapshotted, cfg.Perms.Staged = true, true // as a snapshot the turn took would leave them
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if ended != 1 || len(atEnd) != 2 || atEnd[0] || atEnd[1] {
+		t.Errorf("EndTurn called %d times; snapshotted, staged as turn.end was recorded: %v, want both false", ended, atEnd)
+	}
+}

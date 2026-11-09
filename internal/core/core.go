@@ -188,9 +188,12 @@ type session struct {
 	loop    *loop.Session
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
-	subs    map[*subscriber]bool
-	target  sandbox.Target // what Halt sweeps for this session
-	kit     func() error   // the edit kit's Close, or nil
+	// turn counts the turns started. A turn's goroutine frees the session at its exit only while turn is still its own
+	// and the session still running: emitTurn frees it as turn.end goes out, and the next turn may start then.
+	turn   uint64
+	subs   map[*subscriber]bool
+	target sandbox.Target // what Halt sweeps for this session
+	kit    func() error   // the edit kit's Close, or nil
 	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
 	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
 	// head, instructions.go; the sections); else it follows the prompt.
@@ -553,7 +556,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	symbols, _ := searcher.(tools.Symbols)
 	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, EndTurn: s.endTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
@@ -687,10 +690,45 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	return s, nil
 }
 
+// endTurn is the loop's EndTurn: it holds wmu across the recording of the turn's turn.end, its append and its fan-out
+// (emitTurn), so a Halt's record lands wholly before the turn.end or wholly after it. Under wmu, the next turn, which
+// takes wmu before its first event, cannot reach a subscriber before this turn.end either: emit skips an event at or
+// below a subscriber's last seq, so either order inverted would drop one.
+func (s *session) endTurn(record func() error) error {
+	if h := turnEndHook.Load(); h != nil {
+		(*h)()
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	return record()
+}
+
+// emitTurn is the loop's Emit. A turn.end, which comes only through endTurn with wmu held, frees the session before
+// any subscriber hears it: turn.end is a client's signal that it may prompt again, so a prompt sent on it is never
+// refused as busy. Foreign events, another process's turn.end among them, go through emit.
+func (s *session) emitTurn(ev proto.Event) {
+	if ev.Type != proto.EvTurnEnd {
+		s.emit(ev)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running {
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
+		s.running, s.cancel = false, nil
+	}
+	s.fanOut(ev)
+}
+
 // emit fans an event out to the session's subscribers.
 func (s *session) emit(ev proto.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.fanOut(ev)
+}
+
+// fanOut is emit's body; the caller holds s.mu.
+func (s *session) fanOut(ev proto.Event) {
 	for sub := range s.subs {
 		if ev.Seq != 0 {
 			if ev.Seq <= sub.last {
@@ -808,6 +846,8 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		return nil, &proto.Error{Code: proto.CodeBusy, Message: "a turn is already running in " + string(s.id)}
 	}
 	ctx, cancel := context.WithCancelCause(c.ctx)
+	s.turn++
+	turn := s.turn
 	s.running, s.cancel = true, cancel
 	// The instructions, the map and the injection join the first message itself, so the log holds exactly what the model
 	// was sent. Map and injection sit after the head and before the task, so the message still ends with the task.
@@ -884,15 +924,16 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
-		if h := turnEndHook.Load(); h != nil {
-			(*h)()
-		}
-		// Under wmu, so not between a Halt's wake and append; and under s.mu with the end of running, so a Halt never
-		// sees a turn that has let its log go, nor idles one that has not.
+		// A turn whose turn.end was recorded was freed as it went out (emitTurn), and the next turn may already be running.
+		// One that recorded none (its append failed) is freed here. Under wmu, so not between a Halt's wake and append;
+		// and under s.mu with the end of running, so a Halt never sees a turn that has let its log go, nor idles one that
+		// has not.
 		s.wmu.Lock()
 		s.mu.Lock()
-		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
-		s.running, s.cancel = false, nil
+		if s.running && s.turn == turn {
+			_ = s.log.Idle()
+			s.running, s.cancel = false, nil
+		}
 		s.mu.Unlock()
 		s.wmu.Unlock()
 	}()
