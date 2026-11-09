@@ -50,7 +50,7 @@ type runEvent struct {
 		Outcome    string          `json:"outcome"`
 		Result     string          `json:"result"`
 		StopReason string          `json:"stop_reason"`
-		Request    int             `json:"request"`
+		Request    *int            `json:"request"` // nil when absent: only an explicit 0 is the summarizer's
 	} `json:"payload"`
 }
 
@@ -78,7 +78,7 @@ func readSteps(path string) (steps []step, requests int, stop string, err error)
 		}
 		switch e.Type {
 		case "request.sent":
-			if e.Payload.Request != 0 { // 0: compaction's summarizer, outside the conversation's requests
+			if r := e.Payload.Request; r == nil || *r != 0 { // 0: compaction's summarizer, outside the conversation's requests
 				requests++
 			}
 		case "tool.call":
