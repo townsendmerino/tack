@@ -101,15 +101,21 @@ func TestOpenMakesAFallback(t *testing.T) {
 	}
 }
 
-// TestAMovedTurnFindingNobaraBusyOffersNoMacModel: a busy fallback's error offers this machine's model (tack run
-// --server mac), but a turn the memory pressure moved cannot use it: the offer is dropped, and the pressure named.
+// TestAMovedTurnFindingNobaraBusyOffersNoMacModel: an on-demand server's busy error offers this machine's model (tack
+// run --server mac), but a turn the memory pressure moved cannot use it. The fallback asks for no offer, so the error
+// names nobara's holder and the pressure, offers nothing, and keeps what wraps it whole.
 func TestAMovedTurnFindingNobaraBusyOffersNoMacModel(t *testing.T) {
-	mac := &countingSource{name: "mac"}
-	nobara := &countingSource{name: "nobara", err: &BusyError{Server: "nobara", Message: "a timed run holds the lock", Offer: []string{"mac"}}}
-	f := NewFallback(mac, nobara, "nobara", func() (Pressure, error) { return PressureWarning, nil })
-	_, err := f.Ensure(context.Background())
-	if !errors.As(err, new(*BusyError)) || strings.Contains(err.Error(), "--server mac") || !strings.Contains(err.Error(), "memory pressure is warning") {
-		t.Fatalf("%v; want nobara's busy with the pressure, and no offer of the model the pressure keeps off", err)
+	f := &fakeServe{state: "idle", startBusy: true, msg: "a timed run holds goinfer's timing lock (pid 7)", lockKey: "k"}
+	nobara, _ := onDemand(t, f, nil) // offers "mac"
+	if _, err := nobara.Ensure(context.Background()); err == nil || !strings.Contains(err.Error(), "--server mac") {
+		t.Fatalf("asked directly: %v; want the offer of this machine's model", err)
+	}
+	fb := NewFallback(&countingSource{name: "mac"}, nobara, "nobara", func() (Pressure, error) { return PressureWarning, nil })
+	_, err := fb.Ensure(context.Background())
+	var be *BusyError
+	if !errors.As(err, &be) || len(be.Offer) != 0 || strings.Contains(err.Error(), "--server mac") ||
+		!strings.Contains(err.Error(), "memory pressure is warning") || !strings.Contains(err.Error(), "pid 7") {
+		t.Fatalf("%v; want nobara's busy, with the holder and the pressure, and no offer of the model the pressure keeps off", err)
 	}
 }
 

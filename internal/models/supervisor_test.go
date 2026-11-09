@@ -51,6 +51,12 @@ func fakeGoinfer(args []string) {
 		if v == "" {
 			v = GoinferVersion
 		}
+		if p := os.Getenv("TACK_FAKE_GOINFER_VERSION_LOG"); p != "" { // counts the --version runs, one line each
+			if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+				f.WriteString("version\n")
+				f.Close()
+			}
+		}
 		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_VERSION_SLEEP")); err == nil {
 			time.Sleep(d) // a binary slow to answer --version
 		}
@@ -135,6 +141,9 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "loaded"})
 	})
 	admin.HandleFunc("POST /admin/models/unload", func(w http.ResponseWriter, r *http.Request) {
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_UNLOAD_SLEEP")); err == nil {
+			time.Sleep(d) // an unload that takes a while (a large model's memory going back)
+		}
 		var req struct{ Name string }
 		json.NewDecoder(r.Body).Decode(&req)
 		mu.Lock()
@@ -145,6 +154,10 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "unloaded"})
 	})
 	admin.HandleFunc("GET /admin/status", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("TACK_FAKE_GOINFER_STATUS_FAIL") == "1" {
+			http.Error(w, "status unavailable", http.StatusInternalServerError) // an admin socket that answers, with an error
+			return
+		}
 		if os.Getenv("TACK_FAKE_GOINFER_STATUS_HANG") == "1" {
 			<-r.Context().Done() // an admin socket that accepts and never answers
 			return

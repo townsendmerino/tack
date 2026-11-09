@@ -209,6 +209,12 @@ func (f *Front) serveAPI(w http.ResponseWriter, r *http.Request) {
 		if child, _ := f.sup.Running(); child {
 			f.sup.Touch()
 			p.ServeHTTP(w, r)
+			// A request is use until it ends: a stream longer than the idle timeout must not leave the model idle by the
+			// clock as it finishes.
+			f.sup.Touch()
+			f.mu.Lock()
+			f.active = f.now()
+			f.mu.Unlock()
 			return
 		}
 		f.mu.Lock() // the child went away (it crashed): start again
