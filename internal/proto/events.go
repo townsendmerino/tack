@@ -84,7 +84,8 @@ var EventTypes = map[EventType]EventSpec{
 
 // ModelStatus is how a session's model server stands while a turn waits on it (DESIGN §8.2, §10), live only, for the
 // status line: State "loading", with Message such as "loading model on nobara", while it starts and loads, and
-// "ready" once it serves.
+// "moved", with Message such as "memory pressure is critical on this machine; using nobara", when a turn leaves this
+// machine's model for another server (DESIGN §8.1), and "ready" once it serves.
 type ModelStatus struct {
 	Server  string `json:"server"`
 	State   string `json:"state"`

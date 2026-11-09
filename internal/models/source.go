@@ -47,7 +47,15 @@ func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, e
 		if err != nil {
 			return nil, err
 		}
-		return &childSource{sup: sup}, nil
+		child := &childSource{sup: sup}
+		if s.Fallback == "" {
+			return child, nil
+		}
+		fb, err := Open(cfg, s.Fallback, stateDir, hc)
+		if err != nil {
+			return nil, fmt.Errorf("models: %s's fallback: %w", name, err)
+		}
+		return NewFallback(child, fb, s.Fallback, sup.pressure), nil
 	case config.KindRemote:
 		tok := ""
 		if s.TokenFile != "" {

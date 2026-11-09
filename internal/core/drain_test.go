@@ -339,3 +339,54 @@ func TestAFirstLoadIsAnnounced(t *testing.T) {
 		t.Fatalf("the turn's status events: %q; want loading model on nobara once, then ready, before the request", got)
 	}
 }
+
+// TestATurnMovesToNobaraUnderPressure: a session on this machine's model, with nobara as its fallback, runs a turn
+// here while memory pressure is normal and the next on nobara once it is critical (DESIGN §8.1); its subscribers hear
+// the move. The pressure reading is injected.
+func TestATurnMovesToNobaraUnderPressure(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := goinfertest.NewScripted("m", 16384, goinfertest.Says("from the mac"))
+	nobara := goinfertest.NewScripted("m", 16384, goinfertest.Says("from nobara"))
+	macTS, nobaraTS := httptest.NewServer(mac), httptest.NewServer(nobara)
+	t.Cleanup(macTS.Close)
+	t.Cleanup(nobaraTS.Close)
+	var p atomic.Int32 // models.Pressure
+	p.Store(int32(models.PressureNormal))
+	_, cl, events := daemonOn(t, st, macTS.URL, func(o *Options) {
+		o.Source = func(string) (models.Source, error) {
+			return models.NewFallback(models.NewRemote("mac", macTS.URL, "", "", nil), models.NewRemote("nobara", nobaraTS.URL, "", "", nil),
+				"nobara", func() (models.Pressure, error) { return models.Pressure(p.Load()), nil }), nil
+		}
+	})
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn := func(text string) []proto.Event {
+		if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text(text)}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		return untilTurnEnd(t, events)
+	}
+	turn("one")
+	p.Store(int32(models.PressureCritical))
+	moved := false
+	for _, ev := range turn("two") {
+		if ev.Type == proto.EvModelStatus {
+			v, _ := ev.Decode()
+			moved = moved || v.(proto.ModelStatus).State == "moved"
+		}
+	}
+	if len(mac.Requests) != 1 || len(nobara.Requests) != 1 || !moved {
+		t.Fatalf("mac %d requests, nobara %d, moved announced %v; want one each, and the move announced", len(mac.Requests), len(nobara.Requests), moved)
+	}
+	if !strings.Contains(string(nobara.Requests[0]), "from the mac") {
+		t.Fatal("nobara's request lacks the first turn: the session moved without its conversation")
+	}
+}
