@@ -46,6 +46,14 @@ type fakeReport struct {
 }
 
 func fakeGoinfer(args []string) {
+	if len(args) == 1 && args[0] == "--version" { // as goinfer-serve's versionReport prints it
+		v := os.Getenv("TACK_FAKE_GOINFER_VERSION")
+		if v == "" {
+			v = GoinferVersion
+		}
+		fmt.Printf("goinfer-serve %s\nbackends: cpu metal\ngo: go1.27 darwin/arm64\n", v)
+		return
+	}
 	fs := flag.NewFlagSet("fake", flag.ExitOnError)
 	addr := fs.String("addr", "", "")
 	sock := fs.String("admin-socket", "", "")
@@ -485,6 +493,10 @@ func TestOpenAdmitsTacksOwnLoads(t *testing.T) {
 	if c, ok := src.(*childSource); !ok || !c.sup.cfg.Admission {
 		t.Fatalf("Open made %T without admission", src)
 	}
+	cfg.Servers["mac"] = config.Server{Kind: config.KindChild, Binary: "/bin/goinfer-serve", ModelPath: "/m/q.gguf", Model: "q", Ctx: 16384, AllowDevel: true}
+	if src, _ := Open(cfg, "mac", "/tmp/tk", nil); !src.(*childSource).sup.cfg.AllowDevel {
+		t.Fatal("Open dropped allow_devel")
+	}
 }
 
 // TestCriticalPressureUnloads: at critical memory pressure the idle tick unloads the model, generating or not, and the
@@ -515,6 +527,47 @@ func TestCriticalPressureUnloads(t *testing.T) {
 	*mp = PressureCritical
 	if err := m.Tick(ctx); err != nil || report(t, m).Unloads != 0 {
 		t.Fatalf("measurement at critical pressure: %v, %d unloads; want it left alone", err, report(t, m).Unloads)
+	}
+}
+
+// TestTheGoinferVersionIsPinned: with admission, the child must be the goinfer release this tack pins (GoinferVersion,
+// DESIGN §8.1), as its --version says. Another release is refused, naming both, and nothing starts. A development
+// build, which reports a pseudo-version (or +dirty, or (devel)) and so cannot be checked, is refused unless the server
+// allows it (allow_devel).
+// Measurement, with admission off, runs whatever it was given.
+func TestTheGoinferVersionIsPinned(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newSup(t, "/m/model.gguf")
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatalf("the pinned release: %v", err)
+	}
+	t.Setenv("TACK_FAKE_GOINFER_VERSION", "v0.23.0")
+	s, _, _ = newSup(t, "/m/model.gguf")
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "v0.23.0") || !strings.Contains(err.Error(), GoinferVersion) {
+		t.Fatalf("another release: %v, want refused, naming both versions", err)
+	}
+	if child, _ := s.Running(); child {
+		t.Fatal("another release was started")
+	}
+	// What builds from a checkout print: Go stamps a pseudo-version from the VCS, +dirty for a modified tree, and
+	// (devel) only where it has no VCS information.
+	for _, v := range []string{"v0.23.1-0.20261102005220-51dd5dc4523f", "v0.24.2-0.20261109101500-7f19e161c4f1+dirty", "(devel)"} {
+		t.Setenv("TACK_FAKE_GOINFER_VERSION", v)
+		s, _, _ = newSup(t, "/m/model.gguf")
+		if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "allow_devel") {
+			t.Fatalf("a development build (%s): %v, want refused, naming allow_devel", v, err)
+		}
+		s, _, _ = newSup(t, "/m/model.gguf")
+		s.cfg.AllowDevel = true
+		if _, err := s.Ensure(ctx); err != nil {
+			t.Fatalf("a development build (%s) the server allows: %v", v, err)
+		}
+	}
+	t.Setenv("TACK_FAKE_GOINFER_VERSION", "v0.23.0")
+	s, _, _ = newSup(t, "/m/model.gguf")
+	s.cfg.Admission = false
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatalf("measurement with another release: %v, want it run", err)
 	}
 }
 

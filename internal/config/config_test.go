@@ -228,7 +228,7 @@ func TestDaemonSettings(t *testing.T) {
 // default, and checks goinfer's timing lock at ~/.goinfer-timing.lock unless told otherwise.
 func TestServeSettings(t *testing.T) {
 	const child = "[servers.local]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 16384\n"
-	c, err := load(t, child+"[serve]\nserver = \"local\"\nkey_file = \"~/k\"\nlisten = \"100.64.0.2:8091\"\n")
+	c, err := load(t, child+"[serve]\nserver = \"local\"\nkey_file = \"~/k\"\nlisten = \"100.125.33.107:8091\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,5 +297,16 @@ func TestChildFallback(t *testing.T) {
 		if _, err := load(t, fmt.Sprintf(servers, f)); err == nil || !strings.Contains(err.Error(), "fallback") {
 			t.Errorf("%s: %v, want refused", f, err)
 		}
+	}
+}
+
+// TestAllowDevel: allow_devel is a goinfer-child's, and refused on a remote, whose binary tack does not run.
+func TestAllowDevel(t *testing.T) {
+	c, err := load(t, "[servers.mac]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 1\nallow_devel = true\n")
+	if err != nil || !c.Servers["mac"].AllowDevel {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	if _, err := load(t, "[servers.r]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nallow_devel = true\n"); err == nil || !strings.Contains(err.Error(), "allow_devel") {
+		t.Fatalf("allow_devel on a remote: %v, want refused", err)
 	}
 }

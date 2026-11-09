@@ -43,7 +43,7 @@ func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, e
 	case config.KindChild:
 		sup, err := NewSupervisor(ChildConfig{Binary: s.Binary, ModelPath: s.ModelPath, Model: s.Model, Ctx: s.Ctx,
 			Args: s.Args, Dir: filepath.Join(stateDir, "goinfer", name), IdleUnload: s.IdleUnload.Duration,
-			IdleExit: s.IdleExit.Duration, HTTPClient: hc, Admission: true})
+			IdleExit: s.IdleExit.Duration, HTTPClient: hc, Admission: true, AllowDevel: s.AllowDevel})
 		if err != nil {
 			return nil, err
 		}

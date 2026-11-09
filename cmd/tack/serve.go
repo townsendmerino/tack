@@ -75,7 +75,7 @@ func serveCmd(args []string, stdout, stderr io.Writer) int {
 	idle := sc.IdleUnload.Duration
 	f, err := serve.New(serve.Options{Key: key, CheckLock: checkLock, Log: stderr, Child: models.ChildConfig{Binary: s.Binary,
 		ModelPath: s.ModelPath, Model: s.Model, Ctx: s.Ctx, Args: s.Args, Dir: filepath.Join(stateDir, "serve", sc.Server),
-		IdleUnload: idle, IdleExit: idle, Admission: true}})
+		IdleUnload: idle, IdleExit: idle, Admission: true, AllowDevel: s.AllowDevel}})
 	if err != nil {
 		fmt.Fprintln(stderr, "tack serve:", err)
 		return exitError
