@@ -1138,8 +1138,11 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
 - **The summarizing step is built** behind `[run] summarize`, off by default and not an E1 arm setting (P1 step 6;
   `internal/loop/summarize.go`, `summarize_live.go`). It runs when masking cannot bring a prompt past 75% of the window
   back under it, and summarizes the oldest half of the turns before the last 3 requests. The `compaction` event logs
-  the summary word for word, so `loop.Rebuild` replays it. **Not yet built:** re-retrieval (step 3), and the dead-weight
-  trigger, which waits for P2's ledger.
+  the summary word for word, so `loop.Rebuild` replays it. **Re-retrieval (step 3) is built** behind
+  `[run] summary_retrieve`, off by default (`internal/loop/summary_retrieve.go`). The summary's open threads (its
+  "In progress" and "Next steps" lines, then its anchor symbols) are searched through ken, and the hits, within
+  `summary_retrieve_share` percent of the window (default 10), end the summary message, so they come out of what the
+  summary frees. **Not yet built:** the dead-weight trigger, which waits for P2's ledger.
 - **How the summary is written, when the summarizing step is built** (from Hermes Agent's compaction, 2026-11-08):
   - **Fixed headings:** goal, constraints, done, in progress, decisions, files, next steps.
   - **An anchor list taken mechanically, with no model call:** paths, symbols, commit hashes and error strings,

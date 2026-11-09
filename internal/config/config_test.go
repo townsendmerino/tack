@@ -46,27 +46,32 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 	if c.Run.TurnTokens != 200_000 || c.Run.MaxErrors != 8 || c.Run.SessionTokens != 2_000_000 || c.Run.SessionToolCalls != 1000 {
 		t.Fatalf("budget defaults: %+v", c.Run)
 	}
+	if c.Run.SummaryRetrieve || c.Run.SummaryRetrieveShare != DefaultSummaryRetrieveShare {
+		t.Fatalf("re-retrieval defaults: off, at %d%%: %v, %d", DefaultSummaryRetrieveShare, c.Run.SummaryRetrieve, c.Run.SummaryRetrieveShare)
+	}
 }
 
 func TestLoadFailsLoudly(t *testing.T) {
 	cases := map[string]struct{ body, want string }{
-		"typo":                  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
-		"unknown kind":          {"[servers.a]\nkind = \"ollama\"\n", "kind"},
-		"child no ctx":          {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
-		"remote no url":         {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
-		"mixed":                 {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
-		"main missing":          {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
-		"no servers":            {"main = \"z\"\n", "no [servers"},
-		"bad duration":          {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
-		"negative temperature":  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = -0.1\n", "temperature must be"},
-		"top_p over 1":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
-		"top_k zero":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
-		"negative budget":       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
-		"best_of over the cap":  {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
-		"best_of negative":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
-		"sandbox read relative": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"models\"]\n", "sandbox.read[0]"},
-		"sandbox read root":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not ~ or a directory holding it"},
-		"sandbox read home":     {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"~/\"]\n", "not ~ or a directory holding it"},
+		"typo":                       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nurll = \"y\"\n", "unknown keys: servers.a.urll"},
+		"unknown kind":               {"[servers.a]\nkind = \"ollama\"\n", "kind"},
+		"child no ctx":               {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\n", "ctx"},
+		"remote no url":              {"[servers.a]\nkind = \"goinfer-remote\"\n", "url"},
+		"mixed":                      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\nctx = 4\n", "for goinfer-child"},
+		"main missing":               {"main = \"z\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n", "names no server"},
+		"no servers":                 {"main = \"z\"\n", "no [servers"},
+		"bad duration":               {"[servers.a]\nkind = \"goinfer-child\"\nbinary = \"b\"\nmodel_path = \"m\"\nctx = 1\nidle_unload = \"soon\"\n", "duration"},
+		"negative temperature":       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntemperature = -0.1\n", "temperature must be"},
+		"top_p over 1":               {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_p = 1.5\n", "top_p in (0, 1]"},
+		"top_k zero":                 {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\ntop_k = 0\n", "top_k at least 1"},
+		"negative budget":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nmax_errors = -1\n", "negative"},
+		"best_of over the cap":       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
+		"best_of negative":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
+		"a share over 50":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nsummary_retrieve_share = 60\n", "summary_retrieve_share is 60"},
+		"retrieve without summarize": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nsummary_retrieve = true\n", "summary_retrieve needs summarize"},
+		"sandbox read relative":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"models\"]\n", "sandbox.read[0]"},
+		"sandbox read root":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not ~ or a directory holding it"},
+		"sandbox read home":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"~/\"]\n", "not ~ or a directory holding it"},
 	}
 	for name, tc := range cases {
 		if _, err := load(t, tc.body); err == nil || !strings.Contains(err.Error(), tc.want) {

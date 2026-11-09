@@ -96,6 +96,12 @@ type Config struct {
 	// has reached 75% of the window and masking cannot bring it under, the oldest half of the turns before the last 3
 	// requests become one summary message, written by the model's thinking-off alias. Off, no summary is made.
 	Summarize bool
+	// SummaryRetrieve, when above 0, re-retrieves after each summary (summary_retrieve.go; DESIGN §7.6, step 3): its open
+	// threads are searched through Searcher, and the hits, within SummaryRetrieve percent of the window, become the
+	// summary message's last section. It needs Summarize and a Searcher; 0 is off.
+	SummaryRetrieve int
+	// Searcher is ken's, as the search tool has it; nil without ken.
+	Searcher tools.Searcher
 	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
 	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
 	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last

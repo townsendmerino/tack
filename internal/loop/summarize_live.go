@@ -133,6 +133,13 @@ func (s *Session) summarize(ctx context.Context, srv server.Server, next int, ca
 	case ctx.Err() != nil:
 		return spent, summaryUnchanged, nil // the turn is ending; the loop's own check says why
 	}
+	if s.cfg.SummaryRetrieve > 0 && s.cfg.Searcher != nil {
+		all := append(append([]proto.Event(nil), prior...), stretch...)
+		budget := s.cfg.SummaryRetrieve * s.cfg.Source.Window() * summaryBytesPerToken / 100
+		if sec := retrieveSection(ctx, s.cfg.Searcher, openThreads(sum.Body, AnchorsOf(all)), budget); sec != "" {
+			sum.Text += "\n\n" + sec // after the anchors: bodyOf leaves it out of the next summary's previous body
+		}
+	}
 	text := summaryMessage(s.cfg.WS.Root(), sum)
 	if len(text) >= before {
 		return spent, summaryUnchanged, nil // nothing gained

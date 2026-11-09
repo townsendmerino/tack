@@ -100,5 +100,8 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 	if s, ok := cfg.Servers[name]; ok {
 		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
 	}
+	if cfg.Run.SummaryRetrieve {
+		opts.SummaryRetrieve = cfg.Run.SummaryRetrieveShare
+	}
 	return opts
 }
