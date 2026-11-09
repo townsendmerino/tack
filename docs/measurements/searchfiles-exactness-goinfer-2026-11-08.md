@@ -86,11 +86,12 @@ about it.
     counts above differed under load). It is built twice, and the job stops unless both builds give the same chunk
     count.
   - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it times
-    what ken's route runs per user message: `kensearch.Searcher.SectionPaths` at k=5 (20 hits from ken, cut to 5 distinct sections), the call core makes, its
-    `Sections` check on the file included. It times it over `searchfilescheck`'s ten task-like messages (not its
-    heading queries, which no user sends) for each of the three instruction files: 30 calls. Each runs 20 rounds,
-    interleaved A B B A across modes, and p95 is taken over them. (Amended 2026-11-09, before any run: the spec had
-    named all 94 of the exactness check's calls, headings included, and the bare `SearchFiles`.)
+    what ken's route runs per user message: `kensearch.Searcher.SectionPaths` at k=5 (20 hits from ken, cut to 5
+    distinct sections), the call core makes, its `Sections` check on the file included. It times it over
+    `searchfilescheck`'s ten task-like messages (not its heading queries, which no user sends) for each of the three
+    instruction files: 30 calls. Each runs 20 rounds, interleaved A B B A across modes, and p95 is taken over them.
+    (Amended 2026-11-09, before any run: the spec had named all 94 of the exactness check's calls, headings included,
+    and the bare `SearchFiles`.)
 - **Records:** per cell, the load average and free memory at its start, p50, p95 and max per call, and the index's
   chunk count. A cell started at a load average above 2 is void.
 - **Decision rule (pre-registered; approved, as above):**
