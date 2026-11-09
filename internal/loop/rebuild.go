@@ -134,21 +134,34 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 // callsRan counts the tool calls the live loop counted toward the session's budget: every call that reached a
 // permission decision or started, and every done call answered ok. A call answered without either (malformed, a
 // repeat of a failed call, not run for a budget, a cancel or a shutdown) did not count. Events name their call by its
-// tool.call's seq, as their cause.
+// tool.call's seq, as their cause; one without a cause names it by id, and is matched to that id's latest call.
 func callsRan(history []proto.Event) int {
 	name := map[int64]string{}
+	latest := map[string]int64{}
 	ran := map[int64]bool{}
+	call := func(ev proto.Event, id string) int64 {
+		if ev.Cause != 0 {
+			return ev.Cause
+		}
+		return latest[id]
+	}
 	for _, ev := range history {
-		switch ev.Type {
-		case proto.EvToolCall:
-			if v, err := ev.Decode(); err == nil {
-				name[ev.Seq] = v.(proto.ToolCall).Name
-			}
-		case proto.EvPermissionRequested, proto.EvPermissionResolved, proto.EvToolStarted:
-			ran[ev.Cause] = true
-		case proto.EvToolFinished:
-			if v, err := ev.Decode(); err == nil && name[ev.Cause] == "done" && v.(proto.ToolFinished).Outcome == proto.OutcomeOK {
-				ran[ev.Cause] = true
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		switch p := v.(type) {
+		case proto.ToolCall:
+			name[ev.Seq], latest[p.ID] = p.Name, ev.Seq
+		case proto.PermissionRequested:
+			ran[call(ev, p.ID)] = true
+		case proto.PermissionResolved:
+			ran[call(ev, p.ID)] = true
+		case proto.ToolStarted:
+			ran[call(ev, p.ID)] = true
+		case proto.ToolFinished:
+			if seq := call(ev, p.ID); name[seq] == "done" && p.Outcome == proto.OutcomeOK {
+				ran[seq] = true
 			}
 		}
 	}
