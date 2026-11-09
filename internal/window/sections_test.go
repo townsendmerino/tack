@@ -588,3 +588,35 @@ func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
 		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
 	}
 }
+
+// TestForHitsLoadsAMessagesSections: the sections ken found for a message load once, framed for the message, and a
+// tracker rebuilt from a log holding that message equals the live one.
+func TestForHitsLoadsAMessagesSections(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	initial := live.Initial()
+	note := live.ForHits([][]string{{"notes", "Staging and committing"}, {"notes", "Testing"}})
+	if !strings.HasPrefix(note, "\n\n[Project rules from CLAUDE.md for this message:]") || !strings.Contains(note, "Never git add -A.") ||
+		!strings.Contains(note, "Read for PASS.") {
+		t.Fatalf("note %q", note)
+	}
+	if again := live.ForHits([][]string{{"notes", "Testing"}}); again != "" {
+		t.Errorf("a section in the window loads again: %q", again)
+	}
+	if s := live.ForCall("c1", "bash", bash("git status")); s != "" {
+		t.Errorf("a call after the message brings the same section: %q", s)
+	}
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{
+		proto.Text(initial + note + MessageTask + "Fix the build.")}})
+	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+	if NewInstructions("CLAUDE.md", "# n\n\n## Testing\n\nx\n", 16384).ForHits([][]string{{"n", "Testing"}}) != "" {
+		t.Error("a whole file brings nothing for a message")
+	}
+}

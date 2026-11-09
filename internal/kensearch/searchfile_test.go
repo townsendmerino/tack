@@ -20,9 +20,9 @@ func TestSearchFileKeepsToTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	hits, exact, err := s.SearchFile(context.Background(), "stage explicit paths git add", 5, "CLAUDE.md")
-	if err != nil || !exact {
-		t.Fatalf("exact %v, %v", exact, err)
+	hits, err := s.SearchFile(context.Background(), "stage explicit paths git add", 5, "CLAUDE.md")
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(hits) == 0 || strings.Join(hits[0].HeadingPath, "/") != "Rules/Staging" {
 		t.Fatalf("hits %+v", hits)
@@ -31,10 +31,14 @@ func TestSearchFileKeepsToTheFile(t *testing.T) {
 	if len(all) < 2 || len(hits) >= len(all) {
 		t.Fatalf("the whole search should also find stage.go: %+v", all)
 	}
-	if _, _, err := s.SearchFile(context.Background(), "stage", 5, "AGENTS.md"); err == nil {
+	if _, err := s.SearchFile(context.Background(), "stage", 5, "AGENTS.md"); err == nil {
 		t.Fatal("a file outside the index answered without an error")
 	}
 	if s.Chunks() < 2 {
 		t.Errorf("chunks %d", s.Chunks())
+	}
+	paths, err := s.SectionPaths(context.Background(), "stage explicit paths git add", 5, "CLAUDE.md")
+	if err != nil || len(paths) == 0 || strings.Join(paths[0], "/") != "Rules/Staging" {
+		t.Errorf("section paths %q %v", paths, err)
 	}
 }

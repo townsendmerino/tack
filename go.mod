@@ -5,10 +5,10 @@ go 1.27.3
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ebitengine/purego v0.10.1
-	github.com/townsendmerino/aikit v1.74.0
+	github.com/townsendmerino/aikit v1.76.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.12.1
-	golang.org/x/sys v0.48.0
+	github.com/townsendmerino/ken v1.13.0
+	golang.org/x/sys v0.49.0
 	mvdan.cc/sh/v3 v3.14.1
 )
 

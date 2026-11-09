@@ -185,6 +185,8 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
+	// sectionSearch finds the instruction file's sections for a user message (ken's exact SearchFiles); nil without ken.
+	sectionSearch window.SectionSearcher
 	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
 	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
 	sections *window.Instructions
@@ -576,6 +578,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 				s.instructions, s.notesFirst = initial, !in.Whole()
 			}
 			cfg.Sections, s.sections = in, in
+			s.sectionSearch, _ = searcher.(window.SectionSearcher)
 		}
 	}
 	if history == nil {
@@ -693,6 +696,12 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "repo_map: " + err.Error()}
 		}
 	}
+	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
+	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
+	var paths [][]string
+	if s.sections != nil && s.sectionSearch != nil {
+		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
+	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
 	c.mu.Lock()
 	if h := c.halted; h != nil {
@@ -713,18 +722,28 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	s.running, s.cancel = true, cancel
 	// The instructions, the map and the injection join the first message itself, so the log holds exactly what the model
 	// was sent. Map and injection sit after the head and before the task, so the message still ends with the task.
+	// The sections ken found go last before the task, so the message still ends with it and Replay finds their note's
+	// end at window.MessageTask.
 	statement := text.String()
+	hits := ""
+	if len(paths) > 0 {
+		hits = s.sections.ForHits(paths)
+	}
 	switch {
 	case s.prompted:
+		if hits != "" {
+			text.Reset()
+			text.WriteString(hits + window.MessageTask + statement)
+		}
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
-		text.WriteString(s.instructions + "\n\n")
+		text.WriteString(s.instructions)
 		for _, part := range []string{repoMap, inject} {
 			if part != "" {
-				text.WriteString(part + "\n\n")
+				text.WriteString("\n\n" + part)
 			}
 		}
-		text.WriteString(headTaskLabel + statement)
+		text.WriteString(hits + window.MessageTask + statement)
 	case repoMap != "" || inject != "":
 		text.Reset()
 		for _, part := range []string{repoMap, inject} {
