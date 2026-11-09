@@ -100,6 +100,8 @@ type Options struct {
 	// LeanResults cuts a whole-file read at readLeanLines and grep at grepLeanMatches, each with its narrowing hint, so
 	// exploring takes less of the window (calibration §16.1).
 	LeanResults bool
+	// RecentlyChanged adds recently_changed: the workspace's uncommitted changes and recent commits, from git (recent.go).
+	RecentlyChanged bool
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -119,6 +121,9 @@ func New(o Options) *Set {
 		read, grep = readLeanLines, grepLeanMatches
 	}
 	ts = append(ts, readTool{symbols: o.Symbols != nil, lines: read}, globTool{}, grepTool{max: grep})
+	if o.RecentlyChanged {
+		ts = append(ts, recentTool{})
+	}
 	if o.Write {
 		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits,
 			cur: o.CurrentSymbol, tolerant: o.EditTolerances},

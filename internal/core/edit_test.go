@@ -3,11 +3,14 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,8 @@ import (
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
+	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 type noShell struct{}
@@ -517,6 +522,221 @@ func TestCompactAtCliffThroughTheCore(t *testing.T) {
 		}
 		if !note || got != want {
 			t.Errorf("CompactAtCliff %v: the note given %v, %d cliff compactions of the grep, want %d", on, note, got, want)
+		}
+	}
+}
+
+// TestSectionInstructionsThroughTheCore: with SectionInstructions, an instruction file over its budget gives the first
+// message its opening and an outline, before the task; the testing section arrives with the write of a _test.go file,
+// in that call's result, and not with the first message.
+func TestSectionInstructionsThroughTheCore(t *testing.T) {
+	f := newFixture(t,
+		goinfertest.Calls("", "w1", "write", `{"path":"b_test.go","content":"package a\n"}`),
+		goinfertest.Calls("", "d1", "done", `{"reason":"added the test"}`))
+	md := "# notes\n\nIntro: read this first.\n\n## Testing\n\nRun go test with -v.\n\n## Filler\n\n" +
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300)
+	ws := gitWorkspace(t, md)
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	evs := f.waitTurnEnd(t)
+	var first string
+	var results []string
+	for _, ev := range evs {
+		switch v, _ := ev.Decode(); p := v.(type) {
+		case proto.UserMessage:
+			first = p.Content[0].Text
+		case proto.ToolFinished:
+			results = append(results, p.Result)
+		}
+	}
+	if !strings.HasPrefix(first, "Project notes from CLAUDE.md, for reference:\n\n# notes\n\nIntro: read this first.") ||
+		!strings.Contains(first, "Testing (lines 5–8)") || strings.Contains(first, "Run go test with -v.") ||
+		!strings.HasSuffix(first, "Task: Add a test.") {
+		t.Fatalf("first message %q", first)
+	}
+	if len(results) != 2 || !strings.Contains(results[0], "[Project rules from CLAUDE.md for this call:]\n\n## Testing\n\nRun go test with -v.") {
+		t.Fatalf("results %q", results)
+	}
+	// The session's tracker rebuilt from its log, as a resumed session's is, equals the live one.
+	f.core.mu.Lock()
+	live := f.core.sessions[sid].sections
+	f.core.mu.Unlock()
+	logged, err := f.core.opt.Store.Events(sid, 0)
+	if err != nil || live == nil {
+		t.Fatalf("events %v, tracker %v", err, live)
+	}
+	re := window.NewInstructions("CLAUDE.md", md, window.NewBudget(16384))
+	if err := re.Replay(logged); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lb, lu := live.Loaded()
+	ri, ro, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru || !slices.Contains(lb, "w1") {
+		t.Fatalf("rebuilt tracker differs:\nlive    %v %v %q %d\nrebuilt %v %v %q %d", li, lo, lb, lu, ri, ro, rb, ru)
+	}
+}
+
+// TestKnowledgeThroughTheCore: with Knowledge, the first message carries the index of .agents/knowledge/ and a read of
+// a page's pinned file brings the page into that read's result; without it (every measured run), neither.
+func TestKnowledgeThroughTheCore(t *testing.T) {
+	sum := sha256.Sum256([]byte("package a\n"))
+	page := "---\ntitle: Package a\npins: a.go sha256:" + hex.EncodeToString(sum[:])[:16] + "\n---\nA is empty on purpose.\n"
+	for _, on := range []bool{true, false} {
+		f := newFixture(t, goinfertest.Calls("", "r1", "read", `{"path":"a.go"}`), goinfertest.Says("It is empty."))
+		ws := gitWorkspace(t, "")
+		os.MkdirAll(filepath.Join(ws, ".agents", "knowledge"), 0o755)
+		os.WriteFile(filepath.Join(ws, ".agents", "knowledge", "a.md"), []byte(page), 0o644)
+		f.core.opt.Knowledge = on
+		sid, err := f.sessionIn(t, ws, proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+			Content: []proto.ContentBlock{proto.Text("What is in a.go?")}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		var first string
+		var results []string
+		for _, ev := range f.waitTurnEnd(t) {
+			switch v, _ := ev.Decode(); p := v.(type) {
+			case proto.UserMessage:
+				first = p.Content[0].Text
+			case proto.ToolFinished:
+				results = append(results, p.Result)
+			}
+		}
+		hasIndex := strings.Contains(first, "- Package a (.agents/knowledge/a.md; pinned to a.go)")
+		hasPage := len(results) == 1 && strings.Contains(results[0], "A is empty on purpose.")
+		if hasIndex != on || hasPage != on || !strings.HasSuffix(first, "What is in a.go?") {
+			t.Errorf("knowledge %v: index %v, page %v\nfirst %q\nresults %q", on, hasIndex, hasPage, first, results)
+		}
+	}
+}
+
+// TestSectionInstructionsWholeFileFollowsTheTask: under SectionInstructions, a file within the budget is loaded whole
+// after the task, where WholeInstructions puts it.
+func TestSectionInstructionsWholeFileFollowsTheTask(t *testing.T) {
+	f := newFixture(t, goinfertest.Calls("", "d1", "done", `{"reason":"nothing to do"}`), goinfertest.Calls("", "d2", "done", `{"reason":"none"}`))
+	ws := gitWorkspace(t, "# notes\n\nRun go test.\n")
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	for _, ev := range f.waitTurnEnd(t) {
+		if v, _ := ev.Decode(); first == "" {
+			if m, ok := v.(proto.UserMessage); ok {
+				first = m.Content[0].Text
+			}
+		}
+	}
+	if !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
+		t.Fatalf("first message %q", first)
+	}
+}
+
+// pathsSearcher is ken for the core: no hits from search, and from the instruction file the heading paths it is set
+// to, recording what it was asked.
+type pathsSearcher struct {
+	paths [][]string
+	asked []string
+}
+
+func (p *pathsSearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
+
+func (p *pathsSearcher) SectionPaths(_ context.Context, query string, _ int, file string) ([][]string, error) {
+	p.asked = append(p.asked, file+": "+query)
+	return p.paths, nil
+}
+
+// TestSectionsForAMessageThroughTheCore: with ken, the instruction file's sections for the user's message join the
+// first message before the task; a later message's join its own; the message still ends with the task.
+func TestSectionsForAMessageThroughTheCore(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	ws := gitWorkspace(t, "# notes\n\nIntro.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n## Filler\n\n"+
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300))
+	ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+	f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, true
+	f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+	sid, err := f.sessionIn(t, ws, proto.ModePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	messages := func() []string {
+		var out []string
+		for _, ev := range f.waitTurnEnd(t) {
+			if v, _ := ev.Decode(); ev.Type == proto.EvUserMessage {
+				out = append(out, v.(proto.UserMessage).Content[0].Text)
+			}
+		}
+		return out
+	}
+	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+	first := messages()
+	if len(first) != 1 || !strings.Contains(first[0], "[Project rules from CLAUDE.md for this message:]\n\n## Testing\n\nRun go test with -v.") ||
+		!strings.HasSuffix(first[0], "\n\nTask: How do I test?") || !strings.HasPrefix(first[0], "Project notes from CLAUDE.md") {
+		t.Fatalf("first message %q", first)
+	}
+	ps.paths = [][]string{{"notes", "Testing"}, {"notes", "Releases"}}
+	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("And releases?")}}, nil)
+	second := messages()
+	if len(second) != 1 || second[0] != "\n\n[Project rules from CLAUDE.md for this message:]\n\n## Releases\n\nTag from main.\n\n\nTask: And releases?" {
+		t.Fatalf("second message %q", second)
+	}
+	if len(ps.asked) != 2 || ps.asked[0] != "CLAUDE.md: How do I test?" {
+		t.Errorf("asked %q", ps.asked)
+	}
+}
+
+// TestSectionSearchIsOffByDefaultAndSkipsAWholeFile: without SectionSearch ken is not asked; with it, a file loaded
+// whole is not searched either, since nothing could load.
+func TestSectionSearchIsOffByDefaultAndSkipsAWholeFile(t *testing.T) {
+	for name, c := range map[string]struct {
+		search bool
+		md     string
+	}{"off": {false, "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Filler\n\n" + strings.Repeat("filler line of text\n", 400)},
+		"whole": {true, "# notes\n\n## Testing\n\nRun go test.\n"}} {
+		f := newFixture(t, goinfertest.Says("one"))
+		ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+		f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, c.search
+		f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+		sid, err := f.sessionIn(t, gitWorkspace(t, c.md), proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+		f.waitTurnEnd(t)
+		if len(ps.asked) != 0 {
+			t.Errorf("%s: ken was asked %q", name, ps.asked)
 		}
 	}
 }

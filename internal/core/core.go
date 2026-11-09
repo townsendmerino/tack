@@ -100,6 +100,8 @@ type Options struct {
 	EditTolerances bool
 	// LeanResults cuts whole-file reads and grep shorter (tools.Options.LeanResults; calibration §16.1).
 	LeanResults bool
+	// RecentlyChanged gives every session the recently_changed tool (tools.Options.RecentlyChanged).
+	RecentlyChanged bool
 	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// WidenRepeats widens a repeated whole read or grep (loop.Config.WidenRepeats).
@@ -127,6 +129,19 @@ type Options struct {
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
 	WholeInstructions bool
+	// SectionSearch adds ken's route to SectionInstructions: before each prompt, ken's hits for the message in the
+	// instruction file bring their sections into it (window.Instructions.ForHits). It needs a searcher that is a
+	// window.SectionSearcher, and does nothing for a file loaded whole.
+	SectionSearch bool
+	// SectionInstructions reads the workspace's instruction file by section instead (window.Instructions; DESIGN §2.3):
+	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
+	// brings in to its result. WholeInstructions wins when both are set.
+	SectionInstructions bool
+	// Knowledge reads the workspace's .agents/knowledge/ pages (window.Knowledge; ADR-007): the first message carries
+	// their index, and a tool call that reads or edits a page's pinned file adds the page to its result, sharing
+	// SectionInstructions' budget. WholeInstructions turns it off, as it does SectionInstructions. Measured runs leave
+	// it off.
+	Knowledge bool
 }
 
 // EditKit is what an auto-mode session changes its workspace with.
@@ -147,6 +162,7 @@ type Core struct {
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
 	reopenMu sync.Mutex // held while a session is reopened from the store
+	closed   bool       // under mu: Close has run; nothing is reopened or made
 
 	mu        sync.Mutex
 	sessions  map[proto.SessionID]*session
@@ -161,20 +177,33 @@ type Core struct {
 }
 
 type session struct {
+	// wmu is held from taking the log back to appending to it, by a turn's start and by Halt, and around a turn's
+	// end giving it up. So a log taken back is not given up before its append, and what another process wrote while
+	// it was idle reaches subscribers before anything appended after it. Taken before mu.
+	wmu     sync.Mutex
 	mu      sync.Mutex
 	id      proto.SessionID
 	log     *store.Log
+	hold    *store.Hold // this Core's claim on the session while it has it in memory; released by Close
 	loop    *loop.Session
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
 	subs    map[*subscriber]bool
 	target  sandbox.Target // what Halt sweeps for this session
 	kit     func() error   // the edit kit's Close, or nil
-	// instructions is WholeInstructions' text, added to the first prompt; prompted says it has been. notesFirst puts it
-	// before the prompt, which then follows under "Task:" (the budgeted head, instructions.go); else it follows the prompt.
+	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
+	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
+	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
-	prompted     bool
+	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it.
+	know *window.Knowledge
+	// sectionSearch finds the instruction file's sections for a user message (ken's exact SearchFiles); nil without ken.
+	sectionSearch window.SectionSearcher
+	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
+	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
+	sections *window.Instructions
+	prompted bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
 	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
@@ -195,10 +224,17 @@ func New(ctx context.Context, opt Options) *Core {
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
-// another process may open it. No turn may be running.
+// another process may open it. No turn may be running. It is final: it waits for a reopen in progress, and after it
+// no session is reopened or made, so none is left open behind it. Closing again is a no-op.
 func (c *Core) Close() error {
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
 	var errs []error
 	for _, s := range c.sources {
 		errs = append(errs, s.Close())
@@ -215,13 +251,14 @@ func (c *Core) Close() error {
 		if s.kit != nil {
 			errs = append(errs, s.kit())
 		}
-		errs = append(errs, s.log.Close())
+		errs = append(errs, s.log.Close(), s.hold.Release())
 	}
 	if c.opt.HaltDir != "" {
 		for id := range c.sessions {
 			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
+	c.sessions, c.sources, c.searchers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
 	return errors.Join(errs...)
 }
 
@@ -308,10 +345,16 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if perr != nil {
 			return nil, perr
 		}
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if draining { // a connection accepted just before the shutdown: the next daemon takes its turns
+			return nil, &proto.Error{Code: proto.CodeShuttingDown, Message: "initialize: this daemon is shutting down; connect again to reach the next one"}
+		}
 		version, ok := proto.Negotiate(p.Protocol, proto.Version)
 		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
-				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d and %d", p.Protocol, proto.Version, proto.Version-1)}
+				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %s", p.Protocol, spoken())}
 		}
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
@@ -331,7 +374,11 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		id, err := c.newSession(p)
-		if err != nil {
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe):
+			return nil, pe // errClosed
+		case err != nil:
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: err.Error()}
 		}
 		return proto.SessionNewResult{Session: id}, nil
@@ -383,7 +430,11 @@ func (c *Core) session(id proto.SessionID) (*session, *proto.Error) {
 	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	s, ok = c.sessions[id]
+	closed := c.closed
 	c.mu.Unlock()
+	if closed {
+		return nil, errClosed
+	}
 	if ok {
 		return s, nil // another connection reopened it while this one waited
 	}
@@ -412,6 +463,18 @@ func (c *Core) source(model string) (models.Source, error) {
 }
 
 func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
+	// Held throughout, as a reopen holds it, so a Close waits for the session being made and closes it with the rest.
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return "", errClosed
+	}
+	if madeHook != nil {
+		madeHook()
+	}
 	switch p.Mode {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
@@ -435,23 +498,29 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		return "", fmt.Errorf("ken: %w", err)
 	}
 	id := store.NewSessionID(time.Now())
-	log, err := c.opt.Store.Create(id)
+	log, hold, err := c.opt.Store.CreateHeld(id)
 	if err != nil {
 		return "", err
 	}
+	discard := func() {
+		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		hold.Release()
+	}
 	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
 	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
-		c.opt.Store.Discard(log)
+		discard()
 		return "", err
 	}
 	s, err := c.open(id, log, ws, created, nil)
 	if err != nil {
-		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		discard()
 		return "", err
 	}
-	c.mu.Lock()
+	s.hold = hold
+	c.mu.Lock() // Close waits for the reopen lock this holds, so it has not run
 	c.sessions[id] = s
 	c.mu.Unlock()
+	_ = s.log.Idle() // until its first prompt: another process may write it meanwhile
 	return id, nil
 }
 
@@ -482,7 +551,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults}
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
@@ -498,7 +567,8 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
-			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults})
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
+			RecentlyChanged: c.opt.RecentlyChanged})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
@@ -517,9 +587,91 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	case c.opt.WholeInstructions:
 		s.instructions = readInstructions(ws.Root())
 	}
+	// Sections and knowledge pages are tracked in a resumed session too: its tool calls still bring them in. Its first
+	// message, which the log holds, is not built again.
+	if (c.opt.SectionInstructions || c.opt.Knowledge) && !c.opt.WholeInstructions {
+		w := servedWindow(c.ctx, src)
+		budget := window.NewBudget(w)
+		var parts []string
+		var loads multiSections
+		// The knowledge index is priced first, at its own small cap, so the instruction file gets what is left and the
+		// two together stay in the budget; in the message the instructions come first.
+		index, wholeFile := "", false // wholeFile: the instruction file is loaded whole
+		var know *window.Knowledge
+		if c.opt.Knowledge {
+			pages, err := window.LoadPages(ws.Root())
+			if err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, fmt.Errorf("knowledge pages: %w", err)
+			}
+			if len(pages) > 0 {
+				know = window.NewKnowledge(ws.Root(), pages, w, budget)
+				if prompted {
+					// A reopened session's tracker is rebuilt from its log before anything is priced: first its index
+					// as logged, with each page's freshness as the session judged it; what it loaded comes after the
+					// instruction file is sized, so the file sees the budget a new session's did.
+					if err := know.ReplayIndex(history); err != nil {
+						c.unregister(id)
+						if s.kit != nil {
+							s.kit()
+						}
+						return nil, err
+					}
+				} else {
+					index = know.Index()
+				}
+			}
+		}
+		if c.opt.SectionInstructions {
+			if name, content := readInstructionFile(ws.Root()); name != "" {
+				in := window.NewInstructions(name, content, budget)
+				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+				s.sections = in
+				s.sectionSearch, _ = searcher.(window.SectionSearcher)
+			}
+		}
+		if know != nil && prompted {
+			if err := know.ReplayNotes(history); err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, err
+			}
+		}
+		if know != nil {
+			if index != "" {
+				parts = append(parts, index)
+			}
+			loads = append(loads, know)
+			s.know = know
+		}
+		if len(parts) > 0 && !prompted {
+			// A whole file alone follows the task, as WholeInstructions puts it; sections and the knowledge index are notes
+			// before it.
+			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), !(wholeFile && len(parts) == 1)
+		}
+		if len(loads) > 0 {
+			cfg.Sections = loads
+		}
+	}
 	if history == nil {
 		s.loop = loop.New(cfg)
 		return s, nil
+	}
+	// A reopened session's section tracker is rebuilt from its log, so sections already in its window are not loaded
+	// again.
+	if s.sections != nil {
+		if err = s.sections.Replay(history); err != nil {
+			c.unregister(id)
+			if s.kit != nil {
+				s.kit()
+			}
+			return nil, err
+		}
 	}
 	if s.loop, err = loop.Resume(cfg, history); err != nil {
 		c.unregister(id)
@@ -561,7 +713,7 @@ func (c *Core) replay(cn *conn, req proto.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := &subscriber{conn: cn}
+	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
 		_ = cn.send(notification(s.id, ev))
@@ -621,6 +773,12 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "repo_map: " + err.Error()}
 		}
 	}
+	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
+	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
+	var paths [][]string
+	if c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
+		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
+	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
 	c.mu.Lock()
 	if h := c.halted; h != nil {
@@ -641,18 +799,28 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	s.running, s.cancel = true, cancel
 	// The instructions, the map and the injection join the first message itself, so the log holds exactly what the model
 	// was sent. Map and injection sit after the head and before the task, so the message still ends with the task.
+	// The sections ken found go last before the task, so the message still ends with it and Replay finds their note's
+	// end at window.MessageTask.
 	statement := text.String()
+	hits := ""
+	if len(paths) > 0 {
+		hits = s.sections.ForHits(paths)
+	}
 	switch {
 	case s.prompted:
+		if hits != "" {
+			text.Reset()
+			text.WriteString(hits + window.MessageTask + statement)
+		}
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
-		text.WriteString(s.instructions + "\n\n")
+		text.WriteString(s.instructions)
 		for _, part := range []string{repoMap, inject} {
 			if part != "" {
-				text.WriteString(part + "\n\n")
+				text.WriteString("\n\n" + part)
 			}
 		}
-		text.WriteString(headTaskLabel + statement)
+		text.WriteString(hits + window.MessageTask + statement)
 	case repoMap != "" || inject != "":
 		text.Reset()
 		for _, part := range []string{repoMap, inject} {
@@ -667,15 +835,38 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.instructions != "":
 		text.WriteString("\n\n" + s.instructions)
 	}
-	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
-	seq, err := s.loop.Start(text.String())
+	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
+	// subscribers see it before this turn's own events. The loop needs nothing from it: a rewind changes files, and
+	// edit checks a file's current text against what the model saw.
+	s.wmu.Lock()
+	foreign, err := s.log.Wake()
+	if err == nil {
+		for _, ev := range foreign {
+			s.emit(ev)
+		}
+	}
+	var seq int64
+	if err == nil {
+		seq, err = s.loop.Start(text.String())
+	}
+	s.mu.Lock()
+	if err != nil {
+		s.running, s.cancel = false, nil
+		_ = s.log.Idle()
+	} else {
+		// Only once the user.message is logged: a prompt refused here added nothing, so the next one is still the
+		// first. s.running kept any other prompt out until now.
+		s.prompted = true
+	}
+	s.mu.Unlock()
+	s.wmu.Unlock()
 	if err != nil {
 		cancel(nil)
-		s.mu.Lock()
-		s.running, s.cancel = false, nil
-		s.mu.Unlock()
+		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
+			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
+		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	// A source that has to start or load first (an on-demand server) says how it stands; subscribers hear it live, for
@@ -688,9 +879,17 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	go func() {
 		_, _ = s.loop.Run(tctx)
 		cancel(nil)
+		if h := turnEndHook.Load(); h != nil {
+			(*h)()
+		}
+		// Under wmu, so not between a Halt's wake and append; and under s.mu with the end of running, so a Halt never
+		// sees a turn that has let its log go, nor idles one that has not.
+		s.wmu.Lock()
 		s.mu.Lock()
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
+		s.wmu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
 }
@@ -748,10 +947,35 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		for _, p := range listed {
 			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
 		}
-		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
-			s.emit(e)
-		}
+		s.recordAside(proto.EvDaemonHaltRefused, ev)
 	}
+}
+
+// recordAside appends an event to the session's log from outside a turn's own writes (Halt's daemon.halt_refused) and
+// passes it on, after what another process wrote while the log was idle. While another process is writing the log
+// the event goes unrecorded: appending would take the log back and swallow what that process wrote. A running turn
+// keeps its log; an idle session's is given up again.
+func (s *session) recordAside(typ proto.EventType, payload any) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	foreign, err := s.log.Wake()
+	if err != nil {
+		return
+	}
+	for _, ev := range foreign {
+		s.emit(ev)
+	}
+	if haltHook != nil {
+		haltHook()
+	}
+	if e, err := s.log.Append(typ, 0, payload); err == nil {
+		s.emit(e)
+	}
+	s.mu.Lock() // the check and the idle together, as a turn's end does them
+	if !s.running {
+		_ = s.log.Idle() // the append took the lock back; a running turn keeps it
+	}
+	s.mu.Unlock()
 }
 
 // Resume lets new turns start again.
@@ -776,6 +1000,29 @@ func workspaceChanged(root string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// multiSections is several loop.Sections as one: each call's texts in order, and every compaction told to all.
+type multiSections []loop.Sections
+
+func (m multiSections) ForCall(id, tool string, input json.RawMessage) string {
+	var b strings.Builder
+	for _, s := range m {
+		b.WriteString(s.ForCall(id, tool, input))
+	}
+	return b.String()
+}
+
+func (m multiSections) Masked(ids []string) {
+	for _, s := range m {
+		s.Masked(ids)
+	}
+}
+
+func (m multiSections) Drop(id string) {
+	for _, s := range m {
+		s.Drop(id)
+	}
 }
 
 // readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".
