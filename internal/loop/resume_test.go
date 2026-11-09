@@ -2,8 +2,10 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
@@ -87,5 +89,29 @@ func TestResumeCountsOnlyCallsThatRan(t *testing.T) {
 	}
 	if h.sess.calls != 1 || r.calls != h.sess.calls {
 		t.Fatalf("live counted %d calls, resumed %d; want 1 and 1", h.sess.calls, r.calls)
+	}
+}
+
+// TestResumeCountsCallsWithoutCause: an event that names its call by id alone, with no cause, still counts the call
+// it belongs to.
+func TestResumeCountsCallsWithoutCause(t *testing.T) {
+	in := json.RawMessage(`{"pattern":"*.go"}`)
+	ev := func(seq int64, typ proto.EventType, cause int64, payload any) proto.Event {
+		e, err := proto.NewEvent(seq, time.Now(), typ, cause, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	history := []proto.Event{
+		ev(1, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("x")}}),
+		ev(2, proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{{Type: "tool_use", ID: "t1", Name: "glob", Input: in}}}),
+		ev(3, proto.EvToolCall, 2, proto.ToolCall{ID: "t1", Name: "glob", Input: in}),
+		ev(4, proto.EvToolStarted, 0, proto.ToolStarted{ID: "t1"}),
+		ev(5, proto.EvToolFinished, 0, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeOK, Result: "a.go"}),
+		ev(6, proto.EvTurnEnd, 1, proto.TurnEnd{StopReason: proto.StopEndTurn}),
+	}
+	if n := callsRan(history); n != 1 {
+		t.Fatalf("callsRan = %d; want the started call counted", n)
 	}
 }

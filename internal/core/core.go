@@ -147,6 +147,7 @@ type Core struct {
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
 	reopenMu sync.Mutex // held while a session is reopened from the store
+	closed   bool       // under mu: Close has run; nothing is reopened or made
 
 	mu        sync.Mutex
 	sessions  map[proto.SessionID]*session
@@ -195,10 +196,17 @@ func New(ctx context.Context, opt Options) *Core {
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
-// another process may open it. No turn may be running.
+// another process may open it. No turn may be running. It is final: it waits for a reopen in progress, and after it
+// no session is reopened or made, so none is left open behind it. Closing again is a no-op.
 func (c *Core) Close() error {
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
 	var errs []error
 	for _, s := range c.sources {
 		errs = append(errs, s.Close())
@@ -222,6 +230,7 @@ func (c *Core) Close() error {
 			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
+	c.sessions, c.sources, c.searchers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
 	return errors.Join(errs...)
 }
 
@@ -383,7 +392,11 @@ func (c *Core) session(id proto.SessionID) (*session, *proto.Error) {
 	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	s, ok = c.sessions[id]
+	closed := c.closed
 	c.mu.Unlock()
+	if closed {
+		return nil, errClosed
+	}
 	if ok {
 		return s, nil // another connection reopened it while this one waited
 	}
@@ -412,6 +425,12 @@ func (c *Core) source(model string) (models.Source, error) {
 }
 
 func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return "", errors.New("the daemon is closing")
+	}
 	switch p.Mode {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
@@ -450,6 +469,11 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		return "", err
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		c.discard(s)
+		return "", errors.New("the daemon is closing")
+	}
 	c.sessions[id] = s
 	c.mu.Unlock()
 	return id, nil

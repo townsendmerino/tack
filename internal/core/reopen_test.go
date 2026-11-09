@@ -347,3 +347,102 @@ func TestAFailedSessionLeavesNoLog(t *testing.T) {
 		t.Fatalf("the store holds %v (%v) after the failed session/new; want nothing", ids, err)
 	}
 }
+
+// TestRecoverRecordsCallsTheCrashCutOffBeforeTheirToolCall: the model's response and its tool.call events are separate
+// appends, so a crash can land between them. Recovery records the missing tool.call from the response's tool_use
+// block, then answers it as not run, so the turn closes whole and the session reopens.
+func TestRecoverRecordsCallsTheCrashCutOffBeforeTheirToolCall(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	id := store.NewSessionID(time.Now())
+	log, _ := st.Create(id)
+	in := json.RawMessage(`{"pattern":"*.go"}`)
+	log.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws, Model: "main", Mode: proto.ModePlan})
+	log.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(loop.UserText(true, ws, "two"))}})
+	msg, _ := log.Append(proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{
+		{Type: "tool_use", ID: "t1", Name: "glob", Input: in}, {Type: "tool_use", ID: "t2", Name: "glob", Input: in}}})
+	log.Append(proto.EvToolCall, msg.Seq, proto.ToolCall{ID: "t1", Name: "glob", Input: in}) // the crash: t2's never written
+	log.Close()
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("recovered"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	c, cl, events := daemonOn(t, st, ts.URL)
+	if _, err := c.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := st.Events(id, 0)
+	var calls, fins []string
+	for _, ev := range evs {
+		switch v, _ := ev.Decode(); p := v.(type) {
+		case proto.ToolCall:
+			calls = append(calls, p.ID)
+		case proto.ToolFinished:
+			fins = append(fins, p.ID+" "+p.Outcome)
+		}
+	}
+	if strings.Join(calls, ",") != "t1,t2" || strings.Join(fins, ",") != "t1 cancelled,t2 cancelled" {
+		t.Fatalf("after recovery: calls %v, results %v; want t2's call recorded and both answered not run", calls, fins)
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id, FromSeq: int64(len(evs) + 1)}, nil); err != nil {
+		t.Fatalf("reopening the recovered session: %v", err)
+	}
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("go on")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	untilTurnEnd(t, events)
+}
+
+// TestRecoverLeavesALogFromBeforeTheDaemonAlone: a log without session.created, which reopen refuses, is not
+// written to either.
+func TestRecoverLeavesALogFromBeforeTheDaemonAlone(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := store.NewSessionID(time.Now())
+	log, _ := st.Create(id)
+	log.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("from P0, cut off")}})
+	log.Close()
+	c, _, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	if got, err := c.Recover(); err != nil || len(got) != 0 {
+		t.Fatalf("Recover = %v, %v; want the P0 log left alone", got, err)
+	}
+	if evs, _ := st.Events(id, 0); len(evs) != 1 {
+		t.Fatalf("the P0 log has %d events, want its 1", len(evs))
+	}
+}
+
+// TestCloseIsFinal: a closed Core reopens nothing, so no session's log can be left open behind it; closing it again
+// is a no-op.
+func TestCloseIsFinal(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	c, cl, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("a second Close: %v", err)
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err == nil {
+		t.Fatal("a closed Core reopened a session")
+	}
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); err == nil {
+		t.Fatal("a closed Core made a session")
+	}
+	l, err := st.OpenLog(sess.Session)
+	if err != nil {
+		t.Fatalf("the session's log after Close: %v, want it free", err)
+	}
+	l.Close()
+}
