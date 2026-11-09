@@ -162,7 +162,8 @@ func (s *Session) summarize(ctx context.Context, srv server.Server, next int, ca
 	if s.cfg.Sections != nil && len(ids) > 0 {
 		s.cfg.Sections.Masked(ids) // their notes left with them, so their sections may load again
 	}
-	s.summarizedTo, s.body, s.sumFloor = covered[len(covered)-1], sum.Body, 0
+	// The body as a resume reads it back from the log, so the live one is the same by construction, whatever the model wrote.
+	s.summarizedTo, s.body, s.sumFloor = covered[len(covered)-1], bodyOf(text), 0
 	s.compacted, s.maskFloor = true, 0
 	_, err = s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: "summary", Prompt: s.lastPrompt,
 		Window: s.cfg.Source.Window(), Masked: []proto.MaskedResult{}, Before: before, After: len(text), Summary: text,
