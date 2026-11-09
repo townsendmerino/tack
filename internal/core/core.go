@@ -147,6 +147,7 @@ type Core struct {
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
 	reopenMu sync.Mutex // held while a session is reopened from the store
+	closed   bool       // under mu: Close has run; nothing is reopened or made
 
 	mu        sync.Mutex
 	sessions  map[proto.SessionID]*session
@@ -161,9 +162,14 @@ type Core struct {
 }
 
 type session struct {
+	// wmu is held from taking the log back to appending to it, by a turn's start and by Halt, and around a turn's
+	// end giving it up. So a log taken back is not given up before its append, and what another process wrote while
+	// it was idle reaches subscribers before anything appended after it. Taken before mu.
+	wmu     sync.Mutex
 	mu      sync.Mutex
 	id      proto.SessionID
 	log     *store.Log
+	hold    *store.Hold // this Core's claim on the session while it has it in memory; released by Close
 	loop    *loop.Session
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
@@ -195,10 +201,17 @@ func New(ctx context.Context, opt Options) *Core {
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
-// another process may open it. No turn may be running.
+// another process may open it. No turn may be running. It is final: it waits for a reopen in progress, and after it
+// no session is reopened or made, so none is left open behind it. Closing again is a no-op.
 func (c *Core) Close() error {
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
 	var errs []error
 	for _, s := range c.sources {
 		errs = append(errs, s.Close())
@@ -215,13 +228,14 @@ func (c *Core) Close() error {
 		if s.kit != nil {
 			errs = append(errs, s.kit())
 		}
-		errs = append(errs, s.log.Close())
+		errs = append(errs, s.log.Close(), s.hold.Release())
 	}
 	if c.opt.HaltDir != "" {
 		for id := range c.sessions {
 			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
+	c.sessions, c.sources, c.searchers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
 	return errors.Join(errs...)
 }
 
@@ -311,7 +325,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		version, ok := proto.Negotiate(p.Protocol, proto.Version)
 		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
-				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d and %d", p.Protocol, proto.Version, proto.Version-1)}
+				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %s", p.Protocol, spoken())}
 		}
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
@@ -331,7 +345,11 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		id, err := c.newSession(p)
-		if err != nil {
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe):
+			return nil, pe // errClosed
+		case err != nil:
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: err.Error()}
 		}
 		return proto.SessionNewResult{Session: id}, nil
@@ -383,7 +401,11 @@ func (c *Core) session(id proto.SessionID) (*session, *proto.Error) {
 	defer c.reopenMu.Unlock()
 	c.mu.Lock()
 	s, ok = c.sessions[id]
+	closed := c.closed
 	c.mu.Unlock()
+	if closed {
+		return nil, errClosed
+	}
 	if ok {
 		return s, nil // another connection reopened it while this one waited
 	}
@@ -412,6 +434,18 @@ func (c *Core) source(model string) (models.Source, error) {
 }
 
 func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
+	// Held throughout, as a reopen holds it, so a Close waits for the session being made and closes it with the rest.
+	c.reopenMu.Lock()
+	defer c.reopenMu.Unlock()
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return "", errClosed
+	}
+	if madeHook != nil {
+		madeHook()
+	}
 	switch p.Mode {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
@@ -435,23 +469,29 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		return "", fmt.Errorf("ken: %w", err)
 	}
 	id := store.NewSessionID(time.Now())
-	log, err := c.opt.Store.Create(id)
+	log, hold, err := c.opt.Store.CreateHeld(id)
 	if err != nil {
 		return "", err
 	}
+	discard := func() {
+		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		hold.Release()
+	}
 	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
 	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
-		c.opt.Store.Discard(log)
+		discard()
 		return "", err
 	}
 	s, err := c.open(id, log, ws, created, nil)
 	if err != nil {
-		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		discard()
 		return "", err
 	}
-	c.mu.Lock()
+	s.hold = hold
+	c.mu.Lock() // Close waits for the reopen lock this holds, so it has not run
 	c.sessions[id] = s
 	c.mu.Unlock()
+	_ = s.log.Idle() // until its first prompt: another process may write it meanwhile
 	return id, nil
 }
 
@@ -561,7 +601,7 @@ func (c *Core) replay(cn *conn, req proto.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := &subscriber{conn: cn}
+	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
 		_ = cn.send(notification(s.id, ev))
@@ -667,23 +707,54 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.instructions != "":
 		text.WriteString("\n\n" + s.instructions)
 	}
-	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
-	seq, err := s.loop.Start(text.String())
+	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
+	// subscribers see it before this turn's own events. The loop needs nothing from it: a rewind changes files, and
+	// edit checks a file's current text against what the model saw.
+	s.wmu.Lock()
+	foreign, err := s.log.Wake()
+	if err == nil {
+		for _, ev := range foreign {
+			s.emit(ev)
+		}
+	}
+	var seq int64
+	if err == nil {
+		seq, err = s.loop.Start(text.String())
+	}
+	s.mu.Lock()
+	if err != nil {
+		s.running, s.cancel = false, nil
+		_ = s.log.Idle()
+	} else {
+		// Only once the user.message is logged: a prompt refused here added nothing, so the next one is still the
+		// first. s.running kept any other prompt out until now.
+		s.prompted = true
+	}
+	s.mu.Unlock()
+	s.wmu.Unlock()
 	if err != nil {
 		cancel(nil)
-		s.mu.Lock()
-		s.running, s.cancel = false, nil
-		s.mu.Unlock()
+		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
+			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
+		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
+		if h := turnEndHook.Load(); h != nil {
+			(*h)()
+		}
+		// Under wmu, so not between a Halt's wake and append; and under s.mu with the end of running, so a Halt never
+		// sees a turn that has let its log go, nor idles one that has not.
+		s.wmu.Lock()
 		s.mu.Lock()
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
+		s.wmu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
 }
@@ -741,10 +812,35 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		for _, p := range listed {
 			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
 		}
-		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
-			s.emit(e)
-		}
+		s.recordAside(proto.EvDaemonHaltRefused, ev)
 	}
+}
+
+// recordAside appends an event to the session's log from outside a turn's own writes (Halt's daemon.halt_refused) and
+// passes it on, after what another process wrote while the log was idle. While another process is writing the log
+// the event goes unrecorded: appending would take the log back and swallow what that process wrote. A running turn
+// keeps its log; an idle session's is given up again.
+func (s *session) recordAside(typ proto.EventType, payload any) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	foreign, err := s.log.Wake()
+	if err != nil {
+		return
+	}
+	for _, ev := range foreign {
+		s.emit(ev)
+	}
+	if haltHook != nil {
+		haltHook()
+	}
+	if e, err := s.log.Append(typ, 0, payload); err == nil {
+		s.emit(e)
+	}
+	s.mu.Lock() // the check and the idle together, as a turn's end does them
+	if !s.running {
+		_ = s.log.Idle() // the append took the lock back; a running turn keeps it
+	}
+	s.mu.Unlock()
 }
 
 // Resume lets new turns start again.

@@ -2,6 +2,8 @@ package core
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/loop"
@@ -81,4 +83,16 @@ func (c *Core) status() proto.DaemonStatusResult {
 func unprivileged(method string) *proto.Error {
 	return &proto.Error{Code: proto.CodeUnauthorized,
 		Message: method + " needs the client token: connect as an unsandboxed client that reads client.token"}
+}
+
+// spoken names the protocol versions this daemon answers with, for initialize's refusal: those a client at that
+// version is answered with by Negotiate.
+func spoken() string {
+	var vs []string
+	for _, v := range []int{proto.Version, proto.Version - 1} {
+		if got, ok := proto.Negotiate(v, proto.Version); ok && got == v {
+			vs = append(vs, strconv.Itoa(v))
+		}
+	}
+	return strings.Join(vs, " and ")
 }
