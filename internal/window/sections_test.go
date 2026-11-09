@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 func bash(cmd string) json.RawMessage {
@@ -259,7 +260,7 @@ func replayLog(t *testing.T, live *Instructions, calls []struct{ id, cmd string 
 	}
 	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial() + "\n\nTask: x")}})
 	for n, c := range calls {
-		result := "output of " + c.cmd + live.ForCall(c.id, "bash", bash(c.cmd)) + "\n\n[the current text of F: …]"
+		result := "output of " + c.cmd + live.ForCall(c.id, "bash", bash(c.cmd)) + tools.CurrentSymbolOpen + "F in a.go, lines 1-2 …]"
 		add(proto.EvToolFinished, proto.ToolFinished{ID: c.id, Outcome: proto.OutcomeOK, Result: result})
 		if ids := masked[n]; ids != nil {
 			ms := make([]proto.MaskedResult, len(ids))
@@ -303,5 +304,160 @@ func TestReplayRebuildsTheLiveTracker(t *testing.T) {
 	re.Masked([]string{"c2"})
 	if a, b := live.ForCall("c6", "bash", bash("go test ./...")), re.ForCall("c6", "bash", bash("go test ./...")); a != b || a == "" {
 		t.Errorf("the next call differs:\nlive    %q\nrebuilt %q", a, b)
+	}
+}
+
+// TestFirstSectionSkipsFrontmatterAndUnderlines: frontmatter, and a setext title's underline, are not the opening's
+// body; the opening runs on to the first section with text.
+func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
+	front := "---\ntitle: x\n---\n# notes\n\nIntro here.\n\n## Alpha\n\na\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", front, 4096).Initial(); !strings.Contains(got, "Intro here.") || !strings.Contains(got, "Alpha (lines") {
+		t.Errorf("frontmatter taken for the opening:\n%s", got)
+	}
+	setext := "Title\n=====\n\n## Intro\n\nHello there.\n\n## Beta\n\nb\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", setext, 4096).Initial(); !strings.Contains(got, "Hello there.") || !strings.Contains(got, "Beta (lines") {
+		t.Errorf("a setext underline taken for body:\n%s", got)
+	}
+}
+
+// TestForCallSkipsAMarkedSubsectionsSubtree: a subsection with its own marker is left out with everything under it.
+func TestForCallSkipsAMarkedSubsectionsSubtree(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n" +
+		"#### Profiling\n\nUse pprof.\n\n### Flakes\n\nRetry once.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	got := in.ForCall("c1", "bash", bash("go test ./..."))
+	if !strings.Contains(got, "Run go test.") || !strings.Contains(got, "Retry once.") || strings.Contains(got, "Use pprof.") {
+		t.Errorf("the marked subsection's own subsection came along:\n%s", got)
+	}
+}
+
+// TestInitialTrimsTheOutlineFromTheEnd: when the outline must shrink after always sections gave way, entries go from
+// the end in file order, a given-way always entry among them.
+func TestInitialTrimsTheOutlineFromTheEnd(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("# notes\n\n" + strings.Repeat("intro words. ", 40) + "\n\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "## Section number %02d with a long heading\n\nx\n\n", i)
+	}
+	b.WriteString("## Zed always\n<!-- tack:always -->\n" + strings.Repeat("always text. ", 200) + "\n")
+	got := NewInstructions("CLAUDE.md", b.String(), 4096).Initial()
+	if !strings.Contains(got, "more headings]") || strings.Contains(got, "Zed always (lines") || !strings.Contains(got, "Section number 00") {
+		t.Errorf("the outline was trimmed out of file order:\n%s", got)
+	}
+}
+
+// TestNotesWithEmptyOrReusedIDs: an empty id never touches the first message's sections, and a reused id frees its
+// oldest note on a compaction and its newest on Drop.
+func TestNotesWithEmptyOrReusedIDs(t *testing.T) {
+	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	initial := SectionTokens(in.Initial())
+	if in.ForCall("", "bash", bash("git status")) == "" {
+		t.Fatal("git brings staging in")
+	}
+	in.Masked([]string{""})
+	if in.Used() != initial {
+		t.Errorf("after the empty-id note is stubbed: used %d, want %d", in.Used(), initial)
+	}
+	if s := in.ForCall("x", "bash", bash("git status")); !strings.Contains(s, "Never git add -A.") || strings.Contains(s, "Tag from main.") {
+		t.Errorf("the first message's sections left with the empty id:\n%s", s)
+	}
+	in = NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in.Initial()
+	in.ForCall("c", "bash", bash("git status"))
+	in.ForCall("c", "bash", bash("go test ./..."))
+	in.Masked([]string{"c"})
+	if s := in.ForCall("d", "bash", bash("go test ./...")); s != "" {
+		t.Errorf("a compaction of the older c freed the newer c's testing section: %q", s)
+	}
+	if s := in.ForCall("e", "bash", bash("git diff")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("a compaction of the older c should free staging:\n%s", s)
+	}
+	in.Drop("e")
+	if s := in.ForCall("f", "bash", bash("git diff")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("Drop of e should free staging again:\n%s", s)
+	}
+}
+
+// TestMarkersInMultiBacktickSpans: a marker quoted in a double-backtick span sets nothing.
+func TestMarkersInMultiBacktickSpans(t *testing.T) {
+	got := ParseSections("# A\n\nWrite `` `<!-- tack:always -->` `` to mark one.\n")
+	if got[0].Always {
+		t.Error("a marker in a double-backtick span was read")
+	}
+	if !ParseSections("# A\n\n<!-- tack:always --> and `code`\n")[0].Always {
+		t.Error("a marker in prose beside a code span is read")
+	}
+}
+
+// TestWholeFileChargesItsFraming: a whole file's charge is the text it gives, framing included.
+func TestWholeFileChargesItsFraming(t *testing.T) {
+	in := NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test.\n", 16384)
+	if got := in.Initial(); in.Used() != SectionTokens(got) || !in.Whole() {
+		t.Errorf("used %d, the text's %d, whole %v", in.Used(), SectionTokens(got), in.Whole())
+	}
+}
+
+// replayOne loads one note for cmd into a live tracker over src, logs it, and replays the log into a tracker over
+// changed, the file as it is at the resume.
+func replayOne(t *testing.T, src, changed string, window int, cmds ...string) (live, re *Instructions) {
+	t.Helper()
+	live = NewInstructions("CLAUDE.md", src, window)
+	var calls []struct{ id, cmd string }
+	for i, c := range cmds {
+		calls = append(calls, struct{ id, cmd string }{fmt.Sprintf("c%d", i+1), c})
+	}
+	evs := replayLog(t, live, calls, nil)
+	re = NewInstructions("CLAUDE.md", changed, window)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	return live, re
+}
+
+// TestReplaySkipsANoteThatDoesNotReadBack: a note whose sections changed since is skipped whole, never recorded in
+// part, whether the changed section was loaded or named.
+func TestReplaySkipsANoteThatDoesNotReadBack(t *testing.T) {
+	two := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Flakes\n\nRetry once.\n\n" + filler
+	changed := strings.Replace(two, "Retry once.", "Retry twice.", 1)
+	_, re := replayOne(t, two, changed, 4096, "go test ./...")
+	in, _, _, used := re.Loaded()
+	if slices.Contains(in[1:], true) || used != SectionTokens(NewInstructions("CLAUDE.md", changed, 4096).Initial()) {
+		t.Errorf("a note with a changed loaded section was recorded in part: in %v used %d", in, used)
+	}
+	var b strings.Builder
+	b.WriteString("# notes\n\nIntro.\n\n## Testing one\n\n" + strings.Repeat("short rule. ", 60) + "\n\n## Testing two\n\n" +
+		strings.Repeat("a long rule that will not fit. ", 120) + "\n\n" + filler)
+	named := b.String()
+	live, re := replayOne(t, named, strings.Replace(named, "short rule. ", "short rules. ", 1), 4096, "go test ./...")
+	if _, lo, _, _ := live.Loaded(); !slices.Contains(lo, true) {
+		t.Fatal("the live note should name Testing two")
+	}
+	if _, ro, _, _ := re.Loaded(); slices.Contains(ro, true) {
+		t.Errorf("a note whose loaded section changed kept its notice: offered %v", ro)
+	}
+}
+
+// TestReplayReadsIdenticalSections: two sections with the same text, loaded by one note, both read back.
+func TestReplayReadsIdenticalSections(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nSame rule.\n\n## Testing\n\nSame rule.\n\n" + filler
+	live, re := replayOne(t, src, src, 4096, "go test ./...")
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru || !li[1] || !li[2] {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+}
+
+// TestReplayIgnoresTextQuotedInsideALoadedSection: a section whose text a loaded section quotes is not read as loaded,
+// and the note still reads back.
+func TestReplayIgnoresTextQuotedInsideALoadedSection(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test. Releases look like this:\n\n```\n\n## Release\n\nTag it.\n\n```\n\n" +
+		"## Release\n\nTag it.\n" + filler
+	live, re := replayOne(t, src, src, 4096, "go test ./...")
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
 	}
 }

@@ -49,10 +49,12 @@ func (b Budget) check() error {
 }
 
 // Sections is an instruction file read by section (window.Instructions): ForCall is the text call id brings in, ""
-// for none, and Masked says a compaction stubbed these calls' results.
+// for none; Masked says a compaction stubbed these calls' results; Drop takes back the note ForCall just gave id, when
+// it did not fit the call's result.
 type Sections interface {
 	ForCall(id, tool string, input json.RawMessage) string
 	Masked(ids []string)
+	Drop(id string)
 }
 
 // Config is what a session's loop runs with.
@@ -554,7 +556,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					if room == nil || len(fin.Result)+len(note) <= *room {
 						fin.Result += note
 					} else {
-						s.cfg.Sections.Masked([]string{b.ID})
+						s.cfg.Sections.Drop(b.ID)
 					}
 				}
 			}

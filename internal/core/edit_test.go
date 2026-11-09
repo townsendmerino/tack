@@ -585,3 +585,29 @@ func TestSectionInstructionsThroughTheCore(t *testing.T) {
 		t.Fatalf("rebuilt tracker differs:\nlive    %v %v %q %d\nrebuilt %v %v %q %d", li, lo, lb, lu, ri, ro, rb, ru)
 	}
 }
+
+// TestSectionInstructionsWholeFileFollowsTheTask: under SectionInstructions, a file within the budget is loaded whole
+// after the task, where WholeInstructions puts it.
+func TestSectionInstructionsWholeFileFollowsTheTask(t *testing.T) {
+	f := newFixture(t, goinfertest.Calls("", "d1", "done", `{"reason":"nothing to do"}`), goinfertest.Calls("", "d2", "done", `{"reason":"none"}`))
+	ws := gitWorkspace(t, "# notes\n\nRun go test.\n")
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	f.core.opt.EditTask, f.core.opt.SectionInstructions = true, true
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := f.waitTurnEnd(t)[0].Decode()
+	if first := v.(proto.UserMessage).Content[0].Text; !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
+		t.Fatalf("first message %q", first)
+	}
+}

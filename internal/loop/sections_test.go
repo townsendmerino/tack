@@ -12,8 +12,9 @@ import (
 
 // fakeSections brings in a note for the first call it is asked about, and records what the loop asks and tells it.
 type fakeSections struct {
-	asked  []string
-	masked []string
+	asked   []string
+	masked  []string
+	dropped []string
 }
 
 func (f *fakeSections) ForCall(id, tool string, _ json.RawMessage) string {
@@ -25,6 +26,8 @@ func (f *fakeSections) ForCall(id, tool string, _ json.RawMessage) string {
 }
 
 func (f *fakeSections) Masked(ids []string) { f.masked = append(f.masked, ids...) }
+
+func (f *fakeSections) Drop(id string) { f.dropped = append(f.dropped, id) }
 
 // TestSectionsFollowTheResultAndLeaveWithIt: a call that ran is asked about once, its sections follow its result in
 // the next request and the log, and a compaction that stubs that result says so; the rebuilt conversation matches.
@@ -82,7 +85,7 @@ func (f *bigSections) ForCall(id, tool string, _ json.RawMessage) string {
 }
 
 // TestSectionsThatDoNotFitTheRoomAreRolledBack: under fit_window, a note that does not fit the room left is not added,
-// and the loop tells the sections with Masked that the call's result does not carry it.
+// and the loop takes it back with Drop: the call's result does not carry it.
 func TestSectionsThatDoNotFitTheRoomAreRolledBack(t *testing.T) {
 	h := newHarness(t, Budget{}, goinfertest.Calls("", "t1", "read", `{"path":"mcp/token_budget.go","offset":3,"limit":1}`),
 		goinfertest.Says("ok"))
@@ -96,8 +99,8 @@ func TestSectionsThatDoNotFitTheRoomAreRolledBack(t *testing.T) {
 	if r := doneResults(h); len(r) != 1 || strings.Contains(r[0], "rule rule") {
 		t.Fatalf("the oversized note reached the result: %.200q", r)
 	}
-	if !slices.Equal(f.masked, []string{"t1"}) {
-		t.Errorf("masked %q, want the rolled-back t1", f.masked)
+	if !slices.Equal(f.dropped, []string{"t1"}) || len(f.masked) != 0 {
+		t.Errorf("dropped %q, masked %q; want t1 dropped and nothing masked", f.dropped, f.masked)
 	}
 	h.checkRebuild(t)
 }
