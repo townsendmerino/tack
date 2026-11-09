@@ -105,6 +105,10 @@ func (o *OnDemand) Ensure(ctx context.Context) (server.Server, error) {
 	}
 	for {
 		st, err := o.call(ctx, http.MethodGet, "/tack/status")
+		if se, ok := errors.AsType[*serveError](err); ok && (se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden) {
+			// tack serve answered and refused the token: starting it again, or waiting, would not change that.
+			return nil, fmt.Errorf("models: %s refused the token (this server's token_file; tack serve's [serve] key_file must match): %w", o.name, err)
+		}
 		switch {
 		case err != nil && o.start != nil && !ran:
 			tell("loading", "starting tack serve on "+o.name)
@@ -165,13 +169,21 @@ func (o *OnDemand) call(ctx context.Context, method, path string) (serveStatus, 
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if resp.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, bytes.TrimSpace(b))
+		return st, &serveError{Status: resp.StatusCode, Msg: fmt.Sprintf("%s %s: %d %s", method, path, resp.StatusCode, bytes.TrimSpace(b))}
 	}
 	if err := json.Unmarshal(b, &st); err != nil {
 		return st, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	return st, nil
 }
+
+// serveError is tack serve answering a call with a status other than 200: the server is up, and said no.
+type serveError struct {
+	Status int
+	Msg    string
+}
+
+func (e *serveError) Error() string { return e.Msg }
 
 // runCommand runs argv directly (no shell) and returns its exit status and combined output.
 func runCommand(ctx context.Context, argv []string) (int, string, error) {

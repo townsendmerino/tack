@@ -460,10 +460,18 @@ func TestAnUnknownDaemonCommandIsUsage(t *testing.T) {
 }
 
 // TestStopWhenTheDaemonGoesAndAnotherStarts: a stop whose daemon finishes shutting down as stop reaches it finds the
-// connection closed before its status call returns, so it never learned that daemon's pid. If the next daemon has
-// taken the lock and recorded itself by then, stop must not take the record's pid for the one it asked, and wait
-// for the next daemon to let go: the one it asked has gone, and that is stopped.
+// connection closed before its status call returns, so it never learned that daemon's pid. The next daemon may have
+// taken the lock and recorded itself by then, even before stop's initialize was answered (the answer was in
+// flight). stop must not take the record's pid for the one it asked, and wait for the next daemon to let go: the
+// one it asked has gone, and that is stopped.
 func TestStopWhenTheDaemonGoesAndAnotherStarts(t *testing.T) {
+	for _, atInit := range []bool{false, true} {
+		name := map[bool]string{false: "during status", true: "before initialize is answered"}[atInit]
+		t.Run(name, func(t *testing.T) { stopAsAnotherStarts(t, atInit) })
+	}
+}
+
+func stopAsAnotherStarts(t *testing.T, atInit bool) {
 	models := goinfertest.NewScripted("m", 16384)
 	ts := httptest.NewServer(models)
 	defer ts.Close()
@@ -488,6 +496,27 @@ func TestStopWhenTheDaemonGoesAndAnotherStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := make(chan int, 1)
+	// handOver: this daemon finishes shutting down, and the next one starts behind it and records itself.
+	handOver := func() bool {
+		ln.Close()
+		cmd := exec.Command(os.Args[0], "daemon", "run", "-config", cfg) // this binary, standing in for tack (TestMain)
+		cmd.Env = append(os.Environ(), "TACK_TEST_AS_TACK=1")
+		if err := cmd.Start(); err != nil {
+			t.Error(err)
+			return false
+		}
+		go cmd.Wait()
+		t.Cleanup(func() { cmd.Process.Kill() })
+		next <- cmd.Process.Pid
+		l.Release()
+		for deadline := time.Now().Add(10 * time.Second); daemon.ReadHolder(stateDir).PID != cmd.Process.Pid; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Error("the next daemon never recorded itself")
+				return false
+			}
+		}
+		return true
+	}
 	go func() {
 		nc, err := ln.Accept()
 		if err != nil {
@@ -501,30 +530,17 @@ func TestStopWhenTheDaemonGoesAndAnotherStarts(t *testing.T) {
 				return
 			}
 			if req.Method == proto.MethodInitialize {
+				if atInit && !handOver() { // the answer is still in flight as the next daemon takes over
+					return
+				}
 				r, _ := json.Marshal(proto.InitializeResult{Protocol: proto.Version})
 				enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
 				continue
 			}
-			// Any other call: this daemon finishes shutting down, and the next one starts behind it and records
-			// itself, all before this connection closes unanswered.
-			ln.Close()
-			cmd := exec.Command(os.Args[0], "daemon", "run", "-config", cfg) // this binary, standing in for tack (TestMain)
-			cmd.Env = append(os.Environ(), "TACK_TEST_AS_TACK=1")
-			if err := cmd.Start(); err != nil {
-				t.Error(err)
-				return
+			if !atInit {
+				handOver()
 			}
-			go cmd.Wait()
-			t.Cleanup(func() { cmd.Process.Kill() })
-			next <- cmd.Process.Pid
-			l.Release()
-			for deadline := time.Now().Add(10 * time.Second); daemon.ReadHolder(stateDir).PID != cmd.Process.Pid; time.Sleep(10 * time.Millisecond) {
-				if time.Now().After(deadline) {
-					t.Error("the next daemon never recorded itself")
-					return
-				}
-			}
-			return
+			return // any other call: the connection closes unanswered
 		}
 	}()
 	var out, errb bytes.Buffer

@@ -36,6 +36,11 @@ func (f *Fallback) Ensure(ctx context.Context) (server.Server, error) {
 		tellStatus(ctx, f.name, "moved", fmt.Sprintf("memory pressure is %s on this machine; using %s", p, f.name))
 		f.setActive(f.fallback)
 		srv, err := f.fallback.Ensure(ctx)
+		if be, ok := errors.AsType[*BusyError](err); ok && len(be.Offer) > 0 {
+			quiet := *be // its offer is this machine's model, which the pressure keeps the turn off
+			quiet.Offer = nil
+			err = &quiet
+		}
 		if err != nil {
 			return nil, fmt.Errorf("models: memory pressure is %s on this machine, so the turn moved to %s: %w", p, f.name, err)
 		}
@@ -57,10 +62,21 @@ func (f *Fallback) current() Source {
 	return f.active
 }
 
-// Model, Window and Touch are the server the last turn started on.
+// Model and Touch are the server the last turn started on.
 func (f *Fallback) Model() string { return f.current().Model() }
-func (f *Fallback) Window() int   { return f.current().Window() }
 func (f *Fallback) Touch()        { f.current().Touch() }
+
+// Window is the smaller of the two servers' windows that are known (0 while neither is). A session sizes its budget
+// once, from Window, when it is made, and its turns may run on either server, so the window it is fitted to must fit
+// both. A fallback not yet asked is not counted: a session made before nobara has served is sized for this machine's
+// window alone (docs/design/p1-notes.md, "nobara on demand").
+func (f *Fallback) Window() int {
+	w := f.primary.Window()
+	if o := f.fallback.Window(); o > 0 && (w <= 0 || o < w) {
+		w = o
+	}
+	return w
+}
 
 // Close closes both.
 func (f *Fallback) Close() error { return errors.Join(f.primary.Close(), f.fallback.Close()) }

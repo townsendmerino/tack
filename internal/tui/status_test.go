@@ -49,3 +49,14 @@ func TestStatusLineShowsAMove(t *testing.T) {
 		t.Fatalf("once serving: %q", line)
 	}
 }
+
+// TestStatusLineDropsAMoveOnceARequestGoesOut: a moved turn's notice lasts until a request goes out, on whatever
+// server: one back on this machine's model says no "ready", nor does a remote that was already serving.
+func TestStatusLineDropsAMoveOnceARequestGoesOut(t *testing.T) {
+	var s Status
+	s.Apply(event(t, proto.EvModelStatus, proto.ModelStatus{Server: "nobara", State: "moved", Message: "memory pressure is warning on this machine; using nobara"}))
+	s.Apply(event(t, proto.EvRequestSent, proto.RequestSent{Model: "q", Server: "goinfer@local"}))
+	if line := s.Line(); strings.Contains(line, "using nobara") || !strings.Contains(line, "goinfer@local") {
+		t.Fatalf("a turn back on this machine: %q; want the move gone and the local server named", line)
+	}
+}

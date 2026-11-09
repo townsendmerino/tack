@@ -30,8 +30,8 @@ func (c *countingSource) Close() error               { return nil }
 func (c *countingSource) Tick(context.Context) error { c.ticks++; return nil }
 
 // TestPressureMovesTurnsToTheFallback: a turn starts on this machine's model while its memory pressure is normal, and
-// on the fallback at warning or worse, the status line told so; the session's model and window are the server it is
-// on. Back at normal, turns return. The child's idle rules still run (Tick).
+// on the fallback at warning or worse, the status line told so; the session's model is the server it is on, and its
+// window the smaller of the two (TestAFallbacksWindowFitsBothServers). Back at normal, turns return. The child's idle rules still run (Tick).
 func TestPressureMovesTurnsToTheFallback(t *testing.T) {
 	mac, nobara := &countingSource{name: "mac"}, &countingSource{name: "nobara"}
 	p := PressureNormal
@@ -52,7 +52,7 @@ func TestPressureMovesTurnsToTheFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if nobara.ensures != 2 || mac.ensures != 1 || f.Model() != "nobara-model" || f.Window() != 6000 {
+	if nobara.ensures != 2 || mac.ensures != 1 || f.Model() != "nobara-model" || f.Window() != 3000 {
 		t.Fatalf("under pressure: mac %d, nobara %d, model %s, window %d; want both turns on nobara", mac.ensures, nobara.ensures, f.Model(), f.Window())
 	}
 	if len(said) != 2 || !strings.Contains(said[0], "nobara moved: memory pressure is warning on this machine; using nobara") {
@@ -98,5 +98,47 @@ func TestOpenMakesAFallback(t *testing.T) {
 	}
 	if _, ok := f.fallback.(*OnDemand); !ok {
 		t.Errorf("the fallback is %T, want nobara's on-demand source", f.fallback)
+	}
+}
+
+// TestAMovedTurnFindingNobaraBusyOffersNoMacModel: a busy fallback's error offers this machine's model (tack run
+// --server mac), but a turn the memory pressure moved cannot use it: the offer is dropped, and the pressure named.
+func TestAMovedTurnFindingNobaraBusyOffersNoMacModel(t *testing.T) {
+	mac := &countingSource{name: "mac"}
+	nobara := &countingSource{name: "nobara", err: &BusyError{Server: "nobara", Message: "a timed run holds the lock", Offer: []string{"mac"}}}
+	f := NewFallback(mac, nobara, "nobara", func() (Pressure, error) { return PressureWarning, nil })
+	_, err := f.Ensure(context.Background())
+	if !errors.As(err, new(*BusyError)) || strings.Contains(err.Error(), "--server mac") || !strings.Contains(err.Error(), "memory pressure is warning") {
+		t.Fatalf("%v; want nobara's busy with the pressure, and no offer of the model the pressure keeps off", err)
+	}
+}
+
+// sizedSource is a Source with a set window, 0 while unknown.
+type sizedSource struct {
+	countingSource
+	window int
+}
+
+func (s *sizedSource) Window() int { return s.window }
+
+// TestAFallbacksWindowFitsBothServers: a session's budget is sized once, from Window, at its creation, and its turns
+// may run on either server; so Window is the smaller of the windows known, not the one the last turn ran on.
+func TestAFallbacksWindowFitsBothServers(t *testing.T) {
+	mac := &sizedSource{countingSource{name: "mac"}, 32768}
+	nobara := &sizedSource{countingSource{name: "nobara"}, 0} // not asked yet
+	p := PressureNormal
+	f := NewFallback(mac, nobara, "nobara", func() (Pressure, error) { return p, nil })
+	if w := f.Window(); w != 32768 {
+		t.Fatalf("with only the Mac's window known: %d; want 32768", w)
+	}
+	nobara.window = 16384
+	if w := f.Window(); w != 16384 {
+		t.Fatalf("on the Mac, with nobara's smaller window known: %d; want 16384, which fits a move", w)
+	}
+	p = PressureWarning
+	f.Ensure(context.Background())
+	mac.window, nobara.window = 8192, 16384
+	if w := f.Window(); w != 8192 {
+		t.Fatalf("on nobara, with the Mac's smaller window: %d; want 8192, which fits the return", w)
 	}
 }

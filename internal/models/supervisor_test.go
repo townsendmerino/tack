@@ -517,3 +517,47 @@ func TestCriticalPressureUnloads(t *testing.T) {
 		t.Fatalf("measurement at critical pressure: %v, %d unloads; want it left alone", err, report(t, m).Unloads)
 	}
 }
+
+// TestNoExitWhileGenerating: a generation longer than idle_exit (its request touched the supervisor only at its start)
+// is not killed mid-stream; the exit waits, as the unload does, for no generation in flight.
+func TestNoExitWhileGenerating(t *testing.T) {
+	s, c, _ := newSup(t, "/m/busy.gguf") // busy: a generation is in flight
+	ctx := context.Background()
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.add(31 * time.Minute) // past idle_exit (30m)
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if child, loaded := s.Running(); !child || !loaded {
+		t.Fatalf("child %v, loaded %v with a generation in flight past idle_exit; want both kept", child, loaded)
+	}
+}
+
+// TestAnUnloadForgetsThePlan: once the model is unloaded, at critical pressure or idle, the plan it was loaded under
+// (and so the served window) is not reported as current.
+func TestAnUnloadForgetsThePlan(t *testing.T) {
+	ctx := context.Background()
+	s, c, p := newSup(t, "/m/model.gguf")
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pl, _ := s.Plan(); pl.ContextWindow == 0 {
+		t.Fatal("no window after the load; the check below would prove nothing")
+	}
+	*p = PressureCritical
+	s.Tick(ctx)
+	if pl, loaded := s.Plan(); loaded || pl != (Plan{}) {
+		t.Fatalf("after the critical unload: %+v, loaded %v; want no plan", pl, loaded)
+	}
+	*p = PressureNormal
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.add(11 * time.Minute) // past idle_unload
+	s.Tick(ctx)
+	if pl, loaded := s.Plan(); loaded || pl != (Plan{}) {
+		t.Fatalf("after the idle unload: %+v, loaded %v; want no plan", pl, loaded)
+	}
+}

@@ -207,3 +207,21 @@ func TestOnDemandBusyIsCheckedAgain(t *testing.T) {
 		t.Fatalf("%d starts; want one, to re-check the lock", f.starts)
 	}
 }
+
+// TestOnDemandAWrongTokenFailsAtOnce: tack serve refusing the token (401) answers; it is not a server that is down. So
+// the start command is not run, and Ensure does not wait out its load timeout, but says the token is wrong.
+func TestOnDemandAWrongTokenFailsAtOnce(t *testing.T) {
+	f := &fakeServe{state: "idle", lockKey: "the-right-key"}
+	o, _ := onDemand(t, f, []string{"ssh", "nobara", "tack", "serve", "-detach"})
+	ran := false
+	o.run = func(context.Context, []string) (int, string, error) { ran = true; return 0, "", nil }
+	o.Timeout = 10 * time.Second
+	began := time.Now()
+	_, err := o.Ensure(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("a wrong token: %v; want the refusal", err)
+	}
+	if ran || time.Since(began) > 2*time.Second {
+		t.Fatalf("a wrong token ran the start command (%v) and took %s; want neither", ran, time.Since(began))
+	}
+}

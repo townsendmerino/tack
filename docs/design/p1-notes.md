@@ -281,3 +281,16 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
     moves.
   - A fallback that cannot serve (busy, down) is the turn's error. The turn never goes back to the model the
     pressure keeps it off.
+  - A busy fallback's error under pressure offers no `--server mac`: the pressure keeps the turn off that model.
+  - The window a session is fitted to is the smaller of the two servers' windows, as far as they are known
+    (`models.Fallback.Window`), because a session sizes its budget once, when it is made. A session made before nobara
+    has served is sized for this machine's window alone, so a move to a smaller nobara window can still overflow that
+    session's fixed parts. Asking nobara's window at session creation would start nobara, which a session that never
+    moves should not do.
+- **Open: tack serve does not re-check the timing lock once the model is ready** (G6). The lock is checked only on a
+  start. If a timed run is started by hand on nobara while `tack serve` holds its model, it runs beside a loaded
+  model on the same GPU, and its measurement is void. The night queue avoids this only if its G6 hook stops `tack
+  serve` (and its socket) before it takes the lock. This matters for goinfer's measurements. Two options:
+  - `tack serve` re-checks the lock on each request (or on its idle tick) and unloads when it finds it held;
+  - goinfer's `timing_lock.py` refuses while `tack serve` serves.
+  Neither is built yet; the choice is the owner's.
