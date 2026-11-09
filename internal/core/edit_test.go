@@ -587,8 +587,15 @@ func TestSectionInstructionsWholeFileFollowsTheTask(t *testing.T) {
 		Content: []proto.ContentBlock{proto.Text("Add a test.")}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := f.waitTurnEnd(t)[0].Decode()
-	if first := v.(proto.UserMessage).Content[0].Text; !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
+	var first string
+	for _, ev := range f.waitTurnEnd(t) {
+		if v, _ := ev.Decode(); first == "" {
+			if m, ok := v.(proto.UserMessage); ok {
+				first = m.Content[0].Text
+			}
+		}
+	}
+	if !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
 		t.Fatalf("first message %q", first)
 	}
 }
