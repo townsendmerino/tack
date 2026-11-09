@@ -165,6 +165,7 @@ type session struct {
 	mu      sync.Mutex
 	id      proto.SessionID
 	log     *store.Log
+	hold    *store.Hold // this Core's claim on the session while it has it in memory; released by Close
 	loop    *loop.Session
 	running bool
 	cancel  context.CancelCauseFunc // the running turn's
@@ -223,7 +224,7 @@ func (c *Core) Close() error {
 		if s.kit != nil {
 			errs = append(errs, s.kit())
 		}
-		errs = append(errs, s.log.Close())
+		errs = append(errs, s.log.Close(), s.hold.Release())
 	}
 	if c.opt.HaltDir != "" {
 		for id := range c.sessions {
@@ -468,16 +469,26 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	if err != nil {
 		return "", err
 	}
+	hold, err := c.opt.Store.Hold(id)
+	if err != nil {
+		c.opt.Store.Discard(log)
+		return "", err
+	}
+	discard := func() {
+		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		hold.Release()
+	}
 	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
 	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
-		c.opt.Store.Discard(log)
+		discard()
 		return "", err
 	}
 	s, err := c.open(id, log, ws, created, nil)
 	if err != nil {
-		c.opt.Store.Discard(log) // a session that could not be made leaves no log
+		discard()
 		return "", err
 	}
+	s.hold = hold
 	c.mu.Lock() // Close waits for the reopen lock this holds, so it has not run
 	c.sessions[id] = s
 	c.mu.Unlock()
@@ -591,7 +602,7 @@ func (c *Core) replay(cn *conn, req proto.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub := &subscriber{conn: cn}
+	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
 		_ = cn.send(notification(s.id, ev))
@@ -697,7 +708,6 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.instructions != "":
 		text.WriteString("\n\n" + s.instructions)
 	}
-	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
 	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
@@ -724,6 +734,11 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
+	// Only once the user.message is logged: a prompt refused above added nothing, so the next one is still the first.
+	// s.running keeps any other prompt out until then.
+	s.mu.Lock()
+	s.prompted = true
+	s.mu.Unlock()
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)

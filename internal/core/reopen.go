@@ -26,17 +26,32 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if !store.ValidSessionID(id) {
 		return nil, unknown
 	}
-	log, evs, err := c.opt.Store.Reopen(id) // read once, under the writer's lock
+	busy := &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s is open in another tack process", id)}
+	// The hold first: a session another core has in memory is its, between turns too, when its log is free.
+	hold, err := c.opt.Store.Hold(id)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, unknown
-	case errors.Is(err, store.ErrLogBusy):
-		return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s is open in another tack process", id)}
+	case errors.Is(err, store.ErrSessionHeld):
+		return nil, busy
+	case err != nil:
+		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
+	}
+	log, evs, err := c.opt.Store.Reopen(id) // read once, under the writer's lock
+	if err != nil {
+		hold.Release()
+	}
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, unknown
+	case errors.Is(err, store.ErrLogBusy): // tack rewind, writing it
+		return nil, busy
 	case err != nil:
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
 	fail := func(code int, err error) (*session, *proto.Error) {
 		log.Close()
+		hold.Release()
 		return nil, &proto.Error{Code: code, Message: fmt.Sprintf("reopening session %s: %v", id, err)}
 	}
 	created, ok := sessionCreated(evs)
@@ -56,6 +71,7 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if err != nil { // ken, the sandbox, halt's registration or the rebuild: not the client's params
 		return fail(proto.CodeInternalError, err)
 	}
+	s.hold = hold
 	_ = log.Idle() // until its next prompt
 	return s, nil
 }
@@ -185,30 +201,45 @@ func (c *Core) Recover() ([]proto.SessionID, error) {
 		if held {
 			continue
 		}
-		log, evs, err := c.opt.Store.Reopen(id)
-		if errors.Is(err, store.ErrLogBusy) {
-			continue // live in another process: its turn is not interrupted
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", id, err))
-			continue
-		}
-		if _, ok := sessionCreated(evs); !ok { // from before the daemon: reopen refuses it, so recovery leaves it be
-			log.Close()
-			continue
-		}
-		closed, err := closeInterrupted(log, evs)
-		if cerr := log.Close(); err == nil {
-			err = cerr
-		}
-		switch {
+		switch closed, err := c.recoverOne(id); {
 		case err != nil:
-			errs = append(errs, fmt.Errorf("%s: closing its interrupted turn: %w", id, err))
-		case len(closed) > 0:
+			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+		case closed:
 			out = append(out, id)
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+// recoverOne closes the turn a crash left open in one session, and reports whether there was one. A session another
+// core holds, or another process is writing, is live and left alone, as is one from before the daemon.
+func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
+	hold, err := c.opt.Store.Hold(id)
+	if errors.Is(err, store.ErrSessionHeld) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer hold.Release()
+	log, evs, err := c.opt.Store.Reopen(id)
+	if errors.Is(err, store.ErrLogBusy) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, ok := sessionCreated(evs); !ok { // from before the daemon: reopen refuses it, so recovery leaves it be
+		return false, log.Close()
+	}
+	closed, err := closeInterrupted(log, evs)
+	if cerr := log.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return false, fmt.Errorf("closing its interrupted turn: %w", err)
+	}
+	return len(closed) > 0, nil
 }
 
 // errClosed answers a request for a session once the Core is closed.
