@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +38,14 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 				return tools.SubagentAnswer{}, fmt.Errorf("the turn has no budget left for a helper (%d tokens, %d tool calls)", rem.Tokens, rem.ToolCalls)
 			}
 		}
+		// Refused before its log exists, so a drain leaves no empty child behind; the check under c.mu below catches a
+		// drain that begins while the child opens.
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if draining {
+			return tools.SubagentAnswer{}, errNoHelperWhileDraining
+		}
 		id := store.NewSessionID(time.Now())
 		log, hold, err := c.opt.Store.CreateHeld(id)
 		if err != nil {
@@ -66,13 +73,13 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 		}()
 		child.loop.Limit(b)
 		c.mu.Lock()
-		draining := c.draining
+		draining = c.draining
 		if !draining {
 			c.children[child.loop] = true // under c.mu, as Drain reads it: a Drain either sees it or came first
 		}
 		c.mu.Unlock()
 		if draining {
-			return tools.SubagentAnswer{}, errors.New("the daemon is shutting down: no helper starts now")
+			return tools.SubagentAnswer{}, errNoHelperWhileDraining
 		}
 		defer func() {
 			c.mu.Lock()
@@ -109,29 +116,23 @@ func lastAnswer(s *session) string {
 	return ""
 }
 
-var childLine = regexp.MustCompile(`\[subagent session (s_[0-9A-Za-z]+)\]`)
+var errNoHelperWhileDraining = errors.New("the daemon is shutting down: no helper starts now")
 
-// orphanCost is what the children of session parent spent that no finished task call in its log names: the child a
-// crash cut off with its task call (tool calls run one at a time, and a child has no task of its own). Crash recovery
-// charges that call with it (closeInterrupted), so the parent's budgets still count it on a resume. Children are found
-// by their SessionCreated.Parent; their own logs are closed by the same recovery.
-func (c *Core) orphanCost(parent proto.SessionID, evs []proto.Event) func() (int, int) {
-	return func() (int, int) {
-		named := map[string]bool{}
-		for _, ev := range evs {
-			if v, err := ev.Decode(); err == nil && ev.Type == proto.EvToolFinished {
-				for _, m := range childLine.FindAllStringSubmatch(v.(proto.ToolFinished).Result, -1) {
-					named[m[1]] = true
-				}
-			}
-		}
+// orphanCost is what the children of session parent made since a time spent. Given a cut-off task call's tool.started,
+// that is the call's own child: tool calls run one at a time, and a child has no task of its own. Crash recovery
+// charges the call with it (closeInterrupted), so the parent's budgets still count it on a resume. Children are found by
+// their SessionCreated.Parent and told apart by when their logs began, not by a name in a result: a task that failed,
+// was cancelled or was itself closed by recovery names no child, though its tool.finished carries the child's spend.
+// Their own logs are closed by the same recovery.
+func (c *Core) orphanCost(parent proto.SessionID) func(since time.Time) (int, int) {
+	return func(since time.Time) (int, int) {
 		ids, err := c.opt.Store.Sessions()
 		if err != nil {
 			return 0, 0
 		}
 		tokens, calls := 0, 0
 		for _, id := range ids {
-			if id == parent || named[string(id)] {
+			if id == parent {
 				continue
 			}
 			cevs, err := c.opt.Store.Events(id, 0)
@@ -140,7 +141,7 @@ func (c *Core) orphanCost(parent proto.SessionID, evs []proto.Event) func() (int
 			}
 			if v, err := cevs[0].Decode(); err != nil {
 				continue
-			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent {
+			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent || cevs[0].Time.Before(since) {
 				continue
 			}
 			t, n := loop.Spent(cevs)

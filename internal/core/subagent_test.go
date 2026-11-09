@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"regexp"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/store"
+	"github.com/townsendmerino/tack/internal/tools"
 	"github.com/townsendmerino/tack/internal/usage"
 )
 
@@ -311,5 +314,91 @@ func TestRecoveryChargesACutOffTaskWithItsChild(t *testing.T) {
 	cevs, _ := st.Events(child, 0)
 	if last := cevs[len(cevs)-1]; last.Type != proto.EvTurnEnd {
 		t.Errorf("the child's log ends %s, want its turn closed", last.Type)
+	}
+}
+
+// TestRecoveryChargesOnlyTheCutOffTasksChild: a task whose child failed (its result names no child) and then a task the
+// crash cut off: recovery charges the cut-off call with its own child's spend, not the failed one's again, which the
+// failed call's tool.finished already carries.
+func TestRecoveryChargesOnlyTheCutOffTasksChild(t *testing.T) {
+	f := newFixture(t)
+	st := f.core.opt.Store
+	parent := proto.SessionID("s_01JAPARENT0000000000000003")
+	failed, cut := proto.SessionID("s_01JACHILD00000000000000004"), proto.SessionID("s_01JACHILD00000000000000005")
+	logs := map[proto.SessionID]*store.Log{}
+	for _, id := range []proto.SessionID{parent, failed, cut} {
+		l, err := st.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs[id] = l
+	}
+	var cause int64
+	app := func(id proto.SessionID, typ proto.EventType, p any) {
+		// A tick apart, as real appends are (each tool.started is fsynced): recovery tells children apart by when
+		// their logs began.
+		time.Sleep(time.Millisecond)
+		ev, err := logs[id].Append(typ, cause, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == proto.EvToolCall {
+			cause = ev.Seq
+		}
+	}
+	child := func(id proto.SessionID, prompt int) {
+		app(id, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan, Parent: parent})
+		app(id, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("look")}})
+		app(id, proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"})
+		app(id, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: prompt, Output: 50})
+	}
+	use := func(id string) proto.ModelBlock {
+		return proto.ModelBlock{Type: "tool_use", ID: id, Name: "task", Input: []byte(`{"prompt":"look"}`)}
+	}
+	app(parent, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan})
+	app(parent, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}})
+	app(parent, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{use("t1"), use("t2")}})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)})
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
+	child(failed, 2000)
+	app(failed, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopBudget})
+	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeError, Result: "error: its turn ended with budget", Tokens: 2050, Calls: 0})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t2", Name: "task", Input: []byte(`{"prompt":"look"}`)})
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t2"})
+	child(cut, 1000)
+	for _, l := range logs {
+		l.Close()
+	}
+	if _, err := f.core.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pevs, _ := st.Events(parent, 0)
+	var fin proto.ToolFinished
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+			fin = v.(proto.ToolFinished)
+		}
+	}
+	if fin.ID != "t2" || fin.Outcome != proto.OutcomeUnknown || fin.Tokens != 1050 {
+		t.Errorf("the cut-off task finished %+v; want t2 unknown, charged its own child's 1,050 tokens and not the failed child's 2,050 again", fin)
+	}
+}
+
+// TestADrainingCoreMakesNoChildLog: a task call while the core drains is refused before a child log exists, so no
+// empty child session is left behind.
+func TestADrainingCoreMakesNoChildLog(t *testing.T) {
+	f := newFixture(t)
+	ws, err := tools.NewWorkspace(f.workspace(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := f.core.opt.Store.Sessions()
+	f.core.mu.Lock()
+	f.core.draining = true
+	f.core.mu.Unlock()
+	_, err = f.core.subagent("s_01JAPARENT0000000000000006", ws, proto.SessionCreated{Model: "main"})(context.Background(), "look")
+	after, _ := f.core.opt.Store.Sessions()
+	if err == nil || len(after) != len(before) {
+		t.Errorf("while draining: err %v, %d sessions then %d; want refused with no new log", err, len(before), len(after))
 	}
 }

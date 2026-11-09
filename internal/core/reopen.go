@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
@@ -59,7 +60,7 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if !ok {
 		return fail(proto.CodeInvalidParams, errors.New("its log does not begin with session.created, so it predates tack's daemon"))
 	}
-	closed, err := closeInterrupted(log, evs, c.orphanCost(id, evs))
+	closed, err := closeInterrupted(log, evs, c.orphanCost(id))
 	if err != nil {
 		return fail(proto.CodeInternalError, err)
 	}
@@ -99,9 +100,10 @@ func sessionCreated(evs []proto.Event) (proto.SessionCreated, bool) {
 // matched to the latest open call with its id. A tool_use of the turn's last response with no tool.call (the crash
 // came between the two appends) gets its tool.call recorded first, from the block, and is answered not run.
 //
-// childCost, when set, is what a task call's child spent, for a started task call the crash cut off: its child's
-// tokens and tool calls go on the call's tool.finished, so the parent's budgets count them on a resume (Core.orphanCost).
-func closeInterrupted(log *store.Log, evs []proto.Event, childCost func() (tokens, calls int)) ([]proto.Event, error) {
+// childCost, when set, is what the children made since a time spent: for a started task call the crash cut off, the
+// children made since its tool.started, whose tokens and tool calls go on the call's tool.finished, so the parent's
+// budgets count them on a resume (Core.orphanCost).
+func closeInterrupted(log *store.Log, evs []proto.Event, childCost func(since time.Time) (tokens, calls int)) ([]proto.Event, error) {
 	if !store.Inspect(evs).InTurn {
 		return nil, nil
 	}
@@ -109,6 +111,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event, childCost func() (token
 		id, name      string
 		seq           int64
 		started, done bool
+		startedAt     time.Time
 	}
 	var userSeq int64
 	var calls []*call
@@ -160,7 +163,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event, childCost func() (token
 			}
 		case proto.ToolStarted:
 			if cl := find(ev.Cause, p.ID, false); cl != nil {
-				cl.started = true
+				cl.started, cl.startedAt = true, ev.Time
 			}
 		case proto.ToolFinished:
 			if cl := find(ev.Cause, p.ID, true); cl != nil {
@@ -185,7 +188,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event, childCost func() (token
 		if cl.started {
 			fin = proto.ToolFinished{ID: cl.id, Outcome: proto.OutcomeUnknown, Result: unknownResult}
 			if cl.name == "task" && childCost != nil {
-				fin.Tokens, fin.Calls = childCost()
+				fin.Tokens, fin.Calls = childCost(cl.startedAt)
 			}
 		}
 		ev, err := log.Append(proto.EvToolFinished, cl.seq, fin)
@@ -265,7 +268,7 @@ func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
 	if recoverHook != nil {
 		recoverHook(id)
 	}
-	closed, err := closeInterrupted(log, evs, c.orphanCost(id, evs))
+	closed, err := closeInterrupted(log, evs, c.orphanCost(id))
 	if cerr := log.Close(); err == nil {
 		err = cerr
 	}
