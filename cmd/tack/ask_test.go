@@ -365,3 +365,55 @@ func TestAskPrintsWhatTheGapMissed(t *testing.T) {
 		t.Errorf("stdout %q, want the whole answer once", stdout.String())
 	}
 }
+
+// TestAskCountsOnlyDropsInARow: a daemon that drops the connection more than askRedials times, but hands over events
+// between drops, does not end ask: only drops in a row count.
+func TestAskCountsOnlyDropsInARow(t *testing.T) {
+	var evs []proto.Event
+	payloads := []struct {
+		typ     proto.EventType
+		payload any
+	}{{proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}}}}
+	for range askRedials + 2 {
+		payloads = append(payloads, struct {
+			typ     proto.EventType
+			payload any
+		}{proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{{Type: "text", Text: "."}}}})
+	}
+	payloads = append(payloads, struct {
+		typ     proto.EventType
+		payload any
+	}{proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}})
+	for i, p := range payloads {
+		ev, err := proto.NewEvent(int64(i+1), time.Unix(0, 0), p.typ, 0, p.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	redials := 0
+	redial := func() (*core.Client, error) { // each hands over one more event and drops, until the last
+		redials++
+		if n := redials + 1; n < len(evs) {
+			return fakeDaemon(t, evs[:n], 0, true, nil), nil
+		}
+		return fakeDaemon(t, evs, 0, false, nil), nil
+	}
+	var stdout, stderr bytes.Buffer
+	c := ask(context.Background(), fakeDaemon(t, evs, 1, true, nil), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	if c != exitOK || redials <= askRedials {
+		t.Fatalf("ask = %d after %d redials; stderr %q", c, redials, stderr.String())
+	}
+}
+
+// TestANewDaemonIsNamed: a redial that reached another daemon says the old one's turn ended with it.
+func TestANewDaemonIsNamed(t *testing.T) {
+	if n := newDaemonNote(100, 200); !strings.Contains(n, "pid 200") || !strings.Contains(n, "ended with it") {
+		t.Errorf("note %q", n)
+	}
+	for _, c := range [][2]int{{100, 100}, {0, 200}, {100, 0}} {
+		if n := newDaemonNote(c[0], c[1]); n != "" {
+			t.Errorf("newDaemonNote(%d, %d) = %q, want nothing", c[0], c[1], n)
+		}
+	}
+}
