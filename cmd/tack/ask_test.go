@@ -47,7 +47,7 @@ func TestAskEndsWhenTheDaemonGoes(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := make(chan int, 1)
 	go func() {
-		code <- ask(context.Background(), core.NewClient(a), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr)
+		code <- ask(context.Background(), core.NewClient(a), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, nil)
 	}()
 	select {
 	case c := <-code:
@@ -167,7 +167,7 @@ func TestAskLeavesTheDaemonsTurnOnAnInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var stdout, stderr bytes.Buffer
 	code := make(chan int, 1)
-	go func() { code <- ask(ctx, cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr) }()
+	go func() { code <- ask(ctx, cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, nil) }()
 	time.Sleep(100 * time.Millisecond) // prompted, the turn under way
 	cancel()
 	select {
@@ -185,7 +185,7 @@ func TestAskLeavesTheDaemonsTurnOnAnInterrupt(t *testing.T) {
 func TestAskOnAHaltedDaemonExits5(t *testing.T) {
 	cl := fakeAsk(t, &proto.Error{Code: proto.CodeHalted, Message: "tack is halted; run tack resume"})
 	var stdout, stderr bytes.Buffer
-	if c := ask(context.Background(), cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr); c != exitHalted {
+	if c := ask(context.Background(), cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, nil); c != exitHalted {
 		t.Fatalf("ask on a halted daemon: %d, %q; want %d", c, stderr.String(), exitHalted)
 	}
 }
@@ -219,4 +219,118 @@ func fakeAsk(t *testing.T, refuse *proto.Error) *core.Client {
 		}
 	}()
 	return core.NewClient(a)
+}
+
+// fakeDaemon answers ask's calls on one end of a pipe. Before answering a subscribe it sends the events from the
+// subscribe's from_seq on (events[seq-1] is seq); after answering the prompt it sends live events up to upTo and, when
+// drop is set, closes the connection there, mid-turn, and right after answering a re-subscribe.
+func fakeDaemon(t *testing.T, events []proto.Event, upTo int64, drop bool, from *int64) *core.Client {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	notify := func(enc *json.Encoder, ev proto.Event) {
+		p, _ := json.Marshal(proto.SessionEventParams{Session: "s_1", Event: ev})
+		enc.Encode(proto.Request{JSONRPC: "2.0", Method: proto.MethodSessionEvent, Params: p})
+	}
+	go func() {
+		defer b.Close()
+		sc, enc := bufio.NewScanner(b), json.NewEncoder(b)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			var result any = struct{}{}
+			switch req.Method {
+			case proto.MethodSessionNew:
+				result = proto.SessionNewResult{Session: "s_1"}
+			case proto.MethodSessionSubscribe:
+				var p proto.SessionSubscribeParams
+				json.Unmarshal(req.Params, &p)
+				if from != nil {
+					*from = p.FromSeq
+				}
+				for _, ev := range events {
+					if p.FromSeq > 0 && ev.Seq >= p.FromSeq {
+						notify(enc, ev)
+					}
+				}
+			case proto.MethodSessionPrompt:
+				result = proto.SessionPromptResult{Seq: 1}
+			}
+			r, _ := json.Marshal(result)
+			enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
+			var sp proto.SessionSubscribeParams
+			if drop && req.Method == proto.MethodSessionSubscribe && json.Unmarshal(req.Params, &sp) == nil && sp.FromSeq > 0 {
+				return // a re-subscribe, dropped at once
+			}
+			if req.Method == proto.MethodSessionPrompt {
+				for _, ev := range events {
+					if ev.Seq <= upTo {
+						notify(enc, ev)
+					}
+				}
+				if drop {
+					return
+				}
+			}
+		}
+	}()
+	return core.NewClient(a)
+}
+
+// TestAskPicksUpAfterADrop: a connection the daemon closes mid-turn (a client that stopped reading) is replaced, the
+// session subscribed again from the event after the last one heard, and ask ends with the turn's own stop reason.
+func TestAskPicksUpAfterADrop(t *testing.T) {
+	var evs []proto.Event
+	for i, p := range []struct {
+		typ     proto.EventType
+		payload any
+	}{
+		{proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}}},
+		{proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{{Type: "text", Text: "a"}}}},
+		{proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}},
+	} {
+		ev, err := proto.NewEvent(int64(i+1), time.Unix(0, 0), p.typ, 0, p.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	first := fakeDaemon(t, evs, 2, true, nil) // hears seq 1 and 2, then the daemon drops it
+	var from int64
+	redials := 0
+	redial := func() (*core.Client, error) {
+		redials++
+		return fakeDaemon(t, evs, 0, false, &from), nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := make(chan int, 1)
+	go func() {
+		code <- ask(context.Background(), first, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	}()
+	select {
+	case c := <-code:
+		if c != exitOK || redials != 1 || from != 3 || !strings.Contains(stderr.String(), "connected to the daemon again") {
+			t.Fatalf("ask = %d after %d redials, subscribed again from seq %d; stderr %q", c, redials, from, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ask did not pick the turn up after the drop")
+	}
+}
+
+// TestAskGivesUpAfterItsRedials: a daemon that keeps dropping the connection ends ask with an error after askRedials.
+func TestAskGivesUpAfterItsRedials(t *testing.T) {
+	ev, _ := proto.NewEvent(1, time.Unix(0, 0), proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}})
+	evs := []proto.Event{ev}
+	redials := 0
+	redial := func() (*core.Client, error) {
+		redials++
+		return fakeDaemon(t, evs, 0, true, nil), nil // and it drops this one too
+	}
+	var stdout, stderr bytes.Buffer
+	c := ask(context.Background(), fakeDaemon(t, evs, 1, true, nil), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	if c != exitError || redials != askRedials {
+		t.Fatalf("ask = %d after %d redials; stderr %q", c, redials, stderr.String())
+	}
 }
