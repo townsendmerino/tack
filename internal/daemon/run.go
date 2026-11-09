@@ -75,7 +75,11 @@ func Run(ctx context.Context, o RunOptions) error {
 	case serveErr = <-served:
 		served = nil
 	}
-	fmt.Fprintf(log, "tack daemon: shutting down; running tool calls have %s to finish\n", o.Grace)
+	// Stop accepting first: closing the listener marks the record stopping, then unlinks the socket, so a new client
+	// starts the next daemon, which waits for this one's lock (takeLock), instead of reaching one that refuses it. The
+	// connections already open stay, and see their turns drain.
+	ln.Close()
+	fmt.Fprintf(log, "tack daemon: shutting down; no new connections; running tool calls have %s to finish\n", o.Grace)
 	if cancelled := c.Drain(o.Grace); len(cancelled) > 0 {
 		fmt.Fprintf(log, "tack daemon: cancelled the turns of %v after the grace window\n", cancelled)
 	}
