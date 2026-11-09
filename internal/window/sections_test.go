@@ -684,6 +684,7 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 	changed := strings.Replace(bigFile(), "## Testing\n\nRun go test with -v.", "## Testing\n<!-- tack:always -->\nRun go test with -v.", 1)
 	changed = strings.Replace(changed, "Intro: read this first.", "Intro: read this first, and this new line too.", 1)
 	re := NewInstructions("CLAUDE.md", changed, NewBudget(4096))
+	re.Initial() // as core makes a reopened session's tracker, over the file as it is now
 	if err := re.Replay([]proto.Event{ev}); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +707,7 @@ func TestCallKindsKeepSubcommandFlagsAndQuotes(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Branching\n<!-- tack:on bash:git switch -c -->\nName branches feat/x.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
 	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
-	if s := in.ForCall("c1", "bash", bash("git switch -c feat/x")); !strings.Contains(s, "Name branches") {
+	if s := in.ForCall("c1", "bash", bash("git -C dir switch -c feat/x")); !strings.Contains(s, "Name branches") {
 		t.Errorf("git switch -c lost its -c:\n%s", s)
 	}
 	if s := in.ForCall("c2", "bash", bash(`git commit -m "fix --amend handling"`)); strings.Contains(s, "Never amend") {
@@ -719,5 +720,51 @@ func TestInitialWithAMarkedFirstSection(t *testing.T) {
 	src := "# Night\n<!-- tack:on bash:night -->\nQueue.\n\n## Other\n\nx\n\n" + filler
 	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); strings.Contains(got, "\n\n\n") {
 		t.Errorf("a blank run:\n%q", got[:min(len(got), 120)])
+	}
+}
+
+// TestReplayKeepsTheSessionsFileShape: a file the session read by sections that now fits whole is still read by
+// sections after a reopen, as its logged first message shows.
+func TestReplayKeepsTheSessionsFileShape(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial() + "\n\nTask: x")}})
+	small := "# notes\n\nIntro: read this first.\n\n## Staging and committing\n\nNever git add -A.\n"
+	re := NewInstructions("CLAUDE.md", small, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	if s := re.ForCall("c1", "bash", bash("git status")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("the reopened tracker took the file as whole:\n%q", s)
+	}
+}
+
+// TestReplayPairsAReusedIDInOneTurn: two calls with one id, both logged before their results, are paired with their
+// results in order, so each note is read against its own call's matches.
+func TestReplayPairsAReusedIDInOneTurn(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Bench\n<!-- tack:on bash:bench -->\nb\n\n### Notes\n\nSame rule.\n\n" +
+		"## Night\n<!-- tack:on bash:night -->\nn\n\n### Notes\n\nSame rule.\n\n" + filler
+	live := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	first := live.Initial()
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c", Name: "bash", Input: bash("bench run")})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c", Name: "bash", Input: bash("night add")})
+	for _, cmd := range []string{"bench run", "night add"} {
+		add(proto.EvToolFinished, proto.ToolFinished{ID: "c", Outcome: proto.OutcomeOK, Result: "output" + live.ForCall("c", "bash", bash(cmd))})
+	}
+	re := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, _, _, lu := live.Loaded()
+	ri, _, _, ru := re.Loaded()
+	if !slices.Equal(li, ri) || lu != ru {
+		t.Errorf("live in %v used %d; rebuilt in %v used %d", li, lu, ri, ru)
 	}
 }

@@ -810,7 +810,7 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 	}
 	in.notes = nil
 	for i := range in.secs {
-		in.offered[i], in.by[i] = false, -1
+		in.in[i], in.offered[i], in.by[i] = false, false, -1 // what the file as it is now made Initial give is cleared
 	}
 	// The first message is read from the log, as the session sent it; the file may have changed since. Its share of
 	// the budget is taken back and charged again as logged. Only a log with no first message keeps what Initial made
@@ -843,7 +843,8 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 		in.initial = prev
 		in.b.Used += prev
 	}
-	calls := map[string]proto.ToolCall{}
+	// Calls are kept per id in log order, so an id a model uses twice in one turn pairs each result with its own call.
+	calls := map[string][]proto.ToolCall{}
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
@@ -859,14 +860,14 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 				in.record(MessageID, got, left, note)
 			}
 		case proto.ToolCall:
-			calls[p.ID] = p
+			calls[p.ID] = append(calls[p.ID], p)
 		case proto.ToolFinished:
+			var want map[int]bool // the call's own matches, when the log holds the call: the oldest unanswered with its id
+			if q := calls[p.ID]; len(q) > 0 {
+				want, calls[p.ID] = in.wantFor(callKinds(q[0].Name, q[0].Input)), q[1:]
+			}
 			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
 				continue // the loop asks only about calls that ran
-			}
-			var want map[int]bool // the call's own matches, when the log holds the call
-			if c, ok := calls[p.ID]; ok {
-				want = in.wantFor(callKinds(c.Name, c.Input))
 			}
 			if got, left, text, ok := in.noteIn(p.Result, want); ok {
 				in.record(p.ID, got, left, text)
@@ -902,6 +903,8 @@ func (in *Instructions) firstFrom(msg string) bool {
 				part = part[:e]
 			}
 		}
+		// The file's shape is the session's too: read whole or by sections, whatever it would be now.
+		in.whole = strings.HasPrefix(open, "Project instructions, from ")
 		for i, s := range in.secs {
 			in.in[i] = strings.Contains(part, s.Text)
 		}

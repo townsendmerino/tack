@@ -302,10 +302,16 @@ func TestReplayOnASharedBudget(t *testing.T) {
 	k.Masked([]string{"c1"})
 	add(proto.EvCompaction, proto.Compaction{Masked: []proto.MaskedResult{{ID: "c1", Stub: "[masked]"}}})
 	call("c4", "edit", editOf("internal/x/x_test.go"))
-	rin, rk, rb, _ := sharedSession(root, pages)
+	// The session's own edit of a pinned file, then a reopen as core does it: knowledge rebuilt from the log as it is
+	// made, the instruction file made over what is left, its tracker replayed.
+	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
+	rb := NewBudget(4096)
+	rk := NewKnowledge(root, pages, 4096, rb)
 	if err := rk.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
+	rin := NewInstructions("CLAUDE.md", bigFile(), rb)
+	rin.Initial()
 	if err := rin.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
