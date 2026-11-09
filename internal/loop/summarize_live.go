@@ -133,16 +133,22 @@ func (s *Session) summarize(ctx context.Context, srv server.Server, next int, ca
 	case ctx.Err() != nil:
 		return spent, summaryUnchanged, nil // the turn is ending; the loop's own check says why
 	}
-	if s.cfg.SummaryRetrieve > 0 && s.cfg.Searcher != nil {
-		all := append(append([]proto.Event(nil), prior...), stretch...)
-		budget := s.cfg.SummaryRetrieve * s.cfg.Source.Window() * summaryBytesPerToken / 100
-		if sec := retrieveSection(ctx, s.cfg.Searcher, openThreads(sum.Body, AnchorsOf(all)), budget); sec != "" {
-			sum.Text += "\n\n" + sec // after the anchors: bodyOf leaves it out of the next summary's previous body
-		}
-	}
 	text := summaryMessage(s.cfg.WS.Root(), sum)
 	if len(text) >= before {
 		return spent, summaryUnchanged, nil // nothing gained
+	}
+	// Re-retrieval comes out of what the summary frees, at most half of it, so it never makes a useful summary
+	// unusable: with nothing that fits, the summary goes in without it.
+	if s.cfg.SummaryRetrieve > 0 && s.cfg.Searcher != nil {
+		all := append(append([]proto.Event(nil), prior...), stretch...)
+		budget := min(s.cfg.SummaryRetrieve*s.cfg.Source.Window()*summaryBytesPerToken/100, (before-len(text))/2-2)
+		if sec := retrieveSection(ctx, s.cfg.Searcher, openThreads(sum.Body, AnchorsOf(all)), budget); sec != "" {
+			sum.Text += "\n\n" + sec // after the anchors: bodyOf leaves it out of the next summary's previous body
+			text = summaryMessage(s.cfg.WS.Root(), sum)
+		}
+		if ctx.Err() != nil {
+			return spent, summaryUnchanged, nil // the turn is ending, as after the summarizer's call
+		}
 	}
 	if err := s.conv.Summarize(keep, text); err != nil {
 		return spent, summaryUnchanged, fmt.Errorf("loop: summarize: %w", err)

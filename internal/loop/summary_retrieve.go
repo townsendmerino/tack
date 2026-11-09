@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/tools"
 )
@@ -12,6 +13,10 @@ import (
 // mechanically from its body and anchors, are searched again, so the code they name comes back as it is now instead
 // of as the dumps the summary removed. The hits go in the summary message's last section, after the anchors, where a
 // compaction already rewrites the history; the section is in the logged summary word for word, so Rebuild replays it.
+
+// retrieveSearchTimeout bounds each search, as summaryCallTimeout bounds each summarizer call: a search that runs out
+// finds nothing.
+var retrieveSearchTimeout = 5 * time.Second
 
 const (
 	// retrieveQueries is how many open threads are searched.
@@ -61,7 +66,9 @@ func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, bu
 	var b strings.Builder
 	seen := map[string]bool{}
 	for _, q := range queries {
-		hits, err := s.Search(ctx, q, retrieveHits)
+		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
+		hits, err := s.Search(sctx, q, retrieveHits)
+		cancel()
 		if err != nil {
 			continue
 		}
