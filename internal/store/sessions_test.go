@@ -98,3 +98,41 @@ func TestReopenReadsUnderTheLock(t *testing.T) {
 		t.Fatalf("a second Reopen: %v, want ErrLogBusy", err)
 	}
 }
+
+// TestAnIdleLogIsFreeAndCatchesUp: between turns a Log gives up its writer's lock (Idle), so another process (tack
+// rewind) may write the log; its next Append takes the lock back and reads past what the other appended, so seqs stay
+// dense, and it holds the lock again until the next Idle.
+func TestAnIdleLogIsFreeAndCatchesUp(t *testing.T) {
+	s := newStore(t)
+	end := proto.TurnEnd{StopReason: proto.StopEndTurn}
+	l, err := s.Create("s_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(proto.EvTurnEnd, 0, end)
+	if err := l.Idle(); err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.OpenLog("s_1")
+	if err != nil {
+		t.Fatalf("OpenLog while the first Log is idle: %v, want the lock free", err)
+	}
+	if ev, err := other.Append(proto.EvTurnEnd, 0, end); err != nil || ev.Seq != 2 {
+		t.Fatalf("the other writer's append: seq %d, %v", ev.Seq, err)
+	}
+	other.Close()
+	ev, err := l.Append(proto.EvTurnEnd, 0, end)
+	if err != nil || ev.Seq != 3 || l.Head() != 3 {
+		t.Fatalf("after idle: seq %d, head %d, %v; want 3, past the other writer's", ev.Seq, l.Head(), err)
+	}
+	if _, err := s.OpenLog("s_1"); !errors.Is(err, ErrLogBusy) {
+		t.Fatalf("OpenLog once the first Log has written again: %v, want ErrLogBusy", err)
+	}
+	l.Close()
+	if _, err := l.Append(proto.EvTurnEnd, 0, end); err == nil {
+		t.Fatal("Append after Close succeeded")
+	}
+	if evs, _ := s.Events("s_1", 0); len(evs) != 3 {
+		t.Fatalf("%d events, want 3, dense", len(evs))
+	}
+}
