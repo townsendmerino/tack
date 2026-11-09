@@ -24,6 +24,7 @@ type EventType string
 
 // The event types P0's loop emits. The rest of Appendix B arrives with the features that emit them.
 const (
+	EvSessionCreated      EventType = "session.created"
 	EvUserMessage         EventType = "user.message"
 	EvContextAssembled    EventType = "context.assembled"
 	EvRequestSent         EventType = "request.sent"
@@ -57,7 +58,8 @@ type EventSpec struct {
 // EventTypes is every event type this build emits. The store, the fixtures' conformance test and the Swift generator
 // read it.
 var EventTypes = map[EventType]EventSpec{
-	EvUserMessage:         {reflect.TypeFor[UserMessage](), true, true}, // opens a turn
+	EvSessionCreated:      {reflect.TypeFor[SessionCreated](), true, true}, // the first event of every log
+	EvUserMessage:         {reflect.TypeFor[UserMessage](), true, true},    // opens a turn
 	EvContextAssembled:    {reflect.TypeFor[ContextAssembled](), true, false},
 	EvRequestSent:         {reflect.TypeFor[RequestSent](), true, false},
 	EvAssistantDelta:      {reflect.TypeFor[AssistantDelta](), false, false},
@@ -76,6 +78,15 @@ var EventTypes = map[EventType]EventSpec{
 	EvCompaction:          {reflect.TypeFor[Compaction](), true, false},
 	EvCheckpoint:          {reflect.TypeFor[Checkpoint](), true, false},
 	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
+}
+
+// SessionCreated is the first event of every session's log: what the session was made with, so a daemon that did not
+// make it can reopen it from the log alone (DESIGN §6.2). Workspace is the root as resolved (absolute, symlinks
+// followed); Model is what session/new named, a role or a model id.
+type SessionCreated struct {
+	Workspace string `json:"workspace"`
+	Model     string `json:"model"`
+	Mode      Mode   `json:"mode"`
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -221,7 +232,11 @@ const (
 	StopWindowFull = "window_full"
 	// StopRepeatLoop: one call repeated with an unchanged result until the loop's repeat rule ended the turn.
 	StopRepeatLoop = "repeat_loop"
-	StopError      = "error"
+	// StopInterrupted: tack stopped inside the turn (a crash or a kill); recorded when the session is next opened (DESIGN §6.1).
+	StopInterrupted = "interrupted"
+	// StopShutdown: the daemon shut down between the turn's steps (DESIGN §6.1, drain); the session can be continued.
+	StopShutdown = "shutdown"
+	StopError    = "error"
 )
 
 // TurnEnd closes a turn. The store fsyncs after it.

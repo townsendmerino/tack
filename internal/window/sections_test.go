@@ -163,7 +163,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 
 func TestCallKinds(t *testing.T) {
 	got := strings.Join(callKinds("bash", bash(`FOO=1 /usr/bin/git -C x status | grep "go test"; go test ./...`)), "|")
-	if got != "bash:git -C x status|bash:git status|bash:grep|bash:go test ./..." {
+	if got != "bash:git -C x status|bash:git status|bash:grep go test|bash:go test ./..." {
 		t.Errorf("kinds %q", got)
 	}
 	if !kindMatches("edit:*_test.go", "edit:a/b_test.go") || kindMatches("edit:*_test.go", "edit:a/b.go") ||
@@ -536,5 +536,32 @@ func TestCallKindsSkipFlags(t *testing.T) {
 	if !kindMatches("edit:internal/**/*_test.go", "edit:internal/window/sections_test.go") || !kindMatches("edit:internal/**/*_test.go", "edit:internal/a_test.go") ||
 		kindMatches("edit:internal/**/*_test.go", "edit:cmd/a_test.go") || kindMatches("edit:internal/*_test.go", "edit:internal/window/a_test.go") {
 		t.Error("** crosses directories; * stays in one")
+	}
+}
+
+// TestCallKindsReadQuotedWords: a quoted word is read as its text, and a word that is not plain text stands as a
+// placeholder, so the words after either still count.
+func TestCallKindsReadQuotedWords(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	if s := in.ForCall("c1", "bash", bash(`git -C "some dir" commit -m "msg" --amend`)); !strings.Contains(s, "Never amend") {
+		t.Errorf("quoted words hid --amend:\n%s", s)
+	}
+	if got := strings.Join(callKinds("bash", bash(`git commit -m "$MSG" --amend`)), "|"); !strings.Contains(got, "bash:git commit -m ? --amend") {
+		t.Errorf("kinds %q", got)
+	}
+}
+
+// TestMarkedTitleBringsItsSubtree: a level-1 section with a tack:on marker brings its subsections when it matches,
+// and as the file's first section it waits for its call instead of opening the first message.
+func TestMarkedTitleBringsItsSubtree(t *testing.T) {
+	src := "# Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n## Fitting\n\nFit-check first.\n\n# Other\n\nx\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	if got := in.Initial(); strings.Contains(got, "Queue long jobs.") {
+		t.Errorf("a marked first section opened the message:\n%s", got)
+	}
+	if s := in.ForCall("c1", "bash", bash("night add x")); !strings.Contains(s, "Queue long jobs.") || !strings.Contains(s, "Fit-check first.") {
+		t.Errorf("the marked title should bring its subsection:\n%s", s)
 	}
 }

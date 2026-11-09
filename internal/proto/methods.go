@@ -1,6 +1,9 @@
 package proto
 
-import "reflect"
+import (
+	"reflect"
+	"time"
+)
 
 // Method names (DESIGN §9.2). Only the methods P0 implements are declared; the rest arrive with their phase.
 const (
@@ -9,6 +12,8 @@ const (
 	MethodSessionSubscribe = "session/subscribe"
 	MethodSessionPrompt    = "session/prompt"
 	MethodSessionEvent     = "session/event" // notification, daemon to client
+	MethodDaemonStatus     = "daemon/status"
+	MethodDaemonShutdown   = "daemon/shutdown"
 )
 
 // SessionID names a session: "s_" and a ULID.
@@ -104,6 +109,29 @@ type SessionEventParams struct {
 	Event   Event     `json:"event"`
 }
 
+// DaemonStatusParams asks for daemon/status; it has no fields.
+type DaemonStatusParams struct{}
+
+// DaemonStatusResult is what daemon/status reports (DESIGN §6.1; tack daemon status, tack doctor). Protocol is the
+// newest version the daemon speaks (it serves that one and the one before). Sessions counts the sessions it holds,
+// Running those with a turn running. Draining is true once a shutdown has begun: no new turns start.
+type DaemonStatusResult struct {
+	Version  string    `json:"version"`
+	Protocol int       `json:"protocol"`
+	PID      int       `json:"pid"`
+	Started  time.Time `json:"started"`
+	Sessions int       `json:"sessions"`
+	Running  int       `json:"running"`
+	Halted   bool      `json:"halted"`
+	Draining bool      `json:"draining"`
+}
+
+// DaemonShutdownParams asks the daemon to drain and exit (DESIGN §6.1). It needs a privileged connection.
+type DaemonShutdownParams struct{}
+
+// DaemonShutdownResult acknowledges the shutdown; the daemon drains and exits after answering.
+type DaemonShutdownResult struct{}
+
 // MethodSpec gives a method's params and result types; Result is nil for a notification.
 type MethodSpec struct {
 	Params, Result reflect.Type
@@ -117,4 +145,6 @@ var Methods = map[string]MethodSpec{
 	MethodSessionSubscribe: {reflect.TypeFor[SessionSubscribeParams](), reflect.TypeFor[SessionSubscribeResult]()},
 	MethodSessionPrompt:    {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
 	MethodSessionEvent:     {reflect.TypeFor[SessionEventParams](), nil},
+	MethodDaemonStatus:     {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
+	MethodDaemonShutdown:   {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
 }
