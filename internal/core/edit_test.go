@@ -690,6 +690,11 @@ func TestSectionsForAMessageThroughTheCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	// The client hears turn.end before the turn's goroutine lets the session go; holding that goroutine open makes the
+	// next prompt land in the gap every run, not only on a loaded CI runner.
+	hold := func() { time.Sleep(50 * time.Millisecond) }
+	turnEndHook.Store(&hold)
+	t.Cleanup(func() { turnEndHook.Store(nil) })
 	messages := func() []string {
 		var out []string
 		for _, ev := range f.waitTurnEnd(t) {
@@ -699,14 +704,14 @@ func TestSectionsForAMessageThroughTheCore(t *testing.T) {
 		}
 		return out
 	}
-	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+	f.prompt(t, sid, "How do I test?")
 	first := messages()
 	if len(first) != 1 || !strings.Contains(first[0], "[Project rules from CLAUDE.md for this message:]\n\n## Testing\n\nRun go test with -v.") ||
 		!strings.HasSuffix(first[0], "\n\nTask: How do I test?") || !strings.HasPrefix(first[0], "Project notes from CLAUDE.md") {
 		t.Fatalf("first message %q", first)
 	}
 	ps.paths = [][]string{{"notes", "Testing"}, {"notes", "Releases"}}
-	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("And releases?")}}, nil)
+	f.prompt(t, sid, "And releases?")
 	second := messages()
 	if len(second) != 1 || second[0] != "[Project rules from CLAUDE.md for this message:]\n\n## Releases\n\nTag from main.\n\nTask: And releases?" {
 		t.Fatalf("second message %q", second)

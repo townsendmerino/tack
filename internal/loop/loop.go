@@ -70,6 +70,11 @@ type Config struct {
 	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
 	Emit func(proto.Event)
+	// EndTurn, when set, brackets the recording of a turn's turn.end, its append and its Emit: it must call record
+	// once and return its error. The turn's last act is that record, so a caller that frees the session for its next
+	// turn as turn.end is emitted can hold its write lock across the append and the fan-out together (core's
+	// session.endTurn). Nil records it plainly.
+	EndTurn func(record func() error) error
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
 	// the blob store. Default 16 KiB.
 	MaxResultBytes int
@@ -228,13 +233,24 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	first := s.turns == 0
 	s.turns++
 	start := s.cfg.Now()
+	// turn.end is the turn's last act: once it is emitted the session may start the next turn (core's emitTurn), so
+	// nothing of this one may write shared state after it. ended keeps the deferred snapshot reset off that path.
+	ended := false
 	end := func(reason string) (string, error) {
 		if _, err := s.conv.CancelPending("the turn ended (" + reason + ")"); err != nil {
 			return reason, err
 		}
 		_ = s.conv.EndTurn()
-		_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
-		return reason, err
+		s.endSnapshot()
+		ended = true
+		record := func() error {
+			_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
+			return err
+		}
+		if s.cfg.EndTurn != nil {
+			return reason, s.cfg.EndTurn(record)
+		}
+		return reason, record()
 	}
 	fail := func(class string, err error) (string, error) {
 		if _, rerr := s.record(proto.EvError, cause, proto.ErrorEvent{Class: class, Message: err.Error()}); rerr != nil {
@@ -291,7 +307,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
-	defer s.endSnapshot()                                   // on every way out, an error's too
+	// The snapshot reset on every other way out, an error's too.
+	defer func() {
+		if !ended {
+			s.endSnapshot()
+		}
+	}()
 	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
