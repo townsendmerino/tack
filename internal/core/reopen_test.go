@@ -139,7 +139,9 @@ func TestASessionOutlivesItsDaemon(t *testing.T) {
 }
 
 // crashedLog writes a session's log as a crash during a tool would leave it: the model called glob twice, the first
-// call started, and nothing more was written. It returns the session's id and the two calls' tool.call seqs.
+// call started, and nothing more was written. With causes, the events carry them as the live loop writes them (a
+// request answers its user.message, a response its request, a tool.call its response, tool.started its tool.call);
+// without, none, as a log from before causes. It returns the session's id.
 func crashedLog(t *testing.T, st *store.Store, ws string, causes bool) proto.SessionID {
 	t.Helper()
 	id := store.NewSessionID(time.Now())
@@ -147,21 +149,28 @@ func crashedLog(t *testing.T, st *store.Store, ws string, causes bool) proto.Ses
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := func(seq int64) int64 {
+		if causes {
+			return seq
+		}
+		return 0
+	}
 	input := json.RawMessage(`{"pattern":"*.go"}`)
 	for _, e := range []struct {
 		typ     proto.EventType
+		cause   int64
 		payload any
 	}{
-		{proto.EvSessionCreated, proto.SessionCreated{Workspace: ws, Model: "main", Mode: proto.ModePlan}},
-		{proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(loop.UserText(true, ws, "list twice"))}}},
-		{proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"}},
-		{proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{
+		{proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws, Model: "main", Mode: proto.ModePlan}},                         // 1
+		{proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(loop.UserText(true, ws, "list twice"))}}}, // 2
+		{proto.EvRequestSent, c(2), proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"}},                               // 3
+		{proto.EvAssistantMessage, c(3), proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{ // 4
 			{Type: "tool_use", ID: "t1", Name: "glob", Input: input}, {Type: "tool_use", ID: "t2", Name: "glob", Input: input}}}},
-		{proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "glob", Input: input}},
-		{proto.EvToolCall, proto.ToolCall{ID: "t2", Name: "glob", Input: input}},
-		{proto.EvToolStarted, proto.ToolStarted{ID: "t1"}},
+		{proto.EvToolCall, c(4), proto.ToolCall{ID: "t1", Name: "glob", Input: input}}, // 5
+		{proto.EvToolCall, c(4), proto.ToolCall{ID: "t2", Name: "glob", Input: input}}, // 6
+		{proto.EvToolStarted, c(5), proto.ToolStarted{ID: "t1"}},                       // 7
 	} {
-		if _, err := log.Append(e.typ, 0, e.payload); err != nil {
+		if _, err := log.Append(e.typ, e.cause, e.payload); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -499,7 +508,14 @@ func TestAnIdleSessionsLogIsFree(t *testing.T) {
 	if pr.Seq != ev.Seq+1 {
 		t.Fatalf("the next prompt is seq %d; want %d, after rewind's", pr.Seq, ev.Seq+1)
 	}
-	untilTurnEnd(t, events)
+	// The subscriber hears what rewind wrote, in order, before the turn's own events.
+	var order []proto.EventType
+	for _, e := range untilTurnEnd(t, events) {
+		order = append(order, e.Type)
+	}
+	if len(order) < 2 || order[0] != proto.EvRewind || order[1] != proto.EvUserMessage {
+		t.Fatalf("the subscriber heard %v; want rewind's event, then the next prompt's", order)
+	}
 	if _, err := st.Events(sess.Session, 0); err != nil {
 		t.Fatalf("the log after both writers: %v", err)
 	}
@@ -665,5 +681,21 @@ func TestAReopenedSessionAddsNoFirstPromptContext(t *testing.T) {
 	c2.mu.Unlock()
 	if s.injectRoot != "" || s.mapRoot != "" {
 		t.Fatalf("a reopened, prompted session would add injection %q and map %q to its next prompt", s.injectRoot, s.mapRoot)
+	}
+}
+
+// TestCrashedLogWritesCausesWhenAsked: the helper the recovery tests run both ways does write causes when asked, so
+// the two ways are two paths.
+func TestCrashedLogWritesCausesWhenAsked(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	for _, causes := range []bool{true, false} {
+		evs, _ := st.Events(crashedLog(t, st, ws, causes), 0)
+		if got := evs[len(evs)-1].Cause; (got == 5) != causes {
+			t.Errorf("causes %v: tool.started's cause is %d", causes, got)
+		}
 	}
 }
