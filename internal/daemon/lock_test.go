@@ -486,3 +486,70 @@ func waitBusy(t *testing.T) {
 		t.Error("the racing start never found the lock held")
 	}
 }
+
+// TestAStateDirThroughADanglingLinkIsMade: a state directory named through a symlink whose target does not exist yet
+// is made where the link points, as the kernel (and the sandbox's real) resolves it.
+func TestAStateDirThroughADanglingLinkIsMade(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	target, link := filepath.Join(base, "later", "state"), filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Acquire(link, "1")
+	if err != nil {
+		t.Fatalf("a state directory through a dangling link: %v, want it made", err)
+	}
+	defer l.Release()
+	if st, err := os.Lstat(target); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("the link's target: %v, %v; want a 0700 directory", st, err)
+	}
+}
+
+// TestAMissingParentIsNotMadeThroughAPlantedLink: the directories privateDir makes are made one at a time and checked
+// as each is made, so one that another user planted as a symlink in a shared directory (here reported as uid 4242,
+// as above) is refused, and nothing is made through it.
+func TestAMissingParentIsNotMadeThroughAPlantedLink(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	elsewhere := filepath.Join(base, "elsewhere")
+	os.Mkdir(elsewhere, 0o700)
+	planted := filepath.Join(base, "shared")
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == planted && fi.Mode()&fs.ModeSymlink != 0 { // the planted link only: a directory made there is ours
+			return 4242
+		}
+		return orig(path, fi)
+	}
+	// The check before the directories are made sees nothing at shared; the planting comes after it, as in a race.
+	afterCheck = func() { os.Symlink(elsewhere, planted) }
+	defer func() { afterCheck = nil }()
+	if _, err := Acquire(filepath.Join(planted, "tack"), "1"); err == nil || !strings.Contains(err.Error(), "4242") {
+		t.Fatalf("a parent planted as another user's link: %v, want refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "tack")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a directory was made through the planted link: %v", err)
+	}
+}
+
+// TestTheStateDirMustBeThisUsers: root is trusted on the way to the state directory, not as its owner.
+func TestTheStateDirMustBeThisUsers(t *testing.T) {
+	dir := shortDir(t)
+	os.MkdirAll(dir, 0o700)
+	dir, _ = filepath.EvalSymlinks(dir)
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == dir {
+			return 0
+		}
+		return orig(path, fi)
+	}
+	if _, err := checkPath(dir); err == nil || !strings.Contains(err.Error(), "belongs to uid 0") {
+		t.Fatalf("checkPath on a root-owned state directory: %v, want refused", err)
+	}
+}

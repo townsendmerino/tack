@@ -250,6 +250,10 @@ func (l *Lock) tell(step string) {
 // privateDir makes dir (0700) if it is missing, and narrows it to 0700 if others may read or search it. It refuses,
 // changing nothing, a directory others own or may write, or one under a path they could redirect (checkPath): what
 // they may already have put there is not tack's to trust, so it is not narrowed. tack's state is its user's alone.
+//
+// What is missing is made where the path resolves, through a symlink whose target does not exist yet too, one
+// directory at a time (makeDirs), so a directory planted meanwhile in a shared parent is refused before anything is
+// made in it.
 func privateDir(dir string) error {
 	if slices.Contains(strings.Split(dir, string(filepath.Separator)), "..") {
 		return fmt.Errorf("daemon: the state directory %s holds \"..\"; name it without: after a symlink the kernel and a path cleaned as text resolve \"..\" differently", dir)
@@ -258,21 +262,22 @@ func privateDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkPath(abs); err != nil { // before MkdirAll, which follows symlinks
-		return err
-	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return err
-	}
-	if err := checkPath(abs); err != nil { // and after, now that every component exists
-		return err
-	}
-	st, err := os.Stat(abs) // a directory: MkdirAll fails on anything else
+	resolved, err := checkPath(abs)
 	if err != nil {
 		return err
 	}
-	if uid := ownerOf(abs, st); uid != os.Getuid() {
-		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, os.Getuid())
+	if afterCheck != nil {
+		afterCheck()
+	}
+	if err := makeDirs(resolved); err != nil {
+		return err
+	}
+	if _, err := checkPath(abs); err != nil { // now that every directory exists, the state directory's own rules apply
+		return err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return err
 	}
 	if st.Mode().Perm() != 0o700 {
 		return os.Chmod(abs, 0o700)
@@ -280,58 +285,101 @@ func privateDir(dir string) error {
 	return nil
 }
 
-// checkPath refuses a path another user could redirect to a directory of theirs. It walks the path as the kernel
-// resolves it, one component at a time from /, following each symlink where it is met: every directory passed through
-// must be this user's or root's and not writable by others unless it is sticky, as /tmp is (sshd's StrictModes is the
-// model), and every symlink must be this user's or root's. A component that does not exist yet ends the walk:
-// privateDir makes the rest, as this user's.
-func checkPath(abs string) error {
-	trusted := func(uid int) bool { return uid == os.Getuid() || uid == 0 }
-	checkDir := func(p string, fi fs.FileInfo, leaf bool) error {
-		if uid := ownerOf(p, fi); !trusted(uid) {
-			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
+// afterCheck, when set (tests), runs in privateDir between the first check and the making of what is missing.
+var afterCheck func()
+
+// makeDirs makes the directories of p, a path checkPath resolved, that do not exist yet, one at a time: each with
+// Mkdir, which never follows a symlink already there, and each Lstat'ed as soon as it is made or found, so that a
+// symlink or another user's directory planted after checkPath is refused before anything is made in it.
+func makeDirs(p string) error {
+	cur := "/"
+	for _, name := range components(p) {
+		next := filepath.Join(cur, name)
+		if err := os.Mkdir(next, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
 		}
-		// The sticky bit keeps others from replacing what is in a shared directory, so it may hold the state directory;
-		// it does not keep them from adding files, so the state directory itself may not be one.
-		if fi.Mode().Perm()&0o022 != 0 && (leaf || fi.Mode()&fs.ModeSticky == 0) {
-			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return err
 		}
-		return nil
+		switch {
+		case fi.Mode()&fs.ModeSymlink != 0: // checkPath resolved every link on p, so this one came after it
+			return fmt.Errorf("daemon: %s became a symlink, owned by uid %d, while tack made its state directory", next, ownerOf(next, fi))
+		case !fi.IsDir():
+			return fmt.Errorf("daemon: %s is not a directory", next)
+		}
+		if err := checkDir(next, fi, false); err != nil {
+			return err
+		}
+		cur = next
 	}
+	return nil
+}
+
+// checkDir refuses a directory another user could use to replace tack's state. One on the way to the state directory
+// must be this user's or root's, and not writable by others unless it is sticky; the state directory itself (leaf)
+// must be this user's, and not writable by others even if sticky: the sticky bit keeps others from replacing what a
+// shared directory holds, so it may hold the state directory, but not from adding files, so it may not be one.
+func checkDir(p string, fi fs.FileInfo, leaf bool) error {
+	if uid := ownerOf(p, fi); uid != os.Getuid() && (leaf || uid != 0) {
+		return fmt.Errorf("daemon: %s belongs to uid %d; tack's state must be this user's, under this user's or root's directories", p, uid)
+	}
+	if fi.Mode().Perm()&0o022 != 0 && (leaf || fi.Mode()&fs.ModeSticky == 0) {
+		return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
+	}
+	return nil
+}
+
+// checkPath refuses a path another user could redirect to a directory of theirs, and returns it resolved: the part
+// that exists with its symlinks followed, and the names that do not exist yet after it. It walks the path as the
+// kernel resolves it, one name at a time from /, following each symlink where it is met, one whose target does not
+// exist yet too: every directory passed through is checked (checkDir), and every symlink must be this user's or
+// root's. Once every name exists, the directory the path resolves to is checked as the state directory itself,
+// however it was reached (a link to "." or ".." ends the walk on a directory first passed through).
+func checkPath(abs string) (string, error) {
 	root, err := os.Lstat("/")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := checkDir("/", root, false); err != nil {
-		return err
+		return "", err
 	}
 	cur, rest, links := "/", components(abs), 0
+	var missing []string // names past the first that does not exist: none of them can be a link yet
 	for len(rest) > 0 {
 		name := rest[0]
 		rest = rest[1:]
-		if name == ".." {
+		switch {
+		case name == ".." && len(missing) > 0:
+			missing = missing[:len(missing)-1]
+			continue
+		case name == "..":
 			cur = filepath.Dir(cur) // cur is resolved, so its parent is the physical one
+			continue
+		case len(missing) > 0:
+			missing = append(missing, name)
 			continue
 		}
 		next := filepath.Join(cur, name)
 		fi, err := os.Lstat(next)
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil
+			missing = append(missing, name)
+			continue
 		}
 		if err != nil {
-			return err
+			return "", err
 		}
 		switch {
 		case fi.Mode()&fs.ModeSymlink != 0:
-			if uid := ownerOf(next, fi); !trusted(uid) {
-				return fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", next, uid)
+			if uid := ownerOf(next, fi); uid != os.Getuid() && uid != 0 {
+				return "", fmt.Errorf("daemon: %s is a symlink owned by uid %d; tack's state may be reached only through this user's or root's", next, uid)
 			}
 			if links++; links > 40 {
-				return fmt.Errorf("daemon: %s: too many levels of symlinks", abs)
+				return "", fmt.Errorf("daemon: %s: too many levels of symlinks", abs)
 			}
 			target, err := os.Readlink(next)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if filepath.IsAbs(target) {
 				cur = "/"
@@ -339,22 +387,21 @@ func checkPath(abs string) error {
 			rest = append(components(target), rest...)
 		case fi.IsDir():
 			if err := checkDir(next, fi, false); err != nil {
-				return err
+				return "", err
 			}
 			cur = next
-		case len(rest) > 0:
-			return fmt.Errorf("daemon: %s is not a directory", next)
 		default:
-			return nil // the last component is a file; privateDir says so
+			return "", fmt.Errorf("daemon: %s is not a directory", next)
 		}
 	}
-	// Every name existed: cur is the state directory itself, however it was reached (a link to "." or ".." ends the walk
-	// on a directory first passed through), and it is checked as one.
+	if len(missing) > 0 {
+		return filepath.Join(append([]string{cur}, missing...)...), nil
+	}
 	fi, err := os.Lstat(cur)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return checkDir(cur, fi, true)
+	return cur, checkDir(cur, fi, true)
 }
 
 // components splits a path into its names, dropping empty ones and ".", keeping "..".
