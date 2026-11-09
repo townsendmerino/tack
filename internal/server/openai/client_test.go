@@ -207,3 +207,95 @@ func TestModelsAndNoCount(t *testing.T) {
 		t.Errorf("CountTokens: %v", err)
 	}
 }
+
+func simple() server.Request {
+	return server.Request{Model: "qwen", MaxTokens: 8, Tools: []server.Tool{readTool()},
+		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("q")}}}}
+}
+
+// TestAnErrorInTheStreamIsAServerError: an error event mid-stream is the server's error, not a stream with no end.
+func TestAnErrorInTheStreamIsAServerError(t *testing.T) {
+	s := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"error\":{\"message\":\"the model crashed\",\"type\":\"server_error\"}}\n\n"
+	_, err := client(t, &fake{streams: []string{s}}).Stream(context.Background(), simple(), func(server.Delta) {})
+	var se *server.Error
+	if !errors.As(err, &se) || se.Type != "server_error" || se.Message != "the model crashed" {
+		t.Errorf("error %#v", err)
+	}
+}
+
+// TestAnEventCanSpanLines: an event's data: lines join with newlines (the SSE spec), lines may end in CRLF, and the last
+// event needs no blank line after it.
+func TestAnEventCanSpanLines(t *testing.T) {
+	s := "data: {\"choices\":[{\"index\":0,\r\ndata: \"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\r\n\r\n: a comment\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}"
+	r, err := client(t, &fake{streams: []string{s}}).Stream(context.Background(), simple(), func(server.Delta) {})
+	if err != nil || len(r.Content) != 1 || r.Content[0].Text != "hi" || r.Usage.InputTokens != 5 {
+		t.Errorf("%v: %+v", err, r)
+	}
+}
+
+// TestAFailedToolResultSaysSo: the API has no error flag on a tool message, so a failed result says it in its text.
+func TestAFailedToolResultSaysSo(t *testing.T) {
+	f := &fake{streams: []string{textStream}}
+	req := simple()
+	req.Messages = append(req.Messages,
+		server.Message{Role: server.Assistant, Content: []server.Block{{ModelBlock: proto.ModelBlock{Type: "tool_use", ID: "c1", Name: "read", Input: json.RawMessage(`{}`)}}}},
+		server.Message{Role: server.User, Content: []server.Block{server.ToolResultBlock("c1", "no such file", true)}})
+	if _, err := client(t, f).Stream(context.Background(), req, func(server.Delta) {}); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := json.Marshal(f.bodies[0]["messages"])
+	if !strings.Contains(string(msgs), `"content":"error: no such file","role":"tool"`) {
+		t.Errorf("messages %s", msgs)
+	}
+}
+
+// TestCallsWithNoIndexOrIDStayApart: chunks with no index are told apart by their ids, and a call with no id gets one.
+func TestCallsWithNoIndexOrIDStayApart(t *testing.T) {
+	s := sse(`{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"a","function":{"name":"read","arguments":"{\"path\":"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"\"x\"}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"b","function":{"name":"read","arguments":"{\"path\":\"y\"}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"function":{"name":"read","arguments":"{\"path\":\"z\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	r, err := client(t, &fake{streams: []string{s}}).Stream(context.Background(), simple(), func(server.Delta) {})
+	if err != nil || len(r.Content) != 3 || r.Content[0].ID != "a" || string(r.Content[0].Input) != `{"path":"x"}` ||
+		r.Content[1].ID != "b" || r.Content[2].ID != "call_2" || string(r.Content[2].Input) != `{"path":"z"}` {
+		t.Errorf("%v: %+v", err, r.Content)
+	}
+}
+
+// TestADroppedBodyIsNotAServerError: a stream cut mid-way is a plain error, as goinfer's client gives, so the loop
+// treats it the same: not retried, a server failure for the turn.
+func TestADroppedBodyIsNotAServerError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000") // promises more than it sends
+		io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n")
+	}))
+	t.Cleanup(ts.Close)
+	_, err := New("o", ts.URL, "", ts.Client()).Stream(context.Background(), simple(), func(server.Delta) {})
+	var se *server.Error
+	if err == nil || errors.As(err, &se) {
+		t.Errorf("error %#v; want a plain error", err)
+	}
+}
+
+// TestATextDeltasIndexIsItsBlock: a text delta's index is its block's in the response: 0 alone, 1 after thinking.
+func TestATextDeltasIndexIsItsBlock(t *testing.T) {
+	for name, c := range map[string]struct {
+		stream string
+		want   int
+	}{
+		"alone":          {sse(`{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}]}`), 0},
+		"after thinking": {sse(`{"choices":[{"index":0,"delta":{"reasoning_content":"r"},"finish_reason":null}]}`, `{"choices":[{"index":0,"delta":{"content":"a"},"finish_reason":"stop"}]}`), 1},
+	} {
+		got := -1
+		r, err := client(t, &fake{streams: []string{c.stream}}).Stream(context.Background(), simple(), func(d server.Delta) {
+			if d.Kind == "text" {
+				got = d.Index
+			}
+		})
+		if err != nil || got != c.want || r.Content[got].Type != "text" {
+			t.Errorf("%s: text delta index %d, want %d (%v, %+v)", name, got, c.want, err, r)
+		}
+	}
+}
