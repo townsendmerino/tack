@@ -121,6 +121,13 @@ func TestAnIdleLogIsFreeAndCatchesUp(t *testing.T) {
 		t.Fatalf("the other writer's append: seq %d, %v", ev.Seq, err)
 	}
 	other.Close()
+	foreign, err := l.Wake()
+	if err != nil || len(foreign) != 1 || foreign[0].Seq != 2 {
+		t.Fatalf("Wake = %v, %v; want the other writer's event, seq 2", foreign, err)
+	}
+	if again, err := l.Wake(); err != nil || len(again) != 0 {
+		t.Fatalf("a second Wake = %v, %v; want nothing: the Log is awake", again, err)
+	}
 	ev, err := l.Append(proto.EvTurnEnd, 0, end)
 	if err != nil || ev.Seq != 3 || l.Head() != 3 {
 		t.Fatalf("after idle: seq %d, head %d, %v; want 3, past the other writer's", ev.Seq, l.Head(), err)
@@ -135,4 +142,28 @@ func TestAnIdleLogIsFreeAndCatchesUp(t *testing.T) {
 	if evs, _ := s.Events("s_1", 0); len(evs) != 3 {
 		t.Fatalf("%d events, want 3, dense", len(evs))
 	}
+}
+
+// TestWakeSyncsATornTailItCuts: a torn last line another writer left is cut when an idle Log wakes, and the cut is
+// made durable, as Reopen makes it.
+func TestWakeSyncsATornTailItCuts(t *testing.T) {
+	s := newStore(t)
+	l, _ := s.Create("s_1")
+	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn})
+	l.Idle()
+	p, _ := s.logPath("s_1")
+	f, _ := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0)
+	f.WriteString(`{"seq":2,"time":"2026-11-08T12:00:00Z","ty`)
+	f.Close()
+	syncs := countSyncs(l)
+	if _, err := l.Wake(); err != nil {
+		t.Fatal(err)
+	}
+	if *syncs != 1 {
+		t.Fatalf("%d syncs after cutting the torn tail; want 1", *syncs)
+	}
+	if ev, err := l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn}); err != nil || ev.Seq != 2 {
+		t.Fatalf("after the cut: seq %d, %v; want 2", ev.Seq, err)
+	}
+	l.Close()
 }

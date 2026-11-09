@@ -225,7 +225,7 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 		return proto.Event{}, errors.New("store: log is closed")
 	}
 	if l.f == nil {
-		if err := l.wake(); err != nil {
+		if _, err := l.wake(); err != nil { // the caller that cares what others wrote calls Wake first
 			return proto.Event{}, err
 		}
 	}
@@ -389,29 +389,49 @@ func (l *Log) Idle() error {
 	return err
 }
 
-// wake takes an idle Log's file and lock back and catches up on what others appended. l.mu is held.
-func (l *Log) wake() error {
+// Wake takes an idle Log's writer's lock back now, ahead of its next Append, and returns the events another writer
+// appended while it was idle (tack rewind's), so the caller can pass them on before its own. A Log that is not idle
+// returns none. While another process holds the lock it is ErrLogBusy.
+func (l *Log) Wake() ([]proto.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.idle {
+		return nil, nil
+	}
+	return l.wake()
+}
+
+// wake takes an idle Log's file and lock back, catches up on what others appended, and returns it. l.mu is held.
+func (l *Log) wake() ([]proto.Event, error) {
 	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := lockLog(f); err != nil {
 		f.Close()
-		return fmt.Errorf("%w: %s", err, l.id)
+		return nil, fmt.Errorf("%w: %s", err, l.id)
 	}
 	evs, good, err := readEvents(f)
 	if err == nil {
-		if st, _ := f.Stat(); st != nil && st.Size() != good {
-			err = f.Truncate(good) // a torn line another writer left
+		if st, _ := f.Stat(); st != nil && st.Size() != good { // a torn line another writer left
+			if err = f.Truncate(good); err == nil {
+				err = l.sync(f)
+			}
 		}
 	}
 	if err != nil {
 		f.Close()
-		return err
+		return nil, err
+	}
+	var foreign []proto.Event
+	for _, ev := range evs {
+		if ev.Seq > l.lastSeq {
+			foreign = append(foreign, ev)
+		}
 	}
 	if n := len(evs); n > 0 {
 		l.lastSeq = evs[n-1].Seq
 	}
 	l.f, l.idle = f, false
-	return nil
+	return foreign, nil
 }

@@ -474,12 +474,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		c.opt.Store.Discard(log) // a session that could not be made leaves no log
 		return "", err
 	}
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		c.discard(s)
-		return "", errors.New("the daemon is closing")
-	}
+	c.mu.Lock() // Close waits for the reopen lock this holds, so it has not run
 	c.sessions[id] = s
 	c.mu.Unlock()
 	_ = s.log.Idle() // until its first prompt: another process may write it meanwhile
@@ -701,11 +696,24 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	s.prompted = true
 	s.mu.Unlock()
 	c.mu.Unlock()
-	seq, err := s.loop.Start(text.String())
+	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
+	// subscribers see it before this turn's own events. The loop needs nothing from it: a rewind changes files, and
+	// edit checks a file's current text against what the model saw.
+	foreign, err := s.log.Wake()
+	if err == nil {
+		for _, ev := range foreign {
+			s.emit(ev)
+		}
+	}
+	var seq int64
+	if err == nil {
+		seq, err = s.loop.Start(text.String())
+	}
 	if err != nil {
 		cancel(nil)
 		s.mu.Lock()
 		s.running, s.cancel = false, nil
+		_ = s.log.Idle()
 		s.mu.Unlock()
 		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
 			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
@@ -715,8 +723,10 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
-		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
+		// Under s.mu with the end of running, so a Halt never sees a turn that has let its log go, nor idles one that
+		// has not.
 		s.mu.Lock()
+		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
 	}()
@@ -776,15 +786,19 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		for _, p := range listed {
 			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
 		}
+		if foreign, err := s.log.Wake(); err == nil {
+			for _, ev := range foreign {
+				s.emit(ev)
+			}
+		}
 		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
 			s.emit(e)
 		}
-		s.mu.Lock()
-		idle := !s.running
-		s.mu.Unlock()
-		if idle {
+		s.mu.Lock() // the check and the idle together, as a turn's end does them
+		if !s.running {
 			_ = s.log.Idle() // the append took the lock back; a running turn keeps it
 		}
+		s.mu.Unlock()
 	}
 }
 

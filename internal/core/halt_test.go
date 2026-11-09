@@ -121,3 +121,25 @@ func TestHaltRecordsARefusedSweep(t *testing.T) {
 		t.Fatal("no daemon.halt_refused")
 	}
 }
+
+// TestHaltLeavesLogsAsTurnsNeedThem: a Halt whose sweep refuses writes daemon.halt_refused to each session's log.
+// For an idle session that takes the log's lock back, and the Halt gives it up again, so tack rewind can still write
+// the log; it never gives up a running turn's (the check and the idle are made under the session's lock, as a turn's
+// end makes them).
+func TestHaltLeavesLogsAsTurnsNeedThem(t *testing.T) {
+	f := newFixture(t)
+	id := f.session(t)
+	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
+		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	l, err := f.core.opt.Store.OpenLog(id)
+	if err != nil {
+		t.Fatalf("an idle session's log after a Halt wrote to it: %v, want it free", err)
+	}
+	evs, _ := f.core.opt.Store.Events(id, 0)
+	l.Close()
+	if evs[len(evs)-1].Type != proto.EvDaemonHaltRefused {
+		t.Fatalf("the log ends %s, want daemon.halt_refused", evs[len(evs)-1].Type)
+	}
+}
