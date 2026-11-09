@@ -619,7 +619,10 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if c.opt.SectionInstructions {
 			if name, content := readInstructionFile(ws.Root()); name != "" {
 				in := window.NewInstructions(name, content, budget)
-				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+				if first := in.Initial(); first != "" { // with no room at all, Initial gives nothing
+					parts = append(parts, first)
+				}
+				loads, wholeFile = append(loads, in), in.Whole()
 				s.sections = in
 				s.sectionSearch, _ = searcher.(window.SectionSearcher)
 			}

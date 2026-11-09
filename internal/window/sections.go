@@ -910,6 +910,40 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 	return nil
 }
 
+// outlineEntry is a line of Initial's outline: a heading with its lines, or the count of the headings left out.
+var outlineEntry = regexp.MustCompile(`^(\s*.+ \(lines \d+–\d+\)|\[… \d+ more headings\])$`)
+
+// firstEnd is the instruction text that part opens with, cut where the parts core adds after it begin. The file's own
+// text can hold what looks like one of those (a "Task:" line, a repository map's title), so the cut is placed by the
+// instruction text's own shape where it can be: a whole file runs to the knowledge index or the message's end; a
+// sectioned one with an outline ends where its outline does, the outline being its last part. Only a sectioned one
+// with no outline is cut at the first added part's opening line.
+func (in *Instructions) firstEnd(part string) string {
+	if in.whole {
+		// Alone it follows the task, to the message's end; beside the knowledge index it comes first, and the index's
+		// own opening line ends it.
+		if e := strings.LastIndex(part, "\n\n"+indexOpen); e >= 0 {
+			return part[:e]
+		}
+		return part
+	}
+	if o := strings.LastIndex(part, "\n\nOther sections of "+in.name+", with their lines;"); o >= 0 {
+		lines := strings.Split(part[o+2:], "\n")
+		n := 1 // the outline's own heading line
+		for n < len(lines) && outlineEntry.MatchString(lines[n]) {
+			n++
+		}
+		return part[:o+2+len(strings.Join(lines[:n], "\n"))]
+	}
+	for _, end := range []string{"\n\nTask: ", "\n\n" + RepoMapTitle, "\n\nCode that may be relevant", "\n\n[Project rules from",
+		"\n\nKnowledge pages in "} {
+		if e := strings.Index(part, end); e >= 0 {
+			part = part[:e]
+		}
+	}
+	return part
+}
+
 // firstFrom sets what the first message holds from that message as logged: its instruction text runs from Initial's
 // opening line to the first part the message adds after it (the knowledge index, a repository map, injected code, a
 // message's sections, or the task), or to its end for a whole file, which follows the task. The sections whose text it
@@ -922,14 +956,9 @@ func (in *Instructions) firstFrom(msg string) bool {
 			continue
 		}
 		part := msg[k:]
-		for _, end := range []string{"\n\nTask: ", "\n\n" + RepoMapTitle, "\n\nCode that may be relevant", "\n\n[Project rules from",
-			"\n\nKnowledge pages in "} {
-			if e := strings.Index(part, end); e >= 0 {
-				part = part[:e]
-			}
-		}
 		// The file's shape is the session's too: read whole or by sections, whatever it would be now.
 		in.whole = strings.HasPrefix(open, "Project instructions, from ")
+		part = in.firstEnd(part)
 		for i, s := range in.secs {
 			in.in[i] = strings.Contains(part, s.Text)
 		}

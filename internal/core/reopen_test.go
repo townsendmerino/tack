@@ -1028,10 +1028,11 @@ func TestAReopenedSessionKeepsItsPages(t *testing.T) {
 	}
 	script := goinfertest.NewScripted("m", 16384,
 		goinfertest.Calls("", "r1", "read", `{"path":"a.go"}`), goinfertest.Says("one"),
-		goinfertest.Calls("", "r2", "read", `{"path":"a.go"}`), goinfertest.Says("two"))
+		goinfertest.Calls("", "r2", "read", `{"path":"a.go"}`), goinfertest.Calls("", "r3", "read", `{"path":"b.go"}`),
+		goinfertest.Says("two"))
 	ts := httptest.NewServer(script)
 	t.Cleanup(ts.Close)
-	know := func(o *Options) { o.Knowledge = true }
+	know := func(o *Options) { o.Knowledge, o.SectionInstructions = true, true }
 	first, cl, events := daemonOn(t, st, ts.URL, know)
 	ws := repo(t)
 	code := "package a\n"
@@ -1040,6 +1041,14 @@ func TestAReopenedSessionKeepsItsPages(t *testing.T) {
 	os.MkdirAll(filepath.Join(ws, ".agents", "knowledge"), 0o755)
 	os.WriteFile(filepath.Join(ws, ".agents", "knowledge", "a.md"), []byte("---\ntitle: Package a\npins: a.go sha256:"+
 		hex.EncodeToString(sum[:])[:16]+"\n---\nA is empty on purpose.\n"), 0o644)
+	// b.md is never loaded before the reopen: only the index's line says it was fresh.
+	bcode := "package b\n"
+	os.WriteFile(filepath.Join(ws, "b.go"), []byte(bcode), 0o644)
+	bsum := sha256.Sum256([]byte(bcode))
+	os.WriteFile(filepath.Join(ws, ".agents", "knowledge", "b.md"), []byte("---\ntitle: Package b\npins: b.go sha256:"+
+		hex.EncodeToString(bsum[:])[:16]+"\n---\nB waits for its tests.\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Filler\n\n"+
+		strings.Repeat("a line of filler text for the budget.\n", 150)), 0o644)
 	var sess proto.SessionNewResult
 	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
 		t.Fatal(err)
@@ -1065,7 +1074,8 @@ func TestAReopenedSessionKeepsItsPages(t *testing.T) {
 	}
 	before := used(first)
 	first.Close()
-	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644) // the session's edit, say
+	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644) // the session's edits, say
+	os.WriteFile(filepath.Join(ws, "b.go"), []byte("package b\n\nfunc B() {}\n"), 0o644)
 	c2, cl2, events2 := daemonOn(t, st, ts.URL, know)
 	cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
 	untilTurnEnd(t, events2) // the replay
@@ -1074,8 +1084,11 @@ func TestAReopenedSessionKeepsItsPages(t *testing.T) {
 	}
 	cl2.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil)
 	r := results(untilTurnEnd(t, events2))
-	if len(r) == 0 || strings.Contains(r[len(r)-1], "Knowledge page") {
-		t.Errorf("the reopened session loaded or flagged the page again: %q", r)
+	if len(r) != 2 || strings.Contains(r[0], "Knowledge page") {
+		t.Fatalf("the reopened session loaded or flagged a.md again: %q", r)
+	}
+	if !strings.Contains(r[1], "B waits for its tests.") || strings.Contains(r[1], "possibly out of date") {
+		t.Errorf("b.md, listed fresh in the logged index and never loaded, should load fresh: %q", r[1])
 	}
 }
 

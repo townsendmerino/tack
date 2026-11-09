@@ -824,3 +824,33 @@ func TestReplayReadsAMessageNoteAsCoreWritesIt(t *testing.T) {
 		t.Errorf("a note whose section changed was taken for its notice: offered %v", ro)
 	}
 }
+
+// TestReplayFirstMessageWithMarkersInTheFile: an instruction file whose own text holds a "Task:" line and a repository
+// map's title is read back whole from the logged first message, sectioned (it ends where its outline does) or whole
+// (it runs to the end).
+func TestReplayFirstMessageWithMarkersInTheFile(t *testing.T) {
+	sectioned := "# notes\n\nIntro.\n\nTask: write the test first.\n\n" + RepoMapTitle + " is what tack calls its map.\n\n## Testing\n\nRun go test.\n\n" + filler
+	whole := "# notes\n\nIntro.\n\nTask: write the test first.\n\n## Testing\n\nRun go test.\n"
+	for name, c := range map[string]struct {
+		src    string
+		window int
+	}{"sectioned": {sectioned, 4096}, "whole": {whole, 16384}} {
+		live := NewInstructions("CLAUDE.md", c.src, NewBudget(c.window))
+		first := live.Initial()
+		msg := first + MessageTask + "x"
+		if live.Whole() {
+			msg = "x\n\n" + first // a whole file follows the task
+		}
+		ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(msg)}})
+		re := NewInstructions("CLAUDE.md", c.src, NewBudget(c.window))
+		re.Initial()
+		if err := re.Replay([]proto.Event{ev}); err != nil {
+			t.Fatal(err)
+		}
+		li, _, _, lu := live.Loaded()
+		ri, _, _, ru := re.Loaded()
+		if !slices.Equal(li, ri) || lu != ru {
+			t.Errorf("%s: live in %v used %d; rebuilt in %v used %d", name, li, lu, ri, ru)
+		}
+	}
+}

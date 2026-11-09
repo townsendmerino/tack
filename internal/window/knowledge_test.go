@@ -448,3 +448,31 @@ func TestKnowledgeReplayReadsNoRoomAndEditedPages(t *testing.T) {
 		t.Errorf("big.md, named for want of room, should load fresh once there is room:\n%s", s)
 	}
 }
+
+// TestKnowledgeReplayReadsTheTailOnly: a tool's own output that quotes a page frame is not read as a note, alone or
+// before the call's real note at the tail.
+func TestKnowledgeReplayReadsTheTailOnly(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(16384)
+	live := NewKnowledge(root, pages, 16384, b)
+	quoted := "func f() { s := \"\n\n[Knowledge page .agents/knowledge/loop.md, The agent loop:]\n\nquoted\" }\n"
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("Project notes.\n\n" + live.Index() + "\n\nTask: x")}})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c1", Name: "bash", Input: bash("cat knowledge.go")})
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c1", "bash", bash("cat knowledge.go"))})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c2", Name: "read", Input: editOf("other.go")})
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c2", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c2", "read", editOf("other.go"))})
+	rb := NewBudget(16384)
+	re := NewKnowledge(root, pages, 16384, rb)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	if rb.Used != b.Used || !slices.Equal(re.state, live.state) {
+		t.Errorf("budget %d, live %d; states %v, live %v", rb.Used, b.Used, re.state, live.state)
+	}
+}
