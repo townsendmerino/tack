@@ -878,10 +878,9 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 
 // firstFrom sets what the first message holds from that message as logged: its instruction text runs from Initial's
 // opening line to the first part the message adds after it (the knowledge index, a repository map, injected code, a
-// message's sections,
-// or the task), or to its end for a whole file, which follows the task. The sections whose text it holds whole are in,
-// and so is a cut opening, which counts as in; its tokens are the first message's charge. It is false when the message
-// holds no instruction text.
+// message's sections, or the task), or to its end for a whole file, which follows the task. The sections whose text it
+// holds whole are in, and so is a cut opening, which counts as in; its tokens are the first message's charge. It is
+// false when the message holds no instruction text.
 func (in *Instructions) firstFrom(msg string) bool {
 	for _, open := range []string{"Project notes from " + in.name + ", for reference:", "Project instructions, from " + in.name + ":"} {
 		k := strings.Index(msg, open)
