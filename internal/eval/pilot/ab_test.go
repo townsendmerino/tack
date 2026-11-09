@@ -110,3 +110,10 @@ func TestSummarizeIsNotAnArmSetting(t *testing.T) {
 		t.Fatal("summarize is an arm setting")
 	}
 }
+
+// TestSummaryRetrieveIsNotAnArmSetting: no E1 arm re-retrieves after a summary until a screen registers it.
+func TestSummaryRetrieveIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["summary_retrieve"] {
+		t.Fatal("summary_retrieve is an arm setting")
+	}
+}

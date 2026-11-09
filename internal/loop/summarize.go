@@ -224,16 +224,18 @@ const summaryFrame = "[Summary of the session so far: what the earlier turns ask
 // so the first message's instruction notes stay with it.
 func summaryMessage(root string, s Summary) string { return UserText(true, root, summaryFrame+s.Text) }
 
-// bodyOf is the body of a summary message: from the first of SummaryHeadings to the anchor list; "" when the summary
-// had none (a fallback with no previous body).
+// bodyOf is the body of a summary message: from the first of SummaryHeadings to the anchor list or, with no anchors, the
+// re-retrieval section (summary_retrieve.go); "" when the summary had none (a fallback with no previous body).
 func bodyOf(msg string) string {
 	start := strings.Index(msg, "\n## "+SummaryHeadings[0]+"\n")
 	if start < 0 {
 		return ""
 	}
 	body := msg[start+1:]
-	if end := strings.Index(body, "\n\n## Anchors (exact)\n"); end >= 0 {
-		body = body[:end]
+	for _, next := range []string{"\n\n## Anchors (exact)\n", "\n\n" + retrieveHeading + "\n"} { // whichever follows the body
+		if end := strings.Index(body, next); end >= 0 {
+			body = body[:end]
+		}
 	}
 	return strings.TrimSpace(body)
 }
