@@ -100,6 +100,8 @@ type Options struct {
 	EditTolerances bool
 	// LeanResults cuts whole-file reads and grep shorter (tools.Options.LeanResults; calibration §16.1).
 	LeanResults bool
+	// RecentlyChanged gives every session the recently_changed tool (tools.Options.RecentlyChanged).
+	RecentlyChanged bool
 	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// WidenRepeats widens a repeated whole read or grep (loop.Config.WidenRepeats).
@@ -194,13 +196,13 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
+	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it.
+	know *window.Knowledge
 	// sectionSearch finds the instruction file's sections for a user message (ken's exact SearchFiles); nil without ken.
 	sectionSearch window.SectionSearcher
 	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
 	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
 	sections *window.Instructions
-	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it too.
-	know     *window.Knowledge
 	prompted bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
@@ -342,6 +344,12 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		p, perr := params[proto.InitializeParams](req)
 		if perr != nil {
 			return nil, perr
+		}
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if draining { // a connection accepted just before the shutdown: the next daemon takes its turns
+			return nil, &proto.Error{Code: proto.CodeShuttingDown, Message: "initialize: this daemon is shutting down; connect again to reach the next one"}
 		}
 		version, ok := proto.Negotiate(p.Protocol, proto.Version)
 		if !ok {
@@ -543,7 +551,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults}
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
@@ -559,7 +567,8 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
-			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults})
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
+			RecentlyChanged: c.opt.RecentlyChanged})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close

@@ -43,6 +43,12 @@ The order the owner approved, each step with its exit check:
      `usage/summary` come with the daemon.
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
+     the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
+     config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,
+     submodules' own), and denying them by name kept missing ways in (`internal/tools/recent.go`). Costs: a file under a
+     filter can show as modified, a rename shows as a delete and an add, and a partial clone's missing object is an
+     error, not a fetch.
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
 
 **Decisions:**
@@ -68,6 +74,11 @@ The order the owner approved, each step with its exit check:
         nobara, 91 of 118. `decode_path` is `unknown` on every model on both boxes.
       - **Step 4 therefore:** asks `fit` before a load; refuses on `fits: false` with `decline`; treats null as "load
         to find out"; and keeps the decode-path check after the load.
+      - **Built in step 4** (`internal/models/supervisor.go:checkFit`, `load`), for tack's own sessions
+        (`ChildConfig.Admission`; measurement leaves it off, since a fallback is what an arm records).
+        - A `fits: false` that goinfer's load would retry (`retry`, weight streaming) still loads.
+        - A decode path `fit` already knows, off the one the flags ask for, is refused before the load; a banner off it
+          after the load is unloaded and refused.
       - **Not settled by `fit`:** on Metal the served context can differ from the `ctx` that `fit` priced, so the
         banner remains the authority.
       - **Stage 2,** after G6, settles the decode path and the Metal or CUDA residency before the load.

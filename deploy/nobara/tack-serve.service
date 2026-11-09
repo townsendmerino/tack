@@ -1,0 +1,10 @@
+# tack serve (DESIGN §8.2), started by tack-serve.socket. It refuses to start goinfer-serve while goinfer's timing
+# lock is held, answering busy; it exits on its own after [serve] idle_unload, and the socket starts it again.
+[Unit]
+Description=tack serve: goinfer-serve on demand
+Requires=tack-serve.socket
+
+[Service]
+ExecStart=%h/tack-runs/bin/tack serve -config %h/.config/tack/config.toml
+# An exit after idle is the design, not a failure: the next connection activates it again.
+Restart=no

@@ -1,17 +1,29 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
 // drainLimit is how long Drain waits for a turn it cancelled to record its end before giving up on it.
 const drainLimit = 5 * time.Second
+
+// BeginDrain starts a shutdown without waiting: from now on new connections (initialize) and new turns are refused
+// with CodeShuttingDown. Drain does it too; a daemon calls it first, before it stops accepting, so that a connection
+// accepted just before is not initialized by a daemon on its way out.
+func (c *Core) BeginDrain() {
+	c.mu.Lock()
+	c.draining = true
+	c.mu.Unlock()
+}
 
 // Drain stops the Core for a shutdown (DESIGN §6.1). New turns are refused with CodeShuttingDown. Each running turn
 // finishes the tool call it is running, starts no other, and ends before its next model request (loop.Session.Drain).
@@ -83,6 +95,24 @@ func (c *Core) status() proto.DaemonStatusResult {
 func unprivileged(method string) *proto.Error {
 	return &proto.Error{Code: proto.CodeUnauthorized,
 		Message: method + " needs the client token: connect as an unsandboxed client that reads client.token"}
+}
+
+// Tick applies the idle rules of every model source the Core holds that has them (models.Ticker): a supervised child
+// unloads its model, and later exits, after its idle times (DESIGN §8.1). A daemon calls it periodically.
+func (c *Core) Tick(ctx context.Context) error {
+	c.mu.Lock()
+	var ts []models.Ticker
+	for _, s := range c.sources {
+		if t, ok := s.(models.Ticker); ok {
+			ts = append(ts, t)
+		}
+	}
+	c.mu.Unlock()
+	var errs []error
+	for _, t := range ts {
+		errs = append(errs, t.Tick(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 // spoken names the protocol versions this daemon answers with, for initialize's refusal: those a client at that

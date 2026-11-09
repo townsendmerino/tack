@@ -35,6 +35,7 @@ type Lock struct {
 	// holderMu guards the record: rec is what was written, gone that Release removed it.
 	holderMu sync.Mutex
 	rec      Holder
+	stopFor  time.Duration // under holderMu: SetShutdown
 	gone     bool
 	// step, when set (tests), is told each of Release's steps as it completes: "holder removed", "socket closed",
 	// then "unlocking", just before the flock is dropped.
@@ -52,6 +53,9 @@ type Holder struct {
 	// Stopping says the daemon is shutting down: its socket is gone or going, and the lock will follow. A start that
 	// finds it waits for the lock instead of giving up (takeLock).
 	Stopping bool `json:"stopping,omitempty"`
+	// Until, while stopping, is when the daemon expects to have let go of the lock: when its listener closed, plus its
+	// shutdown's grace and the time to record and close (DrainWait). A start waits for it that long (takeLock).
+	Until time.Time `json:"until,omitempty"`
 }
 
 // HeldError is Acquire finding another daemon holding the lock. Holder is that daemon's record, zero when it is not
@@ -64,7 +68,7 @@ func (e *HeldError) Error() string {
 		return "another tack daemon holds the lock (it has not said which)"
 	}
 	if h.Stopping {
-		return fmt.Sprintf("tack daemon %s (pid %d) is shutting down and still holds the lock after %s", h.Version, h.PID, stopWait)
+		return fmt.Sprintf("tack daemon %s (pid %d) is shutting down and still holds the lock, past the time it said it needed", h.Version, h.PID)
 	}
 	return fmt.Sprintf("tack daemon %s (pid %d, since %s) holds the lock", h.Version, h.PID, h.Start.Local().Format(time.DateTime))
 }
@@ -142,8 +146,8 @@ func ReadHolder(stateDir string) Holder {
 // takeLock takes the exclusive flock on f, the lock file in stateDir, without blocking, and tries again while the
 // holder may let go soon:
 //   - held by a daemon whose record says it is running, it is a *HeldError naming that daemon at once;
-//   - held by one whose record says it is stopping (its listener has closed, Listener.Close), it is tried again for up
-//     to stopWait, the drain's grace window and then some, and taken once released;
+//   - held by one whose record says it is stopping (its listener has closed, Listener.Close), it is tried again until
+//     the record's Until, when that daemon expects to be done, and for stopWait at least; taken once released;
 //   - held with no valid record, the holder is starting (it records itself right after taking the lock) or nearly
 //     done stopping (Release removed the record), so it is tried again for up to a second.
 //
@@ -169,8 +173,11 @@ func takeLock(f *os.File, stateDir string) error {
 		switch {
 		case h.PID != 0 && !h.Stopping:
 			return &HeldError{Holder: h}
-		case h.Stopping && !last.Stopping: // a shutdown: wait for it, through its drain
+		case h.Stopping && !last.Stopping: // a shutdown: wait for it, through its drain, as long as it said
 			deadline = start.Add(stopWait)
+			if h.Until.After(deadline) {
+				deadline = h.Until
+			}
 		}
 		if h.PID != 0 {
 			last = h
@@ -185,9 +192,21 @@ func takeLock(f *os.File, stateDir string) error {
 // lockBusy, when set (tests), is told the first time a takeLock finds the lock held.
 var lockBusy func()
 
-// stopWait is how long a start waits for a stopping daemon to release the lock: its drain's grace window and then
-// some.
-const stopWait = time.Minute
+// stopWait is the least a start waits for a stopping daemon to release the lock, however soon its record said; a
+// variable so tests can shorten it.
+var stopWait = time.Minute
+
+// DrainWait is how long a daemon shutting down with grace may take to let go of the lock: the grace window, then
+// time to record the turns it cancels (core.Drain gives that 5s), close the core and release.
+func DrainWait(grace time.Duration) time.Duration { return grace + 15*time.Second }
+
+// SetShutdown says how long this daemon's shutdown may take, from its listener closing to its releasing the lock;
+// the stopping record carries it as Until.
+func (l *Lock) SetShutdown(d time.Duration) {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	l.stopFor = d
+}
 
 // Dir is the state directory the lock is in.
 func (l *Lock) Dir() string { return l.dir }
@@ -237,6 +256,9 @@ func (l *Lock) markStopping() {
 		return
 	}
 	l.rec.Stopping = true
+	if l.stopFor > 0 {
+		l.rec.Until = time.Now().Add(l.stopFor)
+	}
 	_ = writeHolder(l.dir, l.rec) // at worst a start sees the record as running and names it
 }
 
@@ -428,4 +450,22 @@ var ownerOf = func(_ string, fi fs.FileInfo) int {
 		return int(st.Uid)
 	}
 	return -1
+}
+
+// LockFree says whether no daemon holds stateDir's lock now. It takes the lock for a moment to see, so a daemon that
+// starts in that moment finds it held with no record, and tries again (takeLock).
+func LockFree(stateDir string) bool {
+	f, err := os.OpenFile(filepath.Join(stateDir, LockName), os.O_RDWR, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return false
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return true
 }

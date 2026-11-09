@@ -386,3 +386,56 @@ func TestADaemonStartedDuringAShutdownWaits(t *testing.T) {
 		t.Fatal("the next daemon never took the lock")
 	}
 }
+
+// TestServeKeepsConnectionsWhenItsListenerCloses: a shutdown stops accepting first, and the connections already open
+// keep being served while the daemon drains; they close when Serve's context ends.
+func TestServeKeepsConnectionsWhenItsListenerCloses(t *testing.T) {
+	dir := shortDir(t)
+	l := acquire(t, dir)
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := core.New(context.Background(), core.Options{Store: st, Version: "1.2.3"})
+	served := make(chan error, 1)
+	go func() { served <- Serve(ctx, ln, c) }()
+	conn, err := net.Dial("unix", SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cl := core.NewClient(conn)
+	init := proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}
+	if err := cl.Call(proto.MethodInitialize, init, nil); err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // the shutdown's first step: no new connections
+	if c2, err := net.Dial("unix", SocketPath(dir)); err == nil {
+		c2.Close()
+		t.Fatal("still accepting after the listener closed")
+	}
+	if err := cl.Call(proto.MethodInitialize, init, nil); err != nil {
+		t.Fatalf("the open connection after the listener closed: %v, want it still served", err)
+	}
+	select {
+	case err := <-served:
+		t.Fatalf("Serve returned (%v) when its listener closed; it serves until its context ends", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return when its context ended")
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("read after Serve returned: %v, want EOF", err)
+	}
+}

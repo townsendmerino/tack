@@ -30,6 +30,33 @@ type Config struct {
 	StateDir string `toml:"state_dir"`
 	// Sandbox widens what sandboxed commands may read (DESIGN §6.6).
 	Sandbox Sandbox `toml:"sandbox"`
+	// Daemon configures `tack daemon` (DESIGN §6.1).
+	Daemon Daemon `toml:"daemon"`
+	// Serve configures `tack serve`, the on-demand model server on the box with the GPU (DESIGN §8.2); absent means
+	// this machine serves none.
+	Serve *Serve `toml:"serve"`
+}
+
+// Serve is [serve]: what `tack serve` runs on demand on nobara (DESIGN §8.2). It runs Server, a goinfer-child of
+// [servers], behind its own listener: the first request starts it (refused while goinfer's timing lock is held), and
+// after IdleUnload without a request the model unloads and the processes exit.
+type Serve struct {
+	Server string `toml:"server"`
+	// Listen is the address to listen on when systemd does not hand tack serve its socket (started over ssh): the
+	// tailnet address and a port.
+	Listen string `toml:"listen"`
+	// KeyFile holds the bearer key every client presents (mode 0600).
+	KeyFile    string   `toml:"key_file"`
+	IdleUnload Duration `toml:"idle_unload"` // default 15m
+	// TimingLock is goinfer's timing lock (scripts/timing_lock.py); default ~/.goinfer-timing.lock.
+	TimingLock string `toml:"timing_lock"`
+}
+
+// Daemon is [daemon].
+type Daemon struct {
+	// ShutdownGrace is how long a shutdown lets running tool calls finish before it cancels their turns (default 10s;
+	// 0s cancels them at once).
+	ShutdownGrace Duration `toml:"shutdown_grace"`
 }
 
 // Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
@@ -143,6 +170,10 @@ type Run struct {
 	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
 	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
 	SectionSearch bool `toml:"section_search"`
+	// RecentlyChanged gives sessions the recently_changed tool: uncommitted changes and recent commits, from git
+	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
+	// setting until one is registered.
+	RecentlyChanged bool `toml:"recently_changed"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`
@@ -172,7 +203,10 @@ type Run struct {
 const MaxBestOf = 5
 
 // Duration is a time.Duration written as a string ("10m").
-type Duration struct{ time.Duration }
+type Duration struct {
+	time.Duration
+	set bool // the config file gave it, so a zero is meant, not absent
+}
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (d *Duration) UnmarshalText(b []byte) error {
@@ -180,9 +214,12 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	if err != nil {
 		return err
 	}
-	d.Duration = v
+	d.Duration, d.set = v, true
 	return nil
 }
+
+// Set says whether the config file gave the duration: a default fills only one it did not.
+func (d Duration) Set() bool { return d.set }
 
 // Path is the config file's location: ~/.config/tack/config.toml on every platform.
 func Path() (string, error) {
@@ -345,6 +382,30 @@ func (c *Config) validate() error {
 		if k.Mode != "bm25" && k.ModelDir == "" {
 			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
 		}
+	}
+	switch g := c.Daemon.ShutdownGrace; {
+	case g.Duration < 0:
+		return fmt.Errorf("daemon.shutdown_grace is %s; it may not be negative", g.Duration)
+	case !g.Set():
+		c.Daemon.ShutdownGrace.Duration = 10 * time.Second
+	}
+	if s := c.Serve; s != nil {
+		if srv, ok := c.Servers[s.Server]; !ok || srv.Kind != KindChild {
+			return fmt.Errorf("serve.server = %q: want the name of a %s in [servers]", s.Server, KindChild)
+		}
+		if s.KeyFile = expand(s.KeyFile); s.KeyFile == "" {
+			return errors.New("serve.key_file is required: every client of tack serve presents its key")
+		}
+		switch d := s.IdleUnload.Duration; {
+		case d < 0:
+			return fmt.Errorf("serve.idle_unload is %s; it must be positive", d)
+		case d == 0:
+			s.IdleUnload.Duration = 15 * time.Minute
+		}
+		if s.TimingLock == "" {
+			s.TimingLock = "~/.goinfer-timing.lock"
+		}
+		s.TimingLock = expand(s.TimingLock)
 	}
 	// As written: expand cleans the path as text, which would drop the "..".
 	if slices.Contains(strings.Split(c.StateDir, string(filepath.Separator)), "..") {
