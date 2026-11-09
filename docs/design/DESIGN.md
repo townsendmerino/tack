@@ -1582,6 +1582,10 @@ serving every other agent.
   differ from the exact ranking. At k=5, `SearchFiles` returned 87 of 117 exact hits in the root `CLAUDE.md`, and
   2 of 9 and 2 of 11 in the two nested ones (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). ken's
   route to sections waits for a ken change that makes `SearchFiles` exact at any size.
+- **ken v1.13.0 (2026-11-09): exact at any size.** tack pins it. The same check gives 94 of 94 answers exact, and
+  ken's route is wired: a user message's best hits in the instruction file bring their sections into that message,
+  before the task (`window.Instructions.ForHits`). It is behind `[run] section_search`, default off, until the night
+  latency run reads against its registered rule.
 
 **Delivered in ken v1.11.0** (2026-10-22, ken ADR-048; tagged at `5ab3888`). The brief is
 `docs/briefs/ken-k10-k15-structural.md`, and ken's note on it is `~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`. The

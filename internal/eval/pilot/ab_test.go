@@ -68,6 +68,13 @@ func TestRunPilotRefusesABadComparison(t *testing.T) {
 	}
 }
 
+// TestSectionSearchIsNotAnArmSetting: no E1 arm asks ken for instruction sections before its latency is measured.
+func TestSectionSearchIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["section_search"] {
+		t.Fatal("section_search is an arm setting")
+	}
+}
+
 // TestRecentlyChangedIsNotAnArmSetting: no E1 arm adds recently_changed until a screen registers it; an arm's tool set,
 // and so its fixed prompt, stays as calibrated.
 func TestRecentlyChangedIsNotAnArmSetting(t *testing.T) {

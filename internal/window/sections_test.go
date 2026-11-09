@@ -589,6 +589,38 @@ func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
 	}
 }
 
+// TestForHitsLoadsAMessagesSections: the sections ken found for a message load once, framed for the message, and a
+// tracker rebuilt from a log holding that message equals the live one.
+func TestForHitsLoadsAMessagesSections(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	initial := live.Initial()
+	note := live.ForHits([][]string{{"notes", "Staging and committing"}, {"notes", "Testing"}})
+	if !strings.HasPrefix(note, "\n\n[Project rules from CLAUDE.md for this message:]") || !strings.Contains(note, "Never git add -A.") ||
+		!strings.Contains(note, "Read for PASS.") {
+		t.Fatalf("note %q", note)
+	}
+	if again := live.ForHits([][]string{{"notes", "Testing"}}); again != "" {
+		t.Errorf("a section in the window loads again: %q", again)
+	}
+	if s := live.ForCall("c1", "bash", bash("git status")); s != "" {
+		t.Errorf("a call after the message brings the same section: %q", s)
+	}
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{
+		proto.Text(initial + note + MessageTask + "Fix the build.")}})
+	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+	if NewInstructions("CLAUDE.md", "# n\n\n## Testing\n\nx\n", 16384).ForHits([][]string{{"n", "Testing"}}) != "" {
+		t.Error("a whole file brings nothing for a message")
+	}
+}
+
 // TestReplayReadsTheFirstMessageFromTheLog: when the instruction file changed between the session and its resume
 // (a section marked always since, and a longer opening), the rebuilt tracker holds what the first message held, as
 // logged, not what Initial would give now.
@@ -612,5 +644,29 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 	}
 	if ri[testing] || ru != lu {
 		t.Errorf("rebuilt from the file as it is now: Testing in %v, used %d, want the logged first message's %d", ri[testing], ru, lu)
+	}
+}
+
+// TestForHitsAnIntroHitBringsOnlyTheIntro: a hit in the file's level-1 title section brings that section, not every
+// section under it.
+func TestForHitsAnIntroHitBringsOnlyTheIntro(t *testing.T) {
+	src := "# notes\n\nIntro: about this repo.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	if s := in.ForHits([][]string{{"notes"}}); strings.Contains(s, "Run go test") || strings.Contains(s, "Tag from main") {
+		t.Errorf("an intro hit pulled in the file:\n%s", s)
+	}
+}
+
+// TestForHitsKeepsKensOrder: when the budget holds only one of two hits, the better-ranked one loads, though it comes
+// later in the file, and the other is named.
+func TestForHitsKeepsKensOrder(t *testing.T) {
+	part := strings.Repeat("a rule of some length. ", 40)
+	src := "# notes\n\nIntro.\n\n## Early\n\n" + part + "\n\n## Late\n\n" + part + "late.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	s := in.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}})
+	if !strings.Contains(s, "late.") || !strings.Contains(s, "(Early)") {
+		t.Errorf("ken's best hit should load and the other be named:\n%s", s)
 	}
 }

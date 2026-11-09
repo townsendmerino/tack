@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,31 +112,42 @@ type SectionHit struct {
 	HeadingPath        []string
 }
 
-// searchFilesCap is how many candidates ken's SearchFiles takes from the whole ranking before it keeps the files' hits
-// (ken v1.12.1's searchFilesOverfetchCap): up to this many chunks, its answer is exact.
-const searchFilesCap = 5000
-
 // SearchFile is the top k hits for query inside file, a path from the workspace root, in the workspace's mode, ranked as
-// the whole repository's search ranks them (ken's SearchFiles). It errors when file is not in the index: ken's search
-// alone would answer an unindexed path with no hits (DESIGN §12, K9 "On adoption").
-//
-// exact is false on an index of more than 5,000 chunks. Then ken can drop the file's hits that rank below its cap, and
-// on goinfer it drops most of them (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md): a caller must not
-// treat an inexact answer as the file's best sections. tack's sections do not call it until ken's SearchFiles is
-// exact at any size.
-func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file string) (hits []SectionHit, exact bool, err error) {
+// the whole repository's search ranks them: ken's SearchFiles, exact at any index size since ken v1.13.0 (the
+// 5,000-candidate cap measured in docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md is gone). It errors
+// when file is not in the index: ken's search alone would answer an unindexed path with no hits (DESIGN §12, K9 "On
+// adoption").
+func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file string) ([]SectionHit, error) {
 	if _, err := s.ws.Sections(ctx, file); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	found, _, err := s.ws.SearchFiles(ctx, query, k, s.ws.Status().Mode, []string{file})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	hits = make([]SectionHit, len(found))
+	hits := make([]SectionHit, len(found))
 	for i, h := range found {
 		hits[i] = SectionHit{StartLine: h.StartLine, EndLine: h.EndLine, Score: h.Score, HeadingPath: h.HeadingPath}
 	}
-	return hits, s.Chunks() <= searchFilesCap, nil
+	return hits, nil
+}
+
+// SectionPaths implements window.SectionSearcher: the heading paths of the top k hits for query in file, best first,
+// each once.
+func (s *Searcher) SectionPaths(ctx context.Context, query string, k int, file string) ([][]string, error) {
+	hits, err := s.SearchFile(ctx, query, k, file)
+	if err != nil {
+		return nil, err
+	}
+	var out [][]string
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if key := strings.Join(h.HeadingPath, "\x00"); len(h.HeadingPath) > 0 && !seen[key] {
+			seen[key] = true
+			out = append(out, h.HeadingPath)
+		}
+	}
+	return out, nil
 }
 
 // Chunks is the number of chunks in the index.

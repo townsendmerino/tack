@@ -1,6 +1,7 @@
 package window
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -612,55 +613,120 @@ func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
 			}
 		}
 	}
-	return in.load(want, id)
+
+	var order []int // a call's sections are taken in file order
+	for i := range in.secs {
+		if want[i] {
+			order = append(order, i)
+		}
+	}
+	return in.load(order, id, "call")
 }
 
-// load adds the wanted sections that are neither in nor named already, in file order, while the budget lasts, and
-// names the rest; the whole note is charged to call id.
-func (in *Instructions) load(want map[int]bool, id string) string {
-	header := in.header()
-	var got, left []int
-	body := "" // the loaded sections' text, to price the next
-	for i := range in.secs {
-		if !want[i] || in.in[i] || in.offered[i] {
+// SectionSearcher finds the sections of an instruction file that match a user message: the heading paths of its best
+// hits in file, best first (kensearch.Searcher, over ken's exact SearchFiles).
+type SectionSearcher interface {
+	SectionPaths(ctx context.Context, query string, k int, file string) ([][]string, error)
+}
+
+// MessageID is the note id of sections a user message brings in. No compaction stubs a message, so its notes stay.
+const MessageID = "\x00message"
+
+// ForHits is the sections holding these heading paths, what ken found in the file for a user message (DESIGN §2.3),
+// as a note for that message ("for this message"), loaded as ForCall loads a call's: each with its unmarked
+// subsections, less those already in or named, within the budget. It is "" when nothing is wanted, and always "" for a
+// file loaded whole.
+func (in *Instructions) ForHits(paths [][]string) string {
+	if in.whole {
+		return ""
+	}
+	// Ken's order is kept: each hit's section, then its unmarked subsections, best hit first; the budget cuts from
+	// the tail. A hit in a level-1 section (a file's title and introduction) brings only that section: its subtree is
+	// the whole file.
+	var order []int
+	seen := map[int]bool{}
+	add := func(i int) {
+		if !seen[i] {
+			seen[i] = true
+			order = append(order, i)
+		}
+	}
+	for _, p := range paths {
+		for i, s := range in.secs {
+			if len(p) == 0 || !slices.Equal(s.HeadingPath, p) {
+				continue
+			}
+			add(i)
+			if s.Level < 2 && len(s.On) == 0 {
+				continue
+			}
+			for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
+				if len(in.secs[j].On) == 0 {
+					add(j)
+					continue
+				}
+				for j+1 < len(in.secs) && in.within(j, j+1) {
+					j++
+				}
+			}
+		}
+	}
+	return in.load(order, MessageID, "message")
+}
+
+// Name is the instruction file's path from the workspace root.
+func (in *Instructions) Name() string { return in.name }
+
+// load adds the sections of order that are neither in nor named already, taken in that order while the budget
+// lasts, and names the rest; the note shows them in file order, and the whole of it is charged to call id. When the
+// notice of what is left out does not fit, the last taken give way to it.
+func (in *Instructions) load(order []int, id, what string) string {
+	var taken, left []int // taken in order's order
+	for _, i := range order {
+		if in.in[i] || in.offered[i] || slices.Contains(taken, i) || slices.Contains(left, i) {
 			continue
 		}
-		next := body + "\n\n" + in.secs[i].Text
-		if in.used+SectionTokens(header+next) > in.budget {
+		trial := append(slices.Clone(taken), i)
+		slices.Sort(trial)
+		if in.used+SectionTokens(in.render(trial, nil, what)) > in.budget {
 			left = append(left, i)
 			continue
 		}
-		body = next
-		got = append(got, i)
+		taken = append(taken, i)
 	}
-	if len(got) == 0 && len(left) == 0 {
+	if len(taken) == 0 && len(left) == 0 {
 		return ""
 	}
-	note := func() string { return in.render(got, left) }
-	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
-	// pass the budget, so the model always hears what it is missing.
-	for len(left) > 0 && len(got) > 0 && in.used+SectionTokens(note()) > in.budget {
-		last := got[len(got)-1]
-		got = got[:len(got)-1]
-		left = append(left, last)
-		slices.Sort(left)
+	note := func() string {
+		got, l := slices.Clone(taken), slices.Clone(left)
+		slices.Sort(got)
+		slices.Sort(l)
+		return in.render(got, l, what)
+	}
+	// A notice alone may pass the budget, so the model always hears what it is missing.
+	for len(left) > 0 && len(taken) > 0 && in.used+SectionTokens(note()) > in.budget {
+		left = append(left, taken[len(taken)-1])
+		taken = taken[:len(taken)-1]
 	}
 	text := note()
+	got := slices.Clone(taken)
+	slices.Sort(got)
+	slices.Sort(left)
 	in.record(id, got, left, text)
 	return text
 }
 
-// header opens a call's note of loaded sections; notLoaded opens its notice of the sections it names instead, and
-// notLoadedEnd closes that notice.
-func (in *Instructions) header() string {
-	return "\n\n[Project rules from " + in.name + " for this call:]"
+// header opens a note of loaded sections for what ("call" or "message"); notLoaded opens its notice of the sections it
+// names instead, and notLoadedEnd closes that notice.
+func (in *Instructions) header(what string) string {
+	return "\n\n[Project rules from " + in.name + " for this " + what + ":]"
 }
 
 func (in *Instructions) notLoaded() string {
 	return "\n\n[Not loaded, the instruction budget is spent; read " + in.name + " lines"
 }
 
-const notLoadedEnd = " for the rules on this call.]"
+func notLoadedEnd(what string) string { return " for the rules on this " + what + ".]" }
 
 // entry is how the notice names a section.
 func (in *Instructions) entry(i int) string {
@@ -669,10 +735,10 @@ func (in *Instructions) entry(i int) string {
 }
 
 // render is a call's note: the loaded sections got under the header, then the notice naming left.
-func (in *Instructions) render(got, left []int) string {
+func (in *Instructions) render(got, left []int, what string) string {
 	var out strings.Builder
 	if len(got) > 0 {
-		out.WriteString(in.header())
+		out.WriteString(in.header(what))
 		for _, i := range got {
 			out.WriteString("\n\n" + in.secs[i].Text)
 		}
@@ -685,7 +751,7 @@ func (in *Instructions) render(got, left []int) string {
 			}
 			out.WriteString(in.entry(i))
 		}
-		out.WriteString(notLoadedEnd)
+		out.WriteString(notLoadedEnd(what))
 	}
 	return out.String()
 }
@@ -746,6 +812,14 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
 		}
 		switch p := v.(type) {
+		case proto.UserMessage:
+			var text strings.Builder
+			for _, c := range p.Content {
+				text.WriteString(c.Text)
+			}
+			if got, left, note, ok := in.noteInMessage(text.String()); ok {
+				in.record(MessageID, got, left, note)
+			}
 		case proto.ToolFinished:
 			if got, left, text, ok := in.noteIn(p.Result); ok {
 				in.record(p.ID, got, left, text)
@@ -799,8 +873,8 @@ func (in *Instructions) noteIn(result string) (got, left []int, text string, ok 
 	// instruction file, say): each place a header opens is tried, from the last back. A note with sections holds its
 	// notice after them, so a notice alone is tried only in a result with no header: one whose header does not read
 	// back is skipped whole, never taken for its notice.
-	opens := []string{in.header()}
-	if !strings.Contains(result, in.header()) {
+	opens := []string{in.header("call")}
+	if !strings.Contains(result, in.header("call")) {
 		opens = []string{in.notLoaded()}
 	}
 	for _, open := range opens {
@@ -813,7 +887,7 @@ func (in *Instructions) noteIn(result string) (got, left []int, text string, ok 
 			if c := strings.Index(note, tools.CurrentSymbolOpen); c >= 0 {
 				note = note[:c]
 			}
-			if got, left, text, ok := in.noteAt(note); ok {
+			if got, left, text, ok := in.noteAt(note, "call"); ok {
 				return got, left, text, true
 			}
 			end = k
@@ -822,12 +896,38 @@ func (in *Instructions) noteIn(result string) (got, left []int, text string, ok 
 	return nil, nil, "", false
 }
 
+// MessageTask joins a user message's note of sections (ForHits) to its task: the note comes first, so the message
+// ends with the task, and Replay finds the note's end here.
+const MessageTask = "\n\nTask: "
+
+// noteInMessage reads ForHits's note back from a user message: it opens with its header (or its notice) and runs to a
+// MessageTask that follows it.
+func (in *Instructions) noteInMessage(msg string) (got, left []int, text string, ok bool) {
+	for _, open := range []string{in.header("message"), in.notLoaded()} {
+		start := strings.Index(msg, open)
+		if start < 0 {
+			continue
+		}
+		for from := start; ; {
+			k := strings.Index(msg[from:], MessageTask)
+			if k < 0 {
+				break
+			}
+			if got, left, text, ok := in.noteAt(msg[start:from+k], "message"); ok {
+				return got, left, text, true
+			}
+			from += k + 1
+		}
+	}
+	return nil, nil, "", false
+}
+
 // noteAt reads a note back from note, which must begin with it and hold nothing after it.
-func (in *Instructions) noteAt(note string) (got, left []int, text string, ok bool) {
+func (in *Instructions) noteAt(note, what string) (got, left []int, text string, ok bool) {
 	free := func(i int) bool {
 		return !in.in[i] && !in.offered[i] && !slices.Contains(got, i) && !slices.Contains(left, i)
 	}
-	rest, isLoad := strings.CutPrefix(note, in.header())
+	rest, isLoad := strings.CutPrefix(note, in.header(what))
 	for isLoad {
 		next := -1
 		for i := range in.secs {
@@ -849,7 +949,7 @@ func (in *Instructions) noteAt(note string) (got, left []int, text string, ok bo
 		rest = note
 	}
 	if list, isNotice := strings.CutPrefix(rest, in.notLoaded()); isNotice {
-		list, closed := strings.CutSuffix(list, notLoadedEnd)
+		list, closed := strings.CutSuffix(list, notLoadedEnd(what))
 		if !closed {
 			return nil, nil, "", false
 		}
@@ -868,7 +968,7 @@ func (in *Instructions) noteAt(note string) (got, left []int, text string, ok bo
 			list = strings.TrimPrefix(strings.TrimPrefix(list, in.entry(next)), ",")
 		}
 	}
-	text = in.render(got, left)
+	text = in.render(got, left, what)
 	if len(got)+len(left) == 0 || text != note {
 		return nil, nil, "", false
 	}

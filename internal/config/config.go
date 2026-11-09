@@ -144,6 +144,11 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
+	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
+	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
+	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
+	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
+	SectionSearch bool `toml:"section_search"`
 	// RecentlyChanged gives sessions the recently_changed tool: uncommitted changes and recent commits, from git
 	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
 	// setting until one is registered.

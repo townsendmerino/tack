@@ -7,10 +7,10 @@ require (
 	github.com/ebitengine/purego v0.10.1
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
-	github.com/townsendmerino/aikit v1.74.0
+	github.com/townsendmerino/aikit v1.76.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.12.1
-	golang.org/x/sys v0.48.0
+	github.com/townsendmerino/ken v1.13.0
+	golang.org/x/sys v0.49.0
 	mvdan.cc/sh/v3 v3.14.1
 )
 
