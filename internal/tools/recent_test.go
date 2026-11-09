@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -290,14 +291,43 @@ func TestRecentlyChangedRunsNothingInSubmodulesOrFetches(t *testing.T) {
 	}
 }
 
-// TestRecentlyChangedReportsWhatWentWrong: a cancelled call is cancelled, not "not a git repository".
+// TestRecentlyChangedReportsWhatWentWrong: a cancelled call returns its context's error; a repository git cannot read
+// is a tool error the model sees, saying so, and not a failure of the tool.
 func TestRecentlyChangedReportsWhatWentWrong(t *testing.T) {
 	root := gitRepo(t)
 	ws, _ := NewWorkspace(root)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	r, err := recentTool{}.Run(ctx, ws, json.RawMessage(`{}`))
-	if err == nil && strings.Contains(r.Text, "not a git repository") {
-		t.Errorf("a cancelled call was reported as no repository: %+v", r)
+	if r, err := (recentTool{}).Run(ctx, ws, json.RawMessage(`{}`)); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled call: %+v, %v; want context.Canceled", r, err)
+	}
+	head := strings.TrimSpace(gitIn(t, root, "rev-parse", "HEAD"))
+	os.WriteFile(filepath.Join(root, ".git", "refs", "heads", "master"), []byte(strings.Repeat("0", len(head))+"\n"), 0o644)
+	os.WriteFile(filepath.Join(root, ".git", "refs", "heads", "main"), []byte(strings.Repeat("0", len(head))+"\n"), 0o644)
+	r, err := (recentTool{}).Run(context.Background(), ws, json.RawMessage(`{}`))
+	if err != nil || !r.IsError || !strings.Contains(r.Text, "could not read this repository") {
+		t.Errorf("a broken repository: %+v, %v; want a tool error saying so", r, err)
+	}
+}
+
+// TestRecentlyChangedRunsNoFilterWithAnyName: a filter whose name holds "=" (which defeated blanking filters by
+// name) runs no more than any other: tack runs no git program here.
+func TestRecentlyChangedRunsNoFilterWithAnyName(t *testing.T) {
+	root := gitRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	prog := filepath.Join(t.TempDir(), "prog.sh")
+	os.WriteFile(prog, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755)
+	os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("*.txt filter=a=b\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644)
+	gitIn(t, root, "add", ".gitattributes", "f.txt")
+	gitIn(t, root, "commit", "-q", "-m", "f")
+	gitIn(t, root, "config", "filter.a=b.clean", prog)
+	time.Sleep(1100 * time.Millisecond)
+	os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644)
+	if r := recent(t, root, `{}`); r.IsError {
+		t.Fatalf("%+v", r)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a filter named with = ran")
 	}
 }
