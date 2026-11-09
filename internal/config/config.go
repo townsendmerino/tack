@@ -135,6 +135,11 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
+	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
+	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
+	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
+	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
+	SectionSearch bool `toml:"section_search"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`

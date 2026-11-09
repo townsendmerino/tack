@@ -67,3 +67,10 @@ func TestRunPilotRefusesABadComparison(t *testing.T) {
 		}
 	}
 }
+
+// TestSectionSearchIsNotAnArmSetting: no E1 arm asks ken for instruction sections before its latency is measured.
+func TestSectionSearchIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["section_search"] {
+		t.Fatal("section_search is an arm setting")
+	}
+}
