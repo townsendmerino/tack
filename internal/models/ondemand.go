@@ -48,6 +48,9 @@ func (e *BusyError) Error() string {
 	return s
 }
 
+// controlTimeout bounds each call to tack serve's own routes; a variable so tests can shorten it.
+var controlTimeout = 10 * time.Second
+
 // exitBusy is tack serve -detach's exit when the box's timing lock is held.
 const exitBusy = 75
 
@@ -59,7 +62,7 @@ type OnDemand struct {
 	name, url, token string
 	start            []string // run when nothing answers; nil under socket activation
 	offer            []string
-	hc               *http.Client
+	hc               *http.Client // for /tack/status and /tack/start: controlTimeout
 	// Poll and Timeout pace the wait for the load; run starts the server (exec.CommandContext, never a shell).
 	Poll, Timeout time.Duration
 	run           func(ctx context.Context, argv []string) (exit int, out string, err error)
@@ -69,11 +72,15 @@ type OnDemand struct {
 // (tack serve -detach over ssh), nil when systemd's socket activation does; offer names the servers to suggest when
 // it is busy.
 func NewOnDemand(name, url, token, model string, start, offer []string, hc *http.Client) *OnDemand {
-	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Second}
+	// The model's requests take hc as given: nil is goinfer.New's, with no overall timeout, since a prefill and
+	// generation may take minutes. Only tack serve's own routes get the short timeout (an http.Client's Timeout covers
+	// reading the body too).
+	ctl := &http.Client{Timeout: controlTimeout}
+	if hc != nil {
+		ctl.Transport = hc.Transport
 	}
 	return &OnDemand{Remote: NewRemote(name, url, token, model, hc), name: name, url: strings.TrimRight(url, "/"), token: token,
-		start: start, offer: offer, hc: hc, Poll: time.Second, Timeout: 10 * time.Minute, run: runCommand}
+		start: start, offer: offer, hc: ctl, Poll: time.Second, Timeout: 10 * time.Minute, run: runCommand}
 }
 
 // serveStatus is tack serve's GET /tack/status (internal/serve.Status).
@@ -82,9 +89,10 @@ type serveStatus struct {
 	Message string `json:"message"`
 }
 
-// Ensure brings the server up and returns it ready. It asks tack serve how it stands, starts it when it is idle (or,
-// when nothing answers and a start command is set, runs that), and waits while it loads, telling the context's
-// StatusFunc. busy is a *BusyError; a failed load is the load's error.
+// Ensure brings the server up and returns it ready. It asks tack serve how it stands; starts it when it is idle,
+// failed or busy (a busy status can outlast the timed run that set it, and a start re-checks the timing lock); runs
+// the start command when nothing answers and one is set; and waits while it loads, telling the context's
+// StatusFunc. A start that finds the lock held is a *BusyError; a failed load is the load's error.
 func (o *OnDemand) Ensure(ctx context.Context) (server.Server, error) {
 	deadline := time.Now().Add(o.Timeout)
 	ran, asked := false, false
@@ -114,11 +122,9 @@ func (o *OnDemand) Ensure(ctx context.Context) (server.Server, error) {
 		case st.State == "ready":
 			tell("ready", "")
 			return o.Remote.Ensure(ctx)
-		case st.State == "busy":
-			return nil, &BusyError{Server: o.name, Message: st.Message, Offer: o.offer}
 		case st.State == "failed" && asked:
 			return nil, fmt.Errorf("models: %s failed to load: %s", o.name, st.Message)
-		case st.State == "idle" || st.State == "failed":
+		case st.State == "idle" || st.State == "failed" || st.State == "busy": // busy may be stale: a start re-checks the lock
 			if st, err = o.call(ctx, http.MethodPost, "/tack/start"); err != nil {
 				return nil, fmt.Errorf("models: starting %s: %w", o.name, err)
 			}
