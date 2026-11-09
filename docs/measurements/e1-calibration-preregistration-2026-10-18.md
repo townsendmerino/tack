@@ -2809,3 +2809,61 @@ until Francis approves this section, and no second night without him saying so.
     `disk.tsv` after each sweep, so the disk each run used is in the record.
   - **What the incidental data say about snapshots, not about passes:** the 7 counted runs had 9 `checkpoint` events and none
     "unavailable", and every config had `snapshots = true`.
+
+## 18. Amendment C12: summarizing compaction, and re-retrieval after it — drafted 2026-11-09 for Francis, before any run
+
+**108 runs (36 per arm: 12 tasks × 3), about 6 to 7 hours, one night on nobara. Nothing is queued until Francis approves this
+section; the coordinator then gets the run as a recipe.** It screens two settings built in P1 step 6 and off by default:
+`summarize` (DESIGN §7.6, step 1) and `summary_retrieve` (step 3, at its default share of 10% of the window).
+
+### 18.1 The decision rule (for Francis, one screen)
+
+- **Arms.** A is the bundle as it ships (§14.4's seven; masking stays off, decided 2026-11-01). B is A plus `summarize`. C is
+  B plus `summary_retrieve`. Two contrasts, each decided alone: **B − A decides `summarize`, and C − B decides
+  `summary_retrieve`.** C is never compared with A for adoption.
+- **The metric: passes,** out of 36 per arm. **sd = 2.0** for each difference, from §15.2's per-task pass rates for this
+  model, window and run count (3 per task per arm). §15.2 drew it for one contrast; each contrast here has the same size.
+
+| d (out of 36 each) | verdict, for each contrast |
+|---|---|
+| **+4 or more** (≥ 2 sd) | adopted: the setting goes on (B − A: `summarize`; C − B: `summary_retrieve`) |
+| +2 to +3 | parked: stop, report, and Francis decides on a second night |
+| −1 to +1 | not shown: the setting stays off |
+| −2 or less | parked low: reported, and the setting stays off |
+
+- **Ties go to the do-nothing arm** (A for B − A, B for C − B). Two contrasts at 2 sd each: about 2% each by chance under
+  no effect, so about 4% that either is shown. Read the second with that in mind.
+- **`summary_retrieve` is not decided if `summarize` is not shown:** C − B is then reported, not acted on.
+
+### 18.2 The rest of the registration
+
+- **Model and server:** Qwen3.6-35B-A3B `q4_k_m` on nobara at `-ctx 16384`, as §14.4 and §15.2. The summarizer is the same
+  model's thinking-off alias (`-fast-alias`), so the screen needs nobara's server started with that flag. A tier-1 check
+  first: one summary on a real C-series history writes the seven headings. Without them every summary is the fallback, and
+  the screen would test the fallback. That check is its own recipe to the coordinator.
+- **Why this model:** §15.2 found the 35B filling its window (A had 7 window-full stops in 36, and §14.4 had 9 of 22
+  failures). Summarizing fires only past 75% with masking off, so a model that rarely fills its window would test nothing.
+- **Build:** tack at the pinned commit that merges this section and makes `summarize` and `summary_retrieve` arm settings
+  (pilot.RunSettings; today's guard tests flip in that commit, not before). Built clean, from a `git archive`.
+- **Size and order:** the 12 tasks, 9 runs each, in the order A B C C B A A B C per task, each after the cell check. A cell
+  started under heavy load is void and re-run in its place.
+- **First-block check:** every B run's config has `summarize = true`, and C's has that and `summary_retrieve = true`; A's has
+  neither. Otherwise the screen stops, since the setting did not reach the arm.
+- **Mechanism metrics, reported and never used for adoption:**
+  - summaries per run, and the request each ran before;
+  - the fallback rate, meaning summaries without the summarizer's body (no headings, an error, a timeout, no alias);
+  - the fault rate after a summary: the model asking again for a read, grep or glob the summary removed (DESIGN §7.6,
+    "pinning what faults");
+  - window-full stops, and tokens, with the summarizer's own (request 0) counted apart;
+  - in C, the sections' size and hits, and how many of their spans the model then reads.
+- **Void and stopping:** as §15.2. A night that ends early is listed, not counted, and is re-run only with Francis's say.
+- **Predictions (tack's session, before any run):**
+  - summaries fire in at least half of B's runs that pass 75% of the window;
+  - B's window-full stops are half of A's or fewer;
+  - the fallback rate is under 20% once the tier-1 check passes;
+  - passes: B − A between −2 and +3, and C − B between −2 and +2. The 35B's failures are mostly repeat loops (§15.2: 13 of
+    22), which a summary does not touch, so a large pass effect is not expected.
+- **Time:** 108 runs at about 3.1 minutes each (§14.4's mean), plus the summarizer calls (one to three a summary, each up to
+  a 4,000-token chunk) and cell checks: about 6 to 7 hours. Over two hours, so a night run (the run budget).
+- **The read:** `tools/calreport -rule sd=2.0,n=36` for each contrast. The summarizer's requests are request 0 and are not
+  counted as the run's requests (calreport's readSteps skips them).
