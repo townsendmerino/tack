@@ -3,6 +3,7 @@ package models
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -136,5 +137,21 @@ func TestAStoppedChildLeavesNoRecord(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("the record outlived the child Stop ended")
 		}
+	}
+}
+
+// TestAChildThatCannotBeRecordedIsNotKept: a child whose record cannot be written (its start time unreadable) could
+// not be found by the next daemon if this one died, so it is stopped and the start fails.
+func TestAChildThatCannotBeRecordedIsNotKept(t *testing.T) {
+	defer func(f func(int) (string, bool, error)) { childProcInfo = f }(childProcInfo)
+	var pid int
+	childProcInfo = func(p int) (string, bool, error) { pid = p; return "", false, errors.New("unreadable") }
+	s, _, _ := newSup(t, "/m/model.gguf")
+	_, err := s.Ensure(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "record") {
+		t.Fatalf("a start whose child cannot be recorded: %v; want refused", err)
+	}
+	if pid == 0 || running(pid) {
+		t.Fatalf("the unrecorded child (pid %d) still runs", pid)
 	}
 }
