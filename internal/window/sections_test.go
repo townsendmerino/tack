@@ -163,7 +163,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 
 func TestCallKinds(t *testing.T) {
 	got := strings.Join(callKinds("bash", bash(`FOO=1 /usr/bin/git -C x status | grep "go test"; go test ./...`)), "|")
-	if got != "bash:git -C x status|bash:git status|bash:grep go test|bash:go test ./..." {
+	if got != "bash:git -C x status|bash:git status|bash:grep go\u00a0test|bash:go test ./..." {
 		t.Errorf("kinds %q", got)
 	}
 	if !kindMatches("edit:*_test.go", "edit:a/b_test.go") || kindMatches("edit:*_test.go", "edit:a/b.go") ||
@@ -697,5 +697,27 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 	}
 	if ri[testing] || ru != lu {
 		t.Errorf("rebuilt from the file as it is now: Testing in %v, used %d, want the logged first message's %d", ri[testing], ru, lu)
+	}
+}
+
+// TestCallKindsKeepSubcommandFlagsAndQuotes: -c after the subcommand is the subcommand's flag, kept; a quoted word
+// stays one word, so text inside it is never taken for a flag.
+func TestCallKindsKeepSubcommandFlagsAndQuotes(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Branching\n<!-- tack:on bash:git switch -c -->\nName branches feat/x.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	if s := in.ForCall("c1", "bash", bash("git switch -c feat/x")); !strings.Contains(s, "Name branches") {
+		t.Errorf("git switch -c lost its -c:\n%s", s)
+	}
+	if s := in.ForCall("c2", "bash", bash(`git commit -m "fix --amend handling"`)); strings.Contains(s, "Never amend") {
+		t.Errorf("a quoted message was taken for the --amend flag:\n%s", s)
+	}
+}
+
+// TestInitialWithAMarkedFirstSection: a file whose first section waits for its call opens with no blank run.
+func TestInitialWithAMarkedFirstSection(t *testing.T) {
+	src := "# Night\n<!-- tack:on bash:night -->\nQueue.\n\n## Other\n\nx\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); strings.Contains(got, "\n\n\n") {
+		t.Errorf("a blank run:\n%q", got[:min(len(got), 120)])
 	}
 }

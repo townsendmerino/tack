@@ -299,8 +299,10 @@ func (in *Instructions) Initial() string {
 	firstEnd := in.secs[max(0, first-1)].EndLine
 	build := func(firstLines []string, cutFirst bool, always [][]int, outline []int, more int) string {
 		var b strings.Builder
-		fmt.Fprintf(&b, "Project notes from %s, for reference:\n\n", in.name)
-		b.WriteString(strings.Join(firstLines, "\n"))
+		fmt.Fprintf(&b, "Project notes from %s, for reference:", in.name)
+		if opening := strings.Join(firstLines, "\n"); opening != "" { // a marked first section leaves none
+			b.WriteString("\n\n" + opening)
+		}
 		if cutFirst {
 			fmt.Fprintf(&b, "\n[… the rest of this section is cut to fit the window; read %s lines 1–%d for it]", in.name, firstEnd)
 		}
@@ -401,7 +403,9 @@ func wordText(w *syntax.Word) string {
 	if b.Len() == 0 {
 		return "?"
 	}
-	return b.String()
+	// A word is one word: blanks inside a quoted one are joined with U+00A0, so kindMatches never splits it into words
+	// that could pass for flags.
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // valueFlags are the flags, before a subcommand, that take the next word as their value: git -C dir, git -c k=v,
@@ -444,7 +448,7 @@ func callKinds(tool string, input json.RawMessage) []string {
 				switch {
 				case skip:
 					skip = false
-				case valueFlags[name][w]:
+				case valueFlags[name][w] && len(bare) == 1: // before the subcommand only: git switch -c keeps its -c
 					skip = true
 				case strings.HasPrefix(w, "-") && len(bare) == 1:
 				default:
@@ -481,7 +485,7 @@ func callKinds(tool string, input json.RawMessage) []string {
 func kindMatches(pattern, kind string) bool {
 	if p, ok := strings.CutPrefix(pattern, "bash:"); ok {
 		k, ok := strings.CutPrefix(kind, "bash:")
-		pw, kw := strings.Fields(p), strings.Fields(k)
+		pw, kw := strings.Fields(p), strings.Split(k, " ") // a kind's words hold no plain space (wordText)
 		head := len(pw)
 		for i, w := range pw {
 			if strings.HasPrefix(w, "-") {
