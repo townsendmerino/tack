@@ -2,8 +2,6 @@ package models
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,9 +59,12 @@ func TestAReplacedBinaryIsCheckedAgain(t *testing.T) {
 func TestATickDoesNotWaitOnAStart(t *testing.T) {
 	t.Setenv("TACK_FAKE_GOINFER_VERSION_SLEEP", "2s")
 	s, _, _ := newSup(t, "/m/model.gguf")
+	checking := make(chan struct{})
+	versionHook = func() { close(checking) }
+	t.Cleanup(func() { versionHook = nil })
 	started := make(chan error, 1)
 	go func() { _, err := s.Ensure(context.Background()); started <- err }()
-	time.Sleep(200 * time.Millisecond) // Ensure is inside the version check
+	<-checking // Ensure holds the lock, inside the version check, which takes 2s
 	began := time.Now()
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
@@ -97,23 +98,5 @@ func TestAHungAdminSocketDoesNotKeepAnIdleChild(t *testing.T) {
 	}
 	if child, _ := s.Running(); child {
 		t.Fatal("an idle child whose admin socket does not answer was kept past idle_exit")
-	}
-}
-
-// TestAMovedTurnsBusyErrorKeepsItsWrapping: dropping a busy fallback's offer keeps the rest of its error: what wrapped
-// the BusyError still reads, and still matches.
-func TestAMovedTurnsBusyErrorKeepsItsWrapping(t *testing.T) {
-	cause := errors.New("the lock file says pid 7")
-	busy := fmt.Errorf("models: nobara: %w", &BusyError{Server: "nobara", Message: "a timed run holds the lock", Offer: []string{"mac"}})
-	wrapped := fmt.Errorf("%w (%w)", busy, cause)
-	mac, nobara := &countingSource{name: "mac"}, &countingSource{name: "nobara", err: wrapped}
-	f := NewFallback(mac, nobara, "nobara", func() (Pressure, error) { return PressureWarning, nil })
-	_, err := f.Ensure(context.Background())
-	var be *BusyError
-	if !errors.As(err, &be) || len(be.Offer) != 0 || !errors.Is(err, cause) {
-		t.Fatalf("%v; want a BusyError with no offer, and the cause still matched", err)
-	}
-	if msg := err.Error(); strings.Contains(msg, "--server mac") || !strings.Contains(msg, "models: nobara:") || !strings.Contains(msg, "pid 7") {
-		t.Fatalf("%q; want the wrapping kept and the offer gone", msg)
 	}
 }

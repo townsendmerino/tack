@@ -88,17 +88,18 @@ type Supervisor struct {
 	pressure func() (Pressure, error)
 	now      func() time.Time
 
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	exited   chan struct{} // closed when the child exits
-	exitErr  error         // written before exited closes; read only after
-	baseURL  string
-	key      string
-	loaded   bool
-	plan     Plan
-	lastUse  time.Time
-	fitLines chan string
-	checked  os.FileInfo // the binary checkVersion last passed, as stat saw it; nil before
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	exited      chan struct{} // closed when the child exits
+	exitErr     error         // written before exited closes; read only after
+	baseURL     string
+	key         string
+	loaded      bool
+	plan        Plan
+	lastUse     time.Time
+	fitLines    chan string
+	checked     os.FileInfo // the binary checkVersion last passed, as stat saw it; nil before
+	statusFails int         // Tick's status calls that failed in a row
 }
 
 // NewSupervisor validates cfg and returns a supervisor; nothing starts until Ensure.
@@ -108,6 +109,13 @@ func NewSupervisor(cfg ChildConfig) (*Supervisor, error) {
 	}
 	if n := len(filepath.Join(cfg.Dir, "admin.sock")); n > 103 {
 		return nil, fmt.Errorf("models: admin socket path is %d bytes; Unix sockets allow 103", n)
+	}
+	// A binary named without a directory, or relative, is found once, now: the version check keys on the file
+	// (checkBinary), and a later start must run the same one.
+	if p, err := exec.LookPath(cfg.Binary); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			cfg.Binary = abs
+		}
 	}
 	pressure := cfg.Pressure
 	if pressure == nil {
@@ -224,7 +232,7 @@ func (s *Supervisor) start(ctx context.Context) error {
 		pw.Close()
 		return fmt.Errorf("models: recording goinfer-serve (pid %d) in %s, so a later daemon can stop it: %w", pid, s.cfg.Dir, err)
 	}
-	s.cmd, s.exited, s.loaded = cmd, make(chan struct{}), false
+	s.cmd, s.exited, s.loaded, s.statusFails = cmd, make(chan struct{}), false, 0
 	exited := s.exited
 	go func() {
 		err := cmd.Wait()
@@ -328,9 +336,6 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	if s.cmd == nil || s.dead() {
 		return nil
 	}
-	// Each admin call is bounded: a child whose admin socket hangs must not hold the lock, and so every Ensure, with it.
-	ctx, cancel := context.WithTimeout(ctx, tickAdminTimeout)
-	defer cancel()
 	if s.cfg.Admission && s.loaded {
 		// At critical memory pressure the model unloads, generating or not: the Mac needs the memory more than the turn
 		// (DESIGN §8.1). The next load waits for the pressure to fall (Ensure).
@@ -351,12 +356,21 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 		var st struct {
 			Inflight int `json:"generations_inflight"`
 		}
-		if err := s.admin(ctx, "GET", "/admin/status", nil, &st); err != nil {
-			if idle >= s.cfg.IdleExit { // it cannot say what it is doing, and nothing has used it for idle_exit
+		// The status call is bounded short: a child whose admin socket hangs must not hold the lock, and every Ensure with
+		// it. An unload has its own, longer bound (unloadLocked).
+		sctx, cancel := context.WithTimeout(ctx, tickAdminTimeout)
+		err := s.admin(sctx, "GET", "/admin/status", nil, &st)
+		cancel()
+		if err != nil {
+			// Past idle_exit, a child whose status hangs (the call timed out) cannot say what it is doing and is stopped. An
+			// error answer is stopped only the second time running, so a passing fault does not kill a long generation.
+			s.statusFails++
+			if idle >= s.cfg.IdleExit && (errors.Is(err, context.DeadlineExceeded) || s.statusFails >= 2) {
 				return errors.Join(fmt.Errorf("models: stopping %s: its admin status did not answer: %w", s.cfg.Binary, err), s.stopLocked())
 			}
 			return err
 		}
+		s.statusFails = 0
 		if st.Inflight > 0 {
 			return nil
 		}
@@ -373,8 +387,14 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 // tickAdminTimeout bounds Tick's call to the child's admin status; a variable so tests can shorten it.
 var tickAdminTimeout = 5 * time.Second
 
-// unloadLocked unloads the model, and forgets the plan it was loaded under.
+// unloadTimeout bounds an unload: long enough for a large model's memory to go back, short enough that a hung child
+// does not hold the supervisor for good.
+const unloadTimeout = 2 * time.Minute
+
+// unloadLocked unloads the model, within unloadTimeout, and forgets the plan it was loaded under.
 func (s *Supervisor) unloadLocked(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, unloadTimeout)
+	defer cancel()
 	if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
 		return err
 	}
@@ -602,6 +622,9 @@ func (s *Supervisor) checkBinary(ctx context.Context) error {
 // tree, or "(devel)" where there is no VCS information. With the server's allow_devel (ChildConfig.AllowDevel) any
 // version runs; without it, anything but GoinferVersion is refused.
 func (s *Supervisor) checkVersion(ctx context.Context) error {
+	if versionHook != nil {
+		versionHook()
+	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, s.cfg.Binary, "--version").Output()
@@ -619,6 +642,9 @@ func (s *Supervisor) checkVersion(ctx context.Context) error {
 		return fmt.Errorf("models: %s is a development build of goinfer-serve (%s), which the pin to goinfer %s cannot check: use the %s release's goinfer-serve, or set allow_devel = true for this server in config.toml", s.cfg.Binary, strings.Join(f[1:], " "), GoinferVersion, GoinferVersion)
 	}
 }
+
+// versionHook, when set (tests), runs as checkVersion begins, with the supervisor's lock held.
+var versionHook func()
 
 // releaseTag is a goinfer release's version as --version prints it: the tag alone, no pseudo-version or +dirty.
 var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)

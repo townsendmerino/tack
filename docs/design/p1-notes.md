@@ -301,10 +301,13 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
     has served is sized for this machine's window alone, so a move to a smaller nobara window can still overflow that
     session's fixed parts. Asking nobara's window at session creation would start nobara, which a session that never
     moves should not do.
-- **Open: tack serve does not re-check the timing lock once the model is ready** (G6). The lock is checked only on a
-  start. If a timed run is started by hand on nobara while `tack serve` holds its model, it runs beside a loaded
-  model on the same GPU, and its measurement is void. The night queue avoids this only if its G6 hook stops `tack
-  serve` (and its socket) before it takes the lock. This matters for goinfer's measurements. Two options:
-  - `tack serve` re-checks the lock on each request (or on its idle tick) and unloads when it finds it held;
-  - goinfer's `timing_lock.py` refuses while `tack serve` serves.
-  Neither is built yet; the choice is the owner's.
+- **The timing lock is re-checked while the model is loaded** (G6; the owner chose option 1, 2026-11-09). Once the model
+  was ready, `tack serve` used to check the lock only on a start, so a timed run started by hand on nobara would run
+  beside the loaded model on the same GPU, and its measurement would be void. Now `tack serve` re-checks the lock
+  (`internal/serve.Front.yield`) on every request and on its idle tick, as a start does. While the lock is held:
+  - a loading or loaded model is stopped, child and all;
+  - `/tack/status` and `/tack/start` answer busy, naming the holder;
+  - model requests are refused with 503.
+  A later start re-checks, and loads again once the lock is free. The night queue's hook should still stop
+  `tack-serve.socket` and `tack-serve.service` for the whole queue (`deploy/nobara/README.md`); that change on nobara
+  is for goinfer's process, once the units are installed.

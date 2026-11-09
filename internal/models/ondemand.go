@@ -115,7 +115,7 @@ func (o *OnDemand) Ensure(ctx context.Context) (server.Server, error) {
 			code, out, rerr := o.run(ctx, o.start)
 			ran = true
 			if code == exitBusy {
-				return nil, &BusyError{Server: o.name, Message: strings.TrimSpace(out), Offer: o.offer}
+				return nil, &BusyError{Server: o.name, Message: strings.TrimSpace(out), Offer: o.offerFor(ctx)}
 			}
 			if rerr != nil || code != 0 {
 				return nil, fmt.Errorf("models: starting %s (%s): exit %d: %v %s", o.name, strings.Join(o.start, " "), code, rerr, strings.TrimSpace(out))
@@ -134,7 +134,7 @@ func (o *OnDemand) Ensure(ctx context.Context) (server.Server, error) {
 			}
 			asked = true
 			if st.State == "busy" {
-				return nil, &BusyError{Server: o.name, Message: st.Message, Offer: o.offer}
+				return nil, &BusyError{Server: o.name, Message: st.Message, Offer: o.offerFor(ctx)}
 			}
 			tell("loading", "loading model on "+o.name)
 		case st.State == "loading":
@@ -195,4 +195,20 @@ func runCommand(ctx context.Context, argv []string) (int, string, error) {
 		return ee.ExitCode(), string(out), nil
 	}
 	return 0, string(out), err
+}
+
+type noOfferKey struct{}
+
+// withoutOffer returns ctx asking an on-demand source not to offer this machine's servers when it is busy: a turn that
+// memory pressure moved off this machine cannot use them (Fallback).
+func withoutOffer(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noOfferKey{}, true)
+}
+
+// offerFor is the servers a BusyError under ctx offers: none when ctx asks for none (withoutOffer).
+func (o *OnDemand) offerFor(ctx context.Context) []string {
+	if ctx.Value(noOfferKey{}) != nil {
+		return nil
+	}
+	return o.offer
 }
