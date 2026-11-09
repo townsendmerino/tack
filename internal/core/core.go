@@ -430,7 +430,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	} else if c.opt.SectionInstructions {
 		if name, content := readInstructionFile(ws.Root()); name != "" {
 			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
-			s.instructions, s.notesFirst = in.Initial(), true
+			// A whole file follows the task, as WholeInstructions puts it; a sectioned one is notes before it.
+			s.instructions, s.notesFirst = in.Initial(), !in.Whole()
 			cfg.Sections = in
 		}
 	}
