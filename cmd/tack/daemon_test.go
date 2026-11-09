@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -414,5 +416,84 @@ func TestAnUnknownDaemonCommandIsUsage(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := dispatch([]string{"daemon", "frobnicate", "-config", filepath.Join(t.TempDir(), "absent.toml")}, &out, &errb); code != exitUsage {
 		t.Fatalf("tack daemon frobnicate: exit %d, %q; want %d", code, errb.String(), exitUsage)
+	}
+}
+
+// TestStopWhenTheDaemonGoesAndAnotherStarts: a stop whose daemon finishes shutting down as stop reaches it finds the
+// connection closed before its status call returns, so it never learned that daemon's pid. If the next daemon has
+// taken the lock and recorded itself by then, stop must not take the record's pid for the one it asked, and wait
+// for the next daemon to let go: the one it asked has gone, and that is stopped.
+func TestStopWhenTheDaemonGoesAndAnotherStarts(t *testing.T) {
+	models := goinfertest.NewScripted("m", 16384)
+	ts := httptest.NewServer(models)
+	defer ts.Close()
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	stateDir := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	body := "state_dir = \"" + stateDir + "\"\n[servers.local]\nkind = \"goinfer-remote\"\nurl = \"" + ts.URL + "\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := daemon.Acquire(stateDir, "1") // the daemon stop reaches: this process, its lock, its record, its socket
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := make(chan int, 1)
+	go func() {
+		nc, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer nc.Close()
+		sc, enc := bufio.NewScanner(nc), json.NewEncoder(nc)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				return
+			}
+			if req.Method == proto.MethodInitialize {
+				r, _ := json.Marshal(proto.InitializeResult{Protocol: proto.Version})
+				enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
+				continue
+			}
+			// Any other call: this daemon finishes shutting down, and the next one starts behind it and records
+			// itself, all before this connection closes unanswered.
+			ln.Close()
+			cmd := exec.Command(os.Args[0], "daemon", "run", "-config", cfg) // this binary, standing in for tack (TestMain)
+			cmd.Env = append(os.Environ(), "TACK_TEST_AS_TACK=1")
+			if err := cmd.Start(); err != nil {
+				t.Error(err)
+				return
+			}
+			go cmd.Wait()
+			t.Cleanup(func() { cmd.Process.Kill() })
+			next <- cmd.Process.Pid
+			l.Release()
+			for deadline := time.Now().Add(10 * time.Second); daemon.ReadHolder(stateDir).PID != cmd.Process.Pid; time.Sleep(10 * time.Millisecond) {
+				if time.Now().After(deadline) {
+					t.Error("the next daemon never recorded itself")
+					return
+				}
+			}
+			return
+		}
+	}()
+	var out, errb bytes.Buffer
+	began := time.Now()
+	code := daemonStop(stateDir, time.Second, &out, &errb)
+	if code != exitOK || !strings.Contains(out.String(), "stopped") {
+		t.Fatalf("stop as its daemon went and the next started: exit %d after %s, %q %q; want 0 and stopped", code, time.Since(began), out.String(), errb.String())
+	}
+	if pid := <-next; daemon.ReadHolder(stateDir).PID != pid {
+		t.Fatalf("the next daemon (pid %d) no longer holds the lock; stop should have left it", pid)
 	}
 }

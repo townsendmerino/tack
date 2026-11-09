@@ -216,6 +216,9 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError
 	}
+	// The record names the daemon this stop reached while it serves, as it did to answer initialize. Read now, it is
+	// that daemon's pid if the connection closes before status answers; read later, it may be the next daemon's.
+	asked := daemon.ReadHolder(stateDir).PID
 	var st proto.DaemonStatusResult
 	err = c.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, &st)
 	if err == nil {
@@ -225,7 +228,7 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 	if errors.Is(err, core.ErrClosed) { // it finished shutting down as this stop reached it: wait for its lock
 		pid := st.PID
 		if pid == 0 {
-			pid = daemon.ReadHolder(stateDir).PID
+			pid = asked
 		}
 		return awaitRelease(stateDir, pid, grace, stdout, stderr)
 	}
