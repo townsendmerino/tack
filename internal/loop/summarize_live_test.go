@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
@@ -384,4 +385,67 @@ func TestATimedOutSummarizerCallFallsBack(t *testing.T) {
 		t.Errorf("reason %q, %v; compactions %+v", reason, err, comps)
 	}
 	h.checkRebuild(t)
+}
+
+// TestTheSummaryFloorCanBePassed: the regrowth a floor asks for is capped by the room left, so a floor set near a full
+// window does not switch summarizing off for good.
+func TestTheSummaryFloorCanBePassed(t *testing.T) {
+	for _, c := range []struct{ w, floor, want int }{
+		{120, 60, 12}, // maskRegrowShare of the window
+		{120, 108, 6}, // at 90%: half the 12 tokens left
+		{120, 120, 0}, // at the window: any growth, or none
+		{16384, 8000, 1638},
+	} {
+		if got := summaryRegrow(c.w, c.floor); got != c.want || c.floor+got > c.w {
+			t.Errorf("summaryRegrow(%d, %d) = %d, want %d", c.w, c.floor, got, c.want)
+		}
+	}
+}
+
+// TestANewTurnClearsTheSummaryFloor: an attempt that gains nothing backs off for the rest of its turn, and the next
+// turn tries again.
+func TestANewTurnClearsTheSummaryFloor(t *testing.T) {
+	small := `{"path":"mcp/token_budget.go"}`
+	h := maskHarness(t, false, 120,
+		goinfertest.Calls("", "t1", "read", small), goinfertest.Calls("", "t2", "read", small),
+		goinfertest.Calls("", "t3", "read", small), goinfertest.Calls("", "t4", "read", small),
+		goinfertest.Says(body("first try")), // turn 1's one attempt, before request 5
+		goinfertest.Calls("", "t5", "read", small), goinfertest.Says("done"),
+		goinfertest.Says(body("second try")), // turn 2's attempt, before its first request
+		goinfertest.Says("done again"))
+	h.sess.cfg.Summarize = true
+	h.sess = New(h.sess.cfg)
+	for _, q := range []string{"go", "again"} {
+		if _, err := h.sess.Turn(context.Background(), q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked := 0
+	for _, r := range h.script.Requests {
+		if strings.Contains(string(r), "Previous summary:") {
+			asked++
+		}
+	}
+	if asked != 2 {
+		t.Errorf("%d summarizer calls over two turns, want 2: one each", asked)
+	}
+}
+
+// TestAMaskingCompactionClearsTheSummaryFloor: masking that changes the history clears the floor, so the next request may
+// try a summary again.
+func TestAMaskingCompactionClearsTheSummaryFloor(t *testing.T) {
+	h := maskHarness(t, true, 120)
+	h.sess.sumFloor = 100
+	h.sess.obs = []observation{{id: "c1", tool: "bash", key: "x", req: 1, bytes: 1000, ok: true}}
+	h.sess.requests = 10
+	// compactNow masks the old command output (older than maskKeepRequests requests) when it can rewrite it.
+	h.sess.conv.BeginTurn("go", false)
+	h.sess.conv.AddResponse([]proto.ModelBlock{{Type: "tool_use", ID: "c1", Name: "bash", Input: json.RawMessage(`{"command":"x"}`)}})
+	h.sess.conv.AnswerTools([]server.ToolResult{{ID: "c1", Result: strings.Repeat("o", 1000)}})
+	if n, err := h.sess.compactNow(11, 0, "window"); err != nil || n != 1 {
+		t.Fatalf("compactNow masked %d, %v", n, err)
+	}
+	if h.sess.sumFloor != 0 {
+		t.Errorf("the summary floor is %d after a masking compaction, want 0", h.sess.sumFloor)
+	}
 }

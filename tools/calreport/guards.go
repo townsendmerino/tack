@@ -50,6 +50,7 @@ type runEvent struct {
 		Outcome    string          `json:"outcome"`
 		Result     string          `json:"result"`
 		StopReason string          `json:"stop_reason"`
+		Request    int             `json:"request"`
 	} `json:"payload"`
 }
 
@@ -77,7 +78,9 @@ func readSteps(path string) (steps []step, requests int, stop string, err error)
 		}
 		switch e.Type {
 		case "request.sent":
-			requests++
+			if e.Payload.Request != 0 { // 0: compaction's summarizer, outside the conversation's requests
+				requests++
+			}
 		case "tool.call":
 			calls[e.Payload.ID] = e
 		case "tool.finished":

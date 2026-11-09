@@ -304,11 +304,13 @@ func (l *Log) Head() int64 {
 }
 
 // Events reads every persisted event back from the file, in order: what a summary of the history reads, so the loop
-// keeps no copy of the payloads. A torn last line is ignored, as Store.Events ignores it.
+// keeps no copy of the payloads. The file is only appended to, so it is read without holding the log's lock: an append
+// meanwhile is read or not, and a torn last line is ignored, as Store.Events ignores it.
 func (l *Log) Events() ([]proto.Event, error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	f, err := os.Open(l.path)
+	path := l.path
+	l.mu.Unlock()
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}

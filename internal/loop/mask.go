@@ -298,6 +298,7 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		s.cfg.Sections.Masked(ids)
 	}
 	s.compacted, s.maskFloor = true, 0 // every trigger moves mask_observations' floor; only "window" reads it (due)
+	s.sumFloor = 0                     // the history changed, so a summary may help again
 	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt,
 		Window: s.cfg.Source.Window(), Masked: masked, Before: before, After: after})
 	return len(masked), err

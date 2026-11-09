@@ -24,15 +24,15 @@ var summaryCallTimeout = 3 * time.Minute
 
 // summarizeDue summarizes before request next when masking, which ran first, did not bring the prompt under maskShare
 // of the window. What masking freed is counted at summaryBytesPerToken. After an attempt that changed nothing it waits,
-// as masking does after a compaction, until the prompt has grown maskRegrowShare of the window past that attempt's, so
-// a summary that cannot help is not paid for on every request. It returns the tokens the summarizer's requests cost,
+// as masking does after a compaction, until the prompt has grown summaryRegrow past that attempt's, so a summary
+// that cannot help is not paid for on every request. A new turn and a masking compaction clear that floor. It returns the tokens the summarizer's requests cost,
 // for the turn's budget; the session's is counted as they are logged.
 func (s *Session) summarizeDue(ctx context.Context, srv server.Server, next int, cause int64) (int, error) {
 	w := s.cfg.Source.Window()
 	switch {
 	case w <= 0 || (s.lastPrompt-s.freed/summaryBytesPerToken)*100 < maskShare*w:
 		return 0, nil
-	case s.sumFloor > 0 && (s.lastPrompt-s.sumFloor)*100 < maskRegrowShare*w:
+	case s.sumFloor > 0 && s.lastPrompt-s.sumFloor < summaryRegrow(w, s.sumFloor):
 		return 0, nil
 	}
 	spent, out, err := s.summarize(ctx, srv, next, cause)
@@ -175,3 +175,8 @@ func (s *Session) fastModel(ctx context.Context, srv server.Server) string {
 	s.fastKnown = true
 	return s.fast
 }
+
+// summaryRegrow is how far the prompt must grow past floor, the prompt at an attempt that changed nothing, before
+// another summary is tried in window w: maskRegrowShare of w, but never more than half the room left above floor, so a
+// floor set near a full window can still be passed.
+func summaryRegrow(w, floor int) int { return min(maskRegrowShare*w/100, max(w-floor, 0)/2) }
