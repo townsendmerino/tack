@@ -12,11 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/eval"
 	"github.com/townsendmerino/tack/internal/models"
 )
 
@@ -229,5 +231,62 @@ func TestALongRequestCountsAsUseUntilItEnds(t *testing.T) {
 	f.Tick(context.Background())
 	if child, loaded := f.sup.Running(); !child || !loaded || f.Status().State != Ready {
 		t.Fatalf("a tick just after a long request: child %v, loaded %v, state %+v; want the model kept", child, loaded, f.Status())
+	}
+}
+
+// timingLock is goinfer's timing lock at a file of its own, checked as tack serve checks it, with hold taking it as a
+// timed run does.
+func timingLock(t *testing.T) (check func() error, hold func() func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "timing.lock")
+	check = func() error { return eval.CheckTimingLock(path) }
+	t.Setenv("GOINFER_TIMING_LOCK", "") // restored after the test
+	hold = func() func() {
+		l, err := eval.AcquireTimingLock(path, "a timed run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Acquire marks this process as the holder's own (its token, for its children); the run is another process.
+		os.Unsetenv("GOINFER_TIMING_LOCK")
+		return func() { l.Release() }
+	}
+	return check, hold
+}
+
+// TestATimedRunStartedLaterStopsTheModel (G6): a timed run that takes goinfer's timing lock while the model is loaded
+// does not run beside it. The next request is answered busy, and the child is stopped, so the GPU is the run's.
+// Once the lock is let go, a start loads again.
+func TestATimedRunStartedLaterStopsTheModel(t *testing.T) {
+	check, hold := timingLock(t)
+	f, ts := front(t, time.Hour, check)
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	release := hold()
+	code, body := get(t, ts, "POST", "/v1/messages", key)
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, "busy") {
+		t.Fatalf("a request while a timed run holds the lock: %d %s; want 503 busy", code, body)
+	}
+	if child, _ := f.sup.Running(); child || f.Status().State != Busy {
+		t.Fatalf("child %v, state %+v; want the child stopped and busy", child, f.Status())
+	}
+	release()
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+}
+
+// TestTheIdleTickStopsTheModelForATimedRun (G6): with no request coming, the idle tick finds the timing lock held,
+// stops the child and says busy.
+func TestTheIdleTickStopsTheModelForATimedRun(t *testing.T) {
+	check, hold := timingLock(t)
+	f, ts := front(t, time.Hour, check)
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	defer hold()()
+	f.Tick(context.Background())
+	if child, _ := f.sup.Running(); child || f.Status().State != Busy {
+		t.Fatalf("after a tick under the timing lock: child %v, state %+v; want the child stopped and busy", child, f.Status())
+	}
+	if code, body := get(t, ts, "GET", "/tack/status", key); code != http.StatusOK || !strings.Contains(body, `"busy"`) {
+		t.Fatalf("status under the timing lock: %d %s; want busy", code, body)
 	}
 }

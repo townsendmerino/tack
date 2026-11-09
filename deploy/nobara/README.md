@@ -39,9 +39,10 @@ key_file = "~/.config/tack/serve-api-key"
 
 ## The night queue (G6)
 
-While the timing lock is held, a connection starts `tack serve`, which then answers busy and starts nothing. But
-night.py holds the lock per job, not for the whole queue, so a connection that arrives between two jobs could start
-goinfer-serve.
+`tack serve` checks goinfer's timing lock on every start, every request and every idle tick. While a timed run holds
+it, `tack serve` answers busy, starts nothing, and stops a model it has loaded, child and all. So a timed run started
+by hand does not run beside a loaded model. But night.py holds the lock per job, not for the whole queue, so a
+connection that arrives between two jobs could still start goinfer-serve.
 
 The queue's `before_queue` hook should therefore stop the socket as well as the service:
 
