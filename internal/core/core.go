@@ -591,7 +591,19 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			}
 			if len(pages) > 0 {
 				know = window.NewKnowledge(ws.Root(), pages, w, budget)
-				index = know.Index()
+				if prompted {
+					// A reopened session's tracker is rebuilt from its log before anything is priced: its index as
+					// logged, each page's freshness as the session judged it, and what it loaded.
+					if err := know.Replay(history); err != nil {
+						c.unregister(id)
+						if s.kit != nil {
+							s.kit()
+						}
+						return nil, err
+					}
+				} else {
+					index = know.Index()
+				}
 			}
 		}
 		if c.opt.SectionInstructions {
@@ -619,17 +631,6 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	if history == nil {
 		s.loop = loop.New(cfg)
 		return s, nil
-	}
-	// A reopened session's knowledge tracker is rebuilt from its log: what it loaded, and each page's freshness as
-	// the session judged it, not as the tree, edited since, would judge it now.
-	if s.know != nil {
-		if err = s.know.Replay(history); err != nil {
-			c.unregister(id)
-			if s.kit != nil {
-				s.kit()
-			}
-			return nil, err
-		}
 	}
 	if s.loop, err = loop.Resume(cfg, history); err != nil {
 		c.unregister(id)

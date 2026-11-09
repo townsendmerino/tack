@@ -3,10 +3,14 @@ package window
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/proto"
 )
 
 func hashOf(s string) string {
@@ -200,9 +204,14 @@ func TestKnowledgeIndexAndInstructionsStayInTheBudget(t *testing.T) {
 		t.Errorf("the index took the budget past its limit: used %d of %d\n%s", b.Used, b.Limit, idx)
 	}
 	b = NewBudget(16384)
-	b.Used = b.Limit - 5
-	if NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test with -v before every push.\n", b).Whole() {
+	b.Used = b.Limit - 60
+	md := "# notes\n\nIntro.\n\n## Testing\n\n" + strings.Repeat("Run go test with -v before every push. ", 12) + "\n"
+	in := NewInstructions("CLAUDE.md", md, b)
+	if in.Whole() {
 		t.Error("a file over what is left is loaded whole")
+	}
+	if in.Initial(); b.Used > b.Limit {
+		t.Errorf("the first message took the budget past its limit: used %d of %d", b.Used, b.Limit)
 	}
 }
 
@@ -255,5 +264,78 @@ func TestKnowledgeDropKeepsAnEarlierNotice(t *testing.T) {
 	b.Used += 300
 	if s := k.ForCall("c3", "read", editOf("big.go")); s != "" {
 		t.Errorf("the page, still named by c1's notice, was named again:\n%s", s)
+	}
+}
+
+// knowLog runs calls through a live tracker as the loop does and returns the log: the first message with the index,
+// then each call's result.
+func knowLog(t *testing.T, k *Knowledge, calls ...[2]string) []proto.Event {
+	t.Helper()
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, err := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("Project notes.\n\n" + k.Index() + "\n\nTask: x")}})
+	for n, c := range calls {
+		id := fmt.Sprintf("c%d", n+1)
+		add(proto.EvToolFinished, proto.ToolFinished{ID: id, Outcome: proto.OutcomeOK, Result: "output" + k.ForCall(id, "read", editOf(c[1]))})
+	}
+	return evs
+}
+
+// TestKnowledgeReplayPricesTheLoggedIndex: a reopen after the session edited a pinned file prices the index as logged
+// and keeps the freshness its line gave, for a page the session never loaded too; the budget ends where it did.
+func TestKnowledgeReplayPricesTheLoggedIndex(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(16384)
+	live := NewKnowledge(root, pages, 16384, b)
+	evs := knowLog(t, live, [2]string{"read", "other.go"})
+	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
+	rb := NewBudget(16384)
+	re := NewKnowledge(root, pages, 16384, rb)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	if rb.Used != b.Used || re.Own() != live.Own() {
+		t.Errorf("budget %d, live %d; own %d, live %d", rb.Used, b.Used, re.Own(), live.Own())
+	}
+	if s := re.ForCall("c9", "read", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn") {
+		t.Errorf("a page the index listed fresh came back stale after the session's edit:\n%s", s)
+	}
+}
+
+// TestKnowledgeReplayReadsNoRoomAndEditedPages: a page named for want of room is fresh on a reopen though its pinned
+// file was edited since; a page whose own file changed after it loaded is still found, and charged as logged.
+func TestKnowledgeReplayReadsNoRoomAndEditedPages(t *testing.T) {
+	root := bigPageRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(4096)
+	live := NewKnowledge(root, pages, 4096, b)
+	b.Used = b.Limit - 120 // room for the index and a notice, not for big.md
+	evs := knowLog(t, live, [2]string{"read", "big.go"}, [2]string{"read", "internal/loop/loop.go"})
+	os.WriteFile(filepath.Join(root, "big.go"), []byte("package big\n\nfunc B() {}\n"), 0o644)
+	os.WriteFile(filepath.Join(root, ".agents", "knowledge", "loop.md"), []byte("---\ntitle: The agent loop\npins:\n  - internal/loop/loop.go sha256:"+
+		hashOf("package loop\n\nfunc Run() {}\n")+"\n---\nRewritten since.\n"), 0o644)
+	repages, _ := LoadPages(root)
+	rb := NewBudget(4096)
+	rb.Used = b.Limit - 120
+	re := NewKnowledge(root, repages, 4096, rb)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	if rb.Used != b.Used {
+		t.Errorf("budget %d, live %d", rb.Used, b.Used)
+	}
+	if s := re.ForCall("c9", "read", editOf("internal/loop/loop.go")); s != "" {
+		t.Errorf("loop.md, loaded before its file changed, loads again: %q", s)
+	}
+	rb.Used = 0
+	if s := re.ForCall("c10", "read", editOf("big.go")); !strings.Contains(s, "a long note about big") {
+		t.Errorf("big.md, named for want of room, should load fresh once there is room:\n%s", s)
 	}
 }

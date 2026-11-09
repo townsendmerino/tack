@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // Knowledge pages (DESIGN §2.5, §6.7 "Memory across sessions"; ADR-007): markdown files under .agents/knowledge/, one
@@ -333,28 +334,39 @@ func (k *Knowledge) record(id string, touched []int, text string) {
 	k.b.Used += k.notes[n].cost
 }
 
-// Replay rebuilds the pages' places in the window from a session's log, for a reopened session (core's open, before
-// loop.Resume), keeping the index the first message carries. For each tool.finished result of a call that ran, it
-// finds the texts ForCall gave, in page order and together as ForCall wrote them, and records that call's note
-// (empty when there are none); each compaction's stubbed ids go through Masked. Only this tracker's own notes' share
-// of the shared budget is taken back first.
+// Replay rebuilds a reopened session's tracker from its log, before anything is priced: core makes the tracker over
+// the tree as it is now, then calls Replay instead of Index, and only then sizes the instruction file. So:
+//   - the index is the logged first message's, priced as logged, and each page's freshness is read from its line there
+//     (a stale page's line says so), not judged again over a tree the session may have edited;
+//   - each result of a call that ran is read for the texts ForCall gave there, by their framing lines (so a page whose
+//     own file changed since is still found), and its note charged as logged: a page's text and a no-room notice say it
+//     was fresh, a stale notice that it was not;
+//   - each compaction's stubbed ids go through Masked.
+//
+// Pages the log never mentions keep the judgment made over the tree as it is now. Only this tracker's own share of the
+// shared budget is taken back first.
 func (k *Knowledge) Replay(evs []proto.Event) error {
-	for _, n := range k.notes {
-		if n.live {
-			k.b.Used -= n.cost
-		}
-	}
-	k.freshFromLog(evs)
-	k.notes = nil
+	k.b.Used -= k.Own()
+	k.indexCost, k.notes = 0, nil
 	for i := range k.pages {
 		k.state[i], k.note[i], k.named[i] = pageOut, 0, -1
 	}
+	first := true
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
 			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
 		}
 		switch p := v.(type) {
+		case proto.UserMessage:
+			if first {
+				first = false
+				var text strings.Builder
+				for _, c := range p.Content {
+					text.WriteString(c.Text)
+				}
+				k.indexFrom(text.String())
+			}
 		case proto.ToolFinished:
 			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
 				continue // the loop asks only about calls that ran
@@ -371,89 +383,87 @@ func (k *Knowledge) Replay(evs []proto.Event) error {
 	return nil
 }
 
-// freshFromLog sets each page's freshness to what the session judged as it began, which the log holds: in the first
-// message's index (a stale page's line says so), and in the notes of the calls that ran (a page's text, or its stale
-// notice). The pages the log does not mention keep the judgment made over the tree as it is now. Judging again over
-// the tree would make every page whose file the session edited stale on its resume.
-func (k *Knowledge) freshFromLog(evs []proto.Event) {
-	for _, ev := range evs {
-		v, err := ev.Decode()
-		if err != nil {
-			continue
+// indexOpen opens the index in the first message.
+const indexOpen = "Knowledge pages in " + KnowledgeDir + "/"
+
+// indexFrom prices the index the logged first message carries, and reads each listed page's freshness from its line.
+// The index runs from its opening line to the first part the message adds after it, or to the task.
+func (k *Knowledge) indexFrom(msg string) {
+	s := strings.Index(msg, indexOpen)
+	if s < 0 {
+		return
+	}
+	part := msg[s:]
+	for _, end := range []string{"\n\nTask: ", "\n\n" + RepoMapTitle, "\n\nCode that may be relevant", "\n\n[Project rules from"} {
+		if e := strings.Index(part, end); e >= 0 {
+			part = part[:e]
 		}
-		var text string
-		switch p := v.(type) {
-		case proto.UserMessage:
-			for _, c := range p.Content {
-				text += c.Text
-			}
-			for i := range k.pages {
-				was := k.fresh[i]
-				k.fresh[i] = true
-				fresh := strings.Contains(text, k.indexLine(i))
-				k.fresh[i] = false
-				stale := strings.Contains(text, k.indexLine(i))
-				switch {
-				case fresh:
-					k.fresh[i] = true
-				case stale:
-					k.fresh[i] = false
-				default:
-					k.fresh[i] = was
-				}
-			}
-		case proto.ToolFinished:
-			for i := range k.pages {
-				body, stale, _ := k.texts(i)
-				switch {
-				case strings.Contains(p.Result, body):
-					k.fresh[i] = true
-				case strings.Contains(p.Result, stale):
-					k.fresh[i] = false
-				}
+	}
+	k.indexCost = SectionTokens(part)
+	k.b.Used += k.indexCost
+	for i := range k.pages {
+		was := k.fresh[i]
+		for _, f := range []bool{true, false} {
+			k.fresh[i] = f
+			if strings.Contains(part, k.indexLine(i)+"\n") || strings.HasSuffix(part, k.indexLine(i)) {
+				was = f
+				break
 			}
 		}
+		k.fresh[i] = was
 	}
 }
 
-// replayResult records the note one result holds: each page's text that ForCall could have given then and that the
-// result holds, when together, in page order, they are in the result as one run; otherwise an empty note.
+// opens are the framing lines a page's texts open with, which hold its path and not its body: its text's, its stale
+// notice's, and its no-room notice's.
+func (k *Knowledge) opens(i int) (body, stale, noRoom string) {
+	p := k.pages[i].Path
+	return "\n\n[Knowledge page " + p + ", ", "\n\n[Knowledge page " + p + " is possibly out of date:",
+		"\n\n[Knowledge page " + p + " is not loaded, the instruction budget is spent;"
+}
+
+// replayResult records the note one result holds: the texts ForCall gave, which run from the first page frame to the
+// result's end or edit's current-symbol note after it, charged as they stand, and the pages they carry or name. A
+// result with none gets an empty note, as ForCall gives one.
 func (k *Knowledge) replayResult(id, result string) {
-	var out strings.Builder
+	start := strings.Index(result, "\n\n[Knowledge page ")
+	if start < 0 {
+		k.record(id, nil, "")
+		return
+	}
+	seg := result[start:]
+	if c := strings.Index(seg, tools.CurrentSymbolOpen); c >= 0 {
+		seg = seg[:c]
+	}
 	var touched []int
-	var states []pageState
 	for i := range k.pages {
 		if k.state[i] == pageIn || k.state[i] == pageStale {
 			continue
 		}
-		body, stale, notice := k.texts(i)
+		body, stale, noRoom := k.opens(i)
 		switch {
-		case !k.fresh[i] && strings.Contains(result, stale):
-			out.WriteString(stale)
-			states = append(states, pageStale)
-		case k.fresh[i] && strings.Contains(result, body):
-			out.WriteString(body)
-			states = append(states, pageIn)
-		case k.fresh[i] && k.state[i] != pageNoRoom && strings.Contains(result, notice):
-			out.WriteString(notice)
-			states = append(states, pageNoRoom)
+		case strings.Contains(seg, body):
+			if k.state[i] == pageNoRoom {
+				k.named[i] = k.note[i]
+			}
+			k.state[i], k.fresh[i] = pageIn, true
+		case strings.Contains(seg, stale):
+			k.state[i], k.fresh[i] = pageStale, false
+		case k.state[i] != pageNoRoom && strings.Contains(seg, noRoom):
+			k.state[i], k.fresh[i] = pageNoRoom, true // only a fresh page is named for want of room
 		default:
 			continue
 		}
 		touched = append(touched, i)
 	}
-	text := out.String()
-	if text != "" && !strings.Contains(result, text) {
-		touched, states, text = nil, nil, ""
+	if len(touched) == 0 {
+		seg = ""
 	}
-	for j, i := range touched {
-		if states[j] == pageIn && k.state[i] == pageNoRoom {
-			k.named[i] = k.note[i]
-		}
-		k.state[i] = states[j]
-	}
-	k.record(id, touched, text)
+	k.record(id, touched, seg)
 }
+
+// Budget is the budget this tracker draws on, shared with the instruction sections.
+func (k *Knowledge) Budget() *Budget { return k.b }
 
 // Own is what this tracker's texts take of the budget: its index's and its live notes'.
 func (k *Knowledge) Own() int {
