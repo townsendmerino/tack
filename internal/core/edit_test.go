@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 type noShell struct{}
@@ -566,6 +568,23 @@ func TestSectionInstructionsThroughTheCore(t *testing.T) {
 	}
 	if len(results) != 2 || !strings.Contains(results[0], "[Project rules from CLAUDE.md for this call:]\n\n## Testing\n\nRun go test with -v.") {
 		t.Fatalf("results %q", results)
+	}
+	// The session's tracker rebuilt from its log, as a resumed session's is, equals the live one.
+	f.core.mu.Lock()
+	live := f.core.sessions[sid].sections
+	f.core.mu.Unlock()
+	logged, err := f.core.opt.Store.Events(sid, 0)
+	if err != nil || live == nil {
+		t.Fatalf("events %v, tracker %v", err, live)
+	}
+	re := window.NewInstructions("CLAUDE.md", md, window.NewBudget(16384))
+	if err := re.Replay(logged); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lb, lu := live.Loaded()
+	ri, ro, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru || !slices.Contains(lb, "w1") {
+		t.Fatalf("rebuilt tracker differs:\nlive    %v %v %q %d\nrebuilt %v %v %q %d", li, lo, lb, lu, ri, ro, rb, ru)
 	}
 }
 

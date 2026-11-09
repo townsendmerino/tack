@@ -204,6 +204,25 @@ func TestSnapshotSettings(t *testing.T) {
 	}
 }
 
+// TestDaemonSettings: [daemon] shutdown_grace defaults to 10s when absent, is read as a duration, may be 0s (cancel
+// running turns at once: an explicit zero is kept, not taken for absent), and may not be negative.
+func TestDaemonSettings(t *testing.T) {
+	const server = "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n"
+	c, err := load(t, server)
+	if err != nil || c.Daemon.ShutdownGrace.Duration != 10*time.Second {
+		t.Fatalf("default: %+v, %v; want a 10s grace", c, err)
+	}
+	if c, err = load(t, server+"[daemon]\nshutdown_grace = \"3s\"\n"); err != nil || c.Daemon.ShutdownGrace.Duration != 3*time.Second {
+		t.Fatalf("set: %+v, %v; want 3s", c, err)
+	}
+	if c, err = load(t, server+"[daemon]\nshutdown_grace = \"0s\"\n"); err != nil || c.Daemon.ShutdownGrace.Duration != 0 {
+		t.Fatalf("0s: %+v, %v; want 0, as written", c.Daemon, err)
+	}
+	if _, err = load(t, server+"[daemon]\nshutdown_grace = \"-1s\"\n"); err == nil || !strings.Contains(err.Error(), "shutdown_grace") {
+		t.Fatalf("negative: %v, want refused", err)
+	}
+}
+
 // TestStateDirWithDotDotIsRefused: state_dir may not hold "..", which the daemon and the sandbox would resolve
 // differently after a symlink.
 func TestStateDirWithDotDotIsRefused(t *testing.T) {

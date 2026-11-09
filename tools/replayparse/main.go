@@ -6,7 +6,8 @@
 //	go run ./tools/replayparse -mirrors DIR [-dump FILE] JOB/results.jsonl...
 //
 // A break is a successful edit or write after which a file that parsed no longer parses. It is restored when a later
-// edit or write makes the file parse again; otherwise it lasts to the run's end. A file whose content the replay cannot
+// edit or write makes the file parse again; otherwise it lasts to the run's end. A write that creates a file that does
+// not parse is not a break, since the file never parsed, and is counted apart (the "new unparseable" column). A file whose content the replay cannot
 // follow (an edit it cannot place) is dropped from that point.
 package main
 
@@ -99,6 +100,8 @@ type runOut struct {
 	pass      bool
 	goEdits   int
 	untracked int
+	// newUnparseable counts writes that created a .go file that does not parse.
+	newUnparseable int
 }
 
 func replay(events string, base map[string]string, job, name string, pass bool) runOut {
@@ -176,8 +179,11 @@ func replay(events string, base map[string]string, job, name string, pass bool) 
 				}
 			}
 			files[pth] = next
-			before := !had || parseErr(cur) == ""
+			before := had && parseErr(cur) == ""
 			after := parseErr(next)
+			if !had && after != "" {
+				ro.newUnparseable++
+			}
 			if b := open[pth]; b != nil {
 				if after == "" {
 					b.Restored = true
@@ -186,7 +192,7 @@ func replay(events string, base map[string]string, job, name string, pass bool) 
 				}
 				continue
 			}
-			if before && after != "" && had {
+			if before && after != "" {
 				b := &brk{Job: job, Run: name, File: pth, Tool: c.Name, Err: after, Old: in.OldString, New: in.NewString, Pass: pass}
 				if c.Name == "write" {
 					b.Old, b.New = "", ""
@@ -206,6 +212,7 @@ type agg struct {
 	breaks, restored, runsWithBreak, runsEndBroken int
 	endBrokenPass, breakRestoredPass               int
 	failRunsEndBroken                              int
+	newUnparseable                                 int
 }
 
 func main() {
@@ -266,6 +273,7 @@ func main() {
 				x.runs++
 				x.goEdits += ro.goEdits
 				x.untracked += ro.untracked
+				x.newUnparseable += ro.newUnparseable
 				if rec.Pass {
 					x.pass++
 				}
@@ -307,10 +315,11 @@ func main() {
 		jobs = append(jobs, j)
 	}
 	sort.Strings(jobs)
-	fmt.Println("job | runs | pass | go edits | untracked | breaks | restored | runs with a break | runs ending unparseable (pass/fail) | passing runs with a restored break")
+	fmt.Println("job | runs | pass | go edits | untracked | breaks | restored | runs with a break | runs ending unparseable (pass/fail) | passing runs with a restored break | new files written unparseable")
 	pr := func(n string, a *agg) {
-		fmt.Printf("%s | %d | %d | %d | %d | %d | %d | %d | %d (%d/%d) | %d\n", n, a.runs, a.pass, a.goEdits, a.untracked,
-			a.breaks, a.restored, a.runsWithBreak, a.runsEndBroken, a.endBrokenPass, a.failRunsEndBroken, a.breakRestoredPass)
+		fmt.Printf("%s | %d | %d | %d | %d | %d | %d | %d | %d (%d/%d) | %d | %d\n", n, a.runs, a.pass, a.goEdits, a.untracked,
+			a.breaks, a.restored, a.runsWithBreak, a.runsEndBroken, a.endBrokenPass, a.failRunsEndBroken, a.breakRestoredPass,
+			a.newUnparseable)
 	}
 	for _, j := range jobs {
 		pr(j, byJob[j])
