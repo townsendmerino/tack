@@ -68,12 +68,19 @@ The order the owner approved, each step with its exit check:
      dependency).
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **The adapter built (2026-11-09)** as `kind = "openai-remote"` (`internal/server/openai`), tested against
+     hand-written wire fixtures; the cassettes recorded against goinfer's endpoint are a recipe to the coordinator.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
      the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
      config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,
      submodules' own), and denying them by name kept missing ways in (`internal/tools/recent.go`). Costs: a file under a
      filter can show as modified, a rename shows as a delete and an add, and a partial clone's missing object is an
      error, not a fetch.
+   - **`find_related` built (2026-11-09)**, opt-in with `[run] find_related` and not an E1 arm setting: the k chunks (5 by
+     default, at most 10) nearest in meaning to the chunk at path:line, that chunk left out, from ken's in-process
+     `Workspace.FindRelated`. It is listed only when ken runs in semantic or hybrid mode, since a bm25 index has no
+     vectors (`internal/tools/related.go`, `kensearch.Searcher.Relates`). It adds 62 tokens to the largest fixed
+     prompt: 1,316 of 3,276.
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
 
 **Decisions:**

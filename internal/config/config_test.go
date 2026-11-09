@@ -320,3 +320,34 @@ func TestAllowDevel(t *testing.T) {
 		t.Fatalf("allow_devel on a remote: %v, want refused", err)
 	}
 }
+
+// TestFindRelatedIsOffUnlessAsked: [run] find_related adds a tool, which changes the fixed prompt, so it is off unless
+// the config says so.
+func TestFindRelatedIsOffUnlessAsked(t *testing.T) {
+	const remote = "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	c, err := load(t, remote)
+	if err != nil || c.Run.FindRelated {
+		t.Fatalf("without the setting: %v, find_related %v; want off", err, c != nil && c.Run.FindRelated)
+	}
+	c, err = load(t, remote+"[run]\nfind_related = true\n")
+	if err != nil || !c.Run.FindRelated {
+		t.Fatalf("find_related = true: %v; want on", err)
+	}
+}
+
+// TestAnOpenAIServer: an openai-remote takes a url, a token file and a model, and refuses what is for goinfer alone.
+func TestAnOpenAIServer(t *testing.T) {
+	c, err := load(t, "[servers.box]\nkind = \"openai-remote\"\nurl = \"http://box:8000\"\nmodel = \"qwen\"\n")
+	if err != nil || c.Servers["box"].Kind != KindOpenAI || c.Servers["box"].Model != "qwen" {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	for name, body := range map[string]string{
+		"no url":    "[servers.box]\nkind = \"openai-remote\"\n",
+		"on demand": "[servers.box]\nkind = \"openai-remote\"\nurl = \"u\"\non_demand = true\n",
+		"a binary":  "[servers.box]\nkind = \"openai-remote\"\nurl = \"u\"\nbinary = \"/x\"\n",
+	} {
+		if _, err := load(t, body); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
+	}
+}

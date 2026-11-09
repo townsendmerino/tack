@@ -71,6 +71,9 @@ type Sandbox struct {
 const (
 	KindChild  = "goinfer-child"  // a goinfer-serve tack starts and supervises on this machine (DESIGN §8.1)
 	KindRemote = "goinfer-remote" // a goinfer-serve running elsewhere, e.g. on nobara (DESIGN §8.2)
+	// KindOpenAI is a server speaking the OpenAI-compatible /v1/chat/completions (internal/server/openai; P1 step 7):
+	// goinfer's own, or another. It takes url, token_file and model, as a goinfer-remote does, and nothing on demand.
+	KindOpenAI = "openai-remote"
 )
 
 // Server is one model server.
@@ -208,6 +211,10 @@ type Run struct {
 	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
 	// setting until one is registered.
 	RecentlyChanged bool `toml:"recently_changed"`
+	// FindRelated gives sessions the find_related tool: code similar in meaning to a place in the repository, from ken's
+	// vectors (tools.Options.FindRelated; DESIGN §6.5). It is listed only when ken runs in semantic or hybrid mode. Default
+	// off, so measured runs keep their tool set, and not an E1 arm setting until one is registered.
+	FindRelated bool `toml:"find_related"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`
@@ -366,8 +373,15 @@ func (c *Config) validate() error {
 			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
 				return fmt.Errorf("servers.%s: binary, model_path, ctx, args and allow_devel are for %s", name, KindChild)
 			}
+		case KindOpenAI:
+			if s.URL == "" {
+				return fmt.Errorf("servers.%s: a %s needs url", name, KindOpenAI)
+			}
+			if s.OnDemand || len(s.Start) > 0 || s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
+				return fmt.Errorf("servers.%s: a %s takes url, token_file and model only", name, KindOpenAI)
+			}
 		default:
-			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)
+			return fmt.Errorf("servers.%s: kind %q, want %q, %q or %q", name, s.Kind, KindChild, KindRemote, KindOpenAI)
 		}
 		c.Servers[name] = s
 	}

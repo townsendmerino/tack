@@ -108,6 +108,9 @@ type Options struct {
 	LeanResults bool
 	// RecentlyChanged adds recently_changed: the workspace's uncommitted changes and recent commits, from git (recent.go).
 	RecentlyChanged bool
+	// FindRelated adds find_related when the Searcher can answer it (a Relater whose Relates is true: ken in semantic or
+	// hybrid mode); a bm25 index has no vectors, and a tool that could only fail is not offered (related.go).
+	FindRelated bool
 	// Subagent, when set, adds task, which runs it (task.go). Give it only to a parent session: a child gets none.
 	Subagent Subagent
 }
@@ -131,6 +134,9 @@ func New(o Options) *Set {
 	ts = append(ts, readTool{symbols: o.Symbols != nil, lines: read}, globTool{}, grepTool{max: grep})
 	if o.RecentlyChanged {
 		ts = append(ts, recentTool{})
+	}
+	if r, ok := o.Searcher.(Relater); ok && o.FindRelated && r.Relates() {
+		ts = append(ts, relatedTool{r: r})
 	}
 	if o.Write {
 		ts = append(ts, editTool{messages: o.EditMessages, refuseDup: o.RefuseDuplicateEdits, sym: o.Symbols, lines: o.LineEdits,
