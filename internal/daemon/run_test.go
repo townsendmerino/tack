@@ -389,28 +389,52 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 	}
 }
 
-// TestRunEndsItsWatcherBeforeLettingGo: the core's context ends, and Run waits for the watcher beside the core to
-// return, before it closes the core and releases the lock; nothing of the daemon's runs on after Run returns.
+// closeWatch is a model source that records when the core closes it, which the core does as it closes.
+type closeWatch struct {
+	models.Source
+	closed *atomic.Bool
+}
+
+func (s closeWatch) Close() error { s.closed.Store(true); return s.Source.Close() }
+
+// TestRunEndsItsWatcherBeforeLettingGo: Run waits for its watcher to return before it closes the core and releases
+// the lock, so a watcher ending slowly still sees an open core (its model source not yet closed) and the lock held.
 func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
 	dir := shortDir(t)
-	o := runOptions(t, dir)
-	var ended, heldAtEnd atomic.Bool
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var coreClosed atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return closeWatch{models.NewRemote("local", ts.URL, "", "", nil), &coreClosed}, nil
+	})
+	var ended, heldAtEnd, openAtEnd atomic.Bool
 	o.Watch = func(ctx context.Context, _ *core.Core) {
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
 		heldAtEnd.Store(ReadHolder(dir).PID == os.Getpid())
+		openAtEnd.Store(!coreClosed.Load())
 		ended.Store(true)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, o) }()
-	dialSoon(t, dir).Close()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens its model source, which it closes as it closes
+	}
+	c.Close()
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if !ended.Load() {
 		t.Fatal("Run returned while the watcher beside the core still ran")
+	}
+	if !coreClosed.Load() {
+		t.Fatal("Run returned with the core's source open; the check below would prove nothing")
+	}
+	if !openAtEnd.Load() {
+		t.Fatal("the core was closed before the watcher beside it ended")
 	}
 	if !heldAtEnd.Load() {
 		t.Fatal("the lock was released before the watcher beside the core ended")
