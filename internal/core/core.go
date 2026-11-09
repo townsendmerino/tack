@@ -592,9 +592,10 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			if len(pages) > 0 {
 				know = window.NewKnowledge(ws.Root(), pages, w, budget)
 				if prompted {
-					// A reopened session's tracker is rebuilt from its log before anything is priced: its index as
-					// logged, each page's freshness as the session judged it, and what it loaded.
-					if err := know.Replay(history); err != nil {
+					// A reopened session's tracker is rebuilt from its log before anything is priced: first its index
+					// as logged, with each page's freshness as the session judged it; what it loaded comes after the
+					// instruction file is sized, so the file sees the budget a new session's did.
+					if err := know.ReplayIndex(history); err != nil {
 						c.unregister(id)
 						if s.kit != nil {
 							s.kit()
@@ -610,6 +611,15 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			if name, content := readInstructionFile(ws.Root()); name != "" {
 				in := window.NewInstructions(name, content, budget)
 				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+			}
+		}
+		if know != nil && prompted {
+			if err := know.ReplayNotes(history); err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, err
 			}
 		}
 		if know != nil {
