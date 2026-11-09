@@ -95,7 +95,7 @@ func TestEditTaskThroughTheCore(t *testing.T) {
 	if real, _ := filepath.EvalSymlinks(ws); kitRoot != ws && kitRoot != real {
 		t.Errorf("edit kit built for %q, want the workspace %q", kitRoot, ws)
 	}
-	v, _ := evs[0].Decode()
+	v, _ := evs[1].Decode() // after session.created
 	first := v.(proto.UserMessage).Content[0].Text
 	if !strings.HasPrefix(first, "Add func B.") || !strings.Contains(first, "Project instructions, from CLAUDE.md:\n\nRun go test before you finish.") {
 		t.Fatalf("first message %q", first)
