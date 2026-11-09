@@ -295,11 +295,17 @@ type conn struct {
 	written    chan struct{} // closed when the writer ends
 	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
 	onDrop     func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
-	// catchingUp is set while what a replay queued is still being written: live events then wait sendTimeout for room
-	// too, so a client that is reading its replay is not dropped for a full queue it is draining. The writer clears it
-	// once the queue is empty.
+	// catchingUp is set while what a replay queued is still being written: live events then wait longer for room, so a
+	// client reading its replay is not dropped for a full queue it is draining. It ends when the writer reaches
+	// catchTarget (the replay's last message written), or at catchUntil (unix nanoseconds, sendTimeout after it began),
+	// whichever comes first: a client that reads slowly holds the session to its pace for one sendTimeout at most.
 	catchingUp  atomic.Bool
-	writes      atomic.Int64  // messages written, so a wait can tell a client that reads from one that does not
+	catchTarget atomic.Int64
+	catchUntil  atomic.Int64
+	writes      atomic.Int64 // messages written
+	// progress is the bytes written, counted as each chunk of a message goes out (progressWriter): a wait tells a client
+	// that reads, even one slow to take a large message, from one that does not.
+	progress    atomic.Int64
 	timeout     time.Duration // sendTimeout when the connection was made
 	fanOutWait  time.Duration // fanOutWait when the connection was made
 	catchUpWait time.Duration // catchUpWait when the connection was made
@@ -310,7 +316,7 @@ func newConn(w io.Writer, onDrop func()) *conn {
 	cn := &conn{out: make(chan any, sendQueue), stopped: make(chan struct{}), closing: make(chan struct{}),
 		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, catchUpWait: catchUpWait, onDrop: onDrop}
 	cn.closer, _ = w.(io.Closer)
-	go cn.write(json.NewEncoder(w))
+	go cn.write(json.NewEncoder(progressWriter{w: w, n: &cn.progress}))
 	return cn
 }
 
@@ -331,8 +337,7 @@ func (cn *conn) write(enc *json.Encoder) {
 				cn.drop()
 				return
 			}
-			cn.writes.Add(1)
-			if len(cn.out) == 0 && cn.catchingUp.Load() {
+			if n := cn.writes.Add(1); cn.catchingUp.Load() && n >= cn.catchTarget.Load() {
 				cn.catchingUp.Store(false) // the replay is written: live events wait fanOutWait again
 			}
 		case <-cn.closing:
@@ -357,31 +362,60 @@ func (cn *conn) write(enc *json.Encoder) {
 }
 
 // fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room. While
-// the connection is catching up on a replay it waits longer, up to sendTimeout, but only while the client is reading:
-// each catchUpWait without a write ends the wait, so a client that stopped reading costs the session one catchUpWait,
-// once.
+// the connection is catching up on a replay it waits longer, until catching up ends, but only while the client is
+// reading: each catchUpWait with no bytes written ends the wait, so a client that stopped reading costs the session one
+// catchUpWait, once.
 func (cn *conn) fanOut(v any) error {
+	until := time.Unix(0, cn.catchUntil.Load())
+	if cn.catchingUp.Load() && !time.Now().Before(until) {
+		cn.catchingUp.Store(false) // its time is up: a slow reader no longer sets the session's pace
+	}
 	if !cn.catchingUp.Load() {
 		return cn.sendWithin(v, cn.fanOutWait)
 	}
-	deadline := time.Now().Add(cn.timeout)
 	for {
-		writes := cn.writes.Load()
+		bytes := cn.progress.Load()
 		if sent, err := cn.offer(v, cn.catchUpWait); sent || err != nil {
 			return err
 		}
-		if cn.writes.Load() == writes || time.Now().After(deadline) {
+		if cn.progress.Load() == bytes || !time.Now().Before(until) {
 			cn.drop()
 			return errDropped
 		}
 	}
 }
 
-// catchUp marks the connection as draining a replay, if anything of it is still queued.
-func (cn *conn) catchUp() {
-	if len(cn.out) > 0 {
+// catchUp marks the connection as draining a replay: what is queued, and more messages about to be, are the replay.
+// Catching up lasts until they are written, or sendTimeout from now.
+func (cn *conn) catchUp(more int) {
+	if n := len(cn.out) + more; n > 0 {
+		cn.catchTarget.Store(cn.writes.Load() + int64(n))
+		cn.catchUntil.Store(time.Now().Add(cn.timeout).UnixNano())
 		cn.catchingUp.Store(true)
 	}
+}
+
+// progressWriter writes to w in chunks of progressChunk bytes, adding each to n: a large message shows progress as it
+// goes, not only once it is all written.
+type progressWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+const progressChunk = 64 << 10
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	wrote := 0
+	for len(b) > 0 {
+		k, err := p.w.Write(b[:min(len(b), progressChunk)])
+		wrote += k
+		p.n.Add(int64(k))
+		if err != nil {
+			return wrote, err
+		}
+		b = b[k:]
+	}
+	return wrote, nil
 }
 
 // send queues v for the client, waiting up to sendTimeout for room.
@@ -948,6 +982,8 @@ func notification(id proto.SessionID, ev proto.Event) proto.Request {
 // appended meanwhile goes out and the subscriber is registered, so no event falls between the two: one appended after
 // the first read is in the store for the second, and its live fan-out, if it comes later, is skipped by seq. A
 // connection dropped before it is registered is not registered: its unsubscribe may already have run.
+// Live-only events (seq 0, assistant.delta) emitted before it is registered never reach it; the persisted message
+// that follows them does.
 func (c *Core) replay(cn *conn, req proto.Request) {
 	p, _ := params[proto.SessionSubscribeParams](req)
 	s, perr := c.session(p.Session)
@@ -964,8 +1000,8 @@ func (c *Core) replay(cn *conn, req proto.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cn.catchUp() // phase one may have filled the queue: what follows waits as the replay did
 	more, _ := c.opt.Store.Events(s.id, sub.last+1)
+	cn.catchUp(len(more)) // phase one may have filled the queue; phase two's events are the replay too
 	for _, ev := range more {
 		if cn.fanOut(notification(s.id, ev)) != nil {
 			return

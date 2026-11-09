@@ -306,7 +306,9 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 		mu.Lock()
 		defer mu.Unlock()
 		ev := p.Event
-		last, heard = max(last, ev.Seq), true
+		if ev.Seq > last { // progress is a persisted event not heard before; live-only (seq 0) chatter is not
+			last, heard = ev.Seq, true
+		}
 		if jsonOut {
 			b, _ := json.Marshal(ev)
 			fmt.Fprintf(stdout, "%s\n", b)

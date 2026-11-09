@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -461,5 +462,160 @@ func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
 	f.waitTurnEnd(t)
 	if took := time.Since(start); took > 3*time.Second {
 		t.Errorf("a turn took %v beside a client that stopped while catching up: more than one catchUpWait", took)
+	}
+}
+
+// TestASlowReaderCannotPaceTheSession: a client that keeps reading, slowly, while live events keep coming, stops
+// catching up once its replay is written, so the turn falls back to fanOutWait for it rather than its pace.
+func TestASlowReaderCannotPaceTheSession(t *testing.T) {
+	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
+	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, 400*time.Millisecond, 600*time.Millisecond
+	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	id := f.session(t)
+	f.prompt(t, id, "first")
+	st := f.core.opt.Store
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		evs, _ := st.Events(id, 0)
+		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first turn never ended")
+		}
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go f.core.Serve(ctx, b)
+	go func() { // reads a line every 300 ms, for as long as it can
+		r := bufio.NewReader(a)
+		for {
+			if _, err := r.ReadBytes('\n'); err != nil {
+				return
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}()
+	for n, m := range []struct {
+		method string
+		params any
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version}},
+		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
+		p, _ := json.Marshal(m.params)
+		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
+		a.Write(append(line, '\n'))
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.waitTurnEnd(t) // the first turn, replayed
+	s, _ := f.core.session(id)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) { // the slow client registered
+		s.mu.Lock()
+		n := len(s.subs)
+		s.mu.Unlock()
+		if n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slow client never finished its replay")
+		}
+	}
+	start := time.Now()
+	f.prompt(t, id, "second")
+	f.waitTurnEnd(t)
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Errorf("a turn took %v beside a slow reader: it set the session's pace past sendTimeout", took)
+	}
+}
+
+// blockingWriter takes each write only when released.
+type blockingWriter struct{ release chan struct{} }
+
+func (b blockingWriter) Write(p []byte) (int, error) { <-b.release; return len(p), nil }
+
+// TestCatchingUpEndsAtTheReplaysLastMessage: catching up lasts until the replay's last message is written, not until
+// the queue is first empty: a replay's second phase may still be sending into it.
+func TestCatchingUpEndsAtTheReplaysLastMessage(t *testing.T) {
+	bw := blockingWriter{release: make(chan struct{})}
+	cn := newConn(bw, nil)
+	t.Cleanup(func() { close(bw.release) })
+	cn.send("one")
+	cn.catchUp(2) // "one", then two more the replay is about to send
+	bw.release <- struct{}{}
+	for deadline := time.Now().Add(2 * time.Second); cn.writes.Load() < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the first message was never written")
+		}
+	}
+	if !cn.catchingUp.Load() {
+		t.Error("catching up ended when the queue was first empty, with two of the replay to come")
+	}
+	cn.send("two")
+	cn.send("three")
+	bw.release <- struct{}{}
+	bw.release <- struct{}{}
+	for deadline := time.Now().Add(2 * time.Second); cn.catchingUp.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("catching up did not end at the replay's last message")
+		}
+	}
+}
+
+// TestALargeMessageIsProgress: a message that takes longer than catchUpWait to write, to a client that is reading it,
+// does not get the client dropped: bytes going out are progress.
+func TestALargeMessageIsProgress(t *testing.T) {
+	q, c := sendQueue, catchUpWait
+	sendQueue, catchUpWait = 1, 200*time.Millisecond
+	t.Cleanup(func() { sendQueue, catchUpWait = q, c })
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+	go func() { // reads 64 KB every 30 ms: the 1 MB message takes about half a second
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := io.ReadFull(a, buf); err != nil {
+				return
+			}
+			time.Sleep(30 * time.Millisecond)
+		}
+	}()
+	cn := newConn(b, nil)
+	cn.send(strings.Repeat("x", 1<<20)) // the writer takes it, and the queue is empty
+	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the large message never started")
+		}
+	}
+	cn.send("filler") // the queue of 1 is full behind it
+	cn.catchUp(0)
+	if err := cn.fanOut("live"); err != nil {
+		t.Fatalf("a live event to a client reading a large message: %v", err)
+	}
+}
+
+// TestCatchingUpHasADeadline: catching up lasts sendTimeout at most: past it, a live event waits only fanOutWait, even
+// with the replay unwritten.
+func TestCatchingUpHasADeadline(t *testing.T) {
+	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
+	sendQueue, fanOutWait, catchUpWait, sendTimeout = 1, 10*time.Millisecond, 2*time.Second, 100*time.Millisecond
+	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	bw := blockingWriter{release: make(chan struct{})}
+	cn := newConn(bw, nil)
+	t.Cleanup(func() { close(bw.release) })
+	cn.send("one") // the writer takes it and blocks
+	for deadline := time.Now().Add(2 * time.Second); len(cn.out) > 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the writer never took the first message")
+		}
+	}
+	cn.send("two") // the queue of 1 is full
+	cn.catchUp(100)
+	time.Sleep(150 * time.Millisecond) // past its deadline
+	start := time.Now()
+	cn.fanOut("live")
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("a live event waited %v on a connection past its catch-up deadline; want about fanOutWait", took)
 	}
 }

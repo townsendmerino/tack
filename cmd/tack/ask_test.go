@@ -417,3 +417,49 @@ func TestANewDaemonIsNamed(t *testing.T) {
 		}
 	}
 }
+
+// chattyDaemon answers a resubscribe with one live-only event (an assistant.delta, seq 0) and then drops the
+// connection: chatter, never progress.
+func chattyDaemon(t *testing.T) *core.Client {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go func() {
+		defer b.Close()
+		sc, enc := bufio.NewScanner(b), json.NewEncoder(b)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			r, _ := json.Marshal(struct{}{})
+			enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
+			ev, _ := proto.NewEvent(0, time.Unix(0, 0), proto.EvAssistantDelta, 0, proto.AssistantDelta{Kind: "text", Text: "."})
+			p, _ := json.Marshal(proto.SessionEventParams{Session: "s_1", Event: ev})
+			enc.Encode(proto.Request{JSONRPC: "2.0", Method: proto.MethodSessionEvent, Params: p})
+			return
+		}
+	}()
+	return core.NewClient(a)
+}
+
+// TestChatterIsNotProgress: live-only events after each redial do not start the count again, so a daemon that only
+// chatters and drops still ends ask after askRedials.
+func TestChatterIsNotProgress(t *testing.T) {
+	ev, _ := proto.NewEvent(1, time.Unix(0, 0), proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}})
+	redials := 0
+	redial := func() (*core.Client, error) { redials++; return chattyDaemon(t), nil }
+	code := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		code <- ask(context.Background(), fakeDaemon(t, []proto.Event{ev}, 1, true, nil), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	}()
+	select {
+	case c := <-code:
+		if c != exitError || redials != askRedials {
+			t.Fatalf("ask = %d after %d redials", c, redials)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ask still redialling after %d: chatter counted as progress", redials)
+	}
+}
