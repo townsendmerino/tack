@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,16 +191,53 @@ func (h hangingSearcher) Search(ctx context.Context, _ string, _ int) ([]tools.H
 	return nil, ctx.Err()
 }
 
+// deadlineSearcher hangs until its context ends, as hangingSearcher does, and records each search's deadline as the time
+// it had left when called (-1 for none, which it answers at once rather than hang) and how its context ended.
+type deadlineSearcher struct {
+	mu   *sync.Mutex
+	left *[]time.Duration
+	ends *[]error
+}
+
+func (d deadlineSearcher) Search(ctx context.Context, _ string, _ int) ([]tools.Hit, error) {
+	dl, ok := ctx.Deadline()
+	d.mu.Lock()
+	if !ok {
+		*d.left = append(*d.left, -1)
+		d.mu.Unlock()
+		return nil, errors.New("no deadline")
+	}
+	*d.left = append(*d.left, time.Until(dl))
+	d.mu.Unlock()
+	<-ctx.Done()
+	d.mu.Lock()
+	*d.ends = append(*d.ends, ctx.Err())
+	d.mu.Unlock()
+	return nil, ctx.Err()
+}
+
 // TestASearchThatHangsTimesOut: each re-retrieval search has its own timeout, so a hung ken costs the summary its
-// section, not the turn.
+// section, not the turn: every search is called with a deadline no further off than retrieveSearchTimeout, and ends
+// at it. It reads the deadline each search was given, not the turn's wall time, so a loaded machine cannot fail it.
 func TestASearchThatHangsTimesOut(t *testing.T) {
 	to := retrieveSearchTimeout
 	retrieveSearchTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { retrieveSearchTimeout = to })
-	start := time.Now()
-	h := retrieveHarness(t, 10, hangingSearcher{})
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("the turn took %v with ken hung", took)
+	var left []time.Duration
+	var ends []error
+	h := retrieveHarness(t, 10, deadlineSearcher{mu: &sync.Mutex{}, left: &left, ends: &ends})
+	if len(left) == 0 {
+		t.Fatal("no search ran: the test checks nothing")
+	}
+	for i, l := range left {
+		if l < 0 || l > retrieveSearchTimeout {
+			t.Errorf("search %d was called with %v left (-1: no deadline); want its own timeout, at most %v", i, l, retrieveSearchTimeout)
+		}
+	}
+	for i, err := range ends {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("search %d ended %v, want its deadline", i, err)
+		}
 	}
 	comps := h.payloads(proto.EvCompaction)
 	if len(comps) != 1 || strings.Contains(comps[0].(proto.Compaction).Summary, retrieveHeading) {

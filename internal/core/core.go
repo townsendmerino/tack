@@ -314,9 +314,10 @@ type conn struct {
 	// progress is the bytes written, counted as each chunk of a message goes out (progressWriter): a wait tells a client
 	// that reads, even one slow to take a large message, from one that does not.
 	progress    atomic.Int64
-	timeout     time.Duration // sendTimeout when the connection was made
-	fanOutWait  time.Duration // fanOutWait when the connection was made
-	catchUpWait time.Duration // catchUpWait when the connection was made
+	timeout     time.Duration       // sendTimeout when the connection was made
+	fanOutWait  time.Duration       // fanOutWait when the connection was made
+	catchUpWait time.Duration       // catchUpWait when the connection was made
+	onWait      func(time.Duration) // when set, told each wait offer is about to make: a test reads the wait, not a clock
 }
 
 // newConn is a connection writing to w, closed through w when a stuck client is dropped; onDrop, when not nil, runs then.
@@ -457,6 +458,9 @@ func (cn *conn) offer(v any, wait time.Duration) (bool, error) {
 	case cn.out <- v:
 		return true, nil
 	default:
+	}
+	if cn.onWait != nil {
+		cn.onWait(wait)
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
