@@ -104,11 +104,11 @@ func TestALiveSummaryReRetrieves(t *testing.T) {
 		!strings.HasSuffix(sum, retrieveHeading+"\n\nmcp/token_budget.go:3-3\n```\nfunc applyTokenBudget() {}\n```") {
 		t.Errorf("asked %q; summary ends:\n%s", s.asked, sum[max(0, len(sum)-300):])
 	}
-	if strings.Contains(h.sess.body, retrieveHeading) || strings.Contains(bodyOf(sum), "applyTokenBudget() {}") {
+	if strings.Contains(h.sess.body, retrieveHeading) || strings.Contains(comps[0].Body, "applyTokenBudget() {}") {
 		t.Error("the section reached the next summary's previous body")
 	}
-	if bodyOf(sum) != h.sess.body {
-		t.Error("the body a resume reads from the log differs from the live session's")
+	if comps[0].Body != h.sess.body {
+		t.Error("the body recorded in the log differs from the live session's")
 	}
 	h.checkRebuild(t)
 	evs, _ := h.st.Events("s_test", 0)
@@ -152,16 +152,6 @@ func TestTheShareSetsTheBudget(t *testing.T) {
 		if got != want || len(s.asked) == 0 {
 			t.Errorf("share %d%%: section %v, want %v; asked %q", share, got, want, s.asked)
 		}
-	}
-}
-
-// TestBodyOfStopsAtTheSectionWithNoAnchors: with no anchors the re-retrieval section follows the body directly, and the
-// body read back from the log leaves it out, as the live session's does.
-func TestBodyOfStopsAtTheSectionWithNoAnchors(t *testing.T) {
-	b := body("did it")
-	msg := UserText(true, "/w", summaryFrame+"## Task\n\ngo\n\n"+b+"\n\n"+retrieveHeading+"\n\na.go:1-2\n```\nfunc A() {}\n```")
-	if got := bodyOf(msg); got != b {
-		t.Errorf("bodyOf:\n%s\nwant:\n%s", got, b)
 	}
 }
 
@@ -236,7 +226,7 @@ func TestCancellingDuringRetrievalRecordsNoSummary(t *testing.T) {
 }
 
 // TestALiveBodyIsTheLoggedOne: a summarizer whose body echoes the section's heading leaves the same previous body live
-// and on a resume, since the live one is read back from the message as a resume reads it.
+// and on a resume: the body is recorded with the summary, not parsed back out of it.
 func TestALiveBodyIsTheLoggedOne(t *testing.T) {
 	echo := strings.Replace(body("read"), "## Next steps\n\n(none)", "## Next steps\n\nfind it\n\n"+retrieveHeading+"\n\nan echo", 1)
 	h := maskHarness(t, false, 4000,
@@ -251,8 +241,8 @@ func TestALiveBodyIsTheLoggedOne(t *testing.T) {
 	if len(comps) != 1 {
 		t.Fatalf("%d compactions", len(comps))
 	}
-	if logged := bodyOf(comps[0].(proto.Compaction).Summary); h.sess.body != logged || strings.Contains(h.sess.body, "an echo") {
-		t.Errorf("live body %q, logged %q", h.sess.body, logged)
+	if logged := comps[0].(proto.Compaction).Body; h.sess.body != logged || h.sess.body != echo {
+		t.Errorf("live body %q, recorded %q, want the summarizer's, echo and all", h.sess.body, logged)
 	}
 	evs, _ := h.st.Events("s_test", 0)
 	r, err := Resume(h.sess.cfg, evs)
