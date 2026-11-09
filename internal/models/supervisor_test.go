@@ -51,6 +51,9 @@ func fakeGoinfer(args []string) {
 		if v == "" {
 			v = GoinferVersion
 		}
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_VERSION_SLEEP")); err == nil {
+			time.Sleep(d) // a binary slow to answer --version
+		}
 		fmt.Printf("goinfer-serve %s\nbackends: cpu metal\ngo: go1.27 darwin/arm64\n", v)
 		return
 	}
@@ -142,6 +145,10 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "unloaded"})
 	})
 	admin.HandleFunc("GET /admin/status", func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("TACK_FAKE_GOINFER_STATUS_HANG") == "1" {
+			<-r.Context().Done() // an admin socket that accepts and never answers
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		n := 0
