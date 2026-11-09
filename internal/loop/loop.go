@@ -571,6 +571,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
+				tokens += fin.Tokens // a task's child: it counts toward this turn's and this session's budgets
+				s.tokens += fin.Tokens
 				ranTool = fin.Outcome == proto.OutcomeOK || fin.Outcome == proto.OutcomeError
 				if widenable {
 					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
@@ -798,7 +800,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	r, rerr := t.Run(ctx, s.cfg.WS, b.Input)
 	if rerr != nil {
-		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true}
+		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true, Tokens: r.Tokens} // a cancelled task still spent them
 	}
 	// Redaction comes first, so neither the model, the log nor the blob store ever holds a credential it caught.
 	var kinds []string
@@ -817,7 +819,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if pick != nil { // chooses, on redacted and escaped text, what is shown (Config.CompactAtCliff's widening)
 		pick(&r)
 	}
-	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
+	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds, Tokens: r.Tokens}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
 	}
