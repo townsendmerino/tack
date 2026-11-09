@@ -104,6 +104,9 @@ func TestALiveSummaryReRetrieves(t *testing.T) {
 	if strings.Contains(h.sess.body, retrieveHeading) || strings.Contains(bodyOf(sum), "applyTokenBudget() {}") {
 		t.Error("the section reached the next summary's previous body")
 	}
+	if bodyOf(sum) != h.sess.body {
+		t.Error("the body a resume reads from the log differs from the live session's")
+	}
 	h.checkRebuild(t)
 	evs, _ := h.st.Events("s_test", 0)
 	re, err := Rebuild(evs, h.ws.Root(), *h.sess.Conversation())
@@ -147,4 +150,38 @@ func TestTheShareSetsTheBudget(t *testing.T) {
 			t.Errorf("share %d%%: section %v, want %v; asked %q", share, got, want, s.asked)
 		}
 	}
+}
+
+// TestBodyOfStopsAtTheSectionWithNoAnchors: with no anchors the re-retrieval section follows the body directly, and the
+// body read back from the log leaves it out, as the live session's does.
+func TestBodyOfStopsAtTheSectionWithNoAnchors(t *testing.T) {
+	b := body("did it")
+	msg := UserText(true, "/w", summaryFrame+"## Task\n\ngo\n\n"+b+"\n\n"+retrieveHeading+"\n\na.go:1-2\n```\nfunc A() {}\n```")
+	if got := bodyOf(msg); got != b {
+		t.Errorf("bodyOf:\n%s\nwant:\n%s", got, b)
+	}
+}
+
+// TestASectionTooBigForWhatTheSummaryFreesIsLeftOut: a hit within the share but past half of what the summary frees
+// is left out, and the summary still goes in.
+func TestASectionTooBigForWhatTheSummaryFreesIsLeftOut(t *testing.T) {
+	s := &fakeSearcher{hits: map[string][]tools.Hit{"find applyTokenBudget": {hit("a.go", 1, 300, strings.Repeat("x", 15<<10))}}}
+	h := maskHarness(t, false, 40000, // 10% is 16,000 bytes: the 15 KB hit is within the share
+		grows("t1", 35000), grows("t2", 35000), grows("t3", 35000), grows("t4", 35000),
+		goinfertest.Says(strings.Replace(body("read big.txt"), "## Next steps\n\n(none)", "## Next steps\n\nfind applyTokenBudget", 1)),
+		grows("t5", 35000), goinfertest.Says("done"))
+	h.sess.cfg.Summarize, h.sess.cfg.SummaryRetrieve, h.sess.cfg.Searcher = true, 10, s
+	h.sess = New(h.sess.cfg)
+	if _, err := h.sess.Turn(context.Background(), "read big.txt"); err != nil {
+		t.Fatal(err)
+	}
+	comps := h.payloads(proto.EvCompaction)
+	if len(comps) != 1 {
+		t.Fatalf("%d compactions, want the summary without its section", len(comps))
+	}
+	c := comps[0].(proto.Compaction)
+	if strings.Contains(c.Summary, retrieveHeading) || c.After >= c.Before || len(s.asked) == 0 {
+		t.Errorf("section in the summary %v, after %d, before %d, asked %q", strings.Contains(c.Summary, retrieveHeading), c.After, c.Before, s.asked)
+	}
+	h.checkRebuild(t)
 }
