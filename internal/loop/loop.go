@@ -395,7 +395,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			var fin proto.ToolFinished
 			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
-			ranTool := false     // the tool ran: it was not refused, cancelled or over a budget
+			ranTool := false     // the tool ran to an outcome, ok or error: it was not refused, cancelled or over a budget
 			level := 0           // the call's widening (tools.WithWiden), 0 for none
 			key := callKey(b)
 			switch {
@@ -504,7 +504,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
-				ranTool = true
+				ranTool = fin.Outcome == proto.OutcomeOK || fin.Outcome == proto.OutcomeError
 				if widenable {
 					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
 					// freezes the chain, and the widened lines are not recorded as shown.

@@ -209,8 +209,13 @@ func NewInstructions(name, content string, window int) *Instructions {
 	for i := range in.by {
 		in.by[i] = -1
 	}
-	in.whole = SectionTokens(content) <= in.budget
+	in.whole = SectionTokens(in.wholeText()) <= in.budget
 	return in
+}
+
+// wholeText is the file loaded whole, framed as Initial gives it.
+func (in *Instructions) wholeText() string {
+	return "Project instructions, from " + in.name + ":\n\n" + in.join(0, len(in.secs))
 }
 
 // Used is the tokens the sections in the window take, of Budget.
@@ -223,6 +228,9 @@ func (in *Instructions) Budget() int { return in.budget }
 // with text beyond its heading, so a file that opens with only its title takes in the section after it.
 func (in *Instructions) firstSection() int {
 	for i, s := range in.secs {
+		if i > 0 && len(s.On) > 0 {
+			return i // a marked section waits for its call, even after a bare title
+		}
 		if s.body {
 			return i + 1
 		}
@@ -231,47 +239,64 @@ func (in *Instructions) firstSection() int {
 }
 
 // Initial is the text the session's first message carries, framed as reference notes, and marks what it holds as in
-// the window. A file within the budget is whole. Otherwise it is the first section, the always sections, and an
-// outline of the rest with their lines, in file order. If those pass the budget, always sections give way first, from
-// the last, each leaving its outline entry; then outline entries, from the end; then lines of the first section; and
-// each cut is said. A first section that is cut does not count as in, so a matching call can still bring it whole. It
-// is "" for an empty file.
+// the window. A file within the budget, framing included, is whole. Otherwise it is the first section, each always
+// section with its unmarked subsections, and an outline of the rest with their lines, in file order. A first section
+// over half the budget is cut to half first, so the outline and the calls' sections keep room. If the rest still
+// passes the budget, always sections give way, from the last, each leaving its outline entries; then outline entries,
+// from the end; then more lines of the first section; and each cut is said. The first section counts as in even when
+// cut: it cannot come whole, and its cut names the lines to read. It is "" for an empty file.
 func (in *Instructions) Initial() string {
 	if len(in.secs) == 0 {
 		return ""
 	}
 	if in.whole {
-		var b strings.Builder
-		for i, s := range in.secs {
-			if i > 0 {
-				b.WriteString("\n")
-			}
-			b.WriteString(s.Text)
+		for i := range in.secs {
 			in.in[i] = true
 		}
-		text := "Project instructions, from " + in.name + ":\n\n" + b.String()
+		text := in.wholeText()
 		in.used = SectionTokens(text)
 		return text
 	}
 	first := in.firstSection()
-	var always, rest []int
+	// An always section comes with its subtree, less any marked subsection's own; each is one unit.
+	var always [][]int
+	var rest []int
 	for i := first; i < len(in.secs); i++ {
-		if in.secs[i].Always {
-			always = append(always, i)
-		} else {
+		if !in.secs[i].Always {
 			rest = append(rest, i)
+			continue
+		}
+		unit := []int{i}
+		for j := i + 1; j < len(in.secs) && in.within(i, j); j++ {
+			if len(in.secs[j].On) > 0 {
+				for j+1 < len(in.secs) && in.within(j, j+1) {
+					j++
+				}
+				continue
+			}
+			unit = append(unit, j)
+		}
+		always = append(always, unit)
+		i = unit[len(unit)-1]
+		for k := unit[0] + 1; k <= i; k++ {
+			if !slices.Contains(unit, k) {
+				rest = append(rest, k)
+			}
 		}
 	}
 	firstLines := strings.Split(in.join(0, first), "\n")
-	build := func(firstLines []string, cutFirst bool, always []int, outline []int, more int) string {
+	firstEnd := in.secs[max(0, first-1)].EndLine
+	build := func(firstLines []string, cutFirst bool, always [][]int, outline []int, more int) string {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Project notes from %s, for reference:\n\n", in.name)
 		b.WriteString(strings.Join(firstLines, "\n"))
 		if cutFirst {
-			b.WriteString("\n[… the rest of this section is cut to fit the window; read " + in.name + " for it]")
+			fmt.Fprintf(&b, "\n[… the rest of this section is cut to fit the window; read %s lines 1–%d for it]", in.name, firstEnd)
 		}
-		for _, i := range always {
-			b.WriteString("\n\n" + in.secs[i].Text)
+		for _, unit := range always {
+			for _, i := range unit {
+				b.WriteString("\n\n" + in.secs[i].Text)
+			}
 		}
 		if len(outline) > 0 || more > 0 {
 			b.WriteString("\n\nOther sections of " + in.name + ", with their lines; their rules arrive when a tool call needs " +
@@ -288,8 +313,12 @@ func (in *Instructions) Initial() string {
 	}
 	outline, more, cut := rest, 0, false
 	fits := func() bool { return SectionTokens(build(firstLines, cut, always, outline, more)) <= in.budget }
+	// An opening over half the budget is cut to half first, so the outline and the calls' sections keep room.
+	for len(firstLines) > 1 && SectionTokens(strings.Join(firstLines, "\n")) > in.budget/2 {
+		firstLines, cut = firstLines[:len(firstLines)-1], true
+	}
 	for len(always) > 0 && !fits() {
-		outline = append(outline, always[len(always)-1])
+		outline = append(outline, always[len(always)-1]...)
 		slices.Sort(outline)
 		always = always[:len(always)-1]
 	}
@@ -300,13 +329,14 @@ func (in *Instructions) Initial() string {
 		firstLines, cut = firstLines[:len(firstLines)-1], true
 	}
 	text := build(firstLines, cut, always, outline, more)
-	if !cut {
-		for i := range first {
+	// The opening counts as in even when cut: the cut says which lines to read, and it cannot come whole.
+	for i := range first {
+		in.in[i] = true
+	}
+	for _, unit := range always {
+		for _, i := range unit {
 			in.in[i] = true
 		}
-	}
-	for _, i := range always {
-		in.in[i] = true
 	}
 	in.used = SectionTokens(text)
 	return text
@@ -331,8 +361,13 @@ var defaultWords = []struct {
 	{"edit:*_test.go", []string{"test", "tests", "testing"}},
 }
 
-// callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:<name>" and
-// "bash:<name> <first argument>", and an edit or write as "edit:<path>".
+// valueFlags are the flags, before a subcommand, that take the next word as their value: git -C dir, git -c k=v,
+// go -C dir.
+var valueFlags = map[string]map[string]bool{"git": {"-C": true, "-c": true}, "go": {"-C": true}}
+
+// callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:" and its words
+// (name first, as its base name), once as written and once without its flags, so "go -C pkg test" is also
+// "bash:go test"; and an edit or write as "edit:<path>". A word that is not a plain literal ends the command's words.
 func callKinds(tool string, input json.RawMessage) []string {
 	switch tool {
 	case "bash":
@@ -356,11 +391,28 @@ func callKinds(tool string, input json.RawMessage) []string {
 			if name == "" {
 				return true
 			}
-			out = append(out, "bash:"+path.Base(name))
-			if len(call.Args) > 1 {
-				if a := call.Args[1].Lit(); a != "" {
-					out = append(out, "bash:"+path.Base(name)+" "+a)
+			name = path.Base(name)
+			words, bare := []string{name}, []string{name}
+			skip := false
+			for _, a := range call.Args[1:] {
+				w := a.Lit()
+				if w == "" {
+					break
 				}
+				words = append(words, w)
+				switch {
+				case skip:
+					skip = false
+				case valueFlags[name][w]:
+					skip = true
+				case strings.HasPrefix(w, "-") && len(bare) == 1:
+				default:
+					bare = append(bare, w)
+				}
+			}
+			out = append(out, "bash:"+strings.Join(words, " "))
+			if len(bare) != len(words) {
+				out = append(out, "bash:"+strings.Join(bare, " "))
 			}
 			return true
 		})
@@ -377,9 +429,15 @@ func callKinds(tool string, input json.RawMessage) []string {
 	return nil
 }
 
-// kindMatches says whether a call kind matches a pattern kind: bash kinds by equality, edit kinds by path.Match of the
-// cleaned pattern against the cleaned path, or against its last element when the pattern has no slash.
+// kindMatches says whether a call kind matches a pattern kind. A bash pattern matches a command whose words begin with
+// its words ("bash:git commit" matches "git commit -m x"). An edit pattern matches the cleaned path segment by segment
+// with path.Match, "**" standing for any number of segments, or matches the path's last element when it has no slash.
 func kindMatches(pattern, kind string) bool {
+	if p, ok := strings.CutPrefix(pattern, "bash:"); ok {
+		k, ok := strings.CutPrefix(kind, "bash:")
+		pw, kw := strings.Fields(p), strings.Fields(k)
+		return ok && len(pw) > 0 && len(pw) <= len(kw) && slices.Equal(pw, kw[:len(pw)])
+	}
 	if p, ok := strings.CutPrefix(pattern, "edit:"); ok {
 		k, ok := strings.CutPrefix(kind, "edit:")
 		if !ok {
@@ -389,10 +447,44 @@ func kindMatches(pattern, kind string) bool {
 		if !strings.Contains(p, "/") {
 			k = path.Base(k)
 		}
-		m, _ := path.Match(p, k)
-		return m
+		return globSegments(strings.Split(p, "/"), strings.Split(k, "/"))
 	}
 	return pattern == kind
+}
+
+// globSegments matches path segments against pattern segments, "**" matching any number of them.
+func globSegments(pat, segs []string) bool {
+	if len(pat) == 0 {
+		return len(segs) == 0
+	}
+	if pat[0] == "**" {
+		for i := 0; i <= len(segs); i++ {
+			if globSegments(pat[1:], segs[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(segs) == 0 {
+		return false
+	}
+	m, _ := path.Match(pat[0], segs[0])
+	return m && globSegments(pat[1:], segs[1:])
+}
+
+// markedAbove says whether a section above i in its heading path has a tack:on marker: i is then that section's to
+// bring, and does not match on its own heading.
+func (in *Instructions) markedAbove(i int) bool {
+	level := in.secs[i].Level
+	for k := i - 1; k >= 0 && level > 1; k-- {
+		if l := in.secs[k].Level; l > 0 && l < level {
+			if len(in.secs[k].On) > 0 {
+				return true
+			}
+			level = l
+		}
+	}
+	return false
 }
 
 var nonWord = regexp.MustCompile(`[^a-z0-9]+`)
@@ -409,6 +501,9 @@ func (in *Instructions) matches(i int, kinds []string) bool {
 				}
 			}
 		}
+		return false
+	}
+	if in.markedAbove(i) {
 		return false
 	}
 	words := map[string]bool{}

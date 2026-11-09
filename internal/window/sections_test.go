@@ -163,7 +163,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 
 func TestCallKinds(t *testing.T) {
 	got := strings.Join(callKinds("bash", bash(`FOO=1 /usr/bin/git -C x status | grep "go test"; go test ./...`)), "|")
-	if got != "bash:git|bash:git -C|bash:grep|bash:go|bash:go test" {
+	if got != "bash:git -C x status|bash:git status|bash:grep|bash:go test ./..." {
 		t.Errorf("kinds %q", got)
 	}
 	if !kindMatches("edit:*_test.go", "edit:a/b_test.go") || kindMatches("edit:*_test.go", "edit:a/b.go") ||
@@ -323,7 +323,7 @@ func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
 // TestForCallSkipsAMarkedSubsectionsSubtree: a subsection with its own marker is left out with everything under it.
 func TestForCallSkipsAMarkedSubsectionsSubtree(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n" +
-		"#### Profiling\n\nUse pprof.\n\n### Flakes\n\nRetry once.\n\n" + filler
+		"#### Test profiling\n\nUse pprof.\n\n### Flakes\n\nRetry once.\n\n" + filler
 	in := NewInstructions("CLAUDE.md", src, 4096)
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
@@ -459,5 +459,82 @@ func TestReplayIgnoresTextQuotedInsideALoadedSection(t *testing.T) {
 	ri, _, rb, ru := re.Loaded()
 	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
 		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+}
+
+// TestMarkedSectionGovernsItsSubtree: under a section with its own tack:on marker, a subsection is the marker's to
+// bring: its heading's default words do not match on their own.
+func TestMarkedSectionGovernsItsSubtree(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n### Testing at night\n\nNo go test by night.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	if s := in.ForCall("c1", "bash", bash("go test ./...")); s != "" {
+		t.Errorf("go test pulled in a subsection of a marked section:\n%s", s)
+	}
+	if s := in.ForCall("c2", "bash", bash("night add x")); !strings.Contains(s, "Queue long jobs.") || !strings.Contains(s, "No go test by night.") {
+		t.Errorf("the marker brings its section and subsection:\n%s", s)
+	}
+}
+
+// TestCutOpeningLeavesRoom: an opening too long for the budget is cut to half of it, counts as in, and leaves room
+// for the sections a call brings.
+func TestCutOpeningLeavesRoom(t *testing.T) {
+	src := "# notes\n\n" + strings.Repeat("an opening line that goes on and on.\n", 200) + "\n## Testing\n\nRun go test.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	got := in.Initial()
+	if !strings.Contains(got, "cut to fit the window; read CLAUDE.md lines 1–") || in.Used() > in.Budget()*2/3 {
+		t.Fatalf("used %d of %d:\n%.300s", in.Used(), in.Budget(), got)
+	}
+	if s := in.ForCall("c1", "bash", bash("go test ./...")); !strings.Contains(s, "Run go test.") {
+		t.Errorf("no room left after the cut opening:\n%s", s)
+	}
+}
+
+// TestWholeCountsItsFraming: a file whose text fits but whose framed text does not is not loaded whole.
+func TestWholeCountsItsFraming(t *testing.T) {
+	budget := 16384 * SectionShare / 100
+	var b strings.Builder
+	b.WriteString("# n\n\n")
+	for SectionTokens(b.String()+"x") <= budget-2 {
+		b.WriteString("x")
+	}
+	in := NewInstructions("CLAUDE.md", b.String(), 16384)
+	in.Initial()
+	if in.Used() > in.Budget() {
+		t.Errorf("used %d of %d (whole %v)", in.Used(), in.Budget(), in.Whole())
+	}
+}
+
+// TestAlwaysBringsItsSubsections: an always section brings its unmarked subsections with it, and an opening of a bare
+// title stops before a marked section.
+func TestAlwaysBringsItsSubsections(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Releases\n<!-- tack:always -->\nTag from main.\n\n### Hotfixes\n\nBranch from the tag.\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", src, 4096).Initial(); !strings.Contains(got, "Branch from the tag.") {
+		t.Errorf("the always section's subsection was left out:\n%s", got)
+	}
+	bare := "# notes\n\n## Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n## Other\n\nx\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", bare, 4096).Initial(); strings.Contains(got, "Queue long jobs.") {
+		t.Errorf("a bare title's opening took in a marked section:\n%s", got)
+	}
+}
+
+// TestCallKindsSkipFlags: a flag before a subcommand does not hide it, a marker of several words matches the words it
+// names, and ** in an edit pattern crosses directories.
+func TestCallKindsSkipFlags(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, 4096)
+	in.Initial()
+	if s := in.ForCall("c1", "bash", bash("go -C pkg test ./...")); !strings.Contains(s, "Run go test.") {
+		t.Errorf("go -C pkg test:\n%s", s)
+	}
+	if s := in.ForCall("c2", "bash", bash("git commit -m x")); strings.Contains(s, "Never amend") {
+		t.Errorf("git commit without --amend matched the amend marker:\n%s", s)
+	}
+	if s := in.ForCall("c3", "bash", bash("git -c x=y commit --amend --no-edit")); !strings.Contains(s, "Never amend") {
+		t.Errorf("git commit --amend:\n%s", s)
+	}
+	if !kindMatches("edit:internal/**/*_test.go", "edit:internal/window/sections_test.go") || !kindMatches("edit:internal/**/*_test.go", "edit:internal/a_test.go") ||
+		kindMatches("edit:internal/**/*_test.go", "edit:cmd/a_test.go") || kindMatches("edit:internal/*_test.go", "edit:internal/window/a_test.go") {
+		t.Error("** crosses directories; * stays in one")
 	}
 }
