@@ -257,3 +257,21 @@ func Inspect(evs []proto.Event) Interrupted {
 	}
 	return st
 }
+
+// Sessions is the ids of every session with a log in the store, sorted.
+func (s *Store) Sessions() ([]proto.SessionID, error) {
+	ents, err := os.ReadDir(filepath.Join(s.root, "sessions"))
+	if err != nil {
+		return nil, err
+	}
+	var ids []proto.SessionID
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(s.root, "sessions", e.Name(), "events.jsonl")); err == nil {
+			ids = append(ids, proto.SessionID(e.Name()))
+		}
+	}
+	return ids, nil
+}
