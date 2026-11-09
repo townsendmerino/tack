@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/halt"
@@ -275,6 +276,9 @@ var (
 	sendQueue   = 1024
 	sendTimeout = 5 * time.Second
 	fanOutWait  = 100 * time.Millisecond
+	// catchUpWait is how long a connection catching up on a replay may go without a write before a live event gives up
+	// on it: longer than a slow client takes to read one message.
+	catchUpWait = time.Second
 )
 
 // errDropped is a send to a connection that was dropped or has ended.
@@ -291,14 +295,20 @@ type conn struct {
 	written    chan struct{} // closed when the writer ends
 	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
 	onDrop     func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
-	timeout    time.Duration // sendTimeout when the connection was made
-	fanOutWait time.Duration // fanOutWait when the connection was made
+	// catchingUp is set while what a replay queued is still being written: live events then wait sendTimeout for room
+	// too, so a client that is reading its replay is not dropped for a full queue it is draining. The writer clears it
+	// once the queue is empty.
+	catchingUp  atomic.Bool
+	writes      atomic.Int64  // messages written, so a wait can tell a client that reads from one that does not
+	timeout     time.Duration // sendTimeout when the connection was made
+	fanOutWait  time.Duration // fanOutWait when the connection was made
+	catchUpWait time.Duration // catchUpWait when the connection was made
 }
 
 // newConn is a connection writing to w, closed through w when a stuck client is dropped; onDrop, when not nil, runs then.
 func newConn(w io.Writer, onDrop func()) *conn {
 	cn := &conn{out: make(chan any, sendQueue), stopped: make(chan struct{}), closing: make(chan struct{}),
-		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, onDrop: onDrop}
+		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, catchUpWait: catchUpWait, onDrop: onDrop}
 	cn.closer, _ = w.(io.Closer)
 	go cn.write(json.NewEncoder(w))
 	return cn
@@ -321,6 +331,10 @@ func (cn *conn) write(enc *json.Encoder) {
 				cn.drop()
 				return
 			}
+			cn.writes.Add(1)
+			if len(cn.out) == 0 && cn.catchingUp.Load() {
+				cn.catchingUp.Store(false) // the replay is written: live events wait fanOutWait again
+			}
 		case <-cn.closing:
 			for {
 				select {
@@ -342,8 +356,33 @@ func (cn *conn) write(enc *json.Encoder) {
 	}
 }
 
-// fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room.
-func (cn *conn) fanOut(v any) error { return cn.sendWithin(v, cn.fanOutWait) }
+// fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room. While
+// the connection is catching up on a replay it waits longer, up to sendTimeout, but only while the client is reading:
+// each catchUpWait without a write ends the wait, so a client that stopped reading costs the session one catchUpWait,
+// once.
+func (cn *conn) fanOut(v any) error {
+	if !cn.catchingUp.Load() {
+		return cn.sendWithin(v, cn.fanOutWait)
+	}
+	deadline := time.Now().Add(cn.timeout)
+	for {
+		writes := cn.writes.Load()
+		if sent, err := cn.offer(v, cn.catchUpWait); sent || err != nil {
+			return err
+		}
+		if cn.writes.Load() == writes || time.Now().After(deadline) {
+			cn.drop()
+			return errDropped
+		}
+	}
+}
+
+// catchUp marks the connection as draining a replay, if anything of it is still queued.
+func (cn *conn) catchUp() {
+	if len(cn.out) > 0 {
+		cn.catchingUp.Store(true)
+	}
+}
 
 // send queues v for the client, waiting up to sendTimeout for room.
 func (cn *conn) send(v any) error { return cn.sendWithin(v, cn.timeout) }
@@ -351,26 +390,36 @@ func (cn *conn) send(v any) error { return cn.sendWithin(v, cn.timeout) }
 // sendWithin queues v for the client, waiting up to wait for room; a client that has not made room by then is dropped,
 // and every later send fails at once.
 func (cn *conn) sendWithin(v any, wait time.Duration) error {
+	sent, err := cn.offer(v, wait)
+	if !sent && err == nil {
+		cn.drop()
+		return errDropped
+	}
+	return err
+}
+
+// offer queues v for the client if there is room within wait. It says whether it did; err is errDropped for a connection
+// already dropped. A wait that runs out drops nothing.
+func (cn *conn) offer(v any, wait time.Duration) (bool, error) {
 	select {
 	case <-cn.stopped:
-		return errDropped
+		return false, errDropped
 	default:
 	}
 	select {
 	case cn.out <- v:
-		return nil
+		return true, nil
 	default:
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case cn.out <- v:
-		return nil
+		return true, nil
 	case <-cn.stopped:
-		return errDropped
+		return false, errDropped
 	case <-t.C:
-		cn.drop()
-		return errDropped
+		return false, nil
 	}
 }
 
@@ -408,7 +457,9 @@ func (cn *conn) finish() {
 	select {
 	case <-cn.written:
 	case <-time.After(cn.timeout):
-		cn.drop() // the writer is stuck in a write: closing the transport makes it return
+		// The writer is stuck in a write. Closing the transport makes it return; a transport core cannot close (no
+		// io.Closer) keeps it blocked until the write returns of itself, and nothing is written after.
+		cn.drop()
 		return
 	}
 	cn.stop.Do(func() { close(cn.stopped) })
@@ -892,21 +943,39 @@ func notification(id proto.SessionID, ev proto.Event) proto.Request {
 	return proto.Request{JSONRPC: "2.0", Method: proto.MethodSessionEvent, Params: p}
 }
 
-// replay sends a new subscriber the persisted events from from_seq, then registers it for live ones. Both happen under
-// the session's lock, so no event falls between them; one appended during the replay is skipped live by seq.
+// replay sends a new subscriber the persisted events from from_seq, then registers it for live ones. The log so far
+// goes out without the session's lock, so a slow client's long replay holds up no turn. Then, under the lock, what was
+// appended meanwhile goes out and the subscriber is registered, so no event falls between the two: one appended after
+// the first read is in the store for the second, and its live fan-out, if it comes later, is skipped by seq. A
+// connection dropped before it is registered is not registered: its unsubscribe may already have run.
 func (c *Core) replay(cn *conn, req proto.Request) {
 	p, _ := params[proto.SessionSubscribeParams](req)
 	s, perr := c.session(p.Session)
 	if perr != nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
-		_ = cn.send(notification(s.id, ev))
+		if cn.send(notification(s.id, ev)) != nil {
+			return // dropped
+		}
 		sub.last = ev.Seq
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cn.catchUp() // phase one may have filled the queue: what follows waits as the replay did
+	more, _ := c.opt.Store.Events(s.id, sub.last+1)
+	for _, ev := range more {
+		if cn.fanOut(notification(s.id, ev)) != nil {
+			return
+		}
+		sub.last = ev.Seq
+	}
+	select {
+	case <-cn.stopped:
+		return // dropped before it was registered: nothing would unsubscribe it
+	default:
 	}
 	s.subs[sub] = true
 }
