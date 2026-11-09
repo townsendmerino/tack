@@ -116,6 +116,7 @@ func loadConfig(path string) (*config.Config, string, string, error) {
 // exits; a second one kills at once, as the default action of the signal (DESIGN §6.1). Another daemon holding the
 // lock is not an error: it is named, and this one exits 0, which launchd does not restart.
 func daemonRun(cfg *config.Config, cfgPath, stateDir string, stderr io.Writer) int {
+	stderr = daemon.SyncWriter(stderr) // Run and the core's callbacks write it from their own goroutines
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -209,6 +210,13 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 		err = c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil)
 	}
 	c.Close()
+	if errors.Is(err, core.ErrClosed) { // it finished shutting down as this stop reached it: wait for its lock
+		pid := st.PID
+		if pid == 0 {
+			pid = daemon.ReadHolder(stateDir).PID
+		}
+		return awaitRelease(stateDir, pid, grace, stdout, stderr)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError

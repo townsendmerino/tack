@@ -208,3 +208,34 @@ func TestInitializeNegotiatesTheVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestADrainingCoreRefusesNewConnections: once Drain begins, an initialize is refused with CodeShuttingDown, so a
+// client that reached a daemon in its last moments goes on to the next one; connections initialized before keep
+// working through the drain.
+func TestADrainingCoreRefusesNewConnections(t *testing.T) {
+	f := newFixtureOn(t, stuckModel())
+	id := f.session(t)
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("q")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan struct{})
+	go func() { f.core.Drain(500 * time.Millisecond); close(drained) }()
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		var st proto.DaemonStatusResult
+		if err := f.client.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, &st); err == nil && st.Draining {
+			break // the connection from before still answers
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the core never said it was draining")
+		}
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go f.core.Serve(context.Background(), b)
+	var pe *proto.Error
+	err := NewClient(a).Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "late", Version: "0"}, Protocol: proto.Version}, nil)
+	if !errors.As(err, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("an initialize while draining: %v; want code %d", err, proto.CodeShuttingDown)
+	}
+	<-drained
+}

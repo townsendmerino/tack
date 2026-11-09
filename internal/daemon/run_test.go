@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -376,5 +379,27 @@ func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
 	}
 	if !heldAtEnd.Load() {
 		t.Fatal("the lock was released before the watcher beside the core ended")
+	}
+}
+
+// TestTheDaemonsLogTakesWritesAtOnce: Run, its serve loop's refusals, its idle ticks and the core's callbacks all write
+// the one log; SyncWriter serializes them, so the writer need not be safe itself (run under -race).
+func TestTheDaemonsLogTakesWritesAtOnce(t *testing.T) {
+	var buf bytes.Buffer
+	w := SyncWriter(&buf)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 100 {
+				fmt.Fprintln(w, "tack daemon: a line")
+			}
+		})
+	}
+	wg.Wait()
+	if n := strings.Count(buf.String(), "\n"); n != 800 {
+		t.Fatalf("%d lines; want 800, none torn", n)
+	}
+	if SyncWriter(w) != w {
+		t.Fatal("SyncWriter wrapped a writer it had made already")
 	}
 }

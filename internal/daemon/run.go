@@ -32,10 +32,7 @@ type RunOptions struct {
 // ends or a privileged client asks daemon/shutdown. Then it stops accepting, drains the core within
 // Grace, closes the connections, ends the core's context and its watcher, closes the core, and releases the lock.
 func Run(ctx context.Context, o RunOptions) error {
-	log := o.Log
-	if log == nil {
-		log = io.Discard
-	}
+	log := SyncWriter(o.Log)
 	l, err := Acquire(o.StateDir, o.Version)
 	if err != nil {
 		return err
@@ -106,4 +103,27 @@ func Run(ctx context.Context, o RunOptions) error {
 		return fmt.Errorf("daemon: serving: %w", serveErr)
 	}
 	return nil
+}
+
+// SyncWriter returns w made safe for the daemon's goroutines to write at once (Run, its serve loop's refusals, its idle
+// ticks, the core's callbacks): writes are serialized. nil is io.Discard; a writer SyncWriter made is returned as is.
+func SyncWriter(w io.Writer) io.Writer {
+	switch w.(type) {
+	case nil:
+		return io.Discard
+	case *syncWriter:
+		return w
+	}
+	return &syncWriter{w: w}
+}
+
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

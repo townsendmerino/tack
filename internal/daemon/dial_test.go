@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -125,4 +128,62 @@ func TestDialTellsAnUnreachableSocketFromNoDaemon(t *testing.T) {
 	if err == nil || errors.Is(err, ErrNotRunning) {
 		t.Fatalf("Dial to a socket behind a directory this user may not search: %v; want an error that is not ErrNotRunning", err)
 	}
+}
+
+// TestDialPassesOverADrainingDaemon: a connection a daemon accepted just before its shutdown stays open through the
+// drain, but that daemon takes no new turn. Its initialize is refused (CodeShuttingDown), and Dial starts over: it
+// reaches the next daemon, spawned here, once the draining one has let go.
+func TestDialPassesOverADrainingDaemon(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(stuckModel())
+	t.Cleanup(ts.Close)
+	o := runOptions(t, dir, func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil })
+	o.Grace = 300 * time.Millisecond
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	first := make(chan error, 1)
+	go func() { first <- Run(ctx, o) }()
+	c := dialSoon(t, dir)
+	var sess proto.SessionNewResult
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("q")}}, nil); err != nil {
+		t.Fatal(err) // a turn at the model, so the drain lasts its grace
+	}
+	fired := false
+	dialHook = func() {
+		if fired {
+			return
+		}
+		fired = true
+		time.Sleep(50 * time.Millisecond) // the daemon has accepted this connection
+		stop()
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			if _, err := os.Stat(SocketPath(dir)); errors.Is(err, fs.ErrNotExist) {
+				return // draining, this connection still open
+			}
+		}
+		t.Error("the daemon never stopped accepting")
+	}
+	t.Cleanup(func() { dialHook = nil })
+	spawns := 0
+	spawn := func() error {
+		spawns++
+		start(t, runOptions(t, dir))
+		return nil
+	}
+	d, err := Dial(dir, testClient, spawn, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Dial as its daemon drained: %v; want it to reach the next one", err)
+	}
+	defer d.Close()
+	var st proto.DaemonStatusResult
+	if err := d.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, &st); err != nil || st.Draining {
+		t.Fatalf("the daemon Dial reached: %+v, %v; want one that is not draining", st, err)
+	}
+	if spawns != 1 {
+		t.Fatalf("%d spawns; want the next daemon started once", spawns)
+	}
+	<-first
 }

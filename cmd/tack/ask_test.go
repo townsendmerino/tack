@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/core"
+	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -82,5 +83,40 @@ func TestASpawnWaitsOutADrain(t *testing.T) {
 		if w := drainWait(grace); w < grace+5*time.Second {
 			t.Errorf("drainWait(%s) = %s; want the grace and the drain's 5s to record cancelled turns, at least", grace, w)
 		}
+	}
+}
+
+// TestStopWhenTheDaemonGoesMidway: a daemon that finishes shutting down while stop is talking to it closes the
+// connection; stop then waits for the lock as for any stopping daemon, and reports it stopped, not an error.
+func TestStopWhenTheDaemonGoesMidway(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ln, err := net.Listen("unix", daemon.SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() { // a daemon that initializes the connection, then is gone
+		nc, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer nc.Close()
+		sc, enc := bufio.NewScanner(nc), json.NewEncoder(nc)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil || req.Method != proto.MethodInitialize {
+				return
+			}
+			r, _ := json.Marshal(proto.InitializeResult{Protocol: proto.Version})
+			enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
+		}
+	}()
+	var out, errb bytes.Buffer
+	if code := daemonStop(dir, time.Second, &out, &errb); code != exitOK || !strings.Contains(out.String(), "stopped") {
+		t.Fatalf("stop on a daemon gone midway: exit %d, %q %q; want 0 and stopped", code, out.String(), errb.String())
 	}
 }

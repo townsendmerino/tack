@@ -36,10 +36,10 @@ func (c *Conn) Close() error { return c.nc.Close() }
 // spawn nil it returns ErrNotRunning. A socket this client cannot reach for another reason is that error, not
 // ErrNotRunning.
 //
-// A daemon that shuts down between the dial and the initialize has closed this client's connection by then: it closes
-// its connections before it lets go of the lock, and a successor writes its token only once it holds the lock. So
-// the initialize fails with core.ErrClosed, and Dial starts over, once, as it began: with spawn, and waiting up to
-// wait for a socket.
+// A daemon that shuts down between the dial and the initialize refuses it: with the connection closed (core.ErrClosed)
+// once its drain is over, since it closes its connections before it lets go of the lock, or with CodeShuttingDown
+// while it drains, as it takes no new turn. Dial then starts over, once, as it began: with spawn, and waiting up to
+// wait for a socket, which the next daemon binds once the draining one has let go.
 func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait time.Duration) (*Conn, error) {
 	path := SocketPath(stateDir)
 	nc, err := connect(path, spawn, wait)
@@ -54,7 +54,9 @@ func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait tim
 		var init proto.InitializeResult
 		tok, _ := ReadToken(stateDir) // a client that cannot read it connects unprivileged
 		err = cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: client, Protocol: proto.Version, Token: tok}, &init)
-		if errors.Is(err, core.ErrClosed) && attempt == 1 { // the daemon went as this client reached it
+		var pe *proto.Error
+		going := errors.Is(err, core.ErrClosed) || errors.As(err, &pe) && pe.Code == proto.CodeShuttingDown
+		if going && attempt == 1 { // the daemon went, or is going, as this client reached it
 			nc.Close()
 			nc, err = connect(path, spawn, wait)
 			continue
