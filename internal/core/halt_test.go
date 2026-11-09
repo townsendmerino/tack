@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -279,5 +280,82 @@ func TestHaltPassesOnWhatIsWrittenAroundIt(t *testing.T) {
 		if !heard[ev.Seq] {
 			t.Errorf("the subscriber never heard %s at seq %d", ev.Type, ev.Seq)
 		}
+	}
+}
+
+// TestHaltNeverOvertakesATurnsEvent: a turn's daemon.halted, recorded as Halt records its refused sweep, reaches a live
+// subscriber. Halt's record waits until the turn has appended daemon.halted, and the turn's emit of it waits until
+// Halt is done: without one lock across each event's append and fan-out, halt_refused takes the higher seq, goes out
+// first, and the subscriber's seq filter drops daemon.halted.
+func TestHaltNeverOvertakesATurnsEvent(t *testing.T) {
+	f := newFixtureOn(t, stuckModel())
+	st := f.core.opt.Store
+	id := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
+		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
+	}
+	haltDone := make(chan struct{})
+	hold := func(ev proto.Event) { // the turn's daemon.halted goes out only once Halt has recorded
+		if ev.Type == proto.EvDaemonHalted {
+			select {
+			case <-haltDone:
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+	emitHook.Store(&hold)
+	haltHook = func() { // and Halt records only once the turn has appended daemon.halted, or gives up waiting
+		for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			evs, _ := st.Events(id, 0)
+			for _, ev := range evs {
+				if ev.Type == proto.EvDaemonHalted {
+					return
+				}
+			}
+		}
+	}
+	t.Cleanup(func() { emitHook.Store(nil); haltHook = nil })
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("x")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	close(haltDone)
+	heard := map[int64]bool{}
+	for deadline := time.After(5 * time.Second); ; {
+		select {
+		case ev := <-f.events:
+			heard[ev.Seq] = true
+			if ev.Type != proto.EvTurnEnd {
+				continue
+			}
+		case <-deadline:
+			t.Fatalf("no turn.end; heard %v", heard)
+		}
+		break
+	}
+	for quiet := false; !quiet; {
+		select {
+		case ev := <-f.events:
+			heard[ev.Seq] = true
+		case <-time.After(100 * time.Millisecond):
+			quiet = true
+		}
+	}
+	evs, err := st.Events(id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types []proto.EventType
+	for _, ev := range evs {
+		types = append(types, ev.Type)
+		if !heard[ev.Seq] {
+			t.Errorf("the subscriber never heard %s at seq %d", ev.Type, ev.Seq)
+		}
+	}
+	if !slices.Contains(types, proto.EvDaemonHalted) || !slices.Contains(types, proto.EvDaemonHaltRefused) {
+		t.Fatalf("the log %v lacks daemon.halted or daemon.halt_refused", types)
 	}
 }

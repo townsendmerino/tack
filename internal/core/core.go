@@ -556,7 +556,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	symbols, _ := searcher.(tools.Symbols)
 	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, EndTurn: s.endTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
@@ -690,12 +690,12 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	return s, nil
 }
 
-// endTurn is the loop's EndTurn: it holds wmu across the recording of the turn's turn.end, its append and its fan-out
-// (emitTurn), so a Halt's record lands wholly before the turn.end or wholly after it. Under wmu, the next turn, which
-// takes wmu before its first event, cannot reach a subscriber before this turn.end either: emit skips an event at or
-// below a subscriber's last seq, so either order inverted would drop one.
-func (s *session) endTurn(record func() error) error {
-	if h := turnEndHook.Load(); h != nil {
+// recordTurn is the loop's Record: it holds wmu across each event the turn records, its append and its fan-out
+// (emitTurn). Halt's records (recordAside) and the next turn's first take wmu too, so each lands wholly before or
+// wholly after a turn's event. emit skips an event at or below a subscriber's last seq, so a higher seq that went out
+// first would drop the lower one for every live subscriber. A turn.end frees the session inside the bracket.
+func (s *session) recordTurn(typ proto.EventType, record func() error) error {
+	if h := turnEndHook.Load(); h != nil && typ == proto.EvTurnEnd {
 		(*h)()
 	}
 	s.wmu.Lock()
@@ -703,10 +703,13 @@ func (s *session) endTurn(record func() error) error {
 	return record()
 }
 
-// emitTurn is the loop's Emit. A turn.end, which comes only through endTurn with wmu held, frees the session before
+// emitTurn is the loop's Emit. A turn.end, which comes only through recordTurn with wmu held, frees the session before
 // any subscriber hears it: turn.end is a client's signal that it may prompt again, so a prompt sent on it is never
 // refused as busy. Foreign events, another process's turn.end among them, go through emit.
 func (s *session) emitTurn(ev proto.Event) {
+	if h := emitHook.Load(); h != nil {
+		(*h)(ev)
+	}
 	if ev.Type != proto.EvTurnEnd {
 		s.emit(ev)
 		return

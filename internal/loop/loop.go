@@ -70,11 +70,12 @@ type Config struct {
 	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
 	Emit func(proto.Event)
-	// EndTurn, when set, brackets the recording of a turn's turn.end, its append and its Emit: it must call record
-	// once and return its error. The turn's last act is that record, so a caller that frees the session for its next
-	// turn as turn.end is emitted can hold its write lock across the append and the fan-out together (core's
-	// session.endTurn). Nil records it plainly.
-	EndTurn func(record func() error) error
+	// Record, when set, brackets each event a turn records from Run, its append and its Emit together: it must call
+	// record once and return its error. A caller with other writers to the log (core's Halt) holds its write lock across
+	// both, so no event of theirs takes a higher seq and goes out first (core's session.recordTurn). The turn's last
+	// record is its turn.end. Start's user.message is not bracketed: its caller holds that lock already. Nil records
+	// plainly.
+	Record func(typ proto.EventType, record func() error) error
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
 	// the blob store. Default 16 KiB.
 	MaxResultBytes int
@@ -193,7 +194,22 @@ func New(cfg Config) *Session {
 // Conversation is the session's conversation so far, for tests and for checking it against a rebuild from the log.
 func (s *Session) Conversation() *server.Conversation { return s.conv }
 
+// record appends an event the turn makes and emits it, inside Config.Record's bracket when there is one.
 func (s *Session) record(typ proto.EventType, cause int64, payload any) (proto.Event, error) {
+	var ev proto.Event
+	appendEmit := func() error {
+		var err error
+		ev, err = s.append(typ, cause, payload)
+		return err
+	}
+	if s.cfg.Record == nil {
+		return ev, appendEmit()
+	}
+	return ev, s.cfg.Record(typ, appendEmit)
+}
+
+// append appends an event and emits it, with no bracket.
+func (s *Session) append(typ proto.EventType, cause int64, payload any) (proto.Event, error) {
 	ev, err := s.cfg.Log.Append(typ, cause, payload)
 	if err != nil {
 		return ev, err
@@ -208,7 +224,7 @@ func (s *Session) Start(text string) (int64, error) {
 	if s.pending != "" {
 		return 0, errors.New("loop: a turn is already started")
 	}
-	ev, err := s.record(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(text)}})
+	ev, err := s.append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(text)}}) // unbracketed: Config.Record
 	if err != nil {
 		return 0, err
 	}
@@ -243,14 +259,8 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		_ = s.conv.EndTurn()
 		s.endSnapshot()
 		ended = true
-		record := func() error {
-			_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
-			return err
-		}
-		if s.cfg.EndTurn != nil {
-			return reason, s.cfg.EndTurn(record)
-		}
-		return reason, record()
+		_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
+		return reason, err
 	}
 	fail := func(class string, err error) (string, error) {
 		if _, rerr := s.record(proto.EvError, cause, proto.ErrorEvent{Class: class, Message: err.Error()}); rerr != nil {
@@ -292,6 +302,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	}
 	srv, err := s.cfg.Source.Ensure(ctx)
 	if err != nil {
+		if ctx.Err() != nil { // halted or cancelled while the server was starting: not the server's fault
+			return stopped()
+		}
 		return fail("server", err)
 	}
 	s.conv.Model = s.cfg.Source.Model()
