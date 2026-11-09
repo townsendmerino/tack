@@ -88,6 +88,9 @@ type Server struct {
 	// Fallback names another machine's server (nobara's) that this child's sessions move to while this machine's
 	// memory pressure is warning or worse (DESIGN §8.1); empty means they wait for it to fall.
 	Fallback string `toml:"fallback"`
+	// AllowDevel lets this child be a goinfer-serve built from a checkout, which reports (devel) and so cannot be held to
+	// the goinfer release this tack pins (models.GoinferVersion); without it such a build is refused.
+	AllowDevel bool `toml:"allow_devel"`
 
 	// goinfer-remote
 	URL string `toml:"url"`
@@ -316,8 +319,8 @@ func (c *Config) validate() error {
 			if len(s.Start) > 0 && !s.OnDemand {
 				return fmt.Errorf("servers.%s: start is for a server with on_demand = true", name)
 			}
-			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 {
-				return fmt.Errorf("servers.%s: binary, model_path, ctx and args are for %s", name, KindChild)
+			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
+				return fmt.Errorf("servers.%s: binary, model_path, ctx, args and allow_devel are for %s", name, KindChild)
 			}
 		default:
 			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)

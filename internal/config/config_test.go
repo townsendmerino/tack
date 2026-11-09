@@ -295,3 +295,14 @@ func TestChildFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestAllowDevel: allow_devel is a goinfer-child's, and refused on a remote, whose binary tack does not run.
+func TestAllowDevel(t *testing.T) {
+	c, err := load(t, "[servers.mac]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 1\nallow_devel = true\n")
+	if err != nil || !c.Servers["mac"].AllowDevel {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	if _, err := load(t, "[servers.r]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nallow_devel = true\n"); err == nil || !strings.Contains(err.Error(), "allow_devel") {
+		t.Fatalf("allow_devel on a remote: %v, want refused", err)
+	}
+}

@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 }
 
 func fakeGoinfer(args []string) {
+	if len(args) == 1 && args[0] == "--version" { // the release tack pins, as goinfer-serve prints it
+		fmt.Printf("goinfer-serve %s\nbackends: cpu cuda\n", models.GoinferVersion)
+		return
+	}
 	fs := flag.NewFlagSet("fake", flag.ExitOnError)
 	addr := fs.String("addr", "", "")
 	sock := fs.String("admin-socket", "", "")
