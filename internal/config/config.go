@@ -134,6 +134,10 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
+	// RecentlyChanged gives sessions the recently_changed tool: uncommitted changes and recent commits, from git
+	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
+	// setting until one is registered.
+	RecentlyChanged bool `toml:"recently_changed"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`

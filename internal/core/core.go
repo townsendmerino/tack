@@ -91,6 +91,8 @@ type Options struct {
 	EditTolerances bool
 	// LeanResults cuts whole-file reads and grep shorter (tools.Options.LeanResults; calibration §16.1).
 	LeanResults bool
+	// RecentlyChanged gives every session the recently_changed tool (tools.Options.RecentlyChanged).
+	RecentlyChanged bool
 	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// WidenRepeats widens a repeated whole read or grep (loop.Config.WidenRepeats).
@@ -390,7 +392,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults}
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emit, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
@@ -406,7 +408,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		}
 		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
-			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults})
+			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
+			RecentlyChanged: c.opt.RecentlyChanged})
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, p.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
