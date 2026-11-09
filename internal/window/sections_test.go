@@ -588,3 +588,29 @@ func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
 		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
 	}
 }
+
+// TestReplayReadsTheFirstMessageFromTheLog: when the instruction file changed between the session and its resume
+// (a section marked always since, and a longer opening), the rebuilt tracker holds what the first message held, as
+// logged, not what Initial would give now.
+func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	first := live.Initial()
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	changed := strings.Replace(bigFile(), "## Testing\n\nRun go test with -v.", "## Testing\n<!-- tack:always -->\nRun go test with -v.", 1)
+	changed = strings.Replace(changed, "Intro: read this first.", "Intro: read this first, and this new line too.", 1)
+	re := NewInstructions("CLAUDE.md", changed, 4096)
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, lu := live.Loaded()
+	ri, _, _, ru := re.Loaded()
+	testing := -1
+	for i, s := range re.secs {
+		if s.Heading() == "Testing" {
+			testing = i
+		}
+	}
+	if ri[testing] || ru != lu {
+		t.Errorf("rebuilt from the file as it is now: Testing in %v, used %d, want the logged first message's %d", ri[testing], ru, lu)
+	}
+}
