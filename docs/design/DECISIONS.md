@@ -248,7 +248,9 @@ slice `mbp2-tack-p1s5` proposed.
 - **A stale page isn't loaded as fact.** When a pinned file's hash doesn't match as the session begins, or the pin
   records none, the page is named as possibly out of date and its body stays out. No model call is involved.
   Freshness is judged once, at the session's start. The loop asks only after a call has run, so judging it then would
-  make every edit of a pinned file stale its own page; the session's own edits don't make a page stale midway.
+  make every edit of a pinned file stale its own page; the session's own edits don't make a page stale midway. A
+  reopened session reads freshness back from its log (the index marks a stale page), so a resume doesn't judge again
+  over a tree the session has edited.
 - **One budget.** Pages, the index and instruction sections draw on one 15% budget. The index is priced first, at its
   2% cap and within what's left, and the instruction file gets the rest. A page that doesn't fit is named once, and
   loads at a later matching call once a compaction makes room.

@@ -63,7 +63,7 @@ func TestKnowledgeIndexAndLoads(t *testing.T) {
 	k := NewKnowledge(root, pages, 16384, b)
 	idx := k.Index()
 	for _, want := range []string{"- The agent loop (.agents/knowledge/loop.md; pinned to internal/loop/loop.go)",
-		"- Old notes (.agents/knowledge/stale.md; pinned to internal/loop/loop.go)", "- free (.agents/knowledge/free.md)"} {
+		"- Old notes (.agents/knowledge/stale.md; pinned to internal/loop/loop.go; possibly out of date)", "- free (.agents/knowledge/free.md)"} {
 		if !strings.Contains(idx, want) {
 			t.Errorf("index lacks %q:\n%s", want, idx)
 		}

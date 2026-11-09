@@ -214,16 +214,8 @@ func (k *Knowledge) Index() string {
 	capTokens := min(k.window*IndexShare/100, k.b.Limit-k.b.Used)
 	head := "Knowledge pages in " + KnowledgeDir + "/, notes on this code; one loads when a call reads or edits the file it is pinned to:\n"
 	var lines []string
-	for _, pg := range k.pages {
-		l := "- " + pg.Title + " (" + pg.Path
-		if len(pg.Pins) > 0 {
-			files := make([]string, len(pg.Pins))
-			for i, p := range pg.Pins {
-				files[i] = p.File
-			}
-			l += "; pinned to " + strings.Join(files, ", ")
-		}
-		lines = append(lines, l+")")
+	for i := range k.pages {
+		lines = append(lines, k.indexLine(i))
 	}
 	build := func(lines []string, more int) string {
 		s := head + strings.Join(lines, "\n")
@@ -243,6 +235,24 @@ func (k *Knowledge) Index() string {
 	k.indexCost = SectionTokens(text)
 	k.b.Used += k.indexCost
 	return text
+}
+
+// indexLine is a page's line in the index; a page whose pins did not match as the session began says so, which also
+// lets Replay read its freshness back from the logged index.
+func (k *Knowledge) indexLine(i int) string {
+	pg := k.pages[i]
+	l := "- " + pg.Title + " (" + pg.Path
+	if len(pg.Pins) > 0 {
+		files := make([]string, len(pg.Pins))
+		for j, p := range pg.Pins {
+			files[j] = p.File
+		}
+		l += "; pinned to " + strings.Join(files, ", ")
+	}
+	if !k.fresh[i] {
+		l += "; possibly out of date"
+	}
+	return l + ")"
 }
 
 // ForCall is the pages tool call id brings in, as text to add to its result: each page pinned to a file the call reads
@@ -334,6 +344,7 @@ func (k *Knowledge) Replay(evs []proto.Event) error {
 			k.b.Used -= n.cost
 		}
 	}
+	k.freshFromLog(evs)
 	k.notes = nil
 	for i := range k.pages {
 		k.state[i], k.note[i], k.named[i] = pageOut, 0, -1
@@ -358,6 +369,51 @@ func (k *Knowledge) Replay(evs []proto.Event) error {
 		}
 	}
 	return nil
+}
+
+// freshFromLog sets each page's freshness to what the session judged as it began, which the log holds: in the first
+// message's index (a stale page's line says so), and in the notes of the calls that ran (a page's text, or its stale
+// notice). The pages the log does not mention keep the judgment made over the tree as it is now. Judging again over
+// the tree would make every page whose file the session edited stale on its resume.
+func (k *Knowledge) freshFromLog(evs []proto.Event) {
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		var text string
+		switch p := v.(type) {
+		case proto.UserMessage:
+			for _, c := range p.Content {
+				text += c.Text
+			}
+			for i := range k.pages {
+				was := k.fresh[i]
+				k.fresh[i] = true
+				fresh := strings.Contains(text, k.indexLine(i))
+				k.fresh[i] = false
+				stale := strings.Contains(text, k.indexLine(i))
+				switch {
+				case fresh:
+					k.fresh[i] = true
+				case stale:
+					k.fresh[i] = false
+				default:
+					k.fresh[i] = was
+				}
+			}
+		case proto.ToolFinished:
+			for i := range k.pages {
+				body, stale, _ := k.texts(i)
+				switch {
+				case strings.Contains(p.Result, body):
+					k.fresh[i] = true
+				case strings.Contains(p.Result, stale):
+					k.fresh[i] = false
+				}
+			}
+		}
+	}
 }
 
 // replayResult records the note one result holds: each page's text that ForCall could have given then and that the
