@@ -47,3 +47,25 @@ func TestUsageSummaryIsTheTableOverTheStore(t *testing.T) {
 		t.Fatalf("usage/summary since an hour from now: %+v, %v; want no rows", got.Rows, err)
 	}
 }
+
+// fixedUsage is a usage table with rows of its own.
+type fixedUsage []proto.UsageRow
+
+func (f fixedUsage) Table(time.Time, *time.Location) ([]proto.UsageRow, error) { return f, nil }
+
+// TestUsageSummaryComesFromTheIndexWhenTheCoreHasOne: a core given a usage table (the daemon's index.db) answers from
+// it, not from the logs.
+func TestUsageSummaryComesFromTheIndexWhenTheCoreHasOne(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(stuckModel())
+	t.Cleanup(ts.Close)
+	index := fixedUsage{{Day: "2026-11-09", Server: "from-the-index", Requests: 4}}
+	_, cl, _ := daemonOn(t, st, ts.URL, func(o *Options) { o.Usage = index })
+	var got proto.UsageSummaryResult
+	if err := cl.Call(proto.MethodUsageSummary, proto.UsageSummaryParams{}, &got); err != nil || len(got.Rows) != 1 || got.Rows[0].Server != "from-the-index" {
+		t.Fatalf("usage/summary with an index: %+v, %v; want the index's row", got.Rows, err)
+	}
+}

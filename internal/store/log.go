@@ -194,8 +194,12 @@ func readEvents(r io.Reader) (evs []proto.Event, good int64, err error) {
 // scanEvents parses a log from the start, handing each complete line's event to fn in order, and returns the byte
 // length of the complete lines. An error from fn stops the scan and is returned.
 func scanEvents(r io.Reader, fn func(proto.Event) error) (good int64, err error) {
+	return scanEventsFrom(r, 1, fn)
+}
+
+// scanEventsFrom is scanEvents over a log read from a line boundary whose line has seq want.
+func scanEventsFrom(r io.Reader, want int64, fn func(proto.Event) error) (good int64, err error) {
 	br := bufio.NewReaderSize(r, 1<<16)
-	var want int64 = 1
 	for {
 		line, rerr := br.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
@@ -237,6 +241,41 @@ func (s *Store) Scan(id proto.SessionID, fn func(proto.Event) error) error {
 	defer f.Close()
 	_, err = scanEvents(f, fn)
 	return err
+}
+
+// ScanFrom hands fn the events of session id's log after its first off bytes, which end a line and are followed by
+// the line of seq next (a previous ScanFrom's return; 0 and 1 for the whole log). It returns where the complete lines
+// end and the seq of the next, for the next call; a torn last line is left for it. A log shorter than off has not
+// been appended to since: it is an error, and the caller reads it again from the start.
+func (s *Store) ScanFrom(id proto.SessionID, off, next int64, fn func(proto.Event) error) (end, nextSeq int64, err error) {
+	p, err := s.logPath(id)
+	if err != nil {
+		return 0, 0, err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+	if fi.Size() < off {
+		return 0, 0, fmt.Errorf("store: session %s's log is %d bytes, shorter than the %d already read", id, fi.Size(), off)
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return 0, 0, err
+	}
+	seq := next
+	good, err := scanEventsFrom(f, next, func(ev proto.Event) error {
+		seq = ev.Seq + 1
+		return fn(ev)
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return off + good, seq, nil
 }
 
 // Append records an event of type typ answering cause (0 for none), with payload of typ's registered type, and returns

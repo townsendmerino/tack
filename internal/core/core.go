@@ -37,6 +37,9 @@ import (
 type Options struct {
 	Store   *store.Store
 	Version string
+	// Usage, when set, answers usage/summary (the daemon's is index.db, usage.Cache); nil reads the logs each time
+	// (usage.FromStore).
+	Usage UsageTable
 	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
 	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
 	ClientToken string

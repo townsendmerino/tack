@@ -128,8 +128,8 @@ func spoken() string {
 	return strings.Join(vs, " and ")
 }
 
-// usageSummary is usage/summary: the usage table over every session in the store (internal/usage), read from the logs
-// each time. Any client may ask; it only reads.
+// usageSummary is usage/summary: the usage table over every session in the store (internal/usage), from index.db when
+// the core has it (Options.Usage), and from the logs otherwise. Any client may ask; it only reads.
 func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResult, *proto.Error) {
 	if c.opt.Store == nil {
 		return proto.UsageSummaryResult{}, &proto.Error{Code: proto.CodeInvalidRequest, Message: "usage/summary: this session core has no store"}
@@ -142,7 +142,13 @@ func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResul
 	if p.UTC {
 		loc = time.UTC
 	}
-	rows, err := usage.FromStore(c.opt.Store, since, loc)
+	var rows []proto.UsageRow
+	var err error
+	if c.opt.Usage != nil {
+		rows, err = c.opt.Usage.Table(since, loc)
+	} else {
+		rows, err = usage.FromStore(c.opt.Store, since, loc)
+	}
 	if err != nil {
 		return proto.UsageSummaryResult{}, &proto.Error{Code: proto.CodeInternalError, Message: "usage/summary: " + err.Error()}
 	}
@@ -150,4 +156,9 @@ func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResul
 		rows = []proto.UsageRow{}
 	}
 	return proto.UsageSummaryResult{Rows: rows}, nil
+}
+
+// UsageTable is what answers usage/summary: usage.Cache, over index.db.
+type UsageTable interface {
+	Table(since time.Time, loc *time.Location) ([]proto.UsageRow, error)
 }
