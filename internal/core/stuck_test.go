@@ -294,3 +294,172 @@ func TestFinishUnblocksAStuckWriter(t *testing.T) {
 		t.Errorf("the far end's write: %v; want the transport closed", err)
 	}
 }
+
+// TestADroppedConnectionIsNotSubscribed: a connection dropped before its replay registers it stays unsubscribed; its
+// unsubscribe may already have run, and nothing else would remove it.
+func TestADroppedConnectionIsNotSubscribed(t *testing.T) {
+	f := newFixture(t)
+	id := f.session(t)
+	cn := newConn(io.Discard, nil)
+	cn.drop()
+	// From past the log's end: nothing to send, so only the check before registering can keep it out.
+	p, _ := json.Marshal(proto.SessionSubscribeParams{Session: id, FromSeq: 1000})
+	f.core.replay(cn, proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodSessionSubscribe, Params: p})
+	s, _ := f.core.session(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sub := range s.subs {
+		if sub.conn == cn {
+			t.Fatal("a dropped connection was subscribed")
+		}
+	}
+}
+
+// TestALongReplayHoldsUpNoTurn: a client that stops reading during its replay of a long log holds up no other client's
+// turn: the replay goes out without the session's lock.
+func TestALongReplayHoldsUpNoTurn(t *testing.T) {
+	q, to := sendQueue, sendTimeout
+	sendQueue, sendTimeout = 1, 3*time.Second
+	t.Cleanup(func() { sendQueue, sendTimeout = q, to })
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	id := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.prompt(t, id, "first")
+	f.waitTurnEnd(t)          // a log of several events
+	stuckSubscriber(t, f, id) // its replay stalls on a full queue of 1
+	done := make(chan error, 1)
+	go func() {
+		done <- f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("second")}}, nil)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a prompt waited more than 1 s beside a stuck replay: the replay held the session")
+	}
+	f.waitTurnEnd(t)
+}
+
+// TestAClientCatchingUpIsNotDropped: a client still reading a long replay, slowly, is not dropped by the first live
+// events for the queue the replay filled, and hears the next turn.
+func TestAClientCatchingUpIsNotDropped(t *testing.T) {
+	q, w := sendQueue, fanOutWait
+	sendQueue, fanOutWait = 2, time.Millisecond
+	t.Cleanup(func() { sendQueue, fanOutWait = q, w })
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	id := f.session(t)
+	f.prompt(t, id, "first") // unsubscribed: the turn's events reach the slow client only by replay
+	st := f.core.opt.Store
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		evs, _ := st.Events(id, 0)
+		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first turn never ended")
+		}
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go f.core.Serve(ctx, b)
+	ends := make(chan struct{}, 4)
+	go func() { // a slow reader: every line takes it 20 ms
+		r := bufio.NewReader(a)
+		for {
+			l, err := r.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			if bytes.Contains(l, []byte(`"type":"turn.end"`)) {
+				ends <- struct{}{}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	for n, m := range []struct {
+		method string
+		params any
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version}},
+		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
+		p, _ := json.Marshal(m.params)
+		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
+		a.Write(append(line, '\n'))
+	}
+	f.prompt(t, id, "second") // its live events meet a queue the replay is still draining
+	for i := range 2 {
+		select {
+		case <-ends:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the slow client heard %d of the two turns' ends: it was dropped while catching up", i)
+		}
+	}
+}
+
+// TestAClientThatStopsWhileCatchingUpCostsOneWait: a client that stops reading partway through its replay holds a live
+// turn up for one catchUpWait, not the send timeout.
+func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
+	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
+	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, 100*time.Millisecond, 10*time.Second
+	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	id := f.session(t)
+	f.prompt(t, id, "first")
+	st := f.core.opt.Store
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		evs, _ := st.Events(id, 0)
+		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first turn never ended")
+		}
+	}
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go f.core.Serve(ctx, b)
+	logged, _ := st.Events(id, 0)
+	read := len(logged) // its two answers and all but the last two replayed events, which stay queued
+	if read < 4 {
+		t.Fatalf("the log has %d events, too few to leave the queue of 2 full", read)
+	}
+	registered := make(chan struct{})
+	go func() { // reads slowly, then stops with the replay's last two still queued: it is catching up when it stops
+		defer close(registered)
+		r := bufio.NewReader(a)
+		for range read {
+			if _, err := r.ReadBytes('\n'); err != nil {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	for n, m := range []struct {
+		method string
+		params any
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stops", Version: "0"}, Protocol: proto.Version}},
+		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
+		p, _ := json.Marshal(m.params)
+		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
+		a.Write(append(line, '\n'))
+	}
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.waitTurnEnd(t) // the replay of the first turn
+	<-registered
+	time.Sleep(50 * time.Millisecond) // its replay registered: it is now catching up, and reads no more
+	start := time.Now()
+	f.prompt(t, id, "second")
+	f.waitTurnEnd(t)
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("a turn took %v beside a client that stopped while catching up: more than one catchUpWait", took)
+	}
+}
