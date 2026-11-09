@@ -13,15 +13,25 @@ import (
 )
 
 // recently_changed (DESIGN §6.5; docs/design/p1-notes.md, "Decisions"): the workspace's uncommitted changes and its
-// recent commits with the files each touched, from git run directly, never through a shell. git reads the repository's
-// own config, so every run turns off what that config could make git execute: the fsmonitor hook, external diff
-// drivers and textconv filters, and the pager. The environment's GIT_* variables are dropped, so the run sees only the
-// workspace's repository.
+// recent commits with the files each touched, from git run directly, never through a shell.
+//
+// git reads the repository's own config, which the workspace's content controls, so every run turns off what that
+// config could make git execute:
+//   - the fsmonitor hook;
+//   - external diff drivers and textconv;
+//   - hooks and the pager;
+//   - signature checks, which run gpg.program;
+//   - the clean, smudge and process commands of every filter driver the config names. git status hashes a stat-dirty
+//     file through its clean filter. The cost: a stat-dirty file under a filter (git-lfs's, for one) can show as
+//     modified when it is not.
+//
+// The environment's GIT_* variables are dropped, so the run sees only the workspace's repository, and LC_ALL=C keeps
+// git's messages in English.
 
 const (
 	recentDefault  = 10
 	recentMax      = 30
-	recentMaxLines = 200 // the status's lines, and then the log's, are cut here
+	recentMaxLines = 200 // the status's lines are cut here, and the log's lines too, each on its own count
 )
 
 type recentTool struct{}
@@ -51,49 +61,53 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 		return errorf("commits must be 1 to %d", recentMax), nil
 	}
 	root := ws.Root()
-	prefix, err := git(ctx, root, "rev-parse", "--show-prefix")
+	g, err := newGit(ctx, root)
+	if err != nil {
+		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
+	}
+	prefix, err := g.run(ctx, "rev-parse", "--show-prefix")
 	if err != nil {
 		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
 	}
 	prefix = strings.TrimSpace(prefix)
-	status, err := git(ctx, root, "status", "--porcelain=v1", "--untracked-files=normal", "--", ".")
+	status, err := g.run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", ".")
 	if err != nil {
-		return Result{}, err
-	}
-	log, err := git(ctx, root, "log", "-n", fmt.Sprint(n), "--relative", "--date=short", "--format=%h %ad %s",
-		"--name-status", "--no-ext-diff", "--no-textconv", "--no-color", "--", ".")
-	if err != nil && !strings.Contains(err.Error(), "does not have any commits") {
 		return Result{}, err
 	}
 	var b strings.Builder
 	b.WriteString("Uncommitted changes (git status):\n")
-	lines := 0
-	if strings.TrimSpace(status) == "" {
+	entries := statusEntries(status, prefix)
+	if len(entries) == 0 {
 		b.WriteString("(none)\n")
 	}
-	for l := range strings.SplitSeq(strings.TrimRight(status, "\n"), "\n") {
-		if l == "" {
-			continue
-		}
-		if lines++; lines > recentMaxLines {
+	for i, e := range entries {
+		if i == recentMaxLines {
 			b.WriteString("[… more; narrow with git status in bash if you have it]\n")
 			break
 		}
-		// Porcelain paths are from the repository's top; the tool's are from the workspace root.
-		b.WriteString(l[:3] + strings.TrimPrefix(l[3:], prefix) + "\n")
+		b.WriteString(e + "\n")
 	}
 	fmt.Fprintf(&b, "\nLast %d commits (git log), newest first:\n", n)
+	log := ""
+	if _, err := g.run(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil { // a repository with no commits has no HEAD yet
+		if log, err = g.run(ctx, "log", "-n", fmt.Sprint(n), "--relative", "--date=short", "--format=%h %ad %s",
+			"--name-status", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--no-color", "--", "."); err != nil {
+			return Result{}, err
+		}
+	}
 	if strings.TrimSpace(log) == "" {
 		b.WriteString("(none)\n")
 	}
+	lines := 0
 	for l := range strings.SplitSeq(strings.TrimRight(log, "\n"), "\n") {
 		if l == "" {
 			continue
 		}
-		if lines++; lines > 2*recentMaxLines {
+		if lines == recentMaxLines {
 			b.WriteString("[… more; ask for fewer commits]\n")
 			break
 		}
+		lines++
 		if strings.Contains(l, "\t") { // a file line: status, tab, path
 			l = "  " + l
 		}
@@ -102,21 +116,77 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	return Result{Text: strings.TrimRight(b.String(), "\n")}, nil
 }
 
-// git runs one git command in root with the repository's executable config turned off, and returns its stdout.
-func git(ctx context.Context, root string, args ...string) (string, error) {
-	full := append([]string{"-C", root, "--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false",
-		"-c", "core.untrackedCache=false", "-c", "diff.external=", "-c", "core.hooksPath=/dev/null"}, args...)
+// statusEntries is git status --porcelain=v1 -z's entries, one line each, with paths from the workspace root (prefix
+// stripped from every path a rename or copy names) and a rename shown as "old -> new".
+func statusEntries(z, prefix string) []string {
+	parts := strings.Split(strings.TrimSuffix(z, "\x00"), "\x00")
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if len(p) < 4 {
+			continue
+		}
+		code, path := p[:3], strings.TrimPrefix(p[3:], prefix)
+		if (p[0] == 'R' || p[0] == 'C') && i+1 < len(parts) { // -z gives a rename's new path, then its old one
+			i++
+			path = strings.TrimPrefix(parts[i], prefix) + " -> " + path
+		}
+		out = append(out, code+path)
+	}
+	return out
+}
+
+// gitRun runs git in one workspace with the repository's executable config turned off (the package comment's list).
+type gitRun struct {
+	root string
+	args []string // the -c overrides, the filters' included
+}
+
+// newGit reads the names of the filter drivers git's config defines, so each run can blank their commands.
+func newGit(ctx context.Context, root string) (*gitRun, error) {
+	g := &gitRun{root: root, args: []string{"-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "diff.external=",
+		"-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"}}
+	list, err := g.exec(ctx, "config", "--null", "--get-regexp", `^filter\.`)
+	if err != nil && !strings.Contains(err.Error(), "exit status 1") { // 1: no such keys
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for kv := range strings.SplitSeq(list, "\x00") {
+		key, _, _ := strings.Cut(kv, "\n")
+		name, ok := strings.CutPrefix(key, "filter.")
+		if !ok {
+			continue
+		}
+		if dot := strings.LastIndex(name, "."); dot > 0 {
+			name = name[:dot]
+		}
+		if !seen[name] {
+			seen[name] = true
+			g.args = append(g.args, "-c", "filter."+name+".clean=", "-c", "filter."+name+".smudge=",
+				"-c", "filter."+name+".process=", "-c", "filter."+name+".required=false")
+		}
+	}
+	return g, nil
+}
+
+func (g *gitRun) run(ctx context.Context, args ...string) (string, error) {
+	return g.exec(ctx, append(append([]string(nil), g.args...), args...)...)
+}
+
+// exec runs git in the root with args, the environment's GIT_* variables dropped and the C locale, and returns stdout.
+func (g *gitRun) exec(ctx context.Context, args ...string) (string, error) {
+	full := append([]string{"-C", g.root, "--no-pager", "--no-optional-locks"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "GIT_") {
+		if !strings.HasPrefix(e, "GIT_") && !strings.HasPrefix(e, "LC_") && !strings.HasPrefix(e, "LANG") {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
+		return out.String(), fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
 	return out.String(), nil
 }

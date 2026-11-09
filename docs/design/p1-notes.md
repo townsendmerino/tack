@@ -37,8 +37,9 @@ The order the owner approved, each step with its exit check:
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It runs git
-     directly, with the fsmonitor hook, external diff programs, textconv and the pager off and the GIT_* environment
-     dropped, so a repository's config can't make it run anything (`internal/tools/recent.go`).
+     directly, with the fsmonitor hook, external diff programs, textconv, hooks, the pager, signature checks and every
+     filter driver's commands off, the GIT_* environment dropped and the C locale; a repository's config can't make it run
+     anything (`internal/tools/recent.go`).
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
 
 **Decisions:**
