@@ -22,7 +22,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/townsendmerino/tack/internal/proc"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
@@ -213,8 +212,18 @@ func (s *Supervisor) start(ctx context.Context) error {
 		return fmt.Errorf("models: starting %s: %w", s.cfg.Binary, err)
 	}
 	pid := cmd.Process.Pid
-	if ps, _, err := proc.Info(pid); err == nil {
-		_ = writeChildRecord(s.cfg.Dir, childRecord{PID: pid, ProcStart: ps, Port: port})
+	// A child this supervisor cannot record could not be found and stopped by the next daemon if this one died
+	// (stopStaleChild), and would hold its model beside the next child: it is not kept.
+	ps, _, err := childProcInfo(pid)
+	if err == nil {
+		err = writeChildRecord(s.cfg.Dir, childRecord{PID: pid, ProcStart: ps, Port: port})
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		logf.Close()
+		pw.Close()
+		return fmt.Errorf("models: recording goinfer-serve (pid %d) in %s, so a later daemon can stop it: %w", pid, s.cfg.Dir, err)
 	}
 	s.cmd, s.exited, s.loaded = cmd, make(chan struct{}), false
 	exited := s.exited
@@ -306,7 +315,7 @@ banner:
 }
 
 // Tick applies the idle rules: unload the model after IdleUnload without use, stop the child after IdleExit; nothing
-// is unloaded for idleness while a generation is in flight. With Admission it also applies the memory guard: at
+// is unloaded or stopped for idleness while a generation is in flight. With Admission it also applies the memory guard: at
 // critical pressure the model unloads at once, and Tick reports that as its error. A daemon calls it periodically.
 func (s *Supervisor) Tick(ctx context.Context) error {
 	s.mu.Lock()
@@ -314,22 +323,23 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	if s.cmd == nil || s.dead() {
 		return nil
 	}
-	idle := s.now().Sub(s.lastUse)
-	if idle >= s.cfg.IdleExit {
-		return s.stopLocked()
-	}
 	if s.cfg.Admission && s.loaded {
 		// At critical memory pressure the model unloads, generating or not: the Mac needs the memory more than the turn
 		// (DESIGN §8.1). The next load waits for the pressure to fall (Ensure).
 		if p, err := s.pressure(); err == nil && p >= PressureCritical {
-			if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
+			if err := s.unloadLocked(ctx); err != nil {
 				return err
 			}
-			s.loaded = false
 			return fmt.Errorf("models: unloaded %s: memory pressure is %s", s.cfg.Model, p)
 		}
 	}
-	if s.loaded && idle >= s.cfg.IdleUnload {
+	idle := s.now().Sub(s.lastUse)
+	if idle < s.cfg.IdleUnload && idle < s.cfg.IdleExit {
+		return nil
+	}
+	// Idle by the clock, but a generation's request touched it only at its start: neither the unload nor the exit cuts
+	// off one still in flight.
+	if s.loaded {
 		var st struct {
 			Inflight int `json:"generations_inflight"`
 		}
@@ -339,11 +349,22 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 		if st.Inflight > 0 {
 			return nil
 		}
-		if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
-			return err
-		}
-		s.loaded = false
 	}
+	if idle >= s.cfg.IdleExit {
+		return s.stopLocked()
+	}
+	if s.loaded {
+		return s.unloadLocked(ctx)
+	}
+	return nil
+}
+
+// unloadLocked unloads the model, and forgets the plan it was loaded under.
+func (s *Supervisor) unloadLocked(ctx context.Context) error {
+	if err := s.admin(ctx, "POST", "/admin/models/unload", map[string]string{"name": s.cfg.Model}, nil); err != nil {
+		return err
+	}
+	s.loaded, s.plan = false, Plan{}
 	return nil
 }
 
@@ -373,7 +394,7 @@ func (s *Supervisor) stopLocked() error {
 		s.kill()
 		<-s.exited
 	}
-	s.loaded = false
+	s.loaded, s.plan = false, Plan{}
 	return nil
 }
 

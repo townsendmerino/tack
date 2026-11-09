@@ -87,3 +87,6 @@ func stopStaleChild(dir string) error {
 	}
 	return os.Remove(path)
 }
+
+// childProcInfo is proc.Info; tests replace it.
+var childProcInfo = proc.Info

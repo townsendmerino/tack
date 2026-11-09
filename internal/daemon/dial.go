@@ -24,7 +24,10 @@ type Conn struct {
 	Init proto.InitializeResult
 	// Warning is set when the daemon speaks an older protocol than this client, which then works at the daemon's.
 	Warning string
-	nc      net.Conn
+	// PID is the daemon's, from its holder record read just before the initialize it answered: a daemon that takes
+	// initialize is serving and not draining, so the record then was its own. 0 when none was readable.
+	PID int
+	nc  net.Conn
 }
 
 // Close closes the connection.
@@ -54,6 +57,10 @@ func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait tim
 		cl := core.NewClient(nc)
 		var init proto.InitializeResult
 		tok, _ := ReadToken(stateDir) // a client that cannot read it connects unprivileged
+		pid := 0
+		if h := ReadHolder(stateDir); !h.Stopping {
+			pid = h.PID
+		}
 		err = cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: client, Protocol: proto.Version, Token: tok}, &init)
 		var pe *proto.Error
 		going := errors.Is(err, core.ErrClosed) || errors.As(err, &pe) && pe.Code == proto.CodeShuttingDown
@@ -67,7 +74,7 @@ func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait tim
 			nc.Close()
 			return nil, err
 		}
-		return &Conn{Client: cl, Init: init, Warning: versionWarning(proto.Version, init), nc: nc}, nil
+		return &Conn{Client: cl, Init: init, Warning: versionWarning(proto.Version, init), PID: pid, nc: nc}, nil
 	}
 }
 
