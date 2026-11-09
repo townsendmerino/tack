@@ -208,3 +208,32 @@ func TestAHoldIsExclusive(t *testing.T) {
 		t.Fatalf("holding a session that does not exist: %v, want ErrNotExist", err)
 	}
 }
+
+// TestCreateHeldHoldsBeforeTheLogIsListed: a new session is held before its log exists, so a recovery in another
+// process that lists the log the moment it appears and tries to hold the session cannot, and the new session is kept.
+func TestCreateHeldHoldsBeforeTheLogIsListed(t *testing.T) {
+	s := newStore(t)
+	p, _ := s.logPath("s_1")
+	var tried bool
+	var theirs *Hold
+	listed := errors.New("the log never appeared")
+	old := syncDir
+	t.Cleanup(func() { syncDir = old })
+	syncDir = func(dir string) error {
+		if !tried && fileExists(p) {
+			tried = true
+			theirs, listed = s.Hold("s_1") // what Recover does on listing it, kept past the maker's own hold
+		}
+		return old(dir)
+	}
+	l, h, err := s.CreateHeld("s_1")
+	theirs.Release()
+	if err != nil {
+		t.Fatalf("CreateHeld while a recovery lists the log at once: %v", err)
+	}
+	defer l.Close()
+	defer h.Release()
+	if !errors.Is(listed, ErrSessionHeld) {
+		t.Fatalf("the recovery's hold on the new session: %v, want ErrSessionHeld", listed)
+	}
+}

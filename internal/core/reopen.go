@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"sync/atomic"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
@@ -211,9 +212,21 @@ func (c *Core) Recover() ([]proto.SessionID, error) {
 	return out, errors.Join(errs...)
 }
 
-// recoverOne closes the turn a crash left open in one session, and reports whether there was one. A session another
-// core holds, or another process is writing, is live and left alone, as is one from before the daemon.
+// recoverOne closes the turn a crash left open in one session, and reports whether there was one. It reads the log
+// first without a lock, and takes the session's hold and its log's lock only when the last turn is open, so tack
+// rewind and a core reopening a finished session are not refused meanwhile. A session another core holds, or another
+// process is writing, is live and left alone, as is one from before the daemon.
 func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
+	evs, err := c.opt.Store.Events(id, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil // discarded since it was listed
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, ok := sessionCreated(evs); !ok || !store.Inspect(evs).InTurn { // from before the daemon, or finished
+		return false, nil
+	}
 	hold, err := c.opt.Store.Hold(id)
 	if errors.Is(err, store.ErrSessionHeld) {
 		return false, nil
@@ -222,15 +235,15 @@ func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
 		return false, err
 	}
 	defer hold.Release()
-	log, evs, err := c.opt.Store.Reopen(id)
+	log, evs, err := c.opt.Store.Reopen(id) // read again under the lock: what it holds now is what is closed
 	if errors.Is(err, store.ErrLogBusy) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if _, ok := sessionCreated(evs); !ok { // from before the daemon: reopen refuses it, so recovery leaves it be
-		return false, log.Close()
+	if recoverHook != nil {
+		recoverHook(id)
 	}
 	closed, err := closeInterrupted(log, evs)
 	if cerr := log.Close(); err == nil {
@@ -247,3 +260,13 @@ var errClosed = &proto.Error{Code: proto.CodeShuttingDown, Message: "the daemon 
 
 // madeHook, when set (tests), runs in newSession after its closed check.
 var madeHook func()
+
+// recoverHook, when set (tests), runs in Recover for each session while it holds the session and its log's lock.
+var recoverHook func(proto.SessionID)
+
+// haltHook, when set (tests), runs in Halt's refused path between taking the log back and appending to it.
+var haltHook func()
+
+// turnEndHook, when set (tests), runs as a turn's goroutine returns from the loop, before it gives the log up. It is
+// atomic because any test's turn goroutine reads it.
+var turnEndHook atomic.Pointer[func()]

@@ -877,3 +877,31 @@ func TestRecoverOnAFreshStoreFindsNothing(t *testing.T) {
 		t.Fatalf("Recover on a fresh store: %v, %v; want nothing", ids, err)
 	}
 }
+
+// TestRecoverLocksOnlyWhatItCloses: recovery takes the hold and the log's lock only of a session whose last turn is
+// open, so tack rewind, or a core reopening a finished session, is not refused while recovery reads it.
+func TestRecoverLocksOnlyWhatItCloses(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := repo(t)
+	maker, cl, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	var done proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &done); err != nil {
+		t.Fatal(err)
+	}
+	maker.Close()
+	crashed := crashedLog(t, st, ws, true)
+	var locked []proto.SessionID
+	recoverHook = func(id proto.SessionID) { locked = append(locked, id) }
+	t.Cleanup(func() { recoverHook = nil })
+	c, _, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	ids, err := c.Recover()
+	if err != nil || !slices.Equal(ids, []proto.SessionID{crashed}) {
+		t.Fatalf("Recover: %v, %v; want only %s", ids, err, crashed)
+	}
+	if !slices.Equal(locked, []proto.SessionID{crashed}) {
+		t.Fatalf("Recover locked %v; want only %s, the session it closes (%s has no open turn)", locked, crashed, done.Session)
+	}
+}
