@@ -421,6 +421,9 @@ func ScoreContext(eventsPath string, base map[string]string, gold []LineSpan, in
 		}
 		switch p := v.(type) {
 		case proto.RequestSent:
+			if p.Request == 0 { // compaction's summarizer: not a step of the conversation
+				continue
+			}
 			steps = append(steps, stepSpans{})
 		case proto.ToolCall:
 			calls[p.ID] = p

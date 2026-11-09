@@ -71,6 +71,9 @@ func ReplayRepeats(path string, base map[string]string) (RepeatReplay, error) {
 		case proto.UserMessage:
 			g = loop.RepeatGuard{}
 		case proto.RequestSent:
+			if p.Request == 0 { // compaction's summarizer, outside the conversation's numbering
+				continue
+			}
 			request++
 			r.Requests++
 			if r.Stopped {
@@ -164,6 +167,9 @@ func ReplayDuplicateEdits(path string) (DuplicateEdits, error) {
 		}
 		switch p := v.(type) {
 		case proto.RequestSent:
+			if p.Request == 0 {
+				continue
+			}
 			request++
 		case proto.ToolCall:
 			calls[p.ID] = p

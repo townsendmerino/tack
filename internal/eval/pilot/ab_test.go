@@ -102,3 +102,11 @@ func TestRecentlyChangedIsNotAnArmSetting(t *testing.T) {
 		t.Fatal("recently_changed is an arm setting")
 	}
 }
+
+// TestSummarizeIsNotAnArmSetting: no E1 arm summarizes until a screen registers it; an arm's compaction stays as
+// calibrated.
+func TestSummarizeIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["summarize"] {
+		t.Fatal("summarize is an arm setting")
+	}
+}

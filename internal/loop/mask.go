@@ -289,6 +289,7 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		after += len(m.Stub)
 		s.conv.ReplaceResult(m.ID, m.Stub)
 	}
+	s.freed += before - after // what a summary that follows can count on (Session.summarizeDue)
 	if s.cfg.Sections != nil {
 		ids := make([]string, len(masked))
 		for i, m := range masked {

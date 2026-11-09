@@ -258,7 +258,9 @@ func SummarizeTack(path string) TackSummary {
 			s.ToolCalls[p.Name]++
 			names[p.ID] = p.Name
 		case proto.RequestSent:
-			s.Requests++
+			if p.Request != 0 { // 0: compaction's summarizer, outside the conversation
+				s.Requests++
+			}
 		case proto.ToolFinished:
 			if loop.IsDoneNoChange(p.Result) {
 				s.DoneRefused++

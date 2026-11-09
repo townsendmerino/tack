@@ -49,10 +49,21 @@ type Summary struct {
 	Reason   string
 }
 
+// SummarySend sends one summarizer request and returns the reply: a server's Stream, or the live loop's, which logs
+// the request and its usage (Session.summarize).
+type SummarySend func(ctx context.Context, req server.Request) (*server.Response, error)
+
+// StreamTo is the SummarySend of srv alone, with nothing logged.
+func StreamTo(srv server.Server) SummarySend {
+	return func(ctx context.Context, req server.Request) (*server.Response, error) {
+		return srv.Stream(ctx, req, func(server.Delta) {})
+	}
+}
+
 // Summarize is the summary after stretch, the turns now compacted, given prior, the turns compacted before, and
 // previous, the body of the summary that covered them. model is the summarizing model (the thinking-off alias); ""
-// means none is served, and the previous body is kept with no call.
-func Summarize(ctx context.Context, srv server.Server, model string, prior, stretch []proto.Event, previous string) Summary {
+// means none is served, and the previous body is kept with no call. Each request goes through send.
+func Summarize(ctx context.Context, send SummarySend, model string, prior, stretch []proto.Event, previous string) Summary {
 	all := append(append([]proto.Event(nil), prior...), stretch...)
 	keep := func(reason string) Summary {
 		return Summary{Text: summaryText(all, previous), Body: previous, FellBack: true, Reason: reason}
@@ -62,7 +73,7 @@ func Summarize(ctx context.Context, srv server.Server, model string, prior, stre
 	}
 	body := previous
 	for i, chunk := range summaryChunks(stretch) {
-		resp, err := srv.Stream(ctx, summaryRequest(model, body, chunk), func(server.Delta) {})
+		resp, err := send(ctx, summaryRequest(model, body, chunk))
 		if err != nil {
 			return keep(fmt.Sprintf("chunk %d: %v", i+1, err))
 		}
@@ -188,19 +199,41 @@ func (c *summaryCuts) add(seq int64, index int) {
 	c.index[seq] = index + c.shift
 }
 
-// cut is the index, as it is now, of the first assistant.message after every seq in summarized.
-func (c *summaryCuts) cut(summarized []int64) (int, error) {
+// cut is the first assistant.message after every seq in summarized: its index, as it is now, and its seq.
+func (c *summaryCuts) cut(summarized []int64) (int, int64, error) {
 	if len(summarized) == 0 {
-		return 0, fmt.Errorf("a summary that covers no event")
+		return 0, 0, fmt.Errorf("a summary that covers no event")
 	}
 	last := slices.Max(summarized)
 	for _, seq := range c.at {
 		if seq > last {
-			return c.index[seq] - c.shift, nil
+			return c.index[seq] - c.shift, seq, nil
 		}
 	}
-	return 0, fmt.Errorf("a summary covering up to seq %d keeps no assistant message after it", last)
+	return 0, 0, fmt.Errorf("a summary covering up to seq %d keeps no assistant message after it", last)
 }
 
 // summarized notes that a summary replaced the messages before keep with one.
 func (c *summaryCuts) summarized(keep int) { c.shift += keep - 1 }
+
+// summaryFrame opens the summary message, so the model reads what follows as what came before, not a new request.
+const summaryFrame = "[Summary of the session so far: what the earlier turns asked, did and found. It replaces them.]\n\n"
+
+// summaryMessage is the user message a summary puts in the history's place: the workspace preamble the first user
+// message carried (UserText), the frame, then the summary's text. The summary keeps every user message word for word,
+// so the first message's instruction notes stay with it.
+func summaryMessage(root string, s Summary) string { return UserText(true, root, summaryFrame+s.Text) }
+
+// bodyOf is the body of a summary message: from the first of SummaryHeadings to the anchor list; "" when the summary
+// had none (a fallback with no previous body).
+func bodyOf(msg string) string {
+	start := strings.Index(msg, "\n## "+SummaryHeadings[0]+"\n")
+	if start < 0 {
+		return ""
+	}
+	body := msg[start+1:]
+	if end := strings.Index(body, "\n\n## Anchors (exact)\n"); end >= 0 {
+		body = body[:end]
+	}
+	return strings.TrimSpace(body)
+}

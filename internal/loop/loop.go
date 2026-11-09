@@ -92,6 +92,10 @@ type Config struct {
 	// one-line stub, and a compaction event records what was replaced. The next compaction waits for the prompt to grow
 	// 10% of the window (mask.go; calibration §15.2; DESIGN §7.6). Off, history is only appended to.
 	MaskObservations bool
+	// Summarize adds compaction's summarizing step (DESIGN §7.6; summarize.go, Session.summarize): when the last prompt
+	// has reached 75% of the window and masking cannot bring it under, the oldest half of the turns before the last 3
+	// requests become one summary message, written by the model's thinking-off alias. Off, no summary is made.
+	Summarize bool
 	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
 	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
 	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
@@ -167,6 +171,16 @@ type Session struct {
 	cliffDone  bool       // a cliff compaction masked something this turn
 	stuckDone  int        // stuck compactions this turn (stuckMax)
 	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
+	// What summarizing reads (Config.Summarize, summarize_live.go): where the assistant messages are, the last seq a
+	// summary covered and that summary's body; freed is what this request's masking freed, in bytes; sumFloor is the
+	// prompt at the last summary attempt that changed nothing, 0 if none (summarizeDue backs off from it).
+	sumFloor     int
+	cuts         summaryCuts
+	summarizedTo int64
+	body         string
+	freed        int
+	fast         string // the summarizing model (fastModel), once fastKnown
+	fastKnown    bool
 }
 
 // New returns a session's loop.
@@ -347,9 +361,21 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		requests++
 		s.requests++
 		n := s.requests
+		summarize := s.cfg.Summarize && s.due(s.cfg.Source.Window()) // read before masking moves the floor
+		s.freed = 0
 		if s.cfg.MaskObservations || s.cfg.CompactAtCliff {
 			if err := s.compact(n, cause); err != nil {
 				return proto.StopError, err
+			}
+		}
+		if summarize {
+			spent, err := s.summarizeDue(ctx, srv, n, cause)
+			tokens += spent
+			if err != nil {
+				return proto.StopError, err
+			}
+			if ctx.Err() != nil { // halted or cancelled during the summarizer's call: no request goes out
+				return stopped()
 			}
 		}
 		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
@@ -385,24 +411,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if err != nil {
 			return proto.StopError, err
 		}
-		// Prompt is the whole prompt: InputTokens plus Reused when the server reports reuse (server.Usage), and then
-		// InputTokens is the prefilled share. A server that does not report reuse leaves Reused and Prefilled nil.
-		reused, prefilled := 0, (*int)(nil)
-		if resp.Usage.Reused != nil {
-			reused = *resp.Usage.Reused
-			p := resp.Usage.InputTokens
-			prefilled = &p
-		}
-		u := proto.Usage{Request: n, Server: srv.Name(), Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused, Prefilled: prefilled,
-			Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
+		u := usageOf(n, srv.Name(), resp)
 		s.noteUsage(u.Prompt)
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}
-		computed := u.Prompt + u.Output
-		if u.Prefilled != nil {
-			computed = *u.Prefilled + u.Output
-		}
+		computed := computedTokens(u)
 		tokens += computed
 		s.tokens += computed
 		room = nil
@@ -411,6 +425,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				room = &r
 			}
 		}
+		s.cuts.add(msgEv.Seq, len(s.conv.Messages()))
 		if err := s.conv.AddResponse(resp.Content); err != nil {
 			return fail("internal", err)
 		}
@@ -921,4 +936,27 @@ func (s *Session) endSnapshot() {
 	if s.cfg.Perms != nil {
 		s.cfg.Perms.Snapshotted, s.cfg.Perms.Staged = false, false
 	}
+}
+
+// usageOf is the usage event of request n's response from server. Prompt is the whole prompt: InputTokens plus Reused
+// when the server reports reuse (server.Usage), and then InputTokens is the prefilled share. A server that does not
+// report reuse leaves Reused and Prefilled nil.
+func usageOf(n int, srvName string, resp *server.Response) proto.Usage {
+	reused, prefilled := 0, (*int)(nil)
+	if resp.Usage.Reused != nil {
+		reused = *resp.Usage.Reused
+		p := resp.Usage.InputTokens
+		prefilled = &p
+	}
+	return proto.Usage{Request: n, Server: srvName, Prompt: resp.Usage.InputTokens + reused, Reused: resp.Usage.Reused,
+		Prefilled: prefilled, Output: resp.Usage.OutputTokens, WallMS: int(resp.Usage.Wall.Milliseconds())}
+}
+
+// computedTokens is what the server computed for u: its prefilled share and output when it reports reuse, else the
+// whole prompt and output. Budgets count this.
+func computedTokens(u proto.Usage) int {
+	if u.Prefilled != nil {
+		return *u.Prefilled + u.Output
+	}
+	return u.Prompt + u.Output
 }
