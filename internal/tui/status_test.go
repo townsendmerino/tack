@@ -74,3 +74,15 @@ func TestStatusLineIgnoresTheSummarizer(t *testing.T) {
 		t.Errorf("the summarizer moved the line: %q, was %q", after, before)
 	}
 }
+
+// TestStatusLineNeverShowsAnUnreportedReuseAsZero: a server that reports no reuse gets the fill alone, not "0% reused"
+// (DESIGN principle 6, measured or labelled).
+func TestStatusLineNeverShowsAnUnreportedReuseAsZero(t *testing.T) {
+	var s Status
+	reused := 500
+	s.Apply(event(t, proto.EvUsage, proto.Usage{Request: 1, Server: "openai@x", Prompt: 1000, Reused: &reused}))
+	s.Apply(event(t, proto.EvUsage, proto.Usage{Request: 2, Server: "openai@x", Prompt: 1200}))
+	if line := s.Line(); strings.Contains(line, "reused") || !strings.Contains(line, "1.2k") {
+		t.Errorf("no reuse reported: %q; want the fill alone", line)
+	}
+}

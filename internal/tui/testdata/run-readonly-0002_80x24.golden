@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+> Which file defines applyTokenBudget?
+Let me search.
+● grep func applyTokenBudget
+  ⎿ mcp/token_budget.go:41:func applyTokenBudget(hits []Hit, budget int) []Hit {
+`applyTokenBudget` is defined in `mcp/token_budget.go`.
+────────────────────────────────────────────────────────────────────────────────
+qwen2.5-7b-instruct-q4_k_m @ goinfer@local · 0.9k
