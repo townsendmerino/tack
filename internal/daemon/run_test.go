@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -297,5 +299,86 @@ func TestRunTicksTheCore(t *testing.T) {
 			t.Fatalf("%d ticks in 5s at a 10ms interval", ticks.Load())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// stuckModel serves /v1/models and answers no /v1/messages until the request is cancelled.
+func stuckModel() http.Handler {
+	models := goinfertest.NewScripted("m", 16384)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/messages" {
+			io.Copy(io.Discard, r.Body) // the server sees the client go only once the body is read
+			<-r.Context().Done()
+			return
+		}
+		models.ServeHTTP(w, r)
+	})
+}
+
+// TestAShutdownStopsAcceptingFirst: a shutdown takes the socket away at once, while its turns are still draining, so
+// new clients start the next daemon instead of reaching one that refuses them; that daemon waits for the lock and
+// takes it. The connection already open still sees its turn end, as shutdown (DESIGN §6.1).
+func TestAShutdownStopsAcceptingFirst(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(stuckModel())
+	t.Cleanup(ts.Close)
+	o := runOptions(t, dir, func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil })
+	o.Grace = 500 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), o) }()
+	c := dialSoon(t, dir)
+	events := make(chan proto.Event, 64)
+	c.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
+	var sess proto.SessionNewResult
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("hang")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for ev := range events {
+		if ev.Type == proto.EvRequestSent {
+			break
+		}
+	}
+	if err := c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(o.Grace / 2)
+	for {
+		if _, err := os.Stat(SocketPath(dir)); errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the socket was still there half way through the grace window; a shutdown stops accepting first")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	next := make(chan error, 1)
+	go func() { // a client found the socket gone and started the next daemon
+		l, err := Acquire(dir, "next")
+		if err == nil {
+			l.Release()
+		}
+		next <- err
+	}()
+	var end proto.Event
+	for ev := range events {
+		if ev.Type == proto.EvTurnEnd {
+			end = ev
+			break
+		}
+	}
+	if v, _ := end.Decode(); v != (proto.TurnEnd{StopReason: proto.StopShutdown}) {
+		t.Fatalf("the open connection saw the turn end %+v, want shutdown", v)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v", err)
+	}
+	if err := <-next; err != nil {
+		t.Fatalf("the daemon started during the shutdown: %v, want it to wait and take the lock", err)
 	}
 }

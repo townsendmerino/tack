@@ -173,7 +173,7 @@ func printStatus(c *daemon.Conn, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// daemonStop asks the daemon to drain and exit, and waits until its socket stops answering: within the grace window,
+// daemonStop asks the daemon to drain and exit, and waits until it has released its lock: within the grace window,
 // plus time to record the turns it cancels.
 func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) int {
 	c, err := daemon.Dial(stateDir, cliClient, nil, 0)
@@ -185,27 +185,36 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError
 	}
-	err = c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil)
+	var st proto.DaemonStatusResult
+	err = c.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, &st)
+	if err == nil {
+		err = c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil)
+	}
 	c.Close()
 	if err != nil {
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError
 	}
 	wait := grace + 15*time.Second
+	if !released(stateDir, st.PID, wait) {
+		fmt.Fprintf(stderr, "tack daemon stop: pid %d still holds the lock after %s\n", st.PID, wait)
+		return exitError
+	}
+	fmt.Fprintln(stdout, "tack daemon: stopped")
+	return exitOK
+}
+
+// released waits up to wait for the daemon with pid to let go of stateDir's lock: its holder record gone (Release
+// removes it just before unlocking), or naming another daemon. The socket says less: a shutdown takes it away first.
+func released(stateDir string, pid int, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {
-		next, err := daemon.Dial(stateDir, cliClient, nil, 0)
-		if errors.Is(err, daemon.ErrNotRunning) {
-			fmt.Fprintln(stdout, "tack daemon: stopped")
-			return exitOK
-		}
-		if err == nil {
-			next.Close()
+		if daemon.ReadHolder(stateDir).PID != pid {
+			return true
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(stderr, "tack daemon stop: it is still answering after %s\n", wait)
-			return exitError
+			return false
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
