@@ -203,3 +203,53 @@ func TestScrollShowsEarlierLines(t *testing.T) {
 		t.Fatalf("scrolled to the top:\n%s", f)
 	}
 }
+
+// TestControlCharactersNeverReachTheFrame: model text, a command, a tool result and the status line carrying terminal
+// controls (an OSC 52 clipboard write, a screen clear, a colour, BEL, DEL, a C1 CSI, and a raw byte that is not UTF-8)
+// render as visible characters, one cell each: the frame holds no control but its newlines and is valid UTF-8, so
+// nothing the model or a tool writes can drive the terminal (content never grants anything).
+func TestControlCharactersNeverReachTheFrame(t *testing.T) {
+	var v View
+	v.Apply(ev(t, 1, proto.EvSessionCreated, proto.SessionCreated{Workspace: "/w", Model: "m\x1b[5m", Mode: proto.ModeAsk}))
+	v.Apply(ev(t, 2, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("hi\x1b]0;title\x07")}}))
+	v.Apply(ev(t, 0, proto.EvAssistantDelta, proto.AssistantDelta{Index: 0, Kind: "text", Text: "streaming \x1b[2J"}))
+	v.Apply(ev(t, 3, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, StopReason: "tool_use",
+		Content: []proto.ModelBlock{{Type: "text", Text: "copy \x1b]52;c;cm0gLXJmIH4=\x07 then \x1b[2J clear"}}}))
+	v.Apply(ev(t, 4, proto.EvToolCall, proto.ToolCall{ID: "c1", Name: "bash", Input: json.RawMessage(`{"command":"echo \u001b[31mred"}`)}))
+	v.Apply(ev(t, 5, proto.EvPermissionRequested, proto.PermissionRequested{ID: "c1", Tool: "bash", Mode: proto.ModeAsk,
+		Command: "echo \x1b[31mred", Parsed: []string{"/bin/echo \x1b[31mred"}, Reasons: []string{"why\x7f"}}))
+	v.Apply(ev(t, 6, proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: "bell\x07 del\x7f c1\u009b31m raw\x9b31m nul\x00"}))
+	v.Apply(ev(t, 7, proto.EvError, proto.ErrorEvent{Class: "server", Message: "bad\x1bP"}))
+	for _, sz := range [][2]int{{80, 24}, {40, 12}, {12, 6}} {
+		f := v.Render(sz[0], sz[1])
+		if !utf8.ValidString(f) {
+			t.Fatalf("%dx%d: the frame is not valid UTF-8: %q", sz[0], sz[1], f)
+		}
+		for _, r := range f {
+			if r != '\n' && (r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f) {
+				t.Fatalf("%dx%d: control %U reached the frame:\n%q", sz[0], sz[1], r, f)
+			}
+		}
+		for i, l := range strings.Split(f, "\n") {
+			if n := utf8.RuneCountInString(l); n > sz[0] {
+				t.Fatalf("%dx%d: line %d is %d cells: %q", sz[0], sz[1], i, n, l)
+			}
+		}
+	}
+	if f := v.Render(80, 24); !strings.Contains(f, "␛]52;c;") || !strings.Contains(f, "echo ␛[31mred") {
+		t.Errorf("the controls are not shown as visible characters:\n%s", f)
+	}
+}
+
+// TestAnUnreadableEventIsNotedOncePerType: events this build cannot decode are noted once per type, not once each, so
+// a stream from a newer daemon does not fill the transcript.
+func TestAnUnreadableEventIsNotedOncePerType(t *testing.T) {
+	var v View
+	for i := 0; i < 5; i++ {
+		v.Apply(proto.Event{Seq: int64(i + 1), Type: "future.kind", Payload: json.RawMessage(`{}`)})
+	}
+	v.Apply(proto.Event{Seq: 6, Type: proto.EvTurnEnd, Payload: json.RawMessage(`{"stop_reason":"error","extra":1}`)})
+	if f := v.Render(80, 24); strings.Count(f, "unreadable event future.kind") != 1 || strings.Count(f, "unreadable event turn.end") != 1 {
+		t.Errorf("want one note for future.kind and one for turn.end:\n%s", f)
+	}
+}

@@ -28,6 +28,7 @@ type View struct {
 	// them or the turn ends.
 	stream    []entry
 	streamIdx map[int]int
+	unread    map[proto.EventType]bool // the event types already noted as unreadable
 }
 
 // entry is one item of the transcript: a head paragraph and the paragraphs under it, which Render wraps.
@@ -47,8 +48,14 @@ type entry struct {
 func (v *View) Apply(ev proto.Event) {
 	v.Status.Apply(ev)
 	p, err := ev.Decode()
-	if err != nil {
-		v.note("! unreadable event " + string(ev.Type) + ": " + err.Error())
+	if err != nil { // a newer daemon's event, or a version skew: noted once per type
+		if !v.unread[ev.Type] {
+			if v.unread == nil {
+				v.unread = map[proto.EventType]bool{}
+			}
+			v.unread[ev.Type] = true
+			v.note("! unreadable event " + string(ev.Type) + ": " + err.Error())
+		}
 		return
 	}
 	if v.calls == nil {
@@ -307,7 +314,7 @@ func (v *View) Render(width, height int) string {
 // line carries indent plus the paragraph's own leading space, kept so code stays indented; none ends in a space. An
 // indent that leaves no room is dropped.
 func wrap(s, indent string, width int) []string {
-	s = strings.ReplaceAll(s, "\t", "    ")
+	s = visible(strings.ReplaceAll(s, "\t", "    "))
 	body := strings.TrimLeftFunc(s, unicode.IsSpace)
 	indent += s[:len(s)-len(body)]
 	if utf8.RuneCountInString(indent) >= width {
@@ -346,9 +353,9 @@ func wrap(s, indent string, width int) []string {
 	return out
 }
 
-// fit cuts s to width runes, marking a cut with an ellipsis, with no trailing space.
+// fit cuts s to width runes, marking a cut with an ellipsis, with no trailing space; controls are made visible first.
 func fit(s string, width int) string {
-	s = strings.TrimRight(s, " ")
+	s = strings.TrimRight(visible(strings.ReplaceAll(s, "\t", " ")), " ")
 	r := []rune(s)
 	if len(r) <= width {
 		return s
@@ -357,4 +364,36 @@ func fit(s string, width int) string {
 		return string(r[:width])
 	}
 	return strings.TrimRight(string(r[:width-1]), " ") + "…"
+}
+
+// visible makes every control character in s a visible one, one cell each, so text from the model, a tool or a file
+// cannot drive the terminal (an OSC 52 clipboard write, a screen clear, a colour): ESC is ␛, another C0 control its
+// Unicode Control Pictures symbol (␀…␟), DEL ␡, and a C1 control (U+0080–U+009F, which a terminal may read as ESC
+// and a letter) or a byte that is not UTF-8 is �. Newlines are the caller's: wrap splits on them first, and fit's input
+// is one line. Every string Render draws passes through here, in wrap or fit.
+func visible(s string) string {
+	clean := true
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == utf8.RuneError {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s { // ranging over a string yields RuneError for each byte that is not UTF-8
+		switch {
+		case r < 0x20:
+			b.WriteRune(0x2400 + r)
+		case r == 0x7f:
+			b.WriteRune('␡')
+		case r >= 0x80 && r <= 0x9f:
+			b.WriteRune(utf8.RuneError)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
