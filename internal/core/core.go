@@ -555,6 +555,12 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInvalidRequest, Message: "daemon/shutdown: no daemon hosts this session core (tack run without --daemon)"}
 		}
 		return proto.DaemonShutdownResult{}, nil
+	case proto.MethodUsageSummary:
+		p, perr := params[proto.UsageSummaryParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		return c.usageSummary(p)
 	}
 	return nil, &proto.Error{Code: proto.CodeMethodNotFound, Message: "method not found: " + req.Method}
 }

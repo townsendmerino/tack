@@ -1,0 +1,6 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.2.0"},"protocol":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"","servers":["goinfer@local","goinfer@nobara"]}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"usage/summary","params":{"since":"2026-11-03T00:00:00-08:00"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"rows":[{"day":"2026-11-08","server":"goinfer@local","sessions":2,"requests":14,"prompt":151230,"output":3120,"known":14,"known_prompt":151230,"reused":131600,"prefilled":19630,"prefill_known":14,"prefill_ms":41200,"wall_ms":96300},{"day":"2026-11-09","server":"goinfer@nobara","sessions":1,"requests":5,"prompt":40100,"output":900,"known":0,"known_prompt":0,"reused":0,"prefilled":0,"prefill_known":0,"prefill_ms":0,"wall_ms":22800}]}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"usage/summary","params":{"utc":true}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"rows":[]}}}

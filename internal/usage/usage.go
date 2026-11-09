@@ -1,6 +1,7 @@
 // Package usage is the usage table (DESIGN §7.7, §10's `tack usage`): what each day's requests cost, by model server,
 // summed from the usage events in the session logs. It reads the logs each time; nothing is cached, so nothing is
-// lost if the state directory's derived files go (DESIGN §6.2, "Derived state").
+// lost if the state directory's derived files go (DESIGN §6.2, "Derived state"). The daemon answers usage/summary
+// with it, and tack usage reads it when no daemon runs.
 package usage
 
 import (
@@ -11,35 +12,14 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
-// Row is one day's requests to one server. Reused and Prefilled sum only the requests whose server reported them
-// (Known of Requests): a server that does not say how much of a prompt came from its cache leaves them unknown, never
-// zero. PrefillMS likewise sums the requests that report it (PrefillKnown).
-type Row struct {
-	Day          string // YYYY-MM-DD in the table's time zone
-	Server       string
-	Sessions     int
-	Requests     int
-	Prompt       int // prompt tokens, as the server counted them
-	Output       int
-	Known        int // requests that reported reuse
-	KnownPrompt  int // the prompt tokens of those requests
-	Reused       int
-	Prefilled    int
-	PrefillKnown int
-	PrefillMS    int
-	WallMS       int
-}
-
-// ReuseShare is the share of the known requests' prompt tokens served from the cached prefix, and false when no
-// request said.
-func (r Row) ReuseShare() (float64, bool) {
-	if r.Known == 0 || r.KnownPrompt == 0 {
-		return 0, false
-	}
-	return float64(r.Reused) / float64(r.KnownPrompt), true
-}
+// Row is one day's requests to one server: the protocol's row (proto.UsageRow), which usage/summary answers with.
+// Reused and Prefilled sum only the requests whose server reported them (Known of Requests): a server that does not
+// say how much of a prompt came from its cache leaves them unknown, never zero. PrefillMS likewise sums the requests
+// that report it (PrefillKnown).
+type Row = proto.UsageRow
 
 // Table sums the usage events of each session's log at or after since, by day in loc and server, sorted by day then
 // server. logs maps a session to its events.
@@ -174,4 +154,20 @@ func Print(w io.Writer, rows []Row) {
 	}
 	fmt.Fprintln(w, strings.Repeat("-", 10))
 	line(Total(rows))
+}
+
+// FromStore is the table over every session in st: each log streams through it one event at a time (store.Scan), so
+// only the table is held, never a log. Both tack usage, when no daemon runs, and the daemon's usage/summary read it.
+func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, error) {
+	ids, err := st.Sessions()
+	if err != nil {
+		return nil, err
+	}
+	acc := NewAcc(since, loc)
+	for _, id := range ids {
+		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
+			return nil, fmt.Errorf("usage: session %s: %w", id, err)
+		}
+	}
+	return acc.Rows(), nil
 }

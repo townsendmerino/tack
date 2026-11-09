@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/config"
+	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
 	usagetable "github.com/townsendmerino/tack/internal/usage"
@@ -20,7 +21,8 @@ import (
 var usageNow = time.Now
 
 // usageCmd is `tack usage` (DESIGN §10, §7.7): the usage table over every session in the state directory, by day and
-// model server. It only reads. A config that is there but wrong fails loudly; with none, the default state directory
+// model server. A running daemon answers it (usage/summary); with none, or one from before that method, it reads the
+// logs itself. It only reads, and starts no daemon. A config that is there but wrong fails loudly; with none, the default state directory
 // is read.
 func usageCmd(args []string, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("usage", flag.ContinueOnError)
@@ -45,26 +47,49 @@ func usageCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack usage:", err)
 		return exitError
 	}
-	st, err := store.Open(dir)
-	if err != nil {
-		fmt.Fprintln(stderr, "tack usage:", err)
-		return exitError
-	}
-	ids, err := st.Sessions()
-	if err != nil {
-		fmt.Fprintln(stderr, "tack usage:", err)
-		return exitError
-	}
-	// Each log streams through the table one event at a time: only the table is held, never a log.
-	acc := usagetable.NewAcc(since, loc)
-	for _, id := range ids {
-		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
-			fmt.Fprintf(stderr, "tack usage: session %s: %v\n", id, err)
-			return exitError
+	rows, err := daemonUsage(dir, since, *utc)
+	if errors.Is(err, errNoUsageDaemon) {
+		var st *store.Store
+		if st, err = store.Open(dir); err == nil {
+			rows, err = usagetable.FromStore(st, since, loc)
 		}
 	}
-	usagetable.Print(stdout, acc.Rows())
+	if err != nil {
+		fmt.Fprintln(stderr, "tack usage:", err)
+		return exitError
+	}
+	usagetable.Print(stdout, rows)
 	return exitOK
+}
+
+// errNoUsageDaemon is daemonUsage finding no daemon that answers usage/summary: none runs, or one from before the method.
+var errNoUsageDaemon = errors.New("no daemon answers usage/summary")
+
+// daemonUsage asks the daemon in stateDir for the table (usage/summary), without starting one: a running daemon answers
+// from its own reading of the logs. It is errNoUsageDaemon when none runs or the one running predates the method; then
+// the caller reads the logs itself.
+func daemonUsage(stateDir string, since time.Time, utc bool) ([]usagetable.Row, error) {
+	c, err := daemon.Dial(stateDir, cliClient, nil, 0)
+	if errors.Is(err, daemon.ErrNotRunning) {
+		return nil, errNoUsageDaemon
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	p := proto.UsageSummaryParams{UTC: utc}
+	if !since.IsZero() {
+		p.Since = &since
+	}
+	var res proto.UsageSummaryResult
+	err = c.Call(proto.MethodUsageSummary, p, &res)
+	if pe, ok := errors.AsType[*proto.Error](err); ok && pe.Code == proto.CodeMethodNotFound {
+		return nil, errNoUsageDaemon
+	}
+	if err != nil {
+		return nil, fmt.Errorf("asking the daemon: %w", err)
+	}
+	return res.Rows, nil
 }
 
 // parseSince is the start of the first day counted: a date, a number of days back from today ("1d" is today alone),
