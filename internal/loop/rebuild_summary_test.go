@@ -101,3 +101,26 @@ func TestAMaskOnASummarizedResultStillApplies(t *testing.T) {
 		t.Errorf("messages %s", got)
 	}
 }
+
+// TestRebuildRefusesAnIncompleteSummaryRecord: a record listing summarized events with no summary, or one whose summary
+// leaves out a message it removes, is refused.
+func TestRebuildRefusesAnIncompleteSummaryRecord(t *testing.T) {
+	base := []any{
+		proto.EvUserMessage, user("one"), // 1
+		proto.EvAssistantMessage, usesTool("c1"), // 2
+		proto.EvToolFinished, finished("c1", proto.OutcomeOK, "package a"), // 3
+		proto.EvAssistantMessage, replies("ok"), // 4
+	}
+	for name, c := range map[string]struct {
+		comp proto.Compaction
+		want string
+	}{
+		"no summary": {proto.Compaction{Summarized: []int64{1, 2}}, "but no summary"},
+		"a gap":      {proto.Compaction{Summary: "[S]", Summarized: []int64{1, 2}}, "which it does not cover"},
+	} {
+		evs := summaryLog(t, append(append([]any(nil), base...), proto.EvCompaction, c.comp)...)
+		if _, err := Rebuild(evs, "/w", server.Conversation{}); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+}

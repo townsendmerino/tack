@@ -139,6 +139,11 @@ type Run struct {
 	// MaskObservations replaces superseded reads and old command output with one-line stubs once the prompt passes 75% of
 	// the window, a compaction recorded as an event (loop.Config.MaskObservations; calibration §15.2). Default off.
 	MaskObservations bool `toml:"mask_observations"`
+	// Summarize adds compaction's summarizing step: past 75% of the window, when masking cannot bring the prompt under, the
+	// oldest half of the turns before the last 3 requests become one summary message (loop.Config.Summarize; DESIGN §7.6).
+	// It needs the server to list a thinking-off alias, or the summary is the user messages and anchors alone. Default
+	// off, and not an E1 arm setting until a screen registers it.
+	Summarize bool `toml:"summarize"`
 	// ResultNotes says what to do after an empty search or an unchanged repeat (loop.Config.ResultNotes). Default off until
 	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.4).
 	ResultNotes bool `toml:"result_notes"`
