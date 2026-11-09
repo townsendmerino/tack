@@ -77,7 +77,7 @@ func bigFile() string {
 
 func TestInstructionsWholeUnderBudget(t *testing.T) {
 	src := "# notes\n\n## Testing\n\nRun go test.\n"
-	in := NewInstructions("CLAUDE.md", src, 16384)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(16384))
 	got := in.Initial()
 	if !strings.Contains(got, "Run go test.") || !strings.HasPrefix(got, "Project instructions, from CLAUDE.md:") {
 		t.Fatalf("a file within the budget is whole:\n%s", got)
@@ -88,7 +88,7 @@ func TestInstructionsWholeUnderBudget(t *testing.T) {
 }
 
 func TestInstructionsInitialIsHeadAlwaysAndOutline(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	got := in.Initial()
 	for _, want := range []string{"Intro: read this first.", "Tag from main.", "Staging and committing (lines 5–8)",
 		"Testing (lines 9–12)", "  A skip is not a pass (lines 13–16)"} {
@@ -107,7 +107,7 @@ func TestInstructionsInitialIsHeadAlwaysAndOutline(t *testing.T) {
 }
 
 func TestInstructionsForCall(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	in.Initial()
 	git := in.ForCall("c1", "bash", bash("cd x && git commit -m y"))
 	if !strings.Contains(git, "Never git add -A.") || strings.Contains(git, "Run go test") {
@@ -149,7 +149,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 	for i := range 6 {
 		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n", i, strings.Repeat("rule text for this testing part. ", 25))
 	}
-	in := NewInstructions("CLAUDE.md", b.String(), 4096) // 614 tokens; each part is about 270
+	in := NewInstructions("CLAUDE.md", b.String(), NewBudget(4096)) // 614 tokens; each part is about 270
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(got, "## Testing part 0") || strings.Contains(got, "## Testing part 1\n") ||
@@ -179,14 +179,14 @@ var filler = "## Filler\n\n" + strings.Repeat("a line of filler text to push the
 // a matching level-1 title brings in only itself, never the sections under it.
 func TestForCallSubsectionsAndTitle(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n### Flakes\n\nRetry once.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(got, "Run go test.") || !strings.Contains(got, "Retry once.") || strings.Contains(got, "Night only.") {
 		t.Errorf("Testing brings Flakes, not the marked Benchmarks:\n%s", got)
 	}
 	title := "# Testing guide\n\nIntro.\n\n## Releases\n\nTag from main.\n\n" + filler
-	in = NewInstructions("CLAUDE.md", title, 4096)
+	in = NewInstructions("CLAUDE.md", title, NewBudget(4096))
 	in.Initial()
 	if got := in.ForCall("c1", "bash", bash("go test ./...")); strings.Contains(got, "Tag from main.") || strings.Contains(got, "filler text") {
 		t.Errorf("a matching title pulled in the sections under it:\n%s", got)
@@ -197,7 +197,7 @@ func TestForCallSubsectionsAndTitle(t *testing.T) {
 // later matching call says nothing more; every note is charged in full, framing included.
 func TestForCallNamesWhatDoesNotFitOnce(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Testing\n\n" + strings.Repeat("a long testing rule that will not fit. ", 120) + "\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	initial := SectionTokens(in.Initial())
 	first := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(first, "Not loaded, the instruction budget is spent") || strings.Contains(first, "[Project rules from") {
@@ -220,7 +220,7 @@ func TestForCallNamesWhatDoesNotFitOnce(t *testing.T) {
 
 // TestForCallChargesTheFraming: a note's whole text is charged, header included.
 func TestForCallChargesTheFraming(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	initial := SectionTokens(in.Initial())
 	note := in.ForCall("c1", "bash", bash("git status"))
 	if note == "" || in.Used() != initial+SectionTokens(note) {
@@ -233,7 +233,7 @@ func TestForCallChargesTheFraming(t *testing.T) {
 func TestInitialKeepsTheOutlineBeforeAlways(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Alpha\n\na\n\n## Big\n<!-- tack:always -->\n" + strings.Repeat("always text that is too long. ", 150) +
 		"\n\n## Omega\n\no\n\n" + filler
-	got := NewInstructions("CLAUDE.md", src, 4096).Initial()
+	got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial()
 	a, b, o := strings.Index(got, "Alpha (lines"), strings.Index(got, "Big (lines"), strings.Index(got, "Omega (lines")
 	if a < 0 || b < a || o < b || strings.Contains(got, "more headings") || strings.Contains(got, "always text") {
 		t.Errorf("the outline stays whole and in order, the big always section only named:\n%s", got)
@@ -285,10 +285,10 @@ func TestReplayRebuildsTheLiveTracker(t *testing.T) {
 	}
 	b.WriteString(filler)
 	src := b.String()
-	live := NewInstructions("CLAUDE.md", src, 4096)
+	live := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	evs := replayLog(t, live, []struct{ id, cmd string }{{"c1", "git status"}, {"c2", "go test ./..."}, {"c3", "ls"},
 		{"c4", "go test ./x"}, {"c5", "git diff"}}, map[int][]string{3: {"c1"}})
-	re := NewInstructions("CLAUDE.md", src, 4096)
+	re := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	if err := re.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
@@ -311,11 +311,11 @@ func TestReplayRebuildsTheLiveTracker(t *testing.T) {
 // body; the opening runs on to the first section with text.
 func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
 	front := "---\ntitle: x\n---\n# notes\n\nIntro here.\n\n## Alpha\n\na\n\n" + filler
-	if got := NewInstructions("CLAUDE.md", front, 4096).Initial(); !strings.Contains(got, "Intro here.") || !strings.Contains(got, "Alpha (lines") {
+	if got := NewInstructions("CLAUDE.md", front, NewBudget(4096)).Initial(); !strings.Contains(got, "Intro here.") || !strings.Contains(got, "Alpha (lines") {
 		t.Errorf("frontmatter taken for the opening:\n%s", got)
 	}
 	setext := "Title\n=====\n\n## Intro\n\nHello there.\n\n## Beta\n\nb\n\n" + filler
-	if got := NewInstructions("CLAUDE.md", setext, 4096).Initial(); !strings.Contains(got, "Hello there.") || !strings.Contains(got, "Beta (lines") {
+	if got := NewInstructions("CLAUDE.md", setext, NewBudget(4096)).Initial(); !strings.Contains(got, "Hello there.") || !strings.Contains(got, "Beta (lines") {
 		t.Errorf("a setext underline taken for body:\n%s", got)
 	}
 }
@@ -324,7 +324,7 @@ func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
 func TestForCallSkipsAMarkedSubsectionsSubtree(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n" +
 		"#### Test profiling\n\nUse pprof.\n\n### Flakes\n\nRetry once.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	got := in.ForCall("c1", "bash", bash("go test ./..."))
 	if !strings.Contains(got, "Run go test.") || !strings.Contains(got, "Retry once.") || strings.Contains(got, "Use pprof.") {
@@ -341,7 +341,7 @@ func TestInitialTrimsTheOutlineFromTheEnd(t *testing.T) {
 		fmt.Fprintf(&b, "## Section number %02d with a long heading\n\nx\n\n", i)
 	}
 	b.WriteString("## Zed always\n<!-- tack:always -->\n" + strings.Repeat("always text. ", 200) + "\n")
-	got := NewInstructions("CLAUDE.md", b.String(), 4096).Initial()
+	got := NewInstructions("CLAUDE.md", b.String(), NewBudget(4096)).Initial()
 	if !strings.Contains(got, "more headings]") || strings.Contains(got, "Zed always (lines") || !strings.Contains(got, "Section number 00") {
 		t.Errorf("the outline was trimmed out of file order:\n%s", got)
 	}
@@ -350,7 +350,7 @@ func TestInitialTrimsTheOutlineFromTheEnd(t *testing.T) {
 // TestNotesWithEmptyOrReusedIDs: an empty id never touches the first message's sections, and a reused id frees its
 // oldest note on a compaction and its newest on Drop.
 func TestNotesWithEmptyOrReusedIDs(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	initial := SectionTokens(in.Initial())
 	if in.ForCall("", "bash", bash("git status")) == "" {
 		t.Fatal("git brings staging in")
@@ -362,7 +362,7 @@ func TestNotesWithEmptyOrReusedIDs(t *testing.T) {
 	if s := in.ForCall("x", "bash", bash("git status")); !strings.Contains(s, "Never git add -A.") || strings.Contains(s, "Tag from main.") {
 		t.Errorf("the first message's sections left with the empty id:\n%s", s)
 	}
-	in = NewInstructions("CLAUDE.md", bigFile(), 4096)
+	in = NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	in.Initial()
 	in.ForCall("c", "bash", bash("git status"))
 	in.ForCall("c", "bash", bash("go test ./..."))
@@ -392,7 +392,7 @@ func TestMarkersInMultiBacktickSpans(t *testing.T) {
 
 // TestWholeFileChargesItsFraming: a whole file's charge is the text it gives, framing included.
 func TestWholeFileChargesItsFraming(t *testing.T) {
-	in := NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test.\n", 16384)
+	in := NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test.\n", NewBudget(16384))
 	if got := in.Initial(); in.Used() != SectionTokens(got) || !in.Whole() {
 		t.Errorf("used %d, the text's %d, whole %v", in.Used(), SectionTokens(got), in.Whole())
 	}
@@ -402,13 +402,13 @@ func TestWholeFileChargesItsFraming(t *testing.T) {
 // changed, the file as it is at the resume.
 func replayOne(t *testing.T, src, changed string, window int, cmds ...string) (live, re *Instructions) {
 	t.Helper()
-	live = NewInstructions("CLAUDE.md", src, window)
+	live = NewInstructions("CLAUDE.md", src, NewBudget(window))
 	var calls []struct{ id, cmd string }
 	for i, c := range cmds {
 		calls = append(calls, struct{ id, cmd string }{fmt.Sprintf("c%d", i+1), c})
 	}
 	evs := replayLog(t, live, calls, nil)
-	re = NewInstructions("CLAUDE.md", changed, window)
+	re = NewInstructions("CLAUDE.md", changed, NewBudget(window))
 	if err := re.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestReplaySkipsANoteThatDoesNotReadBack(t *testing.T) {
 	changed := strings.Replace(two, "Retry once.", "Retry twice.", 1)
 	_, re := replayOne(t, two, changed, 4096, "go test ./...")
 	in, _, _, used := re.Loaded()
-	if slices.Contains(in[1:], true) || used != SectionTokens(NewInstructions("CLAUDE.md", changed, 4096).Initial()) {
+	if slices.Contains(in[1:], true) || used != SectionTokens(NewInstructions("CLAUDE.md", changed, NewBudget(4096)).Initial()) {
 		t.Errorf("a note with a changed loaded section was recorded in part: in %v used %d", in, used)
 	}
 	var b strings.Builder
@@ -466,7 +466,7 @@ func TestReplayIgnoresTextQuotedInsideALoadedSection(t *testing.T) {
 // bring: its heading's default words do not match on their own.
 func TestMarkedSectionGovernsItsSubtree(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n### Testing at night\n\nNo go test by night.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	if s := in.ForCall("c1", "bash", bash("go test ./...")); s != "" {
 		t.Errorf("go test pulled in a subsection of a marked section:\n%s", s)
@@ -480,7 +480,7 @@ func TestMarkedSectionGovernsItsSubtree(t *testing.T) {
 // for the sections a call brings.
 func TestCutOpeningLeavesRoom(t *testing.T) {
 	src := "# notes\n\n" + strings.Repeat("an opening line that goes on and on.\n", 200) + "\n## Testing\n\nRun go test.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	got := in.Initial()
 	if !strings.Contains(got, "cut to fit the window; read CLAUDE.md lines 1–") || in.Used() > in.Budget()*2/3 {
 		t.Fatalf("used %d of %d:\n%.300s", in.Used(), in.Budget(), got)
@@ -498,7 +498,7 @@ func TestWholeCountsItsFraming(t *testing.T) {
 	for SectionTokens(b.String()+"x") <= budget-2 {
 		b.WriteString("x")
 	}
-	in := NewInstructions("CLAUDE.md", b.String(), 16384)
+	in := NewInstructions("CLAUDE.md", b.String(), NewBudget(16384))
 	in.Initial()
 	if in.Used() > in.Budget() {
 		t.Errorf("used %d of %d (whole %v)", in.Used(), in.Budget(), in.Whole())
@@ -509,11 +509,11 @@ func TestWholeCountsItsFraming(t *testing.T) {
 // title stops before a marked section.
 func TestAlwaysBringsItsSubsections(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Releases\n<!-- tack:always -->\nTag from main.\n\n### Hotfixes\n\nBranch from the tag.\n\n" + filler
-	if got := NewInstructions("CLAUDE.md", src, 4096).Initial(); !strings.Contains(got, "Branch from the tag.") {
+	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); !strings.Contains(got, "Branch from the tag.") {
 		t.Errorf("the always section's subsection was left out:\n%s", got)
 	}
 	bare := "# notes\n\n## Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n## Other\n\nx\n\n" + filler
-	if got := NewInstructions("CLAUDE.md", bare, 4096).Initial(); strings.Contains(got, "Queue long jobs.") {
+	if got := NewInstructions("CLAUDE.md", bare, NewBudget(4096)).Initial(); strings.Contains(got, "Queue long jobs.") {
 		t.Errorf("a bare title's opening took in a marked section:\n%s", got)
 	}
 }
@@ -522,7 +522,7 @@ func TestAlwaysBringsItsSubsections(t *testing.T) {
 // names, and ** in an edit pattern crosses directories.
 func TestCallKindsSkipFlags(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	if s := in.ForCall("c1", "bash", bash("go -C pkg test ./...")); !strings.Contains(s, "Run go test.") {
 		t.Errorf("go -C pkg test:\n%s", s)
@@ -543,7 +543,7 @@ func TestCallKindsSkipFlags(t *testing.T) {
 // placeholder, so the words after either still count.
 func TestCallKindsReadQuotedWords(t *testing.T) {
 	src := "# notes\n\nIntro.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	if s := in.ForCall("c1", "bash", bash(`git -C "some dir" commit -m "msg" --amend`)); !strings.Contains(s, "Never amend") {
 		t.Errorf("quoted words hid --amend:\n%s", s)
@@ -557,7 +557,7 @@ func TestCallKindsReadQuotedWords(t *testing.T) {
 // and as the file's first section it waits for its call instead of opening the first message.
 func TestMarkedTitleBringsItsSubtree(t *testing.T) {
 	src := "# Night queue\n<!-- tack:on bash:night -->\nQueue long jobs.\n\n## Fitting\n\nFit-check first.\n\n# Other\n\nx\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	if got := in.Initial(); strings.Contains(got, "Queue long jobs.") {
 		t.Errorf("a marked first section opened the message:\n%s", got)
 	}
@@ -569,7 +569,7 @@ func TestMarkedTitleBringsItsSubtree(t *testing.T) {
 // TestReplayFindsTheNoteAtTheEnd: a result whose tool output holds text like a note's header, a read of the
 // instruction file say, still reads its own note back from its end.
 func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
-	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	live := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	var evs []proto.Event
 	add := func(typ proto.EventType, payload any) {
 		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
@@ -578,7 +578,7 @@ func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
 	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial())}})
 	quoted := "a file that quotes a note:\n\n[Project rules from CLAUDE.md for this call:]\n\nnot a section\n"
 	add(proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c1", "bash", bash("git status"))})
-	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	re := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	if err := re.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +592,7 @@ func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
 // TestForHitsLoadsAMessagesSections: the sections ken found for a message load once, framed for the message, and a
 // tracker rebuilt from a log holding that message equals the live one.
 func TestForHitsLoadsAMessagesSections(t *testing.T) {
-	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	live := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	initial := live.Initial()
 	note := live.ForHits([][]string{{"notes", "Staging and committing"}, {"notes", "Testing"}})
 	if !strings.HasPrefix(note, "\n\n[Project rules from CLAUDE.md for this message:]") || !strings.Contains(note, "Never git add -A.") ||
@@ -607,7 +607,7 @@ func TestForHitsLoadsAMessagesSections(t *testing.T) {
 	}
 	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{
 		proto.Text(initial + note + MessageTask + "Fix the build.")}})
-	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	re := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	if err := re.Replay([]proto.Event{ev}); err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +616,7 @@ func TestForHitsLoadsAMessagesSections(t *testing.T) {
 	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
 		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
 	}
-	if NewInstructions("CLAUDE.md", "# n\n\n## Testing\n\nx\n", 16384).ForHits([][]string{{"n", "Testing"}}) != "" {
+	if NewInstructions("CLAUDE.md", "# n\n\n## Testing\n\nx\n", NewBudget(16384)).ForHits([][]string{{"n", "Testing"}}) != "" {
 		t.Error("a whole file brings nothing for a message")
 	}
 }
@@ -625,12 +625,12 @@ func TestForHitsLoadsAMessagesSections(t *testing.T) {
 // (a section marked always since, and a longer opening), the rebuilt tracker holds what the first message held, as
 // logged, not what Initial would give now.
 func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
-	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	live := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
 	first := live.Initial()
 	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
 	changed := strings.Replace(bigFile(), "## Testing\n\nRun go test with -v.", "## Testing\n<!-- tack:always -->\nRun go test with -v.", 1)
 	changed = strings.Replace(changed, "Intro: read this first.", "Intro: read this first, and this new line too.", 1)
-	re := NewInstructions("CLAUDE.md", changed, 4096)
+	re := NewInstructions("CLAUDE.md", changed, NewBudget(4096))
 	if err := re.Replay([]proto.Event{ev}); err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +651,7 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 // section under it.
 func TestForHitsAnIntroHitBringsOnlyTheIntro(t *testing.T) {
 	src := "# notes\n\nIntro: about this repo.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	if s := in.ForHits([][]string{{"notes"}}); strings.Contains(s, "Run go test") || strings.Contains(s, "Tag from main") {
 		t.Errorf("an intro hit pulled in the file:\n%s", s)
@@ -663,7 +663,7 @@ func TestForHitsAnIntroHitBringsOnlyTheIntro(t *testing.T) {
 func TestForHitsKeepsKensOrder(t *testing.T) {
 	part := strings.Repeat("a rule of some length. ", 40)
 	src := "# notes\n\nIntro.\n\n## Early\n\n" + part + "\n\n## Late\n\n" + part + "late.\n\n" + filler
-	in := NewInstructions("CLAUDE.md", src, 4096)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
 	in.Initial()
 	s := in.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}})
 	if !strings.Contains(s, "late.") || !strings.Contains(s, "(Early)") {

@@ -137,6 +137,11 @@ type Options struct {
 	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
 	// brings in to its result. WholeInstructions wins when both are set.
 	SectionInstructions bool
+	// Knowledge reads the workspace's .agents/knowledge/ pages (window.Knowledge; ADR-007): the first message carries
+	// their index, and a tool call that reads or edits a page's pinned file adds the page to its result, sharing
+	// SectionInstructions' budget. WholeInstructions turns it off, as it does SectionInstructions. Measured runs leave
+	// it off.
+	Knowledge bool
 }
 
 // EditKit is what an auto-mode session changes its workspace with.
@@ -191,6 +196,8 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
+	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it.
+	know *window.Knowledge
 	// sectionSearch finds the instruction file's sections for a user message (ken's exact SearchFiles); nil without ken.
 	sectionSearch window.SectionSearcher
 	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
@@ -580,18 +587,75 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	case c.opt.WholeInstructions:
 		s.instructions = readInstructions(ws.Root())
 	}
-	// Sections are tracked in a resumed session too: its tool calls still bring them in. Its first message, which the
-	// log holds, is not built again.
-	if c.opt.SectionInstructions && !c.opt.WholeInstructions {
-		if name, content := readInstructionFile(ws.Root()); name != "" {
-			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
-			initial := in.Initial()
-			if !prompted {
-				// A whole file follows the task, as WholeInstructions puts it; a sectioned one is notes before it.
-				s.instructions, s.notesFirst = initial, !in.Whole()
+	// Sections and knowledge pages are tracked in a resumed session too: its tool calls still bring them in. Its first
+	// message, which the log holds, is not built again.
+	if (c.opt.SectionInstructions || c.opt.Knowledge) && !c.opt.WholeInstructions {
+		w := servedWindow(c.ctx, src)
+		budget := window.NewBudget(w)
+		var parts []string
+		var loads multiSections
+		// The knowledge index is priced first, at its own small cap, so the instruction file gets what is left and the
+		// two together stay in the budget; in the message the instructions come first.
+		index, wholeFile := "", false // wholeFile: the instruction file is loaded whole
+		var know *window.Knowledge
+		if c.opt.Knowledge {
+			pages, err := window.LoadPages(ws.Root())
+			if err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, fmt.Errorf("knowledge pages: %w", err)
 			}
-			cfg.Sections, s.sections = in, in
-			s.sectionSearch, _ = searcher.(window.SectionSearcher)
+			if len(pages) > 0 {
+				know = window.NewKnowledge(ws.Root(), pages, w, budget)
+				if prompted {
+					// A reopened session's tracker is rebuilt from its log before anything is priced: first its index
+					// as logged, with each page's freshness as the session judged it; what it loaded comes after the
+					// instruction file is sized, so the file sees the budget a new session's did.
+					if err := know.ReplayIndex(history); err != nil {
+						c.unregister(id)
+						if s.kit != nil {
+							s.kit()
+						}
+						return nil, err
+					}
+				} else {
+					index = know.Index()
+				}
+			}
+		}
+		if c.opt.SectionInstructions {
+			if name, content := readInstructionFile(ws.Root()); name != "" {
+				in := window.NewInstructions(name, content, budget)
+				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+				s.sections = in
+				s.sectionSearch, _ = searcher.(window.SectionSearcher)
+			}
+		}
+		if know != nil && prompted {
+			if err := know.ReplayNotes(history); err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, err
+			}
+		}
+		if know != nil {
+			if index != "" {
+				parts = append(parts, index)
+			}
+			loads = append(loads, know)
+			s.know = know
+		}
+		if len(parts) > 0 && !prompted {
+			// A whole file alone follows the task, as WholeInstructions puts it; sections and the knowledge index are notes
+			// before it.
+			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), !(wholeFile && len(parts) == 1)
+		}
+		if len(loads) > 0 {
+			cfg.Sections = loads
 		}
 	}
 	if history == nil {
@@ -929,6 +993,29 @@ func workspaceChanged(root string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return len(bytes.TrimSpace(out)) > 0, nil
+}
+
+// multiSections is several loop.Sections as one: each call's texts in order, and every compaction told to all.
+type multiSections []loop.Sections
+
+func (m multiSections) ForCall(id, tool string, input json.RawMessage) string {
+	var b strings.Builder
+	for _, s := range m {
+		b.WriteString(s.ForCall(id, tool, input))
+	}
+	return b.String()
+}
+
+func (m multiSections) Masked(ids []string) {
+	for _, s := range m {
+		s.Masked(ids)
+	}
+}
+
+func (m multiSections) Drop(id string) {
+	for _, s := range m {
+		s.Drop(id)
+	}
 }
 
 // readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".

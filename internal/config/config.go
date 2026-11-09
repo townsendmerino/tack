@@ -144,6 +144,9 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
+	// Knowledge reads the workspace's .agents/knowledge/ pages on demand (core.Options.Knowledge; ADR-007). Default off,
+	// and no E1 arm may turn it on (pilot.RunSettings leaves it out): one run's notes must never reach another.
+	Knowledge bool `toml:"knowledge"`
 	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
 	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
 	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
