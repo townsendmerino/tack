@@ -101,6 +101,7 @@ public struct Compaction: Codable, Equatable, Sendable {
     public var after: Int
     public var summary: String?
     public var summarized: [Int64]?
+    public var body: String?
 
     enum CodingKeys: String, CodingKey {
         case request = "request"
@@ -112,6 +113,7 @@ public struct Compaction: Codable, Equatable, Sendable {
         case after = "after"
         case summary = "summary"
         case summarized = "summarized"
+        case body = "body"
     }
 }
 
