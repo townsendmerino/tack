@@ -54,8 +54,12 @@ The order the owner approved, each step with its exit check:
        not built.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
-     them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
-     `usage/summary` come with the daemon.
+     them, and shown as "—" when none did. It reads the logs each time.
+   - **The usage table over the daemon (2026-11-09):** the daemon answers `usage/summary {since, utc}` with the same
+     table (`internal/usage.FromStore`), and `tack usage` asks a running daemon, without starting one. It reads the logs
+     itself when none runs, or when the daemon predates the method (method not found); there is no protocol version
+     bump. Caching the day totals in `index.db` waits for the owner's decision on `modernc.org/sqlite` (a new
+     dependency).
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads

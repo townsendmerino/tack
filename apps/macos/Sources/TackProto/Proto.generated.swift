@@ -14,6 +14,7 @@ public enum Method {
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
     public static let sessionSubscribe = "session/subscribe"
+    public static let usageSummary = "usage/summary"
 }
 
 public typealias EventType = String
@@ -517,6 +518,56 @@ public struct Usage: Codable, Equatable, Sendable {
         case prefillMS = "prefill_ms"
         case decodeTPS = "decode_tps"
         case wallMS = "wall_ms"
+    }
+}
+
+public struct UsageRow: Codable, Equatable, Sendable {
+    public var day: String
+    public var server: String
+    public var sessions: Int
+    public var requests: Int
+    public var prompt: Int
+    public var output: Int
+    public var known: Int
+    public var knownPrompt: Int
+    public var reused: Int
+    public var prefilled: Int
+    public var prefillKnown: Int
+    public var prefillMS: Int
+    public var wallMS: Int
+
+    enum CodingKeys: String, CodingKey {
+        case day = "day"
+        case server = "server"
+        case sessions = "sessions"
+        case requests = "requests"
+        case prompt = "prompt"
+        case output = "output"
+        case known = "known"
+        case knownPrompt = "known_prompt"
+        case reused = "reused"
+        case prefilled = "prefilled"
+        case prefillKnown = "prefill_known"
+        case prefillMS = "prefill_ms"
+        case wallMS = "wall_ms"
+    }
+}
+
+public struct UsageSummaryParams: Codable, Equatable, Sendable {
+    public var since: String?
+    public var utc: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case since = "since"
+        case utc = "utc"
+    }
+}
+
+public struct UsageSummaryResult: Codable, Equatable, Sendable {
+    public var rows: [UsageRow]
+
+    enum CodingKeys: String, CodingKey {
+        case rows = "rows"
     }
 }
 

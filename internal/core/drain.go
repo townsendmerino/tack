@@ -11,6 +11,7 @@ import (
 	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/usage"
 )
 
 // drainLimit is how long Drain waits for a turn it cancelled to record its end before giving up on it.
@@ -125,4 +126,28 @@ func spoken() string {
 		}
 	}
 	return strings.Join(vs, " and ")
+}
+
+// usageSummary is usage/summary: the usage table over every session in the store (internal/usage), read from the logs
+// each time. Any client may ask; it only reads.
+func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResult, *proto.Error) {
+	if c.opt.Store == nil {
+		return proto.UsageSummaryResult{}, &proto.Error{Code: proto.CodeInvalidRequest, Message: "usage/summary: this session core has no store"}
+	}
+	var since time.Time
+	if p.Since != nil {
+		since = *p.Since
+	}
+	loc := time.Local
+	if p.UTC {
+		loc = time.UTC
+	}
+	rows, err := usage.FromStore(c.opt.Store, since, loc)
+	if err != nil {
+		return proto.UsageSummaryResult{}, &proto.Error{Code: proto.CodeInternalError, Message: "usage/summary: " + err.Error()}
+	}
+	if rows == nil {
+		rows = []proto.UsageRow{}
+	}
+	return proto.UsageSummaryResult{Rows: rows}, nil
 }

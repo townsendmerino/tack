@@ -14,6 +14,7 @@ const (
 	MethodSessionEvent     = "session/event" // notification, daemon to client
 	MethodDaemonStatus     = "daemon/status"
 	MethodDaemonShutdown   = "daemon/shutdown"
+	MethodUsageSummary     = "usage/summary"
 )
 
 // SessionID names a session: "s_" and a ULID.
@@ -132,6 +133,39 @@ type DaemonShutdownParams struct{}
 // DaemonShutdownResult acknowledges the shutdown; the daemon drains and exits after answering.
 type DaemonShutdownResult struct{}
 
+// UsageSummaryParams asks for the usage table (DESIGN §7.7, §9.2): what each day's requests cost, by model server,
+// summed from the usage events of every session in the daemon's state directory. Since is the first instant counted;
+// nil counts everything. Days are UTC days with UTC set, and the daemon's local days otherwise (it runs on the
+// client's machine, as the client's user). Rows are grouped by day and server, the only grouping so far.
+type UsageSummaryParams struct {
+	Since *time.Time `json:"since,omitempty"`
+	UTC   bool       `json:"utc,omitempty"`
+}
+
+// UsageRow is one day's requests to one server (internal/usage.Row). Reused and Prefilled sum only the Known requests,
+// the ones whose server reported reuse, and KnownPrompt their prompt tokens; PrefillMS sums the PrefillKnown requests'.
+// An unreported figure is never counted as zero (DESIGN principle 6).
+type UsageRow struct {
+	Day          string `json:"day"` // YYYY-MM-DD
+	Server       string `json:"server"`
+	Sessions     int    `json:"sessions"`
+	Requests     int    `json:"requests"`
+	Prompt       int    `json:"prompt"`
+	Output       int    `json:"output"`
+	Known        int    `json:"known"`
+	KnownPrompt  int    `json:"known_prompt"`
+	Reused       int    `json:"reused"`
+	Prefilled    int    `json:"prefilled"`
+	PrefillKnown int    `json:"prefill_known"`
+	PrefillMS    int    `json:"prefill_ms"`
+	WallMS       int    `json:"wall_ms"`
+}
+
+// UsageSummaryResult is the table, sorted by day then server.
+type UsageSummaryResult struct {
+	Rows []UsageRow `json:"rows"`
+}
+
 // MethodSpec gives a method's params and result types; Result is nil for a notification.
 type MethodSpec struct {
 	Params, Result reflect.Type
@@ -147,4 +181,14 @@ var Methods = map[string]MethodSpec{
 	MethodSessionEvent:     {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:     {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:   {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
+	MethodUsageSummary:     {reflect.TypeFor[UsageSummaryParams](), reflect.TypeFor[UsageSummaryResult]()},
+}
+
+// ReuseShare is the share of the known requests' prompt tokens served from the cached prefix, and false when no
+// request said.
+func (r UsageRow) ReuseShare() (float64, bool) {
+	if r.Known == 0 || r.KnownPrompt == 0 {
+		return 0, false
+	}
+	return float64(r.Reused) / float64(r.KnownPrompt), true
 }

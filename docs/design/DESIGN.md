@@ -1309,7 +1309,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
   present the client token at `initialize` (§6.6).
 - `context/get {session}`, `context/pin`, `context/exclude`, `context/evict`, `context/suggestions`.
 - `files/read {workspace, path, lines}` for previews (clients never read the filesystem), `files/diff {session, from, to}`.
-- `usage/summary {range, group_by}`.
+- `usage/summary {since, utc}`: the usage table by day and model server (§7.7); a later grouping adds a `group_by`.
 - `servers/add {url, token}`, `servers/list`, `models/list`, `models/status`, `models/load`, `models/unload`.
 - `daemon/status`, `daemon/halt`, `daemon/resume`, `daemon/shutdown`.
 - `config/get`, `config/set`.
