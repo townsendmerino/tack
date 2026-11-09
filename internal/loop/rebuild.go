@@ -3,6 +3,7 @@ package loop
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -134,16 +135,20 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 // callsRan counts the tool calls the live loop counted toward the session's budget: every call that reached a
 // permission decision or started, and every done call answered ok. A call answered without either (malformed, a
 // repeat of a failed call, not run for a budget, a cancel or a shutdown) did not count. Events name their call by its
-// tool.call's seq, as their cause; one without a cause names it by id, and is matched to that id's latest call.
+// tool.call's seq, as their cause; one without a cause names it by id, and is matched to that id's earliest call
+// not yet finished: calls run in the order they were logged, and a response may repeat an id.
 func callsRan(history []proto.Event) int {
 	name := map[int64]string{}
-	latest := map[string]int64{}
+	open := map[string][]int64{} // by id, the calls not yet finished, in log order
 	ran := map[int64]bool{}
 	call := func(ev proto.Event, id string) int64 {
 		if ev.Cause != 0 {
 			return ev.Cause
 		}
-		return latest[id]
+		if q := open[id]; len(q) > 0 {
+			return q[0]
+		}
+		return 0
 	}
 	for _, ev := range history {
 		v, err := ev.Decode()
@@ -152,7 +157,8 @@ func callsRan(history []proto.Event) int {
 		}
 		switch p := v.(type) {
 		case proto.ToolCall:
-			name[ev.Seq], latest[p.ID] = p.Name, ev.Seq
+			name[ev.Seq] = p.Name
+			open[p.ID] = append(open[p.ID], ev.Seq)
 		case proto.PermissionRequested:
 			ran[call(ev, p.ID)] = true
 		case proto.PermissionResolved:
@@ -160,9 +166,11 @@ func callsRan(history []proto.Event) int {
 		case proto.ToolStarted:
 			ran[call(ev, p.ID)] = true
 		case proto.ToolFinished:
-			if seq := call(ev, p.ID); name[seq] == "done" && p.Outcome == proto.OutcomeOK {
+			seq := call(ev, p.ID)
+			if name[seq] == "done" && p.Outcome == proto.OutcomeOK {
 				ran[seq] = true
 			}
+			open[p.ID] = slices.DeleteFunc(open[p.ID], func(s int64) bool { return s == seq })
 		}
 	}
 	n := 0
