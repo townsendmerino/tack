@@ -146,6 +146,9 @@ func (s *Session) summarize(ctx context.Context, srv server.Server, next int, ca
 			sum.Text += "\n\n" + sec // after the anchors: bodyOf leaves it out of the next summary's previous body
 			text = summaryMessage(s.cfg.WS.Root(), sum)
 		}
+		if ctx.Err() != nil {
+			return spent, summaryUnchanged, nil // the turn is ending, as after the summarizer's call
+		}
 	}
 	if err := s.conv.Summarize(keep, text); err != nil {
 		return spent, summaryUnchanged, fmt.Errorf("loop: summarize: %w", err)

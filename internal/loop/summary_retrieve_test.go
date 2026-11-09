@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
@@ -182,6 +183,52 @@ func TestASectionTooBigForWhatTheSummaryFreesIsLeftOut(t *testing.T) {
 	c := comps[0].(proto.Compaction)
 	if strings.Contains(c.Summary, retrieveHeading) || c.After >= c.Before || len(s.asked) == 0 {
 		t.Errorf("section in the summary %v, after %d, before %d, asked %q", strings.Contains(c.Summary, retrieveHeading), c.After, c.Before, s.asked)
+	}
+	h.checkRebuild(t)
+}
+
+// hangingSearcher answers nothing until its context ends; onSearch, when set, runs first.
+type hangingSearcher struct{ onSearch func() }
+
+func (h hangingSearcher) Search(ctx context.Context, _ string, _ int) ([]tools.Hit, error) {
+	if h.onSearch != nil {
+		h.onSearch()
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestASearchThatHangsTimesOut: each re-retrieval search has its own timeout, so a hung ken costs the summary its
+// section, not the turn.
+func TestASearchThatHangsTimesOut(t *testing.T) {
+	to := retrieveSearchTimeout
+	retrieveSearchTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { retrieveSearchTimeout = to })
+	start := time.Now()
+	h := retrieveHarness(t, 10, hangingSearcher{})
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the turn took %v with ken hung", took)
+	}
+	comps := h.payloads(proto.EvCompaction)
+	if len(comps) != 1 || strings.Contains(comps[0].(proto.Compaction).Summary, retrieveHeading) {
+		t.Errorf("%d compactions; want the summary without a section", len(comps))
+	}
+}
+
+// TestCancellingDuringRetrievalRecordsNoSummary: a turn cancelled while its summary re-retrieves records no compaction
+// and ends cancelled, as one cancelled during the summarizer's call does.
+func TestCancellingDuringRetrievalRecordsNoSummary(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := maskHarness(t, false, 4000,
+		grows("t1", 3500), grows("t2", 3500), grows("t3", 3500), grows("t4", 3500),
+		goinfertest.Says(strings.Replace(body("read"), "## Next steps\n\n(none)", "## Next steps\n\nfind it", 1)),
+		goinfertest.Says("never sent"))
+	h.sess.cfg.Summarize, h.sess.cfg.SummaryRetrieve, h.sess.cfg.Searcher = true, 10, hangingSearcher{onSearch: cancel}
+	h.sess = New(h.sess.cfg)
+	reason, err := h.sess.Turn(ctx, "go")
+	if err != nil || reason != proto.StopCancelled || len(h.payloads(proto.EvCompaction)) != 0 {
+		t.Errorf("reason %q, %v, %d compactions; want cancelled and none", reason, err, len(h.payloads(proto.EvCompaction)))
 	}
 	h.checkRebuild(t)
 }
