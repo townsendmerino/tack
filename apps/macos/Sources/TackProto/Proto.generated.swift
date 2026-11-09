@@ -199,10 +199,12 @@ public struct HaltProcess: Codable, Equatable, Sendable {
 public struct InitializeParams: Codable, Equatable, Sendable {
     public var client: ClientInfo
     public var `protocol`: Int
+    public var token: String?
 
     enum CodingKeys: String, CodingKey {
         case client = "client"
         case `protocol` = "protocol"
+        case token = "token"
     }
 }
 
@@ -210,11 +212,13 @@ public struct InitializeResult: Codable, Equatable, Sendable {
     public var daemon: DaemonInfo
     public var `protocol`: Int
     public var capabilities: Capabilities
+    public var privileged: Bool?
 
     enum CodingKeys: String, CodingKey {
         case daemon = "daemon"
         case `protocol` = "protocol"
         case capabilities = "capabilities"
+        case privileged = "privileged"
     }
 }
 
