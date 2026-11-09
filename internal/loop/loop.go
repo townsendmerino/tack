@@ -568,11 +568,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 						}
 					}
 				}
-				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
+				rem := Remaining{Tokens: min(bud.TurnTokens-tokens, bud.SessionTokens-s.tokens),
+					ToolCalls: min(bud.MaxToolCalls-calls, bud.SessionToolCalls-s.calls)} // after this call: what a task's child may take
+				if fin, full, ran, err = s.runTool(withRemaining(tools.WithWiden(shell.WithApproval(ctx, by), level), rem), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
 				tokens += fin.Tokens // a task's child: it counts toward this turn's and this session's budgets
 				s.tokens += fin.Tokens
+				calls += fin.Calls
+				s.calls += fin.Calls
 				ranTool = fin.Outcome == proto.OutcomeOK || fin.Outcome == proto.OutcomeError
 				if widenable {
 					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
@@ -800,7 +804,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	r, rerr := t.Run(ctx, s.cfg.WS, b.Input)
 	if rerr != nil {
-		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true, Tokens: r.Tokens} // a cancelled task still spent them
+		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true, Tokens: r.Tokens, Calls: r.Calls} // a cancelled task still spent them
 	}
 	// Redaction comes first, so neither the model, the log nor the blob store ever holds a credential it caught.
 	var kinds []string
@@ -819,7 +823,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if pick != nil { // chooses, on redacted and escaped text, what is shown (Config.CompactAtCliff's widening)
 		pick(&r)
 	}
-	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds, Tokens: r.Tokens}
+	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds, Tokens: r.Tokens, Calls: r.Calls}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
 	}
@@ -974,3 +978,11 @@ func computedTokens(u proto.Usage) int {
 // Tokens is what the server computed for the session's requests so far, as its budget counts them: a task's caller
 // counts a child session's toward its own (tools.SubagentAnswer).
 func (s *Session) Tokens() int { return s.tokens }
+
+// ToolCalls is the tool calls the session has run so far, as its budget counts them: a task's caller counts a child's
+// toward its own.
+func (s *Session) ToolCalls() int { return s.calls }
+
+// Limit tightens the session's budget before a turn: a task's child is held to what its parent has left
+// (loop.RemainingFrom). Every limit must stay positive.
+func (s *Session) Limit(b Budget) { s.cfg.Budget = b }

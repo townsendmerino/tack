@@ -473,6 +473,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
     public var blob: String?
     public var redacted: [String]?
     public var tokens: Int?
+    public var calls: Int?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -482,6 +483,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
         case blob = "blob"
         case redacted = "redacted"
         case tokens = "tokens"
+        case calls = "calls"
     }
 }
 

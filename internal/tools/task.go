@@ -20,6 +20,7 @@ type Subagent func(ctx context.Context, prompt string) (SubagentAnswer, error)
 type SubagentAnswer struct {
 	Text    string
 	Tokens  int
+	Calls   int // the child's tool calls, counted toward the parent's tool-call budgets (Result.Calls)
 	Session string
 }
 
@@ -43,11 +44,11 @@ func (t taskTool) Run(ctx context.Context, _ *Workspace, input json.RawMessage) 
 	}
 	a, err := t.run(ctx, in.Prompt)
 	if ctx.Err() != nil {
-		return Result{Tokens: a.Tokens}, ctx.Err()
+		return Result{Tokens: a.Tokens, Calls: a.Calls}, ctx.Err()
 	}
 	if err != nil {
 		r := errorf("the helper could not answer: %v", err)
-		r.Tokens = a.Tokens
+		r.Tokens, r.Calls = a.Tokens, a.Calls
 		return r, nil
 	}
 	text := strings.TrimSpace(a.Text)
@@ -57,5 +58,5 @@ func (t taskTool) Run(ctx context.Context, _ *Workspace, input json.RawMessage) 
 	if a.Session != "" {
 		text += "\n\n[subagent session " + a.Session + "]"
 	}
-	return Result{Text: text, Tokens: a.Tokens}, nil
+	return Result{Text: text, Tokens: a.Tokens, Calls: a.Calls}, nil
 }

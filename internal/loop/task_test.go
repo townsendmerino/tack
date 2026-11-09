@@ -91,3 +91,65 @@ func TestATaskWithNoPromptIsAnError(t *testing.T) {
 		t.Errorf("ran %v, finished %+v", ran, fin)
 	}
 }
+
+// TestATasksToolCallsCountTowardTheParent: a child's tool calls are recorded on the call and counted toward the
+// parent's tool-call budgets, live and on a resume.
+func TestATasksToolCallsCountTowardTheParent(t *testing.T) {
+	sub := func(context.Context, string) (tools.SubagentAnswer, error) {
+		return tools.SubagentAnswer{Text: "an answer", Calls: 3}, nil
+	}
+	h := taskHarness(t, Budget{}, sub, goinfertest.Calls("", "t1", "task", `{"prompt":"look"}`), goinfertest.Says("done"))
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	var fin proto.ToolFinished
+	for _, p := range h.payloads(proto.EvToolFinished) {
+		fin = p.(proto.ToolFinished)
+	}
+	if fin.Calls != 3 || h.sess.calls != 1+3 {
+		t.Errorf("recorded %d calls, the session counts %d; want 3 and 4", fin.Calls, h.sess.calls)
+	}
+	evs, _ := h.st.Events("s_test", 0)
+	if r, err := Resume(h.sess.cfg, evs); err != nil || r.calls != h.sess.calls {
+		t.Errorf("resumed calls %d, live %d, %v", r.calls, h.sess.calls, err)
+	}
+}
+
+// TestATasksToolCallsCanTripTheParent: the child's calls count toward the parent's turn, so the parent's tool-call
+// budget holds across a subagent.
+func TestATasksToolCallsCanTripTheParent(t *testing.T) {
+	sub := func(context.Context, string) (tools.SubagentAnswer, error) {
+		return tools.SubagentAnswer{Text: "an answer", Calls: 10}, nil
+	}
+	b := testBudget // 8 tool calls a turn
+	h := taskHarness(t, b, sub, goinfertest.Calls("", "t1", "task", `{"prompt":"look"}`),
+		goinfertest.Calls("", "t2", "glob", `{"pattern":"*.go"}`), goinfertest.Says("done"))
+	reason, err := h.sess.Turn(context.Background(), "go")
+	if err != nil || reason != proto.StopBudget {
+		t.Fatalf("reason %q, %v; want the tool-call budget to trip", reason, err)
+	}
+}
+
+// TestATaskSeesWhatTheParentHasLeft: the remaining budget a task's child is held to is the parent's, after the task
+// call itself.
+func TestATaskSeesWhatTheParentHasLeft(t *testing.T) {
+	var got Remaining
+	var ok bool
+	sub := func(ctx context.Context, _ string) (tools.SubagentAnswer, error) {
+		got, ok = RemainingFrom(ctx)
+		return tools.SubagentAnswer{Text: "x"}, nil
+	}
+	h := taskHarness(t, testBudget, sub, goinfertest.Calls("", "t1", "task", `{"prompt":"look"}`), goinfertest.Says("done"))
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	var used int
+	for _, p := range h.payloads(proto.EvUsage) {
+		used += computedTokens(p.(proto.Usage))
+		break // the first request's, before the task ran
+	}
+	if !ok || got.ToolCalls != testBudget.MaxToolCalls-1 || got.Tokens != min(testBudget.TurnTokens, testBudget.SessionTokens)-used {
+		t.Errorf("remaining %+v (%v); want %d calls and %d tokens", got, ok, testBudget.MaxToolCalls-1,
+			min(testBudget.TurnTokens, testBudget.SessionTokens)-used)
+	}
+}

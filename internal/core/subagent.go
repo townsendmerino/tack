@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
@@ -16,10 +17,22 @@ import (
 // own log with SessionCreated.Parent set, in plan mode on the parent's workspace and model: the read-only tools, no task
 // of its own, and Options.SubagentBudget (open). Its one turn runs in the parent's tool call, on the parent turn's ctx,
 // so a halt or a drain of the parent reaches it, and its log records how it ended. The answer is its last assistant
-// text, and its tokens count toward the parent's budgets (tools.SubagentAnswer.Tokens). The child is not registered with
-// the core: no client subscribes to it live; its log can be opened later like any other.
+// text. Its limits are its own budget clamped to what the parent has left (loop.RemainingFrom), and its tokens and tool
+// calls count toward the parent's budgets (tools.SubagentAnswer). The child is not in the core's sessions, so no client
+// subscribes to it live and its log opens later like any other; its halt target is registered (open), as every
+// session's is.
 func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.SessionCreated) tools.Subagent {
 	return func(ctx context.Context, prompt string) (tools.SubagentAnswer, error) {
+		// The child takes no more than the parent has left, tokens and tool calls both, so a task cannot carry the
+		// parent past its budgets; with nothing left there is no child.
+		b := c.opt.SubagentBudget
+		if rem, ok := loop.RemainingFrom(ctx); ok {
+			b.TurnTokens, b.SessionTokens = min(b.TurnTokens, rem.Tokens), min(b.SessionTokens, rem.Tokens)
+			b.MaxToolCalls, b.SessionToolCalls = min(b.MaxToolCalls, rem.ToolCalls), min(b.SessionToolCalls, rem.ToolCalls)
+			if rem.Tokens <= 0 || rem.ToolCalls <= 0 {
+				return tools.SubagentAnswer{}, fmt.Errorf("the turn has no budget left for a helper (%d tokens, %d tool calls)", rem.Tokens, rem.ToolCalls)
+			}
+		}
 		id := store.NewSessionID(time.Now())
 		log, hold, err := c.opt.Store.CreateHeld(id)
 		if err != nil {
@@ -45,8 +58,9 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 			_ = log.Close()
 			hold.Release()
 		}()
+		child.loop.Limit(b)
 		reason, err := child.loop.Turn(ctx, prompt)
-		a := tools.SubagentAnswer{Text: lastAnswer(child), Tokens: child.loop.Tokens(), Session: string(id)}
+		a := tools.SubagentAnswer{Text: lastAnswer(child), Tokens: child.loop.Tokens(), Calls: child.loop.ToolCalls(), Session: string(id)}
 		switch {
 		case err != nil:
 			return a, err

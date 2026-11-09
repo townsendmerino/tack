@@ -217,6 +217,9 @@ type ToolFinished struct {
 	// task's child session (DESIGN §6.3). It counts toward this session's budgets, here and on a resume; the child's own
 	// usage events are in its log, so the usage table counts it once.
 	Tokens int `json:"tokens,omitempty"`
+	// Calls is the tool calls run on the call's behalf (a task's child), counted toward this session's tool-call budgets
+	// as Tokens is toward its token budgets.
+	Calls int `json:"calls,omitempty"`
 }
 
 // Usage is a request's measured cost. A nil field is one the server did not report; it is never shown as zero

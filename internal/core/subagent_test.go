@@ -159,3 +159,41 @@ func TestUsageCountsAParentAndChildOnce(t *testing.T) {
 		t.Errorf("the table's total %d, the two logs' usage %d (the call recorded %d for the child)", got, want, fin.Tokens)
 	}
 }
+
+// TestAChildCannotSpendPastTheParentsBudget: a child's limits are what the parent has left, so a task call cannot carry
+// the parent past its turn's tokens by more than one request, however large the child's own budget.
+func TestAChildCannotSpendPastTheParentsBudget(t *testing.T) {
+	var replies []goinfertest.Reply
+	replies = append(replies, goinfertest.Calls("", "t1", "task", `{"prompt":"read a.go six times"}`))
+	for i := range 6 {
+		replies = append(replies, goinfertest.Calls("", "r"+string(rune('0'+i)), "read", `{"path":"a.go"}`))
+	}
+	replies = append(replies, goinfertest.Says("read it"), goinfertest.Says("done"))
+	sc := goinfertest.NewScripted("m", 16384, replies...)
+	f := newFixtureOn(t, sc)
+	f.core.opt.Budget.TurnTokens = 300 // about two and a half of the scripted 120-token requests
+	f.core.opt.Subagents = true
+	f.core.opt.SubagentBudget = f.core.opt.Budget
+	f.core.opt.SubagentBudget.TurnTokens, f.core.opt.SubagentBudget.SessionTokens = 100_000, 100_000
+	f.core.opt.SubagentBudget.MaxRequests, f.core.opt.SubagentBudget.MaxToolCalls = 20, 50
+	id := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.prompt(t, id, "go")
+	f.waitTurnEnd(t)
+	evs, _ := f.core.opt.Store.Events(id, 0)
+	spent := 0
+	for _, ev := range evs {
+		v, _ := ev.Decode()
+		switch p := v.(type) {
+		case proto.Usage:
+			spent += p.Prompt + p.Output
+		case proto.ToolFinished:
+			spent += p.Tokens
+		}
+	}
+	if spent > 300+120 {
+		t.Errorf("the parent's turn spent %d tokens with its child, past its 300 by more than one 120-token request", spent)
+	}
+}

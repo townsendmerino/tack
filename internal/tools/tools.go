@@ -54,6 +54,9 @@ type Result struct {
 	// Tokens is what the server computed for requests made on the call's behalf (task's child session): the loop counts
 	// it toward the turn's and the session's budgets, and records it on the call's tool.finished.
 	Tokens int
+	// Calls is the tool calls run on the call's behalf (task's child): the loop counts them toward the turn's and the
+	// session's tool-call budgets, and records them on the call's tool.finished.
+	Calls int
 	// ShowWide is set with Base by a widened read: the loop calls it when it shows the widened view, so the workspace
 	// records those lines as shown (it records the base view's lines itself).
 	ShowWide func()
