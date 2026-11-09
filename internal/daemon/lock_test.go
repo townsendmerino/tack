@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -484,5 +485,156 @@ func waitBusy(t *testing.T) {
 	case <-busy:
 	case <-time.After(10 * time.Second):
 		t.Error("the racing start never found the lock held")
+	}
+}
+
+// TestAStateDirThroughADanglingLinkIsMade: a state directory named through a symlink whose target does not exist yet
+// is made where the link points, as the kernel (and the sandbox's real) resolves it.
+func TestAStateDirThroughADanglingLinkIsMade(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	target, link := filepath.Join(base, "later", "state"), filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	l, err := Acquire(link, "1")
+	if err != nil {
+		t.Fatalf("a state directory through a dangling link: %v, want it made", err)
+	}
+	defer l.Release()
+	if st, err := os.Lstat(target); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Fatalf("the link's target: %v, %v; want a 0700 directory", st, err)
+	}
+}
+
+// TestAMissingParentIsNotMadeThroughAPlantedLink: the directories privateDir makes are made one at a time and checked
+// as each is made, so one that another user planted as a symlink in a shared directory (here reported as uid 4242,
+// as above) is refused, and nothing is made through it.
+func TestAMissingParentIsNotMadeThroughAPlantedLink(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	elsewhere := filepath.Join(base, "elsewhere")
+	os.Mkdir(elsewhere, 0o700)
+	planted := filepath.Join(base, "shared")
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == planted && fi.Mode()&fs.ModeSymlink != 0 { // the planted link only: a directory made there is ours
+			return 4242
+		}
+		return orig(path, fi)
+	}
+	// The check before the directories are made sees nothing at shared; the planting comes after it, as in a race.
+	afterCheck = func() { os.Symlink(elsewhere, planted) }
+	defer func() { afterCheck = nil }()
+	if _, err := Acquire(filepath.Join(planted, "tack"), "1"); err == nil || !strings.Contains(err.Error(), "4242") {
+		t.Fatalf("a parent planted as another user's link: %v, want refused", err)
+	}
+	if _, err := os.Stat(filepath.Join(elsewhere, "tack")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a directory was made through the planted link: %v", err)
+	}
+}
+
+// TestTheStateDirMustBeThisUsers: root is trusted on the way to the state directory, not as its owner.
+func TestTheStateDirMustBeThisUsers(t *testing.T) {
+	dir := shortDir(t)
+	os.MkdirAll(dir, 0o700)
+	dir, _ = filepath.EvalSymlinks(dir)
+	other := 0 // root: allowed on the way, not as the state directory
+	if os.Getuid() == 0 {
+		other = 4242 // run as root, root is this user: another user stands in
+	}
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	ownerOf = func(path string, fi fs.FileInfo) int {
+		if path == dir {
+			return other
+		}
+		return orig(path, fi)
+	}
+	if _, err := checkPath(dir); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("belongs to uid %d", other)) {
+		t.Fatalf("checkPath on a state directory uid %d owns: %v, want refused", other, err)
+	}
+}
+
+// TestALinkClimbingOutOfAMissingDirIsRefused: the kernel resolves "missing/.." only once missing exists, so a state
+// directory reached through a link whose target climbs out of a directory that does not exist yet is refused, saying
+// why, rather than checked as text and then not found.
+func TestALinkClimbingOutOfAMissingDirIsRefused(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink("later/gone/../state", link); err != nil {
+		t.Fatal(err)
+	}
+	err := privateDir(link)
+	if err == nil || errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "..") {
+		t.Fatalf("privateDir through a link climbing out of a missing directory: %v; want it refused, naming the \"..\"", err)
+	}
+}
+
+// TestMakeDirsMakesOnlyWhatIsMissing: privateDir calls mkdir only for the directories that do not exist yet, never for
+// an existing ancestor, which a read-only mount or a sandbox may refuse to have mkdir called on at all.
+func TestMakeDirsMakesOnlyWhatIsMissing(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	var made []string
+	orig := mkdir
+	defer func() { mkdir = orig }()
+	mkdir = func(p string, perm os.FileMode) error {
+		if _, err := os.Lstat(p); err == nil {
+			return fmt.Errorf("mkdir %s: read-only file system (it exists)", p)
+		}
+		made = append(made, p)
+		return orig(p, perm)
+	}
+	if err := privateDir(filepath.Join(base, "a", "b")); err != nil {
+		t.Fatalf("privateDir under existing ancestors mkdir may not be called on: %v", err)
+	}
+	if want := []string{filepath.Join(base, "a"), filepath.Join(base, "a", "b")}; !slices.Equal(made, want) {
+		t.Fatalf("mkdir called for %v; want only %v", made, want)
+	}
+}
+
+// TestAStartWaitsAsLongAsAStoppingDaemonSaid: a daemon whose shutdown may take longer than a start's own wait (a long
+// shutdown_grace) says in its stopping record when it expects to let go, and a start waits that long for the lock.
+func TestAStartWaitsAsLongAsAStoppingDaemonSaid(t *testing.T) {
+	dir := shortDir(t)
+	orig := stopWait
+	stopWait = 100 * time.Millisecond // a start's own wait, shorter than this shutdown
+	t.Cleanup(func() { stopWait = orig })
+	l := acquire(t, dir)
+	l.SetShutdown(time.Second)
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // the shutdown begins: the record says stopping, until a second from now
+	if h := ReadHolder(dir); !h.Stopping || time.Until(h.Until) < 500*time.Millisecond {
+		t.Fatalf("the stopping record: %+v; want it stopping, with an Until about a second away", h)
+	}
+	next := make(chan error, 1)
+	go func() {
+		n, err := Acquire(dir, "next")
+		if err == nil {
+			defer n.Release()
+		}
+		next <- err
+	}()
+	time.Sleep(400 * time.Millisecond) // past stopWait, within what the stopping daemon said
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-next:
+		if err != nil {
+			t.Fatalf("a start during a shutdown longer than stopWait: %v; want it to wait as the record said, and take the lock", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never returned")
 	}
 }

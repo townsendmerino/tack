@@ -329,6 +329,12 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if perr != nil {
 			return nil, perr
 		}
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if draining { // a connection accepted just before the shutdown: the next daemon takes its turns
+			return nil, &proto.Error{Code: proto.CodeShuttingDown, Message: "initialize: this daemon is shutting down; connect again to reach the next one"}
+		}
 		version, ok := proto.Negotiate(p.Protocol, proto.Version)
 		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,

@@ -237,3 +237,57 @@ func TestCreateHeldHoldsBeforeTheLogIsListed(t *testing.T) {
 		t.Fatalf("the recovery's hold on the new session: %v, want ErrSessionHeld", listed)
 	}
 }
+
+// TestIdleSyncsOnlyWhatIsUnsynced: Idle fsyncs before closing only when an append since the last fsync left data
+// unsynced; after a turn boundary, which Append syncs itself, or a reopen that wrote nothing, it does not sync again.
+func TestIdleSyncsOnlyWhatIsUnsynced(t *testing.T) {
+	s := newStore(t)
+	l, _ := s.Create("s_1")
+	syncs := countSyncs(l)
+	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn}) // fsynced on append
+	l.Idle()
+	if *syncs != 1 {
+		t.Fatalf("%d syncs for a turn boundary then Idle; want 1, the append's", *syncs)
+	}
+	l.Append(proto.EvAssistantDelta, 0, proto.AssistantDelta{Text: "x"}) // not persisted: nothing written
+	l.Append(proto.EvRequestSent, 0, proto.RequestSent{Request: 1})
+	before := *syncs
+	l.Idle()
+	if got := *syncs - before; got != 1 {
+		t.Fatalf("%d syncs at Idle after an unsynced append; want 1", got)
+	}
+	l.Close()
+	r, _ := s.OpenLog("s_1")
+	syncs = countSyncs(r)
+	r.Idle()
+	if *syncs != 0 {
+		t.Fatalf("%d syncs idling a reopened log nothing was written to; want 0", *syncs)
+	}
+	r.Close()
+}
+
+// TestCloseSyncsOnlyWhatIsUnsynced: Close, like Idle, fsyncs before closing only when an append left data unsynced.
+func TestCloseSyncsOnlyWhatIsUnsynced(t *testing.T) {
+	s := newStore(t)
+	for _, c := range []struct {
+		id    proto.SessionID
+		typ   proto.EventType
+		value any
+		want  int // syncs in all: the append's own, then Close's
+	}{
+		{"s_1", proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}, 1},
+		{"s_2", proto.EvRequestSent, proto.RequestSent{Request: 1}, 1},
+	} {
+		l, _ := s.Create(c.id)
+		syncs := countSyncs(l)
+		if _, err := l.Append(c.typ, 0, c.value); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if *syncs != c.want {
+			t.Errorf("%s then Close: %d syncs; want %d", c.typ, *syncs, c.want)
+		}
+	}
+}
