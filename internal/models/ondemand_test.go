@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/townsendmerino/tack/internal/server"
+	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
 // fakeServe is tack serve as the Mac sees it: /tack/status and /tack/start move through the states it is told, and
@@ -36,7 +40,7 @@ func (f *fakeServe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.starts++
 		if f.startBusy {
 			f.state = "busy"
-		} else if f.state == "idle" {
+		} else if f.state == "idle" || f.state == "busy" { // as serve.Front.Start: busy is re-checked
 			f.state = "loading"
 		}
 	case "/tack/status":
@@ -90,8 +94,9 @@ func TestOnDemandLoadsThenServes(t *testing.T) {
 	}
 }
 
-// TestOnDemandBusy: a box a timed run holds is a *BusyError that offers this machine's model, whether the start or
-// the status says so, and nothing is announced as loading.
+// TestOnDemandBusy: a box a timed run holds is a *BusyError that offers this machine's model, and nothing is
+// announced as loading. A busy status is asked to start, since it may be stale; the start finding the lock held is
+// what makes it busy.
 func TestOnDemandBusy(t *testing.T) {
 	for _, state := range []string{"busy", "idle"} {
 		f := &fakeServe{state: state, startBusy: true, msg: "a timed run holds goinfer's timing lock (pid 7)", lockKey: "k"}
@@ -103,6 +108,9 @@ func TestOnDemandBusy(t *testing.T) {
 		}
 		if len(*said) != 0 {
 			t.Errorf("%s: the status line was told %q; a busy box loads nothing", state, *said)
+		}
+		if f.starts != 1 {
+			t.Errorf("%s: %d starts; want one, which re-checks the lock", state, f.starts)
 		}
 	}
 }
@@ -148,3 +156,54 @@ func TestOnDemandStartsOverSSH(t *testing.T) {
 }
 
 func netListen(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
+
+// TestOnDemandGenerationOutlastsTheControlTimeout: the short timeout on tack serve's own routes (/tack/status,
+// /tack/start) is not the model's. A prefill and generation longer than that timeout is answered, not cut off.
+func TestOnDemandGenerationOutlastsTheControlTimeout(t *testing.T) {
+	defer func(d time.Duration) { controlTimeout = d }(controlTimeout)
+	controlTimeout = 200 * time.Millisecond
+	f := &fakeServe{state: "ready", lockKey: "k"}
+	model := goinfertest.NewScripted("q", 16384, goinfertest.Says("slow but here"))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/messages" {
+			w.Header().Set("Content-Type", "text/event-stream") // the stream opens at once
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			time.Sleep(3 * controlTimeout) // a long prefill and generation, inside the body
+			model.ServeHTTP(w, r)
+			return
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	o := NewOnDemand("nobara", ts.URL, "k", "q", nil, nil, nil)
+	o.Poll = time.Millisecond
+	srv, err := o.Ensure(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Stream(context.Background(), server.Request{Model: "q", MaxTokens: 16,
+		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}, func(server.Delta) {})
+	if err != nil {
+		t.Fatalf("a generation longer than the control timeout: %v; want it answered", err)
+	}
+	if got := fmt.Sprint(resp.Content); !strings.Contains(got, "slow but here") {
+		t.Fatalf("the reply: %s; want the model's", got)
+	}
+}
+
+// TestOnDemandBusyIsCheckedAgain: a status of busy may be stale (tack serve checks the timing lock on a start, and
+// the run that held it may be over), so it is asked to start; only a start that finds the lock held is busy.
+func TestOnDemandBusyIsCheckedAgain(t *testing.T) {
+	f := &fakeServe{state: "busy", msg: "a timed run holds goinfer's timing lock (pid 7)", lockKey: "k"}
+	o, said := onDemand(t, f, nil)
+	f.mu.Lock()
+	f.state = "busy" // stale: the timed run is over, and the next start finds the lock free
+	f.mu.Unlock()
+	if _, err := o.Ensure(withSaid(said)); err != nil {
+		t.Fatalf("a busy status left by a run that has ended: %v; want the start re-checked and the model loaded", err)
+	}
+	if f.starts != 1 {
+		t.Fatalf("%d starts; want one, to re-check the lock", f.starts)
+	}
+}
