@@ -267,13 +267,14 @@ func (c *Core) Close() error {
 	return errors.Join(errs...)
 }
 
-// sendQueue is how many messages a connection holds that its client has not read yet; sendTimeout is how long a send
-// waits for room before the connection is dropped. A send runs under a session's locks (an event's fan-out), so a
-// client whose socket stops draining stalls that session for at most sendTimeout, once. A replay waits for room
-// rather than overflowing, so a long log reaches a client that reads.
+// sendQueue is how many messages a connection holds that its client has not read yet. An event's fan-out runs under
+// the session's locks, so it waits for room only fanOutWait: a stuck subscriber costs the session that much, once,
+// before it is dropped, and a reader a burst left a moment behind is not. Anything else sent to one client (an answer,
+// a subscribe's replay) waits up to sendTimeout, so a long replay reaches a client that reads.
 var (
-	sendQueue   = 256
+	sendQueue   = 1024
 	sendTimeout = 5 * time.Second
+	fanOutWait  = 100 * time.Millisecond
 )
 
 // errDropped is a send to a connection that was dropped or has ended.
@@ -289,13 +290,15 @@ type conn struct {
 	closing    chan struct{} // closed by Serve's end: the writer writes what is queued, then ends
 	written    chan struct{} // closed when the writer ends
 	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
+	onDrop     func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
 	timeout    time.Duration // sendTimeout when the connection was made
+	fanOutWait time.Duration // fanOutWait when the connection was made
 }
 
-// newConn is a connection writing to w, closed through w when a stuck client is dropped.
-func newConn(w io.Writer) *conn {
+// newConn is a connection writing to w, closed through w when a stuck client is dropped; onDrop, when not nil, runs then.
+func newConn(w io.Writer, onDrop func()) *conn {
 	cn := &conn{out: make(chan any, sendQueue), stopped: make(chan struct{}), closing: make(chan struct{}),
-		written: make(chan struct{}), timeout: sendTimeout}
+		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, onDrop: onDrop}
 	cn.closer, _ = w.(io.Closer)
 	go cn.write(json.NewEncoder(w))
 	return cn
@@ -339,9 +342,15 @@ func (cn *conn) write(enc *json.Encoder) {
 	}
 }
 
-// send queues v for the client, waiting up to sendTimeout for room; a client that has not made room by then is
-// dropped, and every later send fails at once.
-func (cn *conn) send(v any) error {
+// fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room.
+func (cn *conn) fanOut(v any) error { return cn.sendWithin(v, cn.fanOutWait) }
+
+// send queues v for the client, waiting up to sendTimeout for room.
+func (cn *conn) send(v any) error { return cn.sendWithin(v, cn.timeout) }
+
+// sendWithin queues v for the client, waiting up to wait for room; a client that has not made room by then is dropped,
+// and every later send fails at once.
+func (cn *conn) sendWithin(v any, wait time.Duration) error {
 	select {
 	case <-cn.stopped:
 		return errDropped
@@ -352,7 +361,7 @@ func (cn *conn) send(v any) error {
 		return nil
 	default:
 	}
-	t := time.NewTimer(cn.timeout)
+	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case cn.out <- v:
@@ -386,6 +395,9 @@ func (cn *conn) drop() {
 		if cn.closer != nil {
 			_ = cn.closer.Close()
 		}
+		if cn.onDrop != nil {
+			go cn.onDrop() // a drop may run under a session's lock, which unsubscribing takes
+		}
 	})
 }
 
@@ -396,13 +408,16 @@ func (cn *conn) finish() {
 	select {
 	case <-cn.written:
 	case <-time.After(cn.timeout):
+		cn.drop() // the writer is stuck in a write: closing the transport makes it return
+		return
 	}
 	cn.stop.Do(func() { close(cn.stopped) })
 }
 
 // Serve speaks the protocol on rw until it closes or ctx ends. Requests are handled in order.
 func (c *Core) Serve(ctx context.Context, rw io.ReadWriter) error {
-	cn := newConn(rw)
+	var cn *conn
+	cn = newConn(rw, func() { c.unsubscribeAll(cn) }) // unsubscribed on a drop, also when rw cannot be closed
 	sc := bufio.NewScanner(rw)
 	sc.Buffer(make([]byte, 1<<20), 1<<26)
 	defer cn.finish()
@@ -862,7 +877,7 @@ func (s *session) fanOut(ev proto.Event) {
 			}
 			sub.last = ev.Seq
 		}
-		_ = sub.conn.send(notification(s.id, ev))
+		_ = sub.conn.fanOut(notification(s.id, ev))
 	}
 }
 

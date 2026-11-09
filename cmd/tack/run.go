@@ -246,7 +246,7 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	return ask(ctx, cl, ws, question, mode, jsonOut, false, stdout, stderr)
+	return ask(ctx, cl, ws, question, mode, jsonOut, false, stdout, stderr, nil)
 }
 
 // runViaDaemon asks question through the daemon (tack run --daemon), starting it if none is running.
@@ -261,28 +261,47 @@ func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	defer c.Close()
+	defer func() { c.Close() }() // the connection in use at the end: redial replaces it
 	if c.Warning != "" {
 		fmt.Fprintln(stderr, "tack:", c.Warning)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return ask(ctx, c.Client, ws, question, proto.ModePlan, jsonOut, true, stdout, stderr)
+	redial := func() (*core.Client, error) { // the daemon dropped this client, or went: connect as at the start
+		next, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
+		if err != nil {
+			return nil, err
+		}
+		c.Close()
+		c = next
+		return next.Client, nil
+	}
+	return ask(ctx, c.Client, ws, question, proto.ModePlan, jsonOut, true, stdout, stderr, redial)
 }
+
+// askRedials is how many times ask connects again to a daemon that closed its connection mid-turn.
+const askRedials = 3
 
 // ask runs one turn on an initialized connection: a new session in ws, subscribed, prompted with question, until its
 // turn.end, whose stop reason is the exit code. When ctx ends, an in-process turn is cancelled with it and ask waits
 // for its end; a detached one (the daemon's) runs on, and ask leaves it.
-func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.Mode, jsonOut, detached bool, stdout, stderr io.Writer) int {
-
+//
+// redial, when not nil, connects again: a connection that closes before the turn ends (the daemon dropped a client that
+// stopped reading, a terminal paused with Ctrl-S) is replaced, up to askRedials times, and the session subscribed again
+// from the event after the last one heard, so the replay gives what was missed. Streamed text (assistant.delta, never
+// persisted) sent during the gap is not replayed. Without redial a lost connection ends ask with an error.
+func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.Mode, jsonOut, detached bool, stdout, stderr io.Writer,
+	redial func() (*core.Client, error)) int {
 	var mu sync.Mutex
+	var last int64 // the last persisted seq heard, under mu
 	done := make(chan string, 1)
 	var answer strings.Builder
 	noRewind := map[string]bool{}
-	cl.OnEvent = func(p proto.SessionEventParams) {
+	onEvent := func(p proto.SessionEventParams) {
 		mu.Lock()
 		defer mu.Unlock()
 		ev := p.Event
+		last = max(last, ev.Seq)
 		if jsonOut {
 			b, _ := json.Marshal(ev)
 			fmt.Fprintf(stdout, "%s\n", b)
@@ -298,10 +317,24 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 				answer.WriteString(e.Text)
 			}
 		case proto.AssistantMessage:
-			if !jsonOut && answer.Len() > 0 && !strings.HasSuffix(answer.String(), "\n") {
-				fmt.Fprintln(stdout)
-				answer.Reset()
+			if jsonOut {
+				break
 			}
+			// The deltas may not have carried all of it: text streamed while the connection was gone is never replayed.
+			var full strings.Builder
+			for _, b := range e.Content {
+				if b.Type == "text" {
+					full.WriteString(b.Text)
+				}
+			}
+			if rest, ok := strings.CutPrefix(full.String(), answer.String()); ok && rest != "" {
+				fmt.Fprint(stdout, rest)
+				answer.WriteString(rest)
+			}
+			if answer.Len() > 0 && !strings.HasSuffix(answer.String(), "\n") {
+				fmt.Fprintln(stdout)
+			}
+			answer.Reset()
 		case proto.ToolCall:
 			fmt.Fprintf(stderr, "· %s %s\n", e.Name, e.Input)
 		case proto.ToolFinished:
@@ -325,6 +358,7 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 			}
 		}
 	}
+	cl.OnEvent = onEvent
 
 	var sess proto.SessionNewResult
 	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
@@ -344,21 +378,44 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 		return exitError
 	}
 	var reason string
-	select {
-	case reason = <-done:
-	case <-cl.Done():
+	for redials := 0; reason == ""; {
+		select {
+		case reason = <-done:
+			continue
+		case <-ctx.Done():
+			if detached {
+				fmt.Fprintf(stderr, "tack run: left session %s running in the daemon\n", sess.Session)
+				return exitError
+			}
+			reason = <-done // the turn records its cancel and ends
+			continue
+		case <-cl.Done():
+		}
 		select {
 		case reason = <-done: // the turn.end came before the connection closed
+			continue
 		default:
+		}
+		if redial == nil || redials == askRedials {
 			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended\n", sess.Session)
 			return exitError
 		}
-	case <-ctx.Done():
-		if detached {
-			fmt.Fprintf(stderr, "tack run: left session %s running in the daemon\n", sess.Session)
+		redials++
+		next, err := redial()
+		if err != nil {
+			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended, and connecting again failed: %v\n", sess.Session, err)
 			return exitError
 		}
-		reason = <-done // the turn records its cancel and ends
+		next.OnEvent = onEvent
+		mu.Lock()
+		from := last + 1
+		mu.Unlock()
+		if err := next.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session, FromSeq: from}, nil); err != nil {
+			fmt.Fprintf(stderr, "tack run: subscribing again to session %s: %v\n", sess.Session, err)
+			return exitError
+		}
+		fmt.Fprintf(stderr, "tack run: connected to the daemon again; session %s goes on from seq %d\n", sess.Session, from)
+		cl = next
 	}
 	switch reason {
 	case proto.StopEndTurn, proto.StopDone:
