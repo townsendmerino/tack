@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,17 @@ func TestNames(t *testing.T) {
 	}
 	if got := methodIdent("session/subscribe"); got != "sessionSubscribe" {
 		t.Errorf("methodIdent = %q", got)
+	}
+}
+
+// TestFieldlessStructsCompile: a struct with no fields (daemon/status's params) gets no CodingKeys enum, since Swift
+// refuses a raw-typed enum with no cases; synthesized Codable encodes it as {}.
+func TestFieldlessStructsCompile(t *testing.T) {
+	out := string(Generate())
+	if strings.Contains(out, "enum CodingKeys: String, CodingKey {\n    }") {
+		t.Fatal("the generated Swift has an empty CodingKeys enum, which does not compile")
+	}
+	if want := "public struct DaemonStatusParams: Codable, Equatable, Sendable {\n    public init() {}\n}"; !strings.Contains(out, want) {
+		t.Fatalf("the generated Swift lacks %q", want)
 	}
 }

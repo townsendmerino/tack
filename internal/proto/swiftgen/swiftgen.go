@@ -166,6 +166,10 @@ func fields(t reflect.Type) []field {
 func (g *gen) emitStruct(b *bytes.Buffer, t reflect.Type) {
 	fs := fields(t)
 	fmt.Fprintf(b, "public struct %s: Codable, Equatable, Sendable {\n", t.Name())
+	if len(fs) == 0 { // Swift refuses a raw-typed enum with no cases; synthesized Codable encodes this as {}
+		b.WriteString("    public init() {}\n}\n\n")
+		return
+	}
 	for _, f := range fs {
 		typ := g.swiftType(f.Type)
 		if f.OmitEmpty && !strings.HasSuffix(typ, "?") {

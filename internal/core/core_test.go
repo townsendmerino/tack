@@ -253,7 +253,7 @@ func TestErrors(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Code != proto.CodeInvalidParams {
 		t.Fatalf("unknown param field: %v", err)
 	}
-	err = f.client.Call(proto.MethodInitialize, proto.InitializeParams{Protocol: proto.Version + 1}, nil)
+	err = f.client.Call(proto.MethodInitialize, proto.InitializeParams{Protocol: proto.Version + 2}, nil)
 	if !errors.As(err, &pe) || pe.Code != proto.CodeInvalidParams {
 		t.Fatalf("future protocol: %v", err)
 	}

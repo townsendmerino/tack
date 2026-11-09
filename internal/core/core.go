@@ -40,6 +40,10 @@ type Options struct {
 	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
 	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
 	ClientToken string
+	// Shutdown, when set, is what a privileged daemon/shutdown asks for: the daemon drains (Drain) and exits. It is called
+	// once, after the request is answered, and must not block. Without it, daemon/shutdown is refused: no daemon hosts
+	// this Core.
+	Shutdown func()
 	// Servers names the configured model servers, for initialize's capabilities ("goinfer@nobara").
 	Servers []string
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
@@ -151,6 +155,10 @@ type Core struct {
 	searchers map[string]tools.Searcher // by workspace root
 	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
 	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
+	draining  bool                      // Drain has begun: no new turns
+	started   time.Time
+
+	shutdown sync.Once // Options.Shutdown is called once
 }
 
 type session struct {
@@ -189,7 +197,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}}
+		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
@@ -281,6 +289,9 @@ func (c *Core) Serve(ctx context.Context, rw io.ReadWriter) error {
 		if req.Method == proto.MethodSessionSubscribe && perr == nil {
 			c.replay(cn, req)
 		}
+		if req.Method == proto.MethodDaemonShutdown && perr == nil {
+			c.shutdown.Do(func() { go c.opt.Shutdown() }) // answered first: the shutdown closes this connection
+		}
 	}
 	return sc.Err()
 }
@@ -311,9 +322,10 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if perr != nil {
 			return nil, perr
 		}
-		if p.Protocol != proto.Version {
+		version, ok := proto.Negotiate(p.Protocol, proto.Version)
+		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
-				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
+				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %s", p.Protocol, spoken())}
 		}
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
@@ -325,7 +337,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		if c.opt.OpenSearcher != nil {
 			ken = "engine"
 		}
-		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: proto.Version,
+		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: version,
 			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}, Privileged: cn.privileged}, nil
 	case proto.MethodSessionNew:
 		p, perr := params[proto.SessionNewParams](req)
@@ -333,7 +345,11 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		id, err := c.newSession(p)
-		if err != nil {
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe):
+			return nil, pe // errClosed
+		case err != nil:
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: err.Error()}
 		}
 		return proto.SessionNewResult{Session: id}, nil
@@ -353,6 +369,22 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		return c.prompt(p)
+	case proto.MethodDaemonStatus:
+		if _, perr := params[proto.DaemonStatusParams](req); perr != nil {
+			return nil, perr
+		}
+		return c.status(), nil
+	case proto.MethodDaemonShutdown:
+		if _, perr := params[proto.DaemonShutdownParams](req); perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		if c.opt.Shutdown == nil {
+			return nil, &proto.Error{Code: proto.CodeInvalidRequest, Message: "daemon/shutdown: no daemon hosts this session core (tack run without --daemon)"}
+		}
+		return proto.DaemonShutdownResult{}, nil
 	}
 	return nil, &proto.Error{Code: proto.CodeMethodNotFound, Message: "method not found: " + req.Method}
 }
@@ -409,7 +441,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
-		return "", errors.New("the daemon is closing")
+		return "", errClosed
 	}
 	if madeHook != nil {
 		madeHook()
@@ -634,6 +666,10 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	if h := c.halted; h != nil {
 		c.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeHalted, Message: (&halt.Halted{DaemonHalted: *h}).Error() + "; run tack resume"}
+	}
+	if c.draining {
+		c.mu.Unlock()
+		return nil, &proto.Error{Code: proto.CodeShuttingDown, Message: "the daemon is shutting down; prompt again once it has restarted"}
 	}
 	s.mu.Lock()
 	if s.running {

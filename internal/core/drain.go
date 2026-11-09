@@ -1,0 +1,98 @@
+package core
+
+import (
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/proto"
+)
+
+// drainLimit is how long Drain waits for a turn it cancelled to record its end before giving up on it.
+const drainLimit = 5 * time.Second
+
+// Drain stops the Core for a shutdown (DESIGN §6.1). New turns are refused with CodeShuttingDown. Each running turn
+// finishes the tool call it is running, starts no other, and ends before its next model request (loop.Session.Drain).
+// A turn still running when grace ends is cancelled with loop.ErrShutdown, which kills its commands; Drain then waits
+// up to drainLimit for it to record its end, and returns the sessions it cancelled. The caller closes the Core.
+func (c *Core) Drain(grace time.Duration) []proto.SessionID {
+	c.mu.Lock()
+	c.draining = true
+	ss := make([]*session, 0, len(c.sessions))
+	for _, s := range c.sessions {
+		ss = append(ss, s)
+	}
+	c.mu.Unlock()
+	for _, s := range ss {
+		s.loop.Drain()
+	}
+	if c.waitIdle(ss, time.Now().Add(grace)) {
+		return nil
+	}
+	var cancelled []proto.SessionID
+	for _, s := range ss {
+		s.mu.Lock()
+		if s.running && s.cancel != nil {
+			s.cancel(loop.ErrShutdown)
+			cancelled = append(cancelled, s.id)
+		}
+		s.mu.Unlock()
+	}
+	c.waitIdle(ss, time.Now().Add(drainLimit))
+	return cancelled
+}
+
+// waitIdle waits until none of ss has a turn running, or until deadline; it reports whether none has.
+func (c *Core) waitIdle(ss []*session, deadline time.Time) bool {
+	for {
+		busy := false
+		for _, s := range ss {
+			s.mu.Lock()
+			busy = busy || s.running
+			s.mu.Unlock()
+		}
+		if !busy {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// status is daemon/status's answer.
+func (c *Core) status() proto.DaemonStatusResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	r := proto.DaemonStatusResult{Version: c.opt.Version, Protocol: proto.Version, PID: os.Getpid(),
+		Started: c.started.UTC().Truncate(time.Second), Sessions: len(c.sessions), Halted: c.halted != nil, Draining: c.draining}
+	for _, s := range c.sessions {
+		s.mu.Lock()
+		if s.running {
+			r.Running++
+		}
+		s.mu.Unlock()
+	}
+	return r
+}
+
+// unprivileged refuses method on a connection that did not present the client token at initialize (DESIGN §9.2).
+func unprivileged(method string) *proto.Error {
+	return &proto.Error{Code: proto.CodeUnauthorized,
+		Message: method + " needs the client token: connect as an unsandboxed client that reads client.token"}
+}
+
+// spoken names the protocol versions this daemon answers with, for initialize's refusal: those a client at that
+// version is answered with by Negotiate.
+func spoken() string {
+	var vs []string
+	for _, v := range []int{proto.Version, proto.Version - 1} {
+		if got, ok := proto.Negotiate(v, proto.Version); ok && got == v {
+			vs = append(vs, strconv.Itoa(v))
+		}
+	}
+	return strings.Join(vs, " and ")
+}

@@ -256,7 +256,7 @@ func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
 }
 
 // errClosed answers a request for a session once the Core is closed.
-var errClosed = &proto.Error{Code: proto.CodeInternalError, Message: "the daemon is closing"}
+var errClosed = &proto.Error{Code: proto.CodeShuttingDown, Message: "the daemon is closing"}
 
 // madeHook, when set (tests), runs in newSession after its closed check.
 var madeHook func()
