@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
@@ -65,6 +66,9 @@ func TestDaemonCommands(t *testing.T) {
 	if code, out, errs = cli("daemon", "stop", "-config", cfg); code != exitOK || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop: exit %d, %q %q", code, out, errs)
 	}
+	if h := daemon.ReadHolder(filepath.Join(dir, "s")); h.PID != 0 {
+		t.Fatalf("stop returned with the lock still held by %+v", h)
+	}
 	select {
 	case code := <-ran:
 		if code != exitOK {
@@ -87,5 +91,26 @@ func TestRunDaemonRefusesInProcessFlags(t *testing.T) {
 		if code := dispatch(args, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "in this process only") {
 			t.Errorf("run --daemon %v: exit %d, %q", flags, code, errb.String())
 		}
+	}
+}
+
+// TestReleasedWaitsForTheLock: tack daemon stop waits until the daemon it stopped has let go of the lock, not only
+// until its socket stops answering, which a shutdown takes away first.
+func TestReleasedWaitsForTheLock(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	l, err := daemon.Acquire(filepath.Join(dir, "s"), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released(filepath.Join(dir, "s"), os.Getpid(), 200*time.Millisecond) {
+		t.Fatal("released while the lock is held")
+	}
+	l.Release()
+	if !released(filepath.Join(dir, "s"), os.Getpid(), time.Second) {
+		t.Fatal("not released after Release")
 	}
 }
