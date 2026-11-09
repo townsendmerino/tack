@@ -5,13 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/go-git/go-billy/v5"
+	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	format "github.com/go-git/go-git/v5/plumbing/format/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
 
 	"github.com/townsendmerino/tack/internal/server"
@@ -28,7 +36,8 @@ import (
 // costs:
 //   - a file under a filter (git-lfs's, say) can show as modified;
 //   - renames show as a delete and an add;
-//   - a partial clone's missing object is an error, not a fetch.
+//   - a partial clone's missing object is an error, not a fetch;
+//   - a sparse checkout's per-worktree settings are not applied (readIgnorable).
 
 const (
 	recentDefault  = 10
@@ -65,7 +74,7 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	repo, err := git.PlainOpenWithOptions(ws.Root(), &git.PlainOpenOptions{DetectDotGit: true, EnableDotGitCommonDir: true})
+	repo, err := openRepo(ws.Root())
 	if errors.Is(err, git.ErrRepositoryNotExists) {
 		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
 	}
@@ -219,4 +228,83 @@ func changed(c *object.Commit, prefix string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// readIgnorable are the repository extensions a read through go-git can ignore, lowercased as go-git reads them:
+// a partial clone's (a missing object is then an error, not a fetch), sparse checkout's per-worktree config (its
+// settings are not applied: status reads the whole worktree), and two that change nothing for a reader. go-git refuses
+// to open a repository with any extension it does not implement; any other extension (objectformat, refstorage) does
+// change how the repository is read, so it is still refused, and the error names it.
+var readIgnorable = map[string]bool{"partialclone": true, "worktreeconfig": true, "preciousobjects": true, "noop": true}
+
+// readStorer is a repository's storage whose config leaves out the extensions a read can ignore (readIgnorable).
+type readStorer struct{ *filesystem.Storage }
+
+func (s readStorer) Config() (*config.Config, error) {
+	cfg, err := s.Storage.Config()
+	if err != nil || cfg.Raw == nil || !cfg.Raw.HasSection("extensions") {
+		return cfg, err
+	}
+	sec := cfg.Raw.Section("extensions")
+	var keep format.Options
+	for _, o := range sec.Options {
+		if !readIgnorable[strings.ToLower(o.Key)] {
+			keep = append(keep, o)
+		}
+	}
+	sec.Options = keep
+	return cfg, nil
+}
+
+// openRepo opens the repository holding root, as git.PlainOpenWithOptions does with DetectDotGit and
+// EnableDotGitCommonDir: the nearest .git at or above root, a directory or a "gitdir:" file, with its commondir. It
+// opens it through readStorer, which go-git's own open has no option for.
+func openRepo(root string) (*git.Repository, error) {
+	path, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	var fi os.FileInfo
+	for {
+		if fi, err = os.Stat(filepath.Join(path, git.GitDirName)); err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil, git.ErrRepositoryNotExists
+		}
+		path = parent
+	}
+	gitDir := filepath.Join(path, git.GitDirName)
+	if !fi.IsDir() {
+		b, err := os.ReadFile(gitDir)
+		if err != nil {
+			return nil, err
+		}
+		line, ok := strings.CutPrefix(string(b), "gitdir: ")
+		if !ok {
+			return nil, fmt.Errorf(".git file has no gitdir: line")
+		}
+		line, _, _ = strings.Cut(line, "\n")
+		if gitDir = strings.TrimSpace(line); !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(path, gitDir)
+		}
+	}
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return nil, git.ErrRepositoryNotExists
+	}
+	dot := osfs.New(gitDir)
+	var fs billy.Filesystem = dot
+	if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		if common := strings.TrimSpace(string(b)); common != "" {
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitDir, common)
+			}
+			fs = dotgit.NewRepositoryFilesystem(dot, osfs.New(common))
+		}
+	}
+	return git.Open(readStorer{filesystem.NewStorage(fs, cache.NewObjectLRUDefault())}, osfs.New(path))
 }

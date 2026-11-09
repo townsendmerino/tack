@@ -331,3 +331,33 @@ func TestRecentlyChangedRunsNoFilterWithAnyName(t *testing.T) {
 		t.Fatal("a filter named with = ran")
 	}
 }
+
+// TestRecentlyChangedReadsPartialClonesAndWorktreeConfig: a repository with extensions go-git refuses but a read can
+// ignore (a partial clone's partialclone, sparse checkout's worktreeConfig) is read; one with an extension that
+// changes how its objects are read (reftable refs) is a tool error that names it.
+func TestRecentlyChangedReadsPartialClonesAndWorktreeConfig(t *testing.T) {
+	root := gitRepo(t)
+	for _, kv := range [][2]string{{"core.repositoryformatversion", "1"}, {"extensions.partialclone", "origin"},
+		{"extensions.worktreeConfig", "true"}, {"remote.origin.url", "https://example.invalid/r.git"}, {"remote.origin.promisor", "true"}} {
+		gitIn(t, root, "config", kv[0], kv[1])
+	}
+	if r := recent(t, root, `{}`); r.IsError || !strings.Contains(r.Text, " M sub/a.go") || !strings.Contains(r.Text, "second: add b") {
+		t.Errorf("a partial clone with worktreeConfig: %+v", r)
+	}
+	gitIn(t, root, "config", "extensions.refstorage", "reftable")
+	if r := recent(t, root, `{}`); !r.IsError || !strings.Contains(r.Text, "refstorage") {
+		t.Errorf("an extension a read cannot ignore: %+v", r)
+	}
+}
+
+// TestRecentlyChangedReadsALinkedWorktree: a worktree git worktree add made, whose .git is a gitdir: file and whose
+// objects are in the main repository's commondir, is read with its own branch and changes.
+func TestRecentlyChangedReadsALinkedWorktree(t *testing.T) {
+	root := gitRepo(t)
+	linked := filepath.Join(t.TempDir(), "wt")
+	gitIn(t, root, "worktree", "add", "-q", "-b", "side", linked)
+	os.WriteFile(filepath.Join(linked, "side.go"), []byte("package side\n"), 0o644)
+	if r := recent(t, linked, `{}`); r.IsError || !strings.Contains(r.Text, "?? side.go") || !strings.Contains(r.Text, "second: add b") {
+		t.Errorf("a linked worktree: %+v", r)
+	}
+}
