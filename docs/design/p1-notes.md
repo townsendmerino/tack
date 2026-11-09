@@ -64,6 +64,8 @@ The order the owner approved, each step with its exit check:
      dependency).
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **The adapter built (2026-11-09)** as `kind = "openai-remote"` (`internal/server/openai`), tested against
+     hand-written wire fixtures; the cassettes recorded against goinfer's endpoint are a recipe to the coordinator.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
      the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
      config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,
