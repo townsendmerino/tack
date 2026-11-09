@@ -64,13 +64,17 @@ func parseRule(s string) (rule, error) {
 }
 
 // band is d's verdict against sd, d being arm try's passes less arm base's: shown at d ≥ 2 sd, parked at sd ≤ d < 2 sd,
-// else not shown (the do-nothing arm, base, wins ties). d and sd are compared unrounded.
+// else not shown (the do-nothing arm, base, wins ties), and at d ≤ −sd also parked low (calibration §18.1). d and sd
+// are compared unrounded.
 func band(d, sd float64, base, try string) string {
 	switch {
 	case d >= 2*sd:
 		return "shown: " + try + " beats " + base
 	case d >= sd:
 		return "parked: reported, no more runs unless Francis says so"
+	}
+	if d <= -sd {
+		return "not shown, parked low: the do-nothing arm " + base + " wins, and " + try + " is reported as worse by 1 sd or more"
 	}
 	return "not shown: the do-nothing arm " + base + " wins"
 }
@@ -102,7 +106,10 @@ func num(x float64) string { return strconv.FormatFloat(x, 'f', -1, 64) }
 // read prints the rule's section: each arm's passes and n against the registered n, d, and its band. A job without
 // both an A and a B arm gets no band.
 func (r rule) read(w io.Writer, j *jobData) {
-	fmt.Fprintf(w, "## The registered rule (§12.3's form): sd %.2f, %d counted runs per arm\n\n", r.sd, r.n)
+	fmt.Fprintf(w, "## The registered rule (§12.3's form): %s − %s, sd %.2f, %d counted runs per arm\n\n", r.try, r.base, r.sd, r.n)
+	if r.base != "A" {
+		fmt.Fprintf(w, "- a second contrast: %s − %s is acted on only if the first (%s − A) is shown (calibration §18.1)\n", r.try, r.base, r.base)
+	}
 	count := func(arm string) (pass, n int) {
 		for _, rec := range j.arms[arm] {
 			n++

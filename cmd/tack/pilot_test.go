@@ -181,6 +181,7 @@ func TestA1Arms(t *testing.T) {
 		"unknown then":               {compare: settingList{"summarize"}, then: settingList{"summary_retrive"}},
 		"then in B too":              {compare: settingList{"summarize"}, then: settingList{"summarize"}},
 		"then in every arm":          {settings: adopted, compare: settingList{"summarize"}, then: settingList{"stop_repeats"}},
+		"then twice":                 {compare: settingList{"summarize"}, then: settingList{"summary_retrieve", "summary_retrieve"}},
 		"negative reps with compare": {compare: settingList{"verify_done"}, reps: -1},
 		"unknown compare":            {compare: settingList{"verify_dne"}},
 		"in both arms":               {settings: adopted, compare: settingList{"verify_done", "stop_repeats"}},

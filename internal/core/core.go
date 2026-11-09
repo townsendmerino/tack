@@ -82,6 +82,10 @@ type Options struct {
 	SubagentBudget loop.Budget
 	// SummaryRetrieve is re-retrieval's share of the window after each summary, 0 for none (loop.Config.SummaryRetrieve).
 	SummaryRetrieve int
+	// OpenRetrieve, when set, opens an index over a workspace root for SummaryRetrieve alone, for a core without
+	// OpenSearcher: it adds no tool, so re-retrieval is the only thing that changes (C12's arm C, calibration §18). The
+	// Core opens one per root, at the first session on it, and closes it in Close when it is an io.Closer.
+	OpenRetrieve func(ctx context.Context, root string) (tools.Searcher, error)
 	// ResultNotes adds the loop's notes to tool results (loop.Config.ResultNotes).
 	ResultNotes bool
 	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages).
@@ -175,14 +179,15 @@ type Core struct {
 	reopenMu sync.Mutex // held while a session is reopened from the store
 	closed   bool       // under mu: Close has run; nothing is reopened or made
 
-	mu        sync.Mutex
-	sessions  map[proto.SessionID]*session
-	sources   map[string]models.Source
-	searchers map[string]tools.Searcher // by workspace root
-	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
-	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
-	draining  bool                      // Drain has begun: no new turns
-	started   time.Time
+	mu         sync.Mutex
+	sessions   map[proto.SessionID]*session
+	sources    map[string]models.Source
+	searchers  map[string]tools.Searcher // by workspace root
+	retrievers map[string]tools.Searcher // by workspace root (Options.OpenRetrieve)
+	spans      map[string]*lazySpans     // by workspace root (Options.OpenSpans)
+	halted     *proto.DaemonHalted       // non-nil while tack is halted: no new turns
+	draining   bool                      // Drain has begun: no new turns
+	started    time.Time
 
 	shutdown sync.Once // Options.Shutdown is called once
 }
@@ -234,7 +239,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
+		searchers: map[string]tools.Searcher{}, retrievers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
@@ -258,6 +263,11 @@ func (c *Core) Close() error {
 			errs = append(errs, cl.Close())
 		}
 	}
+	for _, s := range c.retrievers {
+		if cl, ok := s.(io.Closer); ok {
+			errs = append(errs, cl.Close())
+		}
+	}
 	for _, l := range c.spans {
 		errs = append(errs, l.Close())
 	}
@@ -272,7 +282,7 @@ func (c *Core) Close() error {
 			errs = append(errs, halt.Unregister(c.opt.HaltDir, string(id)))
 		}
 	}
-	c.sessions, c.sources, c.searchers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
+	c.sessions, c.sources, c.searchers, c.retrievers, c.spans = map[proto.SessionID]*session{}, map[string]models.Source{}, map[string]tools.Searcher{}, map[string]tools.Searcher{}, map[string]*lazySpans{}
 	return errors.Join(errs...)
 }
 
@@ -781,6 +791,12 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	if err != nil {
 		return nil, fmt.Errorf("ken: %w", err)
 	}
+	retrieve := searcher // what re-retrieval searches: ken's engine, or without it an index of its own
+	if retrieve == nil && c.opt.SummaryRetrieve > 0 && c.opt.OpenRetrieve != nil {
+		if retrieve, err = c.retriever(ws.Root()); err != nil {
+			return nil, fmt.Errorf("summary_retrieve's index: %w", err)
+		}
+	}
 	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
 	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
 		prompted: prompted}
@@ -800,7 +816,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		FindRelated: c.opt.FindRelated}
 	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: searcher, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
@@ -1237,6 +1253,21 @@ func (c *Core) searcher(root string) (tools.Searcher, error) {
 		return nil, err
 	}
 	c.searchers[root] = s
+	return s, nil
+}
+
+// retriever returns the root's index for re-retrieval alone (Options.OpenRetrieve), opening it on first use.
+func (c *Core) retriever(root string) (tools.Searcher, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.retrievers[root]; ok {
+		return s, nil
+	}
+	s, err := c.opt.OpenRetrieve(c.ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	c.retrievers[root] = s
 	return s, nil
 }
 

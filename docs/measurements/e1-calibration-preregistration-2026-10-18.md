@@ -2849,6 +2849,14 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
   started under heavy load is void and re-run in its place.
 - **First-block check:** every B run's config has `summarize = true`, and C's has that and `summary_retrieve = true`; A's has
   neither. Otherwise the screen stops, since the setting did not reach the arm.
+- **C's mechanism check** (added 2026-11-09, before any run, from #137's review): the config line is not enough. Arms run
+  with no `[ken]`, and before this review `summary_retrieve` had no index without one, so every C run would have run as
+  B. tack now opens a bm25 index for re-retrieval alone, adding no tool (`cmd/tack/coreopts.go:coreOptions`,
+  `TestRunSummaryRetrieveNeedsNoKen`). The first C run that summarizes must carry a retrieved section in its compaction
+  (the summary's "Current code for the open threads" heading); its size and the spans it holds are read from the
+  compaction's Summary and reported with the check. If
+  it has none, the screen stops: re-retrieval did not reach the arm. A C run with no summary checks nothing, so the
+  check waits for the first that has one.
 - **Mechanism metrics, reported and never used for adoption:**
   - summaries per run, and the request each ran before;
   - the fallback rate, meaning summaries without the summarizer's body (no headings, an error, a timeout, no alias);

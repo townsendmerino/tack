@@ -102,6 +102,19 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 	}
 	if cfg.Run.SummaryRetrieve {
 		opts.SummaryRetrieve = cfg.Run.SummaryRetrieveShare
+		if cfg.Ken == nil {
+			// Re-retrieval's own index, as inject_context's: bm25, no tool, no snapshot. Without it there is no Searcher, and
+			// summary_retrieve would do nothing: C12's arm C would run as B (calibration §18).
+			opts.OpenRetrieve = func(ctx context.Context, root string) (tools.Searcher, error) {
+				start := time.Now()
+				s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
+				if err != nil {
+					return nil, err
+				}
+				fmt.Fprintf(stderr, "tack: summary_retrieve: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
+				return s, nil
+			}
+		}
 	}
 	if cfg.Run.Subagents {
 		opts.Subagents = true

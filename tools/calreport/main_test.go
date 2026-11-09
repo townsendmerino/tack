@@ -390,7 +390,8 @@ func TestRulePairReadsCMinusB(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 	s := out.String()
-	for _, want := range []string{"- B: 10 passes of 36", "- C: 14 passes of 36", "d = C − B = +4; edges 2 (1 sd) and 4 (2 sd)", "verdict: shown: C beats B"} {
+	for _, want := range []string{"## The registered rule (§12.3's form): C − B, sd 2.00", "is acted on only if the first (B − A) is shown",
+		"- B: 10 passes of 36", "- C: 14 passes of 36", "d = C − B = +4; edges 2 (1 sd) and 4 (2 sd)", "verdict: shown: C beats B"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("want %q in\n%s", want, s[strings.Index(s, "## The registered rule"):])
 		}
@@ -401,6 +402,16 @@ func TestRulePairReadsCMinusB(t *testing.T) {
 	for _, bad := range []string{"pair=B:B", "pair=B", "pair=B:C:D", "pair=:C"} {
 		if code := run([]string{"-rule", "sd=2.0,n=36," + bad, p}, &out); code != 2 {
 			t.Errorf("%s: exit %d, want 2 (refused)", bad, code)
+		}
+	}
+}
+
+// TestRuleParkedLow: d at or below −1 sd is not shown and parked low (calibration §18.1); just above it, plain not
+// shown.
+func TestRuleParkedLow(t *testing.T) {
+	for d, want := range map[float64]string{-2: "not shown, parked low", -4: "not shown, parked low", -1.9: "not shown: the do-nothing arm A wins", 0: "not shown: the do-nothing arm A wins"} {
+		if got := band(d, 2, "A", "B"); !strings.HasPrefix(got, want) {
+			t.Errorf("band(%v, 2) = %q, want %q", d, got, want)
 		}
 	}
 }

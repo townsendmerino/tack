@@ -314,8 +314,10 @@ func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 				return nil, 0, false, fmt.Errorf("%q is both a -setting and a -compare-setting: the arms would not differ by it", c)
 			}
 		}
-		for _, c := range r.then {
+		for i, c := range r.then {
 			switch {
+			case slices.Contains(r.then[:i], c):
+				return nil, 0, false, fmt.Errorf("-then-setting %q is given twice", c)
 			case !pilot.RunSettings[c]:
 				return nil, 0, false, fmt.Errorf("-then-setting %q is not one an arm may switch on; allowed: %s", c, settingNames())
 			case slices.Contains(r.settings, c) || slices.Contains(r.compare, c):
