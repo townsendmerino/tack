@@ -450,11 +450,10 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		budget := window.NewBudget(w)
 		var parts []string
 		var loads multiSections
-		wholeFile := false // the instruction file is loaded whole
-		if name, content := readInstructionFile(ws.Root()); name != "" && c.opt.SectionInstructions {
-			in := window.NewInstructions(name, content, budget)
-			parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
-		}
+		// The knowledge index is priced first, at its own small cap, so the instruction file gets what is left and the
+		// two together stay in the budget; in the message the instructions come first.
+		index, wholeFile := "", false // wholeFile: the instruction file is loaded whole
+		var know *window.Knowledge
 		if c.opt.Knowledge {
 			pages, err := window.LoadPages(ws.Root())
 			if err != nil {
@@ -462,14 +461,28 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 				return "", fmt.Errorf("knowledge pages: %w", err)
 			}
 			if len(pages) > 0 {
-				k := window.NewKnowledge(ws.Root(), pages, w, budget)
-				parts, loads = append(parts, k.Index()), append(loads, k)
+				know = window.NewKnowledge(ws.Root(), pages, w, budget)
+				index = know.Index()
 			}
+		}
+		if c.opt.SectionInstructions {
+			if name, content := readInstructionFile(ws.Root()); name != "" {
+				in := window.NewInstructions(name, content, budget)
+				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+			}
+		}
+		if know != nil {
+			if index != "" {
+				parts = append(parts, index)
+			}
+			loads = append(loads, know)
 		}
 		if len(parts) > 0 {
 			// A whole file alone follows the task, as WholeInstructions puts it; sections and the knowledge index are notes
 			// before it.
 			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), !(wholeFile && len(parts) == 1)
+		}
+		if len(loads) > 0 {
 			cfg.Sections = loads
 		}
 	}

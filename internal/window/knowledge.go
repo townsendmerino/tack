@@ -15,8 +15,9 @@ import (
 
 // Knowledge pages (DESIGN §2.5, §6.7 "Memory across sessions"; ADR-007): markdown files under .agents/knowledge/, one
 // page per file, package or subject. The first message carries only a short index of their titles. A page pinned to a
-// file loads when a tool call reads or edits that file, drawing on the instruction budget, unless the file no longer
-// matches the hash the page records: then the page is possibly out of date, and it is named, not loaded as fact.
+// file loads when a tool call reads or edits that file, drawing on the instruction budget, unless the file did not
+// match the hash the page records when the session began: then the page is possibly out of date, and it is named, not
+// loaded as fact.
 //
 // A page's frontmatter names its pins, each a file from the workspace root and the sha256 of its content (a prefix of
 // at least 12 hex digits):
@@ -142,22 +143,44 @@ type Knowledge struct {
 	pages  []Page
 	window int
 	b      *Budget
-	in     []bool
-	cost   []int
-	by     []string // the id of the call whose result carries each page in
-	call   []int    // which ForCall brought each page in, counted from 1, so ids a model reuses stay apart
-	calls  int
+	fresh  []bool      // each page's pins matched their files when the session began
+	state  []pageState // where each page stands in the window
+	note   []int       // the note that carries or names each page: an index into notes
+	notes  []knowNote
 }
 
-// NewKnowledge is root's pages for a window of window tokens, drawing on b.
+type pageState int
+
+const (
+	pageOut    pageState = iota // not in the window
+	pageIn                      // its text is in the window
+	pageStale                   // named in the window as possibly out of date
+	pageNoRoom                  // named in the window as not loaded for want of budget; it loads once it fits
+)
+
+// knowNote is one call's note: its id (which a model may leave empty or use again), what it took of the budget, and
+// whether it is still in the window.
+type knowNote struct {
+	id   string
+	cost int
+	live bool
+}
+
+// NewKnowledge is root's pages for a window of window tokens, drawing on b. Each page's freshness is judged now,
+// against the tree as the session begins: the session's own edits of a pinned file do not make its page stale midway
+// (the loop asks only after an edit has run), and a change made before the session does.
 func NewKnowledge(root string, pages []Page, window int, b *Budget) *Knowledge {
 	n := len(pages)
-	return &Knowledge{root: root, pages: pages, window: window, b: b, in: make([]bool, n), cost: make([]int, n), by: make([]string, n),
-		call: make([]int, n)}
+	k := &Knowledge{root: root, pages: pages, window: window, b: b, fresh: make([]bool, n), state: make([]pageState, n),
+		note: make([]int, n)}
+	for i, pg := range pages {
+		k.fresh[i] = k.matches(pg)
+	}
+	return k
 }
 
-// fresh says whether every pin of the page matches its file now.
-func (k *Knowledge) fresh(pg Page) bool {
+// matches says whether every pin of the page matches its file now.
+func (k *Knowledge) matches(pg Page) bool {
 	for _, p := range pg.Pins {
 		b, err := os.ReadFile(filepath.Join(k.root, filepath.FromSlash(p.File)))
 		if err != nil || p.Hash == "" {
@@ -171,13 +194,13 @@ func (k *Knowledge) fresh(pg Page) bool {
 	return true
 }
 
-// Index is the first message's list of pages, one line each, cut from the end to IndexShare of the window; it draws on
-// the budget. It is "" when there are none.
+// Index is the first message's list of pages, one line each, cut from the end to IndexShare of the window and to what
+// the budget has left; it draws on the budget. It is "" when there are none, or when not even its first line fits.
 func (k *Knowledge) Index() string {
 	if len(k.pages) == 0 {
 		return ""
 	}
-	capTokens := k.window * IndexShare / 100
+	capTokens := min(k.window*IndexShare/100, k.b.Limit-k.b.Used)
 	head := "Knowledge pages in " + KnowledgeDir + "/, notes on this code; one loads when a call reads or edits the file it is pinned to:\n"
 	var lines []string
 	for _, pg := range k.pages {
@@ -203,15 +226,19 @@ func (k *Knowledge) Index() string {
 		lines, more = lines[:len(lines)-1], more+1
 	}
 	text := build(lines, more)
+	if SectionTokens(text) > capTokens {
+		return ""
+	}
 	k.b.Used += SectionTokens(text)
 	return text
 }
 
 // ForCall is the pages tool call id brings in, as text to add to its result: each page pinned to a file the call reads
-// or edits that is not in already. A fresh page is loaded whole while the budget lasts; a page whose pins no longer
-// match is named as possibly out of date and not loaded. A compaction that stubs id's result must call Masked.
+// or edits. A page that was fresh when the session began is loaded whole while the budget lasts, and named as not
+// loaded when it does not fit; a named page loads at a later matching call once it fits, and is not named again. A
+// page whose pins did not match is named once as possibly out of date. A compaction that stubs id's result must call
+// Masked.
 func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
-	k.calls++
 	files := map[string]bool{}
 	for _, kind := range callKinds(tool, input) {
 		for _, p := range []string{"read:", "edit:"} {
@@ -224,27 +251,39 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 		return ""
 	}
 	var out strings.Builder
+	var touched []int
 	for i, pg := range k.pages {
-		if k.in[i] || !pinnedTo(pg, files) {
+		if !pinnedTo(pg, files) || k.state[i] == pageIn || k.state[i] == pageStale {
 			continue
 		}
-		var text string
+		body := "\n\n[Knowledge page " + pg.Path + ", " + pg.Title + ":]\n\n" + strings.TrimSpace(pg.Body)
 		switch {
-		case !k.fresh(pg):
-			text = "\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed since it " +
-				"was written, so it was not loaded. Read it only to check it against the code.]"
+		case !k.fresh[i]:
+			out.WriteString("\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed " +
+				"since it was written, so it was not loaded. Read it only to check it against the code.]")
+			k.state[i] = pageStale
+		case k.b.Used+SectionTokens(out.String()+body) <= k.b.Limit:
+			out.WriteString(body)
+			k.state[i] = pageIn
+		case k.state[i] == pageNoRoom:
+			continue // named already; it waits for room
 		default:
-			text = "\n\n[Knowledge page " + pg.Path + ", " + pg.Title + ":]\n\n" + strings.TrimSpace(pg.Body)
-			if k.b.Used+SectionTokens(text) > k.b.Limit {
-				text = "\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]"
-			}
+			out.WriteString("\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]")
+			k.state[i] = pageNoRoom
 		}
-		cost := SectionTokens(text)
-		k.b.Used += cost
-		k.in[i], k.cost[i], k.by[i], k.call[i] = true, cost, id, k.calls
-		out.WriteString(text)
+		touched = append(touched, i)
 	}
-	return out.String()
+	if len(touched) == 0 {
+		return ""
+	}
+	text := out.String()
+	n := len(k.notes)
+	for _, i := range touched {
+		k.note[i] = n
+	}
+	k.notes = append(k.notes, knowNote{id: id, cost: SectionTokens(text), live: true})
+	k.b.Used += k.notes[n].cost
+	return text
 }
 
 func pinnedTo(pg Page, files map[string]bool) bool {
@@ -256,29 +295,36 @@ func pinnedTo(pg Page, files map[string]bool) bool {
 	return false
 }
 
-// Masked tells the pages a compaction stubbed the results of these tool calls: for each id, the pages its oldest call
-// still in the window brought in are out again, and their cost goes back to the budget.
+// Masked tells the pages a compaction stubbed the results of these tool calls: for each id, its oldest note still in
+// the window is out, with the pages it carried or named, and what it took goes back to the budget.
 func (k *Knowledge) Masked(ids []string) {
 	for _, id := range ids {
-		k.free(id, false)
+		for n := range k.notes {
+			if k.notes[n].live && k.notes[n].id == id {
+				k.free(n)
+				break
+			}
+		}
 	}
 }
 
-// Drop takes back the pages the newest call with id brought in: the loop calls it when they did not fit the room left
-// with the call's result.
-func (k *Knowledge) Drop(id string) { k.free(id, true) }
-
-func (k *Knowledge) free(id string, newest bool) {
-	pick := 0
-	for i := range k.pages {
-		if k.in[i] && k.by[i] == id && (pick == 0 || newest && k.call[i] > pick || !newest && k.call[i] < pick) {
-			pick = k.call[i]
+// Drop takes back the newest note still in the window with id: the loop calls it when the note did not fit the room
+// left with the call's result.
+func (k *Knowledge) Drop(id string) {
+	for n := len(k.notes) - 1; n >= 0; n-- {
+		if k.notes[n].live && k.notes[n].id == id {
+			k.free(n)
+			return
 		}
 	}
+}
+
+func (k *Knowledge) free(n int) {
+	k.notes[n].live = false
+	k.b.Used -= k.notes[n].cost
 	for i := range k.pages {
-		if k.in[i] && k.by[i] == id && k.call[i] == pick {
-			k.b.Used -= k.cost[i]
-			k.in[i], k.cost[i], k.by[i], k.call[i] = false, 0, "", 0
+		if k.state[i] != pageOut && k.note[i] == n {
+			k.state[i] = pageOut
 		}
 	}
 }

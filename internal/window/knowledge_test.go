@@ -102,21 +102,6 @@ func TestKnowledgeStaleAfterAnEdit(t *testing.T) {
 	}
 }
 
-// TestKnowledgeSharesTheInstructionBudget: pages and instruction sections draw on one budget; a page past it is named.
-func TestKnowledgeSharesTheInstructionBudget(t *testing.T) {
-	root := knowledgeRepo(t)
-	pages, _ := LoadPages(root)
-	b := NewBudget(4096)
-	in := NewInstructions("CLAUDE.md", bigFile(), b)
-	in.Initial()
-	in.ForCall("c0", "bash", bash("go test ./..."))
-	b.Used = b.Limit - 5
-	k := NewKnowledge(root, pages, 4096, b)
-	if s := k.ForCall("c1", "read", editOf("internal/loop/loop.go")); strings.Contains(s, "Run ends a turn") || !strings.Contains(s, "loop.md is not loaded, the instruction budget is spent") {
-		t.Errorf("a page past the shared budget is named:\n%s", s)
-	}
-}
-
 func TestLoadPagesWithNoDirectory(t *testing.T) {
 	if pages, err := LoadPages(t.TempDir()); err != nil || len(pages) != 0 {
 		t.Fatalf("%v %v", pages, err)
@@ -153,5 +138,70 @@ func TestKnowledgeReusedIDs(t *testing.T) {
 	k.Drop("e")
 	if s := k.ForCall("f", "read", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn") {
 		t.Errorf("Drop of e should free its page:\n%s", s)
+	}
+}
+
+// TestKnowledgeLoadsOnAnEdit: a page fresh when the session began loads on an edit of its file, although the edit has
+// already changed the file by the time the loop asks.
+func TestKnowledgeLoadsOnAnEdit(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	k := NewKnowledge(root, pages, 16384, NewBudget(16384))
+	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
+	if s := k.ForCall("c1", "edit", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn on done.") {
+		t.Errorf("an edit of the pinned file did not load its page:\n%s", s)
+	}
+}
+
+// bigPageRepo is knowledgeRepo with big.go and a page pinned to it, hashed, of about 400 tokens with its framing.
+func bigPageRepo(t *testing.T) string {
+	t.Helper()
+	root := knowledgeRepo(t)
+	os.WriteFile(filepath.Join(root, "big.go"), []byte("package big\n"), 0o644)
+	os.WriteFile(filepath.Join(root, ".agents", "knowledge", "big.md"), []byte("---\ntitle: Big\npins: big.go sha256:"+
+		hashOf("package big\n")+"\n---\n"+strings.Repeat("a long note about big. ", 50)+"\n"), 0o644)
+	return root
+}
+
+// TestKnowledgeSharesTheInstructionBudget: the instruction sections a go test brings in (about 300 tokens of a 4096
+// window's 614) leave the page too little room, so it is named; once a compaction frees the sections' share, the next
+// read of its file loads it.
+func TestKnowledgeSharesTheInstructionBudget(t *testing.T) {
+	root := bigPageRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(4096)
+	src := "# notes\n\nIntro.\n\n## Testing\n\n" + strings.Repeat("testing rule words. ", 45) + "\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, b)
+	in.Initial()
+	if in.ForCall("c0", "bash", bash("go test ./...")) == "" {
+		t.Fatal("go test brings the testing section in")
+	}
+	k := NewKnowledge(root, pages, 4096, b)
+	if s := k.ForCall("c1", "read", editOf("big.go")); strings.Contains(s, "a long note") || !strings.Contains(s, "big.md is not loaded") {
+		t.Fatalf("a page past the shared budget is named (used %d of %d):\n%s", b.Used, b.Limit, s)
+	}
+	in.Masked([]string{"c0"})
+	if s := k.ForCall("c2", "read", editOf("big.go")); !strings.Contains(s, "a long note") {
+		t.Errorf("after the sections' share is freed, the page loads (used %d of %d):\n%s", b.Used, b.Limit, s)
+	}
+	if b.Used > b.Limit {
+		t.Errorf("used %d of %d", b.Used, b.Limit)
+	}
+}
+
+// TestKnowledgeIndexAndInstructionsStayInTheBudget: the index takes no more than the budget has left, and an
+// instruction file is whole only if it fits what is left.
+func TestKnowledgeIndexAndInstructionsStayInTheBudget(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(16384)
+	b.Used = b.Limit - 10
+	if idx := NewKnowledge(root, pages, 16384, b).Index(); b.Used > b.Limit {
+		t.Errorf("the index took the budget past its limit: used %d of %d\n%s", b.Used, b.Limit, idx)
+	}
+	b = NewBudget(16384)
+	b.Used = b.Limit - 5
+	if NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test with -v before every push.\n", b).Whole() {
+		t.Error("a file over what is left is loaded whole")
 	}
 }

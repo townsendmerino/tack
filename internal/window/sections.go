@@ -204,7 +204,7 @@ type Budget struct{ Limit, Used int }
 func NewBudget(window int) *Budget { return &Budget{Limit: window * SectionShare / 100} }
 
 // NewInstructions is name's content read by section, drawing on b. name is the file's path from the workspace root, as
-// the model's read tool takes it. A file within b's limit is loaded whole.
+// the model's read tool takes it. A file within what b has left is loaded whole.
 func NewInstructions(name, content string, b *Budget) *Instructions {
 	in := &Instructions{name: name, secs: ParseSections(content), b: b}
 	n := len(in.secs)
@@ -212,7 +212,7 @@ func NewInstructions(name, content string, b *Budget) *Instructions {
 	for i := range in.by {
 		in.by[i] = -1
 	}
-	in.whole = SectionTokens(content) <= b.Limit
+	in.whole = SectionTokens(content) <= b.Limit-b.Used
 	return in
 }
 
