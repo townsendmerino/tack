@@ -78,13 +78,15 @@ about it.
   owner's apps are open (tack `CLAUDE.md`, "Run budget"). Queue it with goinfer's `scripts/night.py add` on the Mac.
   Pin a pre-built `searchfileslat` binary and a goinfer tree exported at a fixed commit, and write the log to
   `~/tack-runs/p1s5/`.
-- **Build:** a small `tools/searchfileslat` beside `searchfilescheck`, built at a pinned tack commit on the ken release
-  that makes `SearchFiles` exact.
-  - It opens the index once, from a ken snapshot built in an untimed step before the timed one.
-  - **The snapshot step is gated like a cell.** It starts only at a load average of 2 or less, and builds with the
-    tree-sitter parse timeout off, as ken's CLI does, so the index doesn't depend on how busy the box is (the chunk
-    counts above differed under load). It is built twice, and the job stops unless both builds give the same chunk
-    count.
+- **Build:** `tools/searchfileslat` (built; tier-0 tests only, never run), built at a pinned tack commit on ken v1.13.0
+  that includes #93, whose `SectionPaths` asks ken for 4 hits per section.
+  - **The untimed build step is gated like a cell.** Each build starts only at a load average of 2 or less, or the job
+    stops with nothing timed. It builds with the tree-sitter parse timeout off, as ken's CLI does, so the index doesn't
+    depend on how busy the box is (the chunk counts above differed under load). There is one in-memory index per mode,
+    which is two builds, and the job stops unless both give the same chunk count. One mode alone is built twice.
+    Nothing is written to the tree. Then one untimed warm-up pass per mode.
+    (Amended 2026-11-09, before any run: the spec had named a ken snapshot built twice. Two in-memory builds, one per
+    mode, check the same thing and write nothing.)
   - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it times
     what ken's route runs per user message: `kensearch.Searcher.SectionPaths` at k=5 (20 hits from ken, cut to 5
     distinct sections), the call core makes, its `Sections` check on the file included. It times it over
@@ -93,14 +95,23 @@ about it.
     (Amended 2026-11-09, before any run: the spec had named all 94 of the exactness check's calls, headings included,
     and the bare `SearchFiles`.)
 - **Records:** per cell, the load average and free memory at its start, p50, p95 and max per call, and the index's
-  chunk count. A cell started at a load average above 2 is void.
-- **Decision rule (pre-registered; approved, as above):**
+  chunk count. A cell is one mode's pass over the 30 calls in one round. A cell started at a load average above 2 is
+  void: it is left out, not averaged. A mode with fewer than half its cells valid makes the run void
+  (`VERDICT: INCONCLUSIVE`).
+- **Decision rule (pre-registered; approved, as above):** read on the worst call's p95 in hybrid. Each of the 30 calls
+  gets its p95 by nearest rank over its valid rounds, and the rule takes the largest. The p95 over all calls together
+  is recorded beside it, but it doesn't decide: one slow message would hide in it. (Added 2026-11-09, before any run,
+  where the approved text had left open which p95 decides. **Approved by Francis on 2026-11-09, through the
+  coordinator, before any run.**) `searchfileslat` ends with `VERDICT: PASS` inline, `INCONCLUSIVE` parked, and
+  `FAIL` off the critical path.
   - **p95 ≤ 100 ms** in hybrid: ken's route runs inline on every user message.
   - **100–400 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
   - **> 400 ms:** it runs off the critical path or not at all. The deterministic route stays.
   - The do-nothing arm is the deterministic route alone, which costs no search.
-- **Expected wall time:** about 10 minutes: two snapshot builds about 2 minutes, then 2 modes × 30 calls × 20 rounds,
-  with hybrid well under 0.5 s a call.
+- **Expected wall time:** about 10 minutes: two index builds about 2 minutes, then 2 modes × 30 calls × 21 passes (one
+  warm-up), with hybrid well under 0.5 s a call.
+- **Command** (from the job, with the timing lock held):
+  `searchfileslat -root <goinfer export> -model-dir ~/models/<Model2Vec> > ~/tack-runs/p1s5/searchfileslat-<goinfer sha>-<tack sha>.log 2>&1`
 
 ## Rerun on ken v1.13.0 (2026-11-09): exact
 
