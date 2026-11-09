@@ -289,6 +289,13 @@ func (s *Session) compactNow(next int, cause int64, trigger string) (int, error)
 		after += len(m.Stub)
 		s.conv.ReplaceResult(m.ID, m.Stub)
 	}
+	if s.cfg.Sections != nil {
+		ids := make([]string, len(masked))
+		for i, m := range masked {
+			ids[i] = m.ID
+		}
+		s.cfg.Sections.Masked(ids)
+	}
 	s.compacted, s.maskFloor = true, 0 // every trigger moves mask_observations' floor; only "window" reads it (due)
 	_, err := s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: trigger, Prompt: s.lastPrompt,
 		Window: s.cfg.Source.Window(), Masked: masked, Before: before, After: after})

@@ -24,6 +24,10 @@ import (
 // goinfer-serve (the flags, auth and admin routes the supervisor uses, after goinfer's internal/serveapp) and writes
 // what it observed to <session-dir>/../fake.json.
 func TestMain(m *testing.M) {
+	if dir := os.Getenv("TACK_FAKE_DAEMON"); dir != "" {
+		fakeDaemon(dir)
+		return
+	}
 	if os.Getenv("TACK_FAKE_GOINFER") == "1" {
 		fakeGoinfer(os.Args[1:])
 		return
@@ -182,13 +186,24 @@ func newSup(t *testing.T, modelPath string) (*Supervisor, *clock, *Pressure) {
 // newSupArgs is newSup with the child's extra flags.
 func newSupArgs(t *testing.T, modelPath string, args []string) (*Supervisor, *clock, *Pressure) {
 	t.Helper()
-	t.Setenv("TACK_FAKE_GOINFER", "1")
-	t.Setenv("GOINFER_API_KEY", "leaked-from-the-parent")
 	dir, err := os.MkdirTemp("/tmp", "tksup")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	return newSupIn(t, dir, modelPath, args)
+}
+
+// newSupDir is newSup with the child's directory given.
+func newSupDir(t *testing.T, dir string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
+	return newSupIn(t, dir, "/m/model.gguf", []string{"-backend", "cpu"})
+}
+
+func newSupIn(t *testing.T, dir, modelPath string, args []string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	t.Setenv("GOINFER_API_KEY", "leaked-from-the-parent")
 	s, err := NewSupervisor(ChildConfig{Binary: os.Args[0], ModelPath: modelPath, Model: "m", Ctx: 8192,
 		Args: args, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute, Admission: true})
 	if err != nil {

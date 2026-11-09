@@ -49,6 +49,15 @@ func (b Budget) check() error {
 	return nil
 }
 
+// Sections is an instruction file read by section (window.Instructions): ForCall is the text call id brings in, ""
+// for none; Masked says a compaction stubbed these calls' results; Drop takes back the note ForCall just gave id, when
+// it did not fit the call's result.
+type Sections interface {
+	ForCall(id, tool string, input json.RawMessage) string
+	Masked(ids []string)
+	Drop(id string)
+}
+
 // Config is what a session's loop runs with.
 type Config struct {
 	Source models.Source
@@ -61,6 +70,11 @@ type Config struct {
 	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
 	Emit func(proto.Event)
+	// EndTurn, when set, brackets the recording of a turn's turn.end, its append and its Emit: it must call record
+	// once and return its error. The turn's last act is that record, so a caller that frees the session for its next
+	// turn as turn.end is emitted can hold its write lock across the append and the fan-out together (core's
+	// session.endTurn). Nil records it plainly.
+	EndTurn func(record func() error) error
 	// MaxResultBytes caps a tool result the model sees; beyond it, head and tail are kept and the full output goes to
 	// the blob store. Default 16 KiB.
 	MaxResultBytes int
@@ -120,6 +134,10 @@ type Config struct {
 	// no change is refused once (DoneNoChange), R13's loop mitigation (DESIGN §17).
 	EditTask bool
 	Changed  func() (bool, error)
+	// Sections loads the instruction file's sections a tool call brings in (DESIGN §2.3; window.Instructions): after a
+	// call runs, what ForCall returns is added to its result, and a compaction that stubs results tells it with Masked.
+	// nil loads none.
+	Sections Sections
 	// Now and Sleep are replaced by tests.
 	Now   func() time.Time
 	Sleep func(context.Context, time.Duration) error
@@ -215,13 +233,24 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	first := s.turns == 0
 	s.turns++
 	start := s.cfg.Now()
+	// turn.end is the turn's last act: once it is emitted the session may start the next turn (core's emitTurn), so
+	// nothing of this one may write shared state after it. ended keeps the deferred snapshot reset off that path.
+	ended := false
 	end := func(reason string) (string, error) {
 		if _, err := s.conv.CancelPending("the turn ended (" + reason + ")"); err != nil {
 			return reason, err
 		}
 		_ = s.conv.EndTurn()
-		_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
-		return reason, err
+		s.endSnapshot()
+		ended = true
+		record := func() error {
+			_, err := s.record(proto.EvTurnEnd, cause, proto.TurnEnd{StopReason: reason})
+			return err
+		}
+		if s.cfg.EndTurn != nil {
+			return reason, s.cfg.EndTurn(record)
+		}
+		return reason, record()
 	}
 	fail := func(class string, err error) (string, error) {
 		if _, rerr := s.record(proto.EvError, cause, proto.ErrorEvent{Class: class, Message: err.Error()}); rerr != nil {
@@ -278,7 +307,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 	s.cliffNote, s.cliffDone, s.stuckDone = false, false, 0 // Config.CompactAtCliff's per-turn arming
 	s.shown = shownChain{}                                  // and its widening
 	var verify verifyState                                  // the turn's changes and verifications (Config.VerifyDone)
-	defer s.endSnapshot()                                   // on every way out, an error's too
+	// The snapshot reset on every other way out, an error's too.
+	defer func() {
+		if !ended {
+			s.endSnapshot()
+		}
+	}()
 	verify.tests = newTestChanges(text, s.cfg.WS)
 	repeatLoop := false
 	for {
@@ -390,6 +424,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			var fin proto.ToolFinished
 			var ran tools.Result // what the tool itself returned, when it ran: its Empty and State
+			ranTool := false     // the tool ran to an outcome, ok or error: it was not refused, cancelled or over a budget
 			level := 0           // the call's widening (tools.WithWiden), 0 for none
 			key := callKey(b)
 			switch {
@@ -500,6 +535,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
+				ranTool = fin.Outcome == proto.OutcomeOK || fin.Outcome == proto.OutcomeError
 				if widenable {
 					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
 					// freezes the chain, and the widened lines are not recorded as shown.
@@ -543,6 +579,17 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 			}
 			if s.cfg.BuildAfterEdit && fin.Outcome == proto.OutcomeOK && !ran.IsError && (b.Name == "edit" || b.Name == "write") {
 				fin.Result += s.buildNote(ctx, b.Input)
+			}
+			// The instruction sections a call that ran brings in (Config.Sections) follow its own result, where the room
+			// fit_window leaves allows; where it does not, they are not counted as in.
+			if ranTool && s.cfg.Sections != nil {
+				if note := s.cfg.Sections.ForCall(b.ID, b.Name, b.Input); note != "" {
+					if room == nil || len(fin.Result)+len(note) <= *room {
+						fin.Result += note
+					} else {
+						s.cfg.Sections.Drop(b.ID)
+					}
+				}
 			}
 			// edit's current-symbol note (tools.Options.CurrentSymbol) goes last, after the repeat count, and only where it
 			// fits in the room fit_window leaves with the result.

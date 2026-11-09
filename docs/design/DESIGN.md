@@ -158,9 +158,10 @@ and in how much memory, before the loop is built around them.
     window: 3,276 tokens at 16k, more on a larger window (owner, 2026-10-16, ADR-003; to be reconsidered as goinfer
     serves larger windows). For scale, goinfer's census found Claude Code's first request, with its 24 built-in tools, is 19,692 tokens: more than
     the whole window (`docs/integrations/claude-code.md`).
-    Measured: tack's largest fixed prompt, an edit task's with ken and `edit_lines` (its system prompt and every tool,
-    `done`, `symbol` and `edit`'s symbol and line forms included), is 1,197 tokens (`TestFixedPromptBudget`,
-    2026-10-25); 1,159 without the line form; without ken or line edits, as in every calibration arm, it is 1,024, and
+    Measured: tack's largest fixed prompt, an edit task's with ken, `edit_lines` and `recently_changed` (its system prompt
+    and every tool, `done`, `symbol` and `edit`'s symbol and line forms included), is 1,254 tokens (`TestFixedPromptBudget`,
+    2026-11-08); 1,197 without `recently_changed` (2026-10-25); 1,159 without that or the line form; without ken, line
+    edits or `recently_changed`, as in every calibration arm, it is 1,024, and
     P0's read-only set measured 447 on 2026-10-16. opencode 1.19.0's own system prompt
     and tool schemas, before any instruction file, are 11,180 tokens with the same Qwen2.5 tokenizer: about 9 times
     tack's largest, and 68% of a 16k window. With ken-mcp's schemas they are 14,694 (E1 pilot smoke, 2026-10-16;
@@ -228,7 +229,7 @@ tickets and large unspecified features. On a local model, the app should help th
 
 **Where they are tracked.** The self-review and the staged plan are C6 screen candidates
 (`docs/measurements/e1-calibration-c6-status-2026-10-21.md`, "Candidates, not registered"); reading
-`.agents/knowledge/` is proposed for P1's instruction-file step (`docs/design/p1-notes.md`, step 5).
+`.agents/knowledge/` is **decided** for P1's instruction-file step (ADR-007, 2026-11-08; `docs/design/p1-notes.md`, step 5).
 
 ---
 
@@ -772,6 +773,18 @@ tool-use smoke set compares this merged set against the split one before it is f
   compiled into the sandbox profile as `file-read*` denials, so `cat .env` in a shell command is stopped by the kernel,
   not only by tack's own file tools; plus a redaction pass over tool output for well-known key formats before it
   reaches the model, logged when it fires.
+  - **Commands get a short environment, not tack's** (added 2026-11-08, owner, after Hermes Agent's security docs).
+    Today `internal/shell` passes `os.Environ()` whole, so one `env` puts a token such as `GH_TOKEN` into the
+    model's context and the event log, and later into the transcripts corpus (§7.6). Commands are denied the
+    network, so it cannot leave the machine, and the redaction pass knows only well-known key formats.
+  - The fix: an allowlist (`PATH`, `HOME`, `USER`, `LANG` and `LC_*`, `TMPDIR`, `TERM`, and Go's `GO*` settings such
+    as `GOPATH`, `GOCACHE`, `GOFLAGS`), plus what a trusted repo's config adds. Nothing named like a secret (`*TOKEN*`,
+    `*KEY*`, `*SECRET*`, `*PASSWORD*`) passes, even from config.
+- **Text loaded into the prompt is scanned first** (added 2026-11-08, after Hermes Agent). Instruction files,
+  `.agents/knowledge/` pages and skills are checked before loading for invisible Unicode (zero-width characters, and
+  bidirectional overrides such as U+202E) and for text that tells the model to send files or secrets out. A flagged
+  file is shown with the characters escaped and a warning, and the owner decides. §9.3's escaping covers control
+  characters in tool output; these characters are not control characters, so they pass it.
 - **No sandbox inside the sandbox.** macOS refuses `sandbox-exec` inside an already sandboxed process. Tests that start
   `sandbox-exec` (the profile and escape tests) therefore cannot run from tack's own `bash` tool when tack is used to
   develop tack; they carry a build tag and run from the day-loop checker or CI, outside tack's sandbox.
@@ -801,7 +814,7 @@ tool-use smoke set compares this merged set against the split one before it is f
 ### 6.7 Instructions and extensions
 
 - **Instruction files.** `AGENTS.md` and `CLAUDE.md` at the workspace root, and in a subdirectory once the session works
-  under it; a user-level `~/.config/tack/AGENTS.md`; *proposed* (§2.5), `.agents/knowledge/` files, read on demand.
+  under it; a user-level `~/.config/tack/AGENTS.md`; `.agents/knowledge/` files, read on demand (§2.5, **decided**: ADR-007).
   Long files are loaded by section (§2.3). The owner's repos depend on these: their `CLAUDE.md` files carry hard rules
   (the staticcheck canary, explicit-path staging, the night queue).
 - **Memory across sessions** (added 2026-11-07, from Anthropic's "The components of agent memory").
@@ -821,6 +834,9 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **The harness loads the notes; the model doesn't have to ask.**
     - Auto-context (§7.4) brings in the pages for the files and names in the task, through ken, within its budget.
     - Every session gets only a short index of page titles, sized for the 16k window.
+    - **The loaded notes stay fixed for the session** (after Hermes Agent, 2026-11-08). A page changed mid-session,
+      by the owner or by dreaming, reaches the prompt in the next session, so the cached prefix (§7.2) is not
+      rewritten. The index has a hard size cap: a change that would pass it is refused and says so, never cut short.
   - **Past sessions are searchable memory** (P2, with the transcripts corpus). ken indexes tack's own event logs, so
     "the last edit to `banner.go` failed this way" can surface without anyone writing a note.
   - **Dreaming: consolidation, on demand or overnight.** A job reads sessions and proposes changes to
@@ -1120,6 +1136,18 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
   - Francis split it from `compact_at_cliff` on 2026-11-01. The data put the repeat loops at the cliff, where widening
     does not apply.
 - **Not yet built:** the summarizing and re-retrieval steps above.
+- **How the summary is written, when the summarizing step is built** (from Hermes Agent's compaction, 2026-11-08):
+  - **Fixed headings:** goal, constraints, done, in progress, decisions, files, next steps.
+  - **An anchor list taken mechanically, with no model call:** paths, symbols, commit hashes and error strings,
+    found by pattern in the turns being compacted and copied exactly, never paraphrased.
+  - **Every user message kept word for word,** the task statement first.
+  - **Updated, not rewritten:** a later compaction gives the summarizer the previous summary to update.
+  - **A fallback when the summarizer fails** or returns something without the headings: a summary built from the
+    anchor list and the user messages alone, so the step never drops turns with nothing in their place. A local
+    `-fast` model is more likely to return junk than the hosted models Hermes uses.
+  - **Not taken: summarizing every turn** (Hermes's opt-in "micro-compaction"). It rewrites history each turn, so the
+    prefix breaks each turn. Hermes's own docs say it may cost more than it saves, and its passes took a median of
+    about 31 s on a small local model.
 - **Proposed: pinning what faults** (`[run] pin_faulted`, off by default; from Pichay, arXiv 2603.09023, which treats
   the window as the top of a memory hierarchy). Added 2026-11-07 (owner).
   - **A fault** is the model asking again for a result a compaction stubbed: a read of the same path, a grep or glob
@@ -1544,11 +1572,20 @@ serving every other agent.
   Level, StartLine, EndLine, ApproxTokens}`, the text before the first heading as a level-0 section), and
   `Workspace.SearchFiles(ctx, query, k, mode, files)` (`SearchMode` restricted to those files). Sections and hits share
   one boundary, so a hit never straddles two of tack's sections.
-- **Pinned when P1's instruction-file work starts, not before**; tack stays on v1.9.0 until then.
+- **Pinned when P1's instruction-file work starts, not before**; tack stays on v1.9.0 until then. (By then tack was on
+  v1.12.1, which carries K9, and step 5 began there on 2026-11-08.)
 - **On adoption:** `SearchFiles` over-fetches `min(index size, 5000)` candidates and then filters, so it is exact only
   on repositories of up to 5,000 chunks; measure its latency on goinfer, the largest. A path that is not in the index
   silently returns no hits, so check a file with `Sections` (which errors on an unindexed path) before trusting a
   search over it.
+- **Measured 2026-11-08: not exact on goinfer.** goinfer's index is about 80,000 chunks, and 63 of 94 checked answers
+  differ from the exact ranking. At k=5, `SearchFiles` returned 87 of 117 exact hits in the root `CLAUDE.md`, and
+  2 of 9 and 2 of 11 in the two nested ones (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). ken's
+  route to sections waits for a ken change that makes `SearchFiles` exact at any size.
+- **ken v1.13.0 (2026-11-09): exact at any size.** tack pins it. The same check gives 94 of 94 answers exact, and
+  ken's route is wired: a user message's best hits in the instruction file bring their sections into that message,
+  before the task (`window.Instructions.ForHits`). It is behind `[run] section_search`, default off, until the night
+  latency run reads against its registered rule.
 
 **Delivered in ken v1.11.0** (2026-10-22, ken ADR-048; tagged at `5ab3888`). The brief is
 `docs/briefs/ken-k10-k15-structural.md`, and ken's note on it is `~/tack-runs/NOTE-from-ken-2026-10-22-k10-k15.md`. The

@@ -54,7 +54,8 @@ type Serve struct {
 
 // Daemon is [daemon].
 type Daemon struct {
-	// ShutdownGrace is how long a shutdown lets running tool calls finish before it cancels their turns (default 10s).
+	// ShutdownGrace is how long a shutdown lets running tool calls finish before it cancels their turns (default 10s;
+	// 0s cancels them at once).
 	ShutdownGrace Duration `toml:"shutdown_grace"`
 }
 
@@ -173,6 +174,18 @@ type Run struct {
 	// LeanResults cuts a whole-file read at 80 lines and grep at 30 matches, each with its narrowing hint, so exploring
 	// takes less of the window (tools.Options.LeanResults; calibration §16.1). Default off.
 	LeanResults bool `toml:"lean_results"`
+	// Knowledge reads the workspace's .agents/knowledge/ pages on demand (core.Options.Knowledge; ADR-007). Default off,
+	// and no E1 arm may turn it on (pilot.RunSettings leaves it out): one run's notes must never reach another.
+	Knowledge bool `toml:"knowledge"`
+	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
+	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
+	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
+	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
+	SectionSearch bool `toml:"section_search"`
+	// RecentlyChanged gives sessions the recently_changed tool: uncommitted changes and recent commits, from git
+	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
+	// setting until one is registered.
+	RecentlyChanged bool `toml:"recently_changed"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`
@@ -202,7 +215,10 @@ type Run struct {
 const MaxBestOf = 5
 
 // Duration is a time.Duration written as a string ("10m").
-type Duration struct{ time.Duration }
+type Duration struct {
+	time.Duration
+	set bool // the config file gave it, so a zero is meant, not absent
+}
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (d *Duration) UnmarshalText(b []byte) error {
@@ -210,9 +226,12 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	if err != nil {
 		return err
 	}
-	d.Duration = v
+	d.Duration, d.set = v, true
 	return nil
 }
+
+// Set says whether the config file gave the duration: a default fills only one it did not.
+func (d Duration) Set() bool { return d.set }
 
 // Path is the config file's location: ~/.config/tack/config.toml on every platform.
 func Path() (string, error) {
@@ -393,10 +412,10 @@ func (c *Config) validate() error {
 			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
 		}
 	}
-	switch g := c.Daemon.ShutdownGrace.Duration; {
-	case g < 0:
-		return fmt.Errorf("daemon.shutdown_grace is %s; it must be positive", g)
-	case g == 0:
+	switch g := c.Daemon.ShutdownGrace; {
+	case g.Duration < 0:
+		return fmt.Errorf("daemon.shutdown_grace is %s; it may not be negative", g.Duration)
+	case !g.Set():
 		c.Daemon.ShutdownGrace.Duration = 10 * time.Second
 	}
 	if s := c.Serve; s != nil {

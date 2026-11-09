@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/loop"
@@ -13,6 +15,15 @@ import (
 
 // drainLimit is how long Drain waits for a turn it cancelled to record its end before giving up on it.
 const drainLimit = 5 * time.Second
+
+// BeginDrain starts a shutdown without waiting: from now on new connections (initialize) and new turns are refused
+// with CodeShuttingDown. Drain does it too; a daemon calls it first, before it stops accepting, so that a connection
+// accepted just before is not initialized by a daemon on its way out.
+func (c *Core) BeginDrain() {
+	c.mu.Lock()
+	c.draining = true
+	c.mu.Unlock()
+}
 
 // Drain stops the Core for a shutdown (DESIGN §6.1). New turns are refused with CodeShuttingDown. Each running turn
 // finishes the tool call it is running, starts no other, and ends before its next model request (loop.Session.Drain).
@@ -102,4 +113,16 @@ func (c *Core) Tick(ctx context.Context) error {
 		errs = append(errs, t.Tick(ctx))
 	}
 	return errors.Join(errs...)
+}
+
+// spoken names the protocol versions this daemon answers with, for initialize's refusal: those a client at that
+// version is answered with by Negotiate.
+func spoken() string {
+	var vs []string
+	for _, v := range []int{proto.Version, proto.Version - 1} {
+		if got, ok := proto.Negotiate(v, proto.Version); ok && got == v {
+			vs = append(vs, strconv.Itoa(v))
+		}
+	}
+	return strings.Join(vs, " and ")
 }

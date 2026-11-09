@@ -80,7 +80,7 @@ func serveCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack serve:", err)
 		return exitError
 	}
-	ln, err := serveListener(os.Getenv, os.Getpid(), 3, sc.Listen)
+	ln, err := serveListener(os.Getenv, os.Unsetenv, os.Getpid(), 3, sc.Listen)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack serve:", err)
 		return exitError
@@ -97,11 +97,17 @@ func serveCmd(args []string, stdout, stderr io.Writer) int {
 
 // serveListener is the socket systemd passed at fd when it activated this process (sd_listen_fds(3): LISTEN_PID is
 // this process and LISTEN_FDS is 1), or else a listener on listen. Reading those two is systemd's protocol, not a tack
-// setting, as GOINFER_TIMING_LOCK is goinfer's (internal/eval/timinglock.go).
-func serveListener(getenv func(string) string, pid int, fd uintptr, listen string) (net.Listener, error) {
-	if getenv("LISTEN_PID") == strconv.Itoa(pid) {
-		if n := getenv("LISTEN_FDS"); n != "1" {
-			return nil, fmt.Errorf("systemd passed %s sockets; tack serve takes one", n)
+// setting, as GOINFER_TIMING_LOCK is goinfer's (internal/eval/timinglock.go). They are unset once read, as
+// sd_listen_fds(3) does with unset_environment, so the processes tack serve starts are not told of a socket they
+// do not have.
+func serveListener(getenv func(string) string, unsetenv func(string) error, pid int, fd uintptr, listen string) (net.Listener, error) {
+	lpid, nfds := getenv("LISTEN_PID"), getenv("LISTEN_FDS")
+	for _, k := range []string{"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"} {
+		_ = unsetenv(k)
+	}
+	if lpid == strconv.Itoa(pid) {
+		if nfds != "1" {
+			return nil, fmt.Errorf("systemd passed %s sockets; tack serve takes one", nfds)
 		}
 		f := os.NewFile(fd, "tack-serve.socket")
 		ln, err := net.FileListener(f)

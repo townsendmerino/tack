@@ -159,6 +159,16 @@ func (f *fixture) waitTurnEnd(t *testing.T) []proto.Event {
 	}
 }
 
+// prompt sends text to session sid and fails the test at once if the prompt is refused. turn.end is a client's signal
+// that it may prompt again (session.emitTurn frees the session before turn.end goes out), so a prompt sent straight
+// after waitTurnEnd is never refused with CodeBusy, and nothing here retries one.
+func (f *fixture) prompt(t *testing.T, sid proto.SessionID, text string) {
+	t.Helper()
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text(text)}}, nil); err != nil {
+		t.Fatalf("prompt %q: %v", text, err)
+	}
+}
+
 // TestTrafficConformsToTheProtocol runs a real turn through the core and holds every line that crossed the pipe to
 // the same checks as the golden fixtures (proto.CheckTranscript).
 func TestTrafficConformsToTheProtocol(t *testing.T) {

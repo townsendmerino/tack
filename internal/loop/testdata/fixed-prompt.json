@@ -1,5 +1,5 @@
 {
-  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-10-25",
+  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-11-08",
   "interactions": [
     {
       "request": {
@@ -122,6 +122,18 @@
                 "required": [
                   "pattern"
                 ]
+              }
+            },
+            {
+              "name": "recently_changed",
+              "description": "Uncommitted changes and the last commits (default 10, max 30), each with the files it changed.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "commits": {
+                    "type": "integer"
+                  }
+                }
               }
             },
             {
@@ -296,7 +308,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":1197}\n"
+        "body": "{\"input_tokens\":1254}\n"
       }
     }
   ]

@@ -28,6 +28,9 @@ const headBytesPerToken = 3
 // (docs/measurements/e1-calibration-c6-42-stopped-2026-10-20.md).
 const headTaskLabel = "Task: "
 
+// sectionHits is how many of ken's hits in the instruction file a user message's sections come from.
+const sectionHits = 5
+
 // instructionHead is name's content cut to its budgeted head for a window of window tokens, framed as reference notes:
 // its first section, which runs to the first heading after some body text (so a file that opens with only its title
 // takes in the section after it), then the headings of the rest as an outline. When the two exceed the cap, the outline

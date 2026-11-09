@@ -44,11 +44,14 @@ func (s *Store) Root() string { return s.root }
 // Log is one session's append-only event log. One Log per session per process: the daemon is its only writer. Its
 // methods are safe for concurrent use.
 type Log struct {
-	mu      sync.Mutex
-	id      proto.SessionID
-	f       *os.File
-	lastSeq int64
-	now     func() time.Time
+	mu       sync.Mutex
+	id       proto.SessionID
+	path     string
+	f        *os.File // nil when closed or idle
+	idle     bool     // Idle gave up the lock; the next persisted Append takes it back
+	unsynced bool     // an append since the last fsync wrote data not yet durable: Idle and Close sync only then
+	lastSeq  int64
+	now      func() time.Time
 	// sync makes the file durable; tests count calls through it.
 	sync   func(*os.File) error
 	onSync func(proto.EventType, time.Duration)
@@ -93,7 +96,7 @@ func (s *Store) Create(id proto.SessionID) (*Log, error) {
 		f.Close()
 		return nil, err
 	}
-	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
+	return &Log{id: id, path: p, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
 }
 
 // OpenLog is Reopen without the events.
@@ -135,7 +138,7 @@ func (s *Store) Reopen(id proto.SessionID) (*Log, []proto.Event, error) {
 			return nil, nil, err
 		}
 	}
-	l := &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
+	l := &Log{id: id, path: p, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
 	if n := len(evs); n > 0 {
 		l.lastSeq = evs[n-1].Seq
 	}
@@ -178,6 +181,19 @@ func (s *Store) Events(id proto.SessionID, fromSeq int64) ([]proto.Event, error)
 // readEvents parses a log from the start. good is the byte length of its complete lines; anything after it is a torn
 // tail.
 func readEvents(r io.Reader) (evs []proto.Event, good int64, err error) {
+	good, err = scanEvents(r, func(ev proto.Event) error {
+		evs = append(evs, ev)
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return evs, good, nil
+}
+
+// scanEvents parses a log from the start, handing each complete line's event to fn in order, and returns the byte
+// length of the complete lines. An error from fn stops the scan and is returned.
+func scanEvents(r io.Reader, fn func(proto.Event) error) (good int64, err error) {
 	br := bufio.NewReaderSize(r, 1<<16)
 	var want int64 = 1
 	for {
@@ -187,22 +203,40 @@ func readEvents(r io.Reader) (evs []proto.Event, good int64, err error) {
 			dec := json.NewDecoder(bytes.NewReader(line))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&ev); err != nil {
-				return nil, 0, fmt.Errorf("line %d: %w", want, err)
+				return 0, fmt.Errorf("line %d: %w", want, err)
 			}
 			if ev.Seq != want {
-				return nil, 0, fmt.Errorf("line %d has seq %d: the log's seqs must be dense from 1", want, ev.Seq)
+				return 0, fmt.Errorf("line %d has seq %d: the log's seqs must be dense from 1", want, ev.Seq)
 			}
-			evs = append(evs, ev)
+			if err := fn(ev); err != nil {
+				return 0, err
+			}
 			good += int64(len(line))
 			want++
 		}
 		if rerr == io.EOF {
-			return evs, good, nil
+			return good, nil
 		}
 		if rerr != nil {
-			return nil, 0, rerr
+			return 0, rerr
 		}
 	}
+}
+
+// Scan hands a session's persisted events to fn in order, one at a time, without holding the log; a torn last line is
+// ignored. An error from fn stops the scan and is returned.
+func (s *Store) Scan(id proto.SessionID, fn func(proto.Event) error) error {
+	p, err := s.logPath(id)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = scanEvents(f, fn)
+	return err
 }
 
 // Append records an event of type typ answering cause (0 for none), with payload of typ's registered type, and returns
@@ -219,8 +253,13 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	if !spec.Persisted {
 		return proto.NewEvent(0, l.now(), typ, cause, payload)
 	}
-	if l.f == nil {
+	if l.f == nil && !l.idle {
 		return proto.Event{}, errors.New("store: log is closed")
+	}
+	if l.f == nil {
+		if _, err := l.wake(); err != nil { // the caller that cares what others wrote calls Wake first
+			return proto.Event{}, err
+		}
 	}
 	ev, err := proto.NewEvent(l.lastSeq+1, l.now(), typ, cause, payload)
 	if err != nil {
@@ -233,12 +272,13 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	if _, err := l.f.Write(append(b, '\n')); err != nil {
 		return proto.Event{}, err
 	}
-	l.lastSeq = ev.Seq
+	l.lastSeq, l.unsynced = ev.Seq, true
 	if spec.Fsync {
 		t0 := time.Now()
 		if err := l.sync(l.f); err != nil {
 			return proto.Event{}, err
 		}
+		l.unsynced = false
 		if l.onSync != nil {
 			l.onSync(typ, time.Since(t0))
 		}
@@ -246,29 +286,35 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	return ev, nil
 }
 
-// Head is the seq of the last persisted event, 0 for an empty log.
+// Head is the seq of the last persisted event, 0 for an empty log. An idle Log reads it from the file, which another
+// writer may have added to.
 func (l *Log) Head() int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.idle {
+		if f, err := os.Open(l.path); err == nil {
+			evs, _, err := readEvents(f)
+			f.Close()
+			if n := len(evs); err == nil && n > 0 {
+				return evs[n-1].Seq
+			}
+		}
+	}
 	return l.lastSeq
 }
 
 // ID is the session the log belongs to.
 func (l *Log) ID() proto.SessionID { return l.id }
 
-// Close fsyncs and closes the log.
+// Close closes the log for good, fsyncing first what an append left unsynced.
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.idle = false // closed for good: no Append wakes it
 	if l.f == nil {
 		return nil
 	}
-	err := l.sync(l.f)
-	if cerr := l.f.Close(); err == nil {
-		err = cerr
-	}
-	l.f = nil
-	return err
+	return l.closeFile()
 }
 
 // Interrupted is what a log says about a turn a crash cut short (DESIGN §6.1).
@@ -351,4 +397,79 @@ func ValidSessionID(id proto.SessionID) bool {
 		}
 	}
 	return true
+}
+
+// Idle gives up the writer's lock until the next persisted Append, so that between turns another process (tack rewind)
+// may write the log. The file is closed, fsynced first if an append left data unsynced. The next Append opens it again, takes the lock (ErrLogBusy while
+// another holds it), and reads past what others appended, so seqs stay dense; it holds the lock until the next Idle.
+// Idle on a closed or idle Log does nothing.
+func (l *Log) Idle() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	err := l.closeFile()
+	l.idle = true
+	return err
+}
+
+// closeFile fsyncs the open file if an append left data unsynced, and closes it. l.mu is held.
+func (l *Log) closeFile() error {
+	var err error
+	if l.unsynced {
+		err = l.sync(l.f)
+	}
+	if cerr := l.f.Close(); err == nil {
+		err = cerr
+	}
+	l.f, l.unsynced = nil, false
+	return err
+}
+
+// Wake takes an idle Log's writer's lock back now, ahead of its next Append, and returns the events another writer
+// appended while it was idle (tack rewind's), so the caller can pass them on before its own. A Log that is not idle
+// returns none. While another process holds the lock it is ErrLogBusy.
+func (l *Log) Wake() ([]proto.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.idle {
+		return nil, nil
+	}
+	return l.wake()
+}
+
+// wake takes an idle Log's file and lock back, catches up on what others appended, and returns it. l.mu is held.
+func (l *Log) wake() ([]proto.Event, error) {
+	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockLog(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s", err, l.id)
+	}
+	evs, good, err := readEvents(f)
+	if err == nil {
+		if st, _ := f.Stat(); st != nil && st.Size() != good { // a torn line another writer left
+			if err = f.Truncate(good); err == nil {
+				err = l.sync(f)
+			}
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	var foreign []proto.Event
+	for _, ev := range evs {
+		if ev.Seq > l.lastSeq {
+			foreign = append(foreign, ev)
+		}
+	}
+	if n := len(evs); n > 0 {
+		l.lastSeq = evs[n-1].Seq
+	}
+	l.f, l.idle = f, false
+	return foreign, nil
 }
