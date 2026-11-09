@@ -333,12 +333,11 @@ func (cn *conn) write(enc *json.Encoder) {
 		case v := <-cn.out:
 			if m, ok := v.(flushMark); ok {
 				close(m)
-				continue
-			}
-			if enc.Encode(v) != nil {
+			} else if enc.Encode(v) != nil {
 				cn.drop()
 				return
 			}
+			// A flush mark counts as written too: catchUp's target counts everything queued.
 			if n := cn.writes.Add(1); cn.catchingUp.Load() && n >= cn.catchTarget.Load() {
 				cn.catchingUp.Store(false) // the replay is written: live events wait fanOutWait again
 			}
@@ -377,7 +376,7 @@ func (cn *conn) fanOut(v any) error {
 	}
 	for {
 		bytes := cn.progress.Load()
-		if sent, err := cn.offer(v, cn.catchUpWait); sent || err != nil {
+		if sent, err := cn.offer(v, min(cn.catchUpWait, max(time.Until(until), 0))); sent || err != nil {
 			return err
 		}
 		if cn.progress.Load() == bytes || !time.Now().Before(until) {
@@ -388,7 +387,9 @@ func (cn *conn) fanOut(v any) error {
 }
 
 // catchUp marks the connection as draining a replay: what is queued, and more messages about to be, are the replay.
-// Catching up lasts until they are written, or sendTimeout from now.
+// Catching up lasts until they are written, or sendTimeout from now. It is per connection, not per subscription: a second
+// subscribe's replay on one connection starts it again for the connection's other subscriptions too. A client subscribes
+// to one session per connection in practice (tack run, the TUI).
 func (cn *conn) catchUp(more int) {
 	if n := len(cn.out) + more; n > 0 {
 		cn.catchTarget.Store(cn.writes.Load() + int64(n))

@@ -57,34 +57,15 @@ const (
 // during the summarizer call. Rebuild cuts the same way from the record (summaryCuts), so a resumed session's request
 // is this one's. The events it summarizes are read back from the log, so the loop keeps no copy of them.
 func (s *Session) summarize(ctx context.Context, srv server.Server, next int, cause int64) (spent int, out summaryOutcome, err error) {
-	var open []int64 // the assistant messages no summary covers yet, in order
-	for _, seq := range s.cuts.at {
-		if seq > s.summarizedTo {
-			open = append(open, seq)
-		}
-	}
-	older := len(open) - summaryKeepRequests
-	if older < 1 {
+	at, ok := summaryAt(s.cuts.at, s.summarizedTo)
+	if !ok {
 		return 0, summaryTooLittle, nil
 	}
-	at := open[(older+1)/2] // the first assistant message kept: the oldest half, rounded up, goes
 	evs, err := s.cfg.Log.Events()
 	if err != nil {
 		return 0, summaryUnchanged, fmt.Errorf("loop: summarize: %w", err)
 	}
-	var prior, stretch []proto.Event
-	var covered []int64 // every event before at: the summary covers each message it removes (Rebuild's gapless)
-	for _, ev := range evs {
-		if ev.Seq >= at {
-			break
-		}
-		covered = append(covered, ev.Seq)
-		if ev.Seq <= s.summarizedTo {
-			prior = append(prior, ev)
-		} else {
-			stretch = append(stretch, ev)
-		}
-	}
+	prior, stretch, covered := splitAt(evs, s.summarizedTo, at)
 	keep, cutAt, err := s.cuts.cut(covered)
 	if err == nil && cutAt != at {
 		err = fmt.Errorf("the cut lands at seq %d, not %d", cutAt, at)
@@ -162,7 +143,8 @@ func (s *Session) summarize(ctx context.Context, srv server.Server, next int, ca
 	if s.cfg.Sections != nil && len(ids) > 0 {
 		s.cfg.Sections.Masked(ids) // their notes left with them, so their sections may load again
 	}
-	s.summarizedTo, s.body, s.sumFloor = covered[len(covered)-1], sum.Body, 0
+	// The body as a resume reads it back from the log, so the live one is the same by construction, whatever the model wrote.
+	s.summarizedTo, s.body, s.sumFloor = covered[len(covered)-1], bodyOf(text), 0
 	s.compacted, s.maskFloor = true, 0
 	_, err = s.record(proto.EvCompaction, cause, proto.Compaction{Request: next, Trigger: "summary", Prompt: s.lastPrompt,
 		Window: s.cfg.Source.Window(), Masked: []proto.MaskedResult{}, Before: before, After: len(text), Summary: text,
@@ -193,3 +175,55 @@ func (s *Session) fastModel(ctx context.Context, srv server.Server) string {
 // another summary is tried in window w: maskRegrowShare of w, but never more than half the room left above floor, so a
 // floor set near a full window can still be passed.
 func summaryRegrow(w, floor int) int { return min(maskRegrowShare*w/100, max(w-floor, 0)/2) }
+
+// summaryAt is the first assistant message a summary keeps, given every assistant.message seq so far and the last seq
+// a summary covered: of those no summary covers yet, less the last summaryKeepRequests, the oldest half (rounded up)
+// goes. ok is false when there are too few to summarize.
+func summaryAt(assistants []int64, summarizedTo int64) (int64, bool) {
+	var open []int64
+	for _, seq := range assistants {
+		if seq > summarizedTo {
+			open = append(open, seq)
+		}
+	}
+	older := len(open) - summaryKeepRequests
+	if older < 1 {
+		return 0, false
+	}
+	return open[(older+1)/2], true
+}
+
+// splitAt splits the events before at into those an earlier summary covered (prior, up to summarizedTo) and the
+// stretch this one covers, and lists every seq before at (covered): the summary covers each message it removes.
+func splitAt(evs []proto.Event, summarizedTo, at int64) (prior, stretch []proto.Event, covered []int64) {
+	for _, ev := range evs {
+		if ev.Seq >= at {
+			break
+		}
+		covered = append(covered, ev.Seq)
+		if ev.Seq <= summarizedTo {
+			prior = append(prior, ev)
+		} else {
+			stretch = append(stretch, ev)
+		}
+	}
+	return prior, stretch, covered
+}
+
+// FirstSummary is what a session's first summary covers, if one were made after the last event of evs: the stretch
+// Session.summarize would hand the summarizer, by the same cut. ok is false when there are too few requests. It is for
+// tools that replay logged sessions (tools/summarycheck).
+func FirstSummary(evs []proto.Event) (stretch []proto.Event, ok bool) {
+	var assistants []int64
+	for _, ev := range evs {
+		if ev.Type == proto.EvAssistantMessage {
+			assistants = append(assistants, ev.Seq)
+		}
+	}
+	at, ok := summaryAt(assistants, 0)
+	if !ok {
+		return nil, false
+	}
+	_, stretch, _ = splitAt(evs, 0, at)
+	return stretch, true
+}

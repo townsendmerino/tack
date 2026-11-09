@@ -146,10 +146,13 @@ type runner struct {
 	o       Options
 	mu      sync.Mutex
 	results io.Writer
+	logMu   sync.Mutex // serializes logf: the arm and its heartbeat goroutine both log
 }
 
 func (r *runner) logf(format string, args ...any) {
 	if r.o.Log != nil {
+		r.logMu.Lock()
+		defer r.logMu.Unlock()
 		fmt.Fprintf(r.o.Log, time.Now().Format("15:04:05")+" "+format+"\n", args...)
 	}
 }

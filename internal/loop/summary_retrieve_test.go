@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -229,6 +231,66 @@ func TestCancellingDuringRetrievalRecordsNoSummary(t *testing.T) {
 	reason, err := h.sess.Turn(ctx, "go")
 	if err != nil || reason != proto.StopCancelled || len(h.payloads(proto.EvCompaction)) != 0 {
 		t.Errorf("reason %q, %v, %d compactions; want cancelled and none", reason, err, len(h.payloads(proto.EvCompaction)))
+	}
+	h.checkRebuild(t)
+}
+
+// TestALiveBodyIsTheLoggedOne: a summarizer whose body echoes the section's heading leaves the same previous body live
+// and on a resume, since the live one is read back from the message as a resume reads it.
+func TestALiveBodyIsTheLoggedOne(t *testing.T) {
+	echo := strings.Replace(body("read"), "## Next steps\n\n(none)", "## Next steps\n\nfind it\n\n"+retrieveHeading+"\n\nan echo", 1)
+	h := maskHarness(t, false, 4000,
+		grows("t1", 3500), grows("t2", 3500), grows("t3", 3500), grows("t4", 3500),
+		goinfertest.Says(echo), grows("t5", 3500), goinfertest.Says("done"))
+	h.sess.cfg.Summarize = true
+	h.sess = New(h.sess.cfg)
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	comps := h.payloads(proto.EvCompaction)
+	if len(comps) != 1 {
+		t.Fatalf("%d compactions", len(comps))
+	}
+	if logged := bodyOf(comps[0].(proto.Compaction).Summary); h.sess.body != logged || strings.Contains(h.sess.body, "an echo") {
+		t.Errorf("live body %q, logged %q", h.sess.body, logged)
+	}
+	evs, _ := h.st.Events("s_test", 0)
+	r, err := Resume(h.sess.cfg, evs)
+	if err != nil || r.body != h.sess.body {
+		t.Errorf("resumed body %q, live %q, %v", r.body, h.sess.body, err)
+	}
+}
+
+// TestASummaryWithNoAnchorsRebuilds: a history with nothing to anchor (no path, symbol, hash or error in it) still
+// summarizes, with its section after the body, and the log rebuilds the live request.
+func TestASummaryWithNoAnchorsRebuilds(t *testing.T) {
+	grep := func(id string) goinfertest.Reply { // a grep with no path, past 75% of the window
+		return goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", 3500, 0, 20,
+			proto.ModelBlock{Type: "tool_use", ID: id, Name: "grep", Input: json.RawMessage(`{"pattern":"plain"}`)})}
+	}
+	h := maskHarness(t, false, 4000, grep("t1"), grep("t2"), grep("t3"), grep("t4"),
+		goinfertest.Says(strings.Replace(body("searched"), "## Next steps\n\n(none)", "## Next steps\n\nfind it", 1)),
+		grep("t5"), goinfertest.Says("done"))
+	root := h.ws.Root()
+	os.RemoveAll(filepath.Join(root, "mcp"))
+	os.Remove(filepath.Join(root, "big.txt"))
+	os.WriteFile(filepath.Join(root, "notes"), []byte(strings.Repeat("plain words with nothing to anchor here\n", 300)), 0o644)
+	s := &fakeSearcher{hits: map[string][]tools.Hit{"find it": {hit("notes", 1, 1, "plain words")}}}
+	h.sess.cfg.Summarize, h.sess.cfg.SummaryRetrieve, h.sess.cfg.Searcher = true, 10, s
+	h.sess = New(h.sess.cfg)
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	comps := h.payloads(proto.EvCompaction)
+	if len(comps) != 1 {
+		t.Fatalf("%d compactions", len(comps))
+	}
+	sum := comps[0].(proto.Compaction).Summary
+	if strings.Contains(sum, "## Anchors (exact)") || !strings.Contains(sum, retrieveHeading) {
+		t.Fatalf("want no anchors and a section:\n%s", sum)
+	}
+	if strings.Contains(h.sess.body, retrieveHeading) {
+		t.Error("the section reached the body")
 	}
 	h.checkRebuild(t)
 }
