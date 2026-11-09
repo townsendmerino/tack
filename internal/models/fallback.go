@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/townsendmerino/tack/internal/server"
@@ -39,7 +40,7 @@ func (f *Fallback) Ensure(ctx context.Context) (server.Server, error) {
 		if be, ok := errors.AsType[*BusyError](err); ok && len(be.Offer) > 0 {
 			quiet := *be // its offer is this machine's model, which the pressure keeps the turn off
 			quiet.Offer = nil
-			err = &quiet
+			err = &withoutOffer{msg: strings.Replace(err.Error(), be.Error(), quiet.Error(), 1), busy: &quiet, err: err}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("models: memory pressure is %s on this machine, so the turn moved to %s: %w", p, f.name, err)
@@ -88,3 +89,15 @@ func (f *Fallback) Tick(ctx context.Context) error {
 	}
 	return nil
 }
+
+// withoutOffer is a fallback's error with its BusyError's offer taken out: msg is the error's text with the BusyError's
+// replaced, and it unwraps to that offerless BusyError first, so errors.As finds it, then to the error itself, so
+// whatever else it wraps still matches.
+type withoutOffer struct {
+	msg  string
+	busy *BusyError
+	err  error
+}
+
+func (w *withoutOffer) Error() string   { return w.msg }
+func (w *withoutOffer) Unwrap() []error { return []error{w.busy, w.err} }
