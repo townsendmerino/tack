@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -44,7 +46,9 @@ func (s *Store) Root() string { return s.root }
 type Log struct {
 	mu      sync.Mutex
 	id      proto.SessionID
-	f       *os.File
+	path    string
+	f       *os.File // nil when closed or idle
+	idle    bool     // Idle gave up the lock; the next persisted Append takes it back
 	lastSeq int64
 	now     func() time.Time
 	// sync makes the file durable; tests count calls through it.
@@ -52,13 +56,30 @@ type Log struct {
 	onSync func(proto.EventType, time.Duration)
 }
 
-func (s *Store) logPath(id proto.SessionID) string {
-	return filepath.Join(s.root, "sessions", string(id), "events.jsonl")
+func (s *Store) logPath(id proto.SessionID) (string, error) {
+	if !ValidSessionID(id) {
+		return "", fmt.Errorf("store: %q is not a session id", id)
+	}
+	return filepath.Join(s.root, "sessions", string(id), "events.jsonl"), nil
 }
 
-// Create starts a new session's log. It fails if the session exists.
+// lockLog takes the writer's lock on an open log: an exclusive flock, dropped when the file is closed.
+func lockLog(f *os.File) error {
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return ErrLogBusy
+		}
+		return fmt.Errorf("store: locking %s: %w", f.Name(), err)
+	}
+	return nil
+}
+
+// Create starts a new session's log and holds its writer's lock until Close. It fails if the session exists.
 func (s *Store) Create(id proto.SessionID) (*Log, error) {
-	p := s.logPath(id)
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, err
+	}
 	if err := mkdirAllSynced(filepath.Dir(p), 0o700); err != nil {
 		return nil, err
 	}
@@ -66,47 +87,81 @@ func (s *Store) Create(id proto.SessionID) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := lockLog(f); err != nil {
+		f.Close()
+		return nil, err
+	}
 	if err := syncDir(filepath.Dir(p)); err != nil { // the new log's directory entry (ADR-004)
 		f.Close()
 		return nil, err
 	}
-	return &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
+	return &Log{id: id, path: p, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}, nil
 }
 
-// OpenLog reopens an existing session's log for appending. A torn last line (a crash mid-append, so no trailing
+// OpenLog is Reopen without the events.
+func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
+	l, _, err := s.Reopen(id)
+	return l, err
+}
+
+// Reopen reopens an existing session's log for appending, holding its writer's lock until Close, and returns its
+// events, read once under that lock: a log another Log has open, in this process or another, is ErrLogBusy, and
+// nothing is read or cut. A torn last line (a crash mid-append, so no trailing
 // newline) is cut off; a malformed line anywhere else is an error, since the log is the truth and must not be guessed
 // at.
-func (s *Store) OpenLog(id proto.SessionID) (*Log, error) {
-	p := s.logPath(id)
+func (s *Store) Reopen(id proto.SessionID) (*Log, []proto.Event, error) {
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, nil, err
+	}
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	if err := lockLog(f); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("%w: %s", err, id)
 	}
 	evs, good, err := readEvents(f)
 	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("store: %s: %w", p, err)
+		return nil, nil, fmt.Errorf("store: %s: %w", p, err)
 	}
 	if st, _ := f.Stat(); st != nil && st.Size() != good {
 		if err := f.Truncate(good); err != nil {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		if err := f.Sync(); err != nil {
 			f.Close()
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	l := &Log{id: id, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
+	l := &Log{id: id, path: p, f: f, now: s.now, sync: (*os.File).Sync, onSync: s.OnSync}
 	if n := len(evs); n > 0 {
 		l.lastSeq = evs[n-1].Seq
 	}
-	return l, nil
+	return l, evs, nil
+}
+
+// Discard closes a log Create made and removes its session, for a session that could not be made after all. The
+// writer's lock is held until the files are gone.
+func (s *Store) Discard(l *Log) error {
+	p, err := s.logPath(l.id)
+	if err != nil {
+		return err
+	}
+	err = os.RemoveAll(filepath.Dir(p))
+	return errors.Join(err, l.Close())
 }
 
 // Events reads a session's persisted events with seq ≥ fromSeq. A torn last line is ignored.
 func (s *Store) Events(id proto.SessionID, fromSeq int64) ([]proto.Event, error) {
-	f, err := os.Open(s.logPath(id))
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(p)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +225,11 @@ func scanEvents(r io.Reader, fn func(proto.Event) error) (good int64, err error)
 // Scan hands a session's persisted events to fn in order, one at a time, without holding the log; a torn last line is
 // ignored. An error from fn stops the scan and is returned.
 func (s *Store) Scan(id proto.SessionID, fn func(proto.Event) error) error {
-	f, err := os.Open(s.logPath(id))
+	p, err := s.logPath(id)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(p)
 	if err != nil {
 		return err
 	}
@@ -193,8 +252,13 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	if !spec.Persisted {
 		return proto.NewEvent(0, l.now(), typ, cause, payload)
 	}
-	if l.f == nil {
+	if l.f == nil && !l.idle {
 		return proto.Event{}, errors.New("store: log is closed")
+	}
+	if l.f == nil {
+		if _, err := l.wake(); err != nil { // the caller that cares what others wrote calls Wake first
+			return proto.Event{}, err
+		}
 	}
 	ev, err := proto.NewEvent(l.lastSeq+1, l.now(), typ, cause, payload)
 	if err != nil {
@@ -220,10 +284,20 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	return ev, nil
 }
 
-// Head is the seq of the last persisted event, 0 for an empty log.
+// Head is the seq of the last persisted event, 0 for an empty log. An idle Log reads it from the file, which another
+// writer may have added to.
 func (l *Log) Head() int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.idle {
+		if f, err := os.Open(l.path); err == nil {
+			evs, _, err := readEvents(f)
+			f.Close()
+			if n := len(evs); err == nil && n > 0 {
+				return evs[n-1].Seq
+			}
+		}
+	}
 	return l.lastSeq
 }
 
@@ -234,6 +308,7 @@ func (l *Log) ID() proto.SessionID { return l.id }
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.idle = false // closed for good: no Append wakes it
 	if l.f == nil {
 		return nil
 	}
@@ -285,7 +360,10 @@ func Inspect(evs []proto.Event) Interrupted {
 	return st
 }
 
-// Sessions is the ids of every session with a log in the store, sorted.
+// ErrLogBusy is OpenLog finding the session's log open for appending in another Log, in this process or another.
+var ErrLogBusy = errors.New("store: the session's log is open in another tack process")
+
+// Sessions names every session in the store that has a log, in id order: creation order, since ids are ULIDs.
 func (s *Store) Sessions() ([]proto.SessionID, error) {
 	ents, err := os.ReadDir(filepath.Join(s.root, "sessions"))
 	if err != nil {
@@ -293,12 +371,98 @@ func (s *Store) Sessions() ([]proto.SessionID, error) {
 	}
 	var ids []proto.SessionID
 	for _, e := range ents {
-		if !e.IsDir() {
+		id := proto.SessionID(e.Name())
+		if !e.IsDir() || !ValidSessionID(id) {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(s.root, "sessions", e.Name(), "events.jsonl")); err == nil {
-			ids = append(ids, proto.SessionID(e.Name()))
+		if p, _ := s.logPath(id); fileExists(p) {
+			ids = append(ids, id)
 		}
 	}
-	return ids, nil
+	return ids, nil // ReadDir sorts by name
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// ValidSessionID says whether id can name a session: "s_" then 1 to 62 ASCII letters and digits. Ids come from
+// clients and become paths, so an id is one path element and cannot leave the store.
+func ValidSessionID(id proto.SessionID) bool {
+	rest, ok := strings.CutPrefix(string(id), "s_")
+	if !ok || rest == "" || len(rest) > 62 {
+		return false
+	}
+	for _, r := range rest {
+		if !(r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// Idle gives up the writer's lock until the next persisted Append, so that between turns another process (tack rewind)
+// may write the log. The file is fsynced and closed. The next Append opens it again, takes the lock (ErrLogBusy while
+// another holds it), and reads past what others appended, so seqs stay dense; it holds the lock until the next Idle.
+// Idle on a closed or idle Log does nothing.
+func (l *Log) Idle() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f == nil {
+		return nil
+	}
+	err := l.sync(l.f)
+	if cerr := l.f.Close(); err == nil {
+		err = cerr
+	}
+	l.f, l.idle = nil, true
+	return err
+}
+
+// Wake takes an idle Log's writer's lock back now, ahead of its next Append, and returns the events another writer
+// appended while it was idle (tack rewind's), so the caller can pass them on before its own. A Log that is not idle
+// returns none. While another process holds the lock it is ErrLogBusy.
+func (l *Log) Wake() ([]proto.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.idle {
+		return nil, nil
+	}
+	return l.wake()
+}
+
+// wake takes an idle Log's file and lock back, catches up on what others appended, and returns it. l.mu is held.
+func (l *Log) wake() ([]proto.Event, error) {
+	f, err := os.OpenFile(l.path, os.O_RDWR|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockLog(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s", err, l.id)
+	}
+	evs, good, err := readEvents(f)
+	if err == nil {
+		if st, _ := f.Stat(); st != nil && st.Size() != good { // a torn line another writer left
+			if err = f.Truncate(good); err == nil {
+				err = l.sync(f)
+			}
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	var foreign []proto.Event
+	for _, ev := range evs {
+		if ev.Seq > l.lastSeq {
+			foreign = append(foreign, ev)
+		}
+	}
+	if n := len(evs); n > 0 {
+		l.lastSeq = evs[n-1].Seq
+	}
+	l.f, l.idle = f, false
+	return foreign, nil
 }
