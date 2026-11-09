@@ -619,3 +619,47 @@ func TestCatchingUpHasADeadline(t *testing.T) {
 		t.Errorf("a live event waited %v on a connection past its catch-up deadline; want about fanOutWait", took)
 	}
 }
+
+// TestAFlushMarkCountsAsWritten: the writer counts a flush mark as it counts a message, since catchUp's target counts
+// everything queued; a mark left uncounted would hold catching up to its deadline.
+func TestAFlushMarkCountsAsWritten(t *testing.T) {
+	cn := newConn(io.Discard, nil)
+	cn.send("a")
+	cn.flush()
+	if n := cn.writes.Load(); n != 2 {
+		t.Errorf("writes %d after a message and a flush, want 2", n)
+	}
+}
+
+// TestACatchUpWaitEndsAtTheDeadline: a live event to a client that is reading, slowly, a large message waits no longer
+// than catching up has left, though catchUpWait is longer.
+func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
+	q, c, to := sendQueue, catchUpWait, sendTimeout
+	sendQueue, catchUpWait, sendTimeout = 1, 3*time.Second, 300*time.Millisecond
+	t.Cleanup(func() { sendQueue, catchUpWait, sendTimeout = q, c, to })
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+	go func() { // reads 64 KB every 50 ms: a 4 MB message takes about 3 s
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := io.ReadFull(a, buf); err != nil {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+	cn := newConn(b, nil)
+	cn.send(strings.Repeat("x", 4<<20))
+	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the large message never started")
+		}
+	}
+	cn.send("filler")
+	cn.catchUp(0)
+	start := time.Now()
+	cn.fanOut("live")
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("a live event waited %v; catching up had 300 ms left", took)
+	}
+}
