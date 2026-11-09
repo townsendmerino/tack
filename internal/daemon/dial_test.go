@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -186,4 +187,60 @@ func TestDialPassesOverADrainingDaemon(t *testing.T) {
 		t.Fatalf("%d spawns; want the next daemon started once", spawns)
 	}
 	<-first
+}
+
+// TestDialWaitsForADrainingDaemonsSocketToGo: between the core refusing new work and the listener closing, a draining
+// daemon's socket is still bound and still accepts. A client that reaches it then is refused at initialize, and must
+// not reconnect at once to the same socket, which refuses it again: Dial waits for that socket to go, then spawns the
+// next daemon, which waits for the lock. Run keeps its own shutdown order here; drainHook only holds that window open.
+func TestDialWaitsForADrainingDaemonsSocketToGo(t *testing.T) {
+	dir := shortDir(t)
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	first := make(chan error, 1)
+	go func() { first <- Run(ctx, runOptions(t, dir)) }()
+	dialSoon(t, dir).Close()
+	draining := make(chan struct{})
+	var once sync.Once
+	drainHook = func() { // the first daemon's only: the successor stops at the test's end
+		once.Do(func() {
+			close(draining)
+			time.Sleep(300 * time.Millisecond) // the window a client starting at an idle exit lands in
+		})
+	}
+	t.Cleanup(func() { drainHook = nil })
+	stop()
+	<-draining
+	if _, err := os.Stat(SocketPath(dir)); err != nil {
+		t.Fatalf("the draining daemon's socket: %v; want it still bound", err)
+	}
+	spawns := 0
+	var next <-chan error
+	spawn := func() error {
+		spawns++
+		next = start(t, runOptions(t, dir))
+		return nil
+	}
+	d, err := Dial(dir, testClient, spawn, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Dial as its daemon began to drain: %v; want it to reach the next one", err)
+	}
+	defer d.Close()
+	var st proto.DaemonStatusResult
+	if err := d.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, &st); err != nil || st.Draining {
+		t.Fatalf("the daemon Dial reached: %+v, %v; want one that is not draining", st, err)
+	}
+	if spawns != 1 {
+		t.Fatalf("%d spawns; want the next daemon started once", spawns)
+	}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	// The successor stops here, not in start's cleanup, so its shutdown is over before drainHook is reset.
+	if err := d.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-next; err != nil {
+		t.Fatal(err)
+	}
 }

@@ -93,6 +93,9 @@ func Run(ctx context.Context, o RunOptions) error {
 	// next daemon, which waits for this one's lock (takeLock). The connections already open stay, and see their turns
 	// drain.
 	c.BeginDrain()
+	if drainHook != nil {
+		drainHook()
+	}
 	ln.Close()
 	if stopHook != nil {
 		stopHook()
@@ -136,3 +139,7 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 
 // stopHook, when set (tests), runs in Run's shutdown once it has stopped accepting, before the drain.
 var stopHook func()
+
+// drainHook, when set (tests), runs in Run's shutdown once the core refuses new work, before the listener closes: the
+// socket is still bound and accepting.
+var drainHook func()
