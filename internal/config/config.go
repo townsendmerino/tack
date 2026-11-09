@@ -144,6 +144,13 @@ type Run struct {
 	// It needs the server to list a thinking-off alias, or the summary is the user messages and anchors alone. Default
 	// off, and not an E1 arm setting until a screen registers it.
 	Summarize bool `toml:"summarize"`
+	// SummaryRetrieve re-retrieves after each summary: the summary's open threads are searched through ken, and the hits,
+	// within SummaryRetrieveShare percent of the window, become its last section (loop.Config.SummaryRetrieve; DESIGN
+	// §7.6, step 3). It needs summarize. Default off, and not an E1 arm setting until a screen registers it.
+	SummaryRetrieve bool `toml:"summary_retrieve"`
+	// SummaryRetrieveShare is re-retrieval's budget, in percent of the window: 1 to 50, default 10 (DESIGN §7.4's
+	// auto-context share). It comes out of what the summary frees.
+	SummaryRetrieveShare int `toml:"summary_retrieve_share"`
 	// ResultNotes says what to do after an empty search or an unchanged repeat (loop.Config.ResultNotes). Default off until
 	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.4).
 	ResultNotes bool `toml:"result_notes"`
@@ -219,6 +226,9 @@ type Run struct {
 
 // MaxBestOf is the most attempts best_of may ask for.
 const MaxBestOf = 5
+
+// DefaultSummaryRetrieveShare is summary_retrieve_share's default, in percent of the window.
+const DefaultSummaryRetrieveShare = 10
 
 // Duration is a time.Duration written as a string ("10m").
 type Duration struct {
@@ -403,6 +413,15 @@ func (c *Config) validate() error {
 	}
 	if r.BestOf < 0 || r.BestOf > MaxBestOf {
 		return fmt.Errorf("run: best_of is %d; it must be 0 to %d", r.BestOf, MaxBestOf)
+	}
+	if c.Run.SummaryRetrieveShare == 0 { // on c.Run: r is a copy
+		c.Run.SummaryRetrieveShare, r.SummaryRetrieveShare = DefaultSummaryRetrieveShare, DefaultSummaryRetrieveShare
+	}
+	if r.SummaryRetrieveShare < 1 || r.SummaryRetrieveShare > 50 {
+		return fmt.Errorf("run: summary_retrieve_share is %d; it must be 1 to 50 (percent of the window)", r.SummaryRetrieveShare)
+	}
+	if r.SummaryRetrieve && !r.Summarize {
+		return errors.New("run: summary_retrieve needs summarize: it re-retrieves after a summary")
 	}
 	if k := c.Ken; k != nil {
 		if k.Mode == "" {

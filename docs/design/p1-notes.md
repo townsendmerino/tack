@@ -50,8 +50,10 @@ The order the owner approved, each step with its exit check:
        updating the last body, any failure keeping the previous body; the record and its replay
        (`proto.Compaction`'s `Summary` and `Summarized`, `server.Conversation.Summarize`, `loop.Rebuild`); and the live
        step behind `[run] summarize` (`loop.Session.summarize`). The summarizer's requests are logged as request 0
-       (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval (S4) is
-       not built.
+       (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval behind
+       `[run] summary_retrieve` (share `summary_retrieve_share`, default 10% of the window; coordinator, 2026-11-09,
+       logged for the owner): the summary's open threads are searched through ken and the hits end the summary message.
+       The E1 screen of summarize and re-retrieval is not registered yet.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time.
