@@ -48,7 +48,7 @@ func TestInitializeChecksTheClientToken(t *testing.T) {
 		t.Errorf("a wrong token: %v, want code %d", err, proto.CodeUnauthorized)
 	}
 	// What a connection is privileged for is its own state, read here right after each initialize on one connection.
-	cn := &conn{enc: json.NewEncoder(io.Discard)}
+	cn := newConn(io.Discard)
 	initOn := func(token string) *proto.Error {
 		p, _ := json.Marshal(proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: token})
 		_, perr := withToken.dispatch(cn, proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodInitialize, Params: p})

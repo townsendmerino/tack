@@ -281,7 +281,11 @@ var recoverHook func(proto.SessionID)
 // haltHook, when set (tests), runs in Halt's refused path between taking the log back and appending to it.
 var haltHook func()
 
-// turnEndHook, when set (tests), runs as a turn records its turn.end (session.endTurn), outside wmu: before the
+// turnEndHook, when set (tests), runs as a turn records its turn.end (session.recordTurn), outside wmu: before the
 // append, before the turn frees the session and gives the log up, and before any subscriber hears it. It is atomic
 // because any test's turn goroutine reads it.
 var turnEndHook atomic.Pointer[func()]
+
+// emitHook, when set (tests), runs as the loop emits an event (session.emitTurn), after its append and before its
+// fan-out, inside recordTurn's bracket for a turn's own events.
+var emitHook atomic.Pointer[func(proto.Event)]
