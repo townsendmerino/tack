@@ -699,3 +699,180 @@ func TestCrashedLogWritesCausesWhenAsked(t *testing.T) {
 		}
 	}
 }
+
+// connect is another initialized client of c, with its own event channel.
+func connect(t *testing.T, c *Core) (*Client, chan proto.Event) {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go c.Serve(c.ctx, b)
+	cl := NewClient(a)
+	events := make(chan proto.Event, 256)
+	cl.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return cl, events
+}
+
+// rewindWhileIdle appends a rewind event to the session's idle log as tack rewind does, once the core has let it go.
+func rewindWhileIdle(t *testing.T, st *store.Store, id proto.SessionID, ws string) proto.Event {
+	t.Helper()
+	var rw *store.Log
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for rw, err = st.OpenLog(id); errors.Is(err, store.ErrLogBusy) && time.Now().Before(deadline); rw, err = st.OpenLog(id) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("the idle session's log: %v", err)
+	}
+	defer rw.Close()
+	ev, err := rw.Append(proto.EvRewind, 1, proto.Rewind{To: 1, Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ev
+}
+
+// TestAnEventWrittenWhileIdleReachesEachSubscriberOnce: what tack rewind wrote reaches a subscriber from before the
+// write live, one from after it by replay alone, and one subscribed from past it not at all.
+func TestAnEventWrittenWhileIdleReachesEachSubscriberOnce(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("one"), goinfertest.Says("two"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	c, before, beforeEvs := daemonOn(t, st, ts.URL)
+	ws := repo(t)
+	var sess proto.SessionNewResult
+	if err := before.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	before.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	before.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil)
+	untilTurnEnd(t, beforeEvs)
+	rw := rewindWhileIdle(t, st, sess.Session, ws)
+	after, afterEvs := connect(t, c)
+	if err := after.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	past, pastEvs := connect(t, c)
+	if err := past.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session, FromSeq: rw.Seq + 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := before.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rewinds := func(evs []proto.Event) int {
+		n := 0
+		for _, e := range evs {
+			if e.Type == proto.EvRewind {
+				n++
+			}
+		}
+		return n
+	}
+	afterGot := untilTurnEnd(t, afterEvs) // the replayed first turn
+	afterGot = append(afterGot, untilTurnEnd(t, afterEvs)...)
+	for _, w := range []struct {
+		name string
+		got  []proto.Event
+		want int
+	}{{"subscribed before the write", untilTurnEnd(t, beforeEvs), 1}, {"subscribed after it", afterGot, 1},
+		{"subscribed from past it", untilTurnEnd(t, pastEvs), 0}} {
+		if n := rewinds(w.got); n != w.want {
+			t.Errorf("%s: heard rewind's event %d times, want %d (%v)", w.name, n, w.want, types(w.got))
+		}
+	}
+}
+
+// TestAFirstPromptRefusedKeepsItsAdditions: a first prompt refused because another process is writing the log adds
+// nothing to it, so the one after still carries the first prompt's additions (here the project instructions).
+func TestAFirstPromptRefusedKeepsItsAdditions(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("one"))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	_, cl, events := daemonOn(t, st, ts.URL, func(o *Options) { o.WholeInstructions = true })
+	ws := repo(t)
+	if err := os.WriteFile(filepath.Join(ws, "AGENTS.md"), []byte("Answer in French."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	rw, err := st.OpenLog(sess.Session) // tack rewind, writing between turns
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeBusy {
+		t.Fatalf("a prompt while another process writes the log: %v, want code %d", err, proto.CodeBusy)
+	}
+	rw.Close()
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("one")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range untilTurnEnd(t, events) {
+		if ev.Type == proto.EvUserMessage && !strings.Contains(string(ev.Payload), "Answer in French.") {
+			t.Fatalf("the first prompt that ran lost the project instructions: %s", ev.Payload)
+		}
+	}
+}
+
+// TestASessionAnotherCoreHoldsIsBusy: a session one Core has in memory is not reopened by another, between turns too,
+// when the log itself is free; recovery passes over it; once the first Core closes, the second may reopen it.
+func TestASessionAnotherCoreHoldsIsBusy(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, cl, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	// The log ends inside a turn while its Core lives (a turn.end that failed to append): the live Core's to finish,
+	// not another's to close.
+	rw, err := st.OpenLog(sess.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rw.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("x")}}); err != nil {
+		t.Fatal(err)
+	}
+	rw.Close()
+	second, cl2, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	var pe *proto.Error
+	if err := cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeBusy {
+		t.Fatalf("reopening a session another Core holds: %v, want code %d", err, proto.CodeBusy)
+	}
+	if ids, err := second.Recover(); err != nil || len(ids) != 0 {
+		t.Fatalf("recovery beside a live Core: %v, %v; want it to leave the held session alone", ids, err)
+	}
+	first.Close()
+	if err := cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatalf("reopening it once the first Core closed: %v", err)
+	}
+}
+
+// TestRecoverOnAFreshStoreFindsNothing: a daemon's first start, before any session exists, recovers nothing and does
+// not fail.
+func TestRecoverOnAFreshStoreFindsNothing(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, _ := daemonOn(t, st, "http://127.0.0.1:1")
+	if ids, err := c.Recover(); err != nil || len(ids) != 0 {
+		t.Fatalf("Recover on a fresh store: %v, %v; want nothing", ids, err)
+	}
+}

@@ -167,3 +167,44 @@ func TestWakeSyncsATornTailItCuts(t *testing.T) {
 	}
 	l.Close()
 }
+
+// TestAFreshStoreHasNoSessions: Open makes sessions/, so a store no session has been made in lists none, without error,
+// and a daemon's first start recovers nothing rather than failing.
+func TestAFreshStoreHasNoSessions(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.Sessions(); err != nil || len(ids) != 0 {
+		t.Fatalf("a fresh store's sessions: %v, %v; want none", ids, err)
+	}
+}
+
+// TestAHoldIsExclusive: one Hold per session, in this process or another; a released hold can be taken again, and a
+// session with no directory has none to take.
+func TestAHoldIsExclusive(t *testing.T) {
+	s := newStore(t)
+	l, err := s.Create("s_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	h, err := s.Hold("s_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Hold("s_1"); !errors.Is(err, ErrSessionHeld) {
+		t.Fatalf("a second hold: %v, want ErrSessionHeld", err)
+	}
+	if err := h.Release(); err != nil {
+		t.Fatal(err)
+	}
+	h, err = s.Hold("s_1")
+	if err != nil {
+		t.Fatalf("a hold after release: %v", err)
+	}
+	h.Release()
+	if _, err := s.Hold("s_2"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("holding a session that does not exist: %v, want ErrNotExist", err)
+	}
+}
