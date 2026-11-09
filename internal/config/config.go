@@ -85,6 +85,9 @@ type Server struct {
 	Args       []string `toml:"args"`        // extra goinfer-serve flags, e.g. ["-backend", "metal"]
 	IdleUnload Duration `toml:"idle_unload"` // unload the model after this long without a request (default 10m)
 	IdleExit   Duration `toml:"idle_exit"`   // stop the child after this long without a request (default 30m)
+	// Fallback names another machine's server (nobara's) that this child's sessions move to while this machine's
+	// memory pressure is warning or worse (DESIGN §8.1); empty means they wait for it to fall.
+	Fallback string `toml:"fallback"`
 
 	// goinfer-remote
 	URL string `toml:"url"`
@@ -320,6 +323,20 @@ func (c *Config) validate() error {
 			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)
 		}
 		c.Servers[name] = s
+	}
+	for name, s := range c.Servers {
+		if s.Fallback == "" {
+			continue
+		}
+		f, ok := c.Servers[s.Fallback]
+		switch {
+		case s.Kind != KindChild:
+			return fmt.Errorf("servers.%s: fallback is for a %s", name, KindChild)
+		case !ok:
+			return fmt.Errorf("servers.%s: fallback = %q names no server", name, s.Fallback)
+		case s.Fallback == name || f.Kind == KindChild:
+			return fmt.Errorf("servers.%s: fallback = %q; a fallback is another machine's server, not a %s", name, s.Fallback, KindChild)
+		}
 	}
 	if c.Run.Snapshots == nil {
 		on := true

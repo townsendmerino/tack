@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -275,5 +276,22 @@ func TestStateDirWithDotDotUnderHomeIsRefused(t *testing.T) {
 	_, err := load(t, "state_dir = \"~/a/../b\"\n[servers.a]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n")
 	if err == nil || !strings.Contains(err.Error(), "state_dir") {
 		t.Fatalf("state_dir ~/a/../b: %v, want refused", err)
+	}
+}
+
+// TestChildFallback: a goinfer-child may name a fallback, another machine's server that its sessions move to under
+// memory pressure (DESIGN §8.1); it must name a server that exists, is not itself, and is not another child.
+func TestChildFallback(t *testing.T) {
+	const servers = "main = \"mac\"\n[servers.mac]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 1\n%s\n" +
+		"[servers.nobara]\nkind = \"goinfer-remote\"\nurl = \"http://nobara:8091\"\n" +
+		"[servers.mac2]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 1\n"
+	c, err := load(t, fmt.Sprintf(servers, `fallback = "nobara"`))
+	if err != nil || c.Servers["mac"].Fallback != "nobara" {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	for _, f := range []string{`fallback = "nowhere"`, `fallback = "mac"`, `fallback = "mac2"`} {
+		if _, err := load(t, fmt.Sprintf(servers, f)); err == nil || !strings.Contains(err.Error(), "fallback") {
+			t.Errorf("%s: %v, want refused", f, err)
+		}
 	}
 }

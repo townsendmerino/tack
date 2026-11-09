@@ -35,3 +35,17 @@ func TestStatusLineShowsAFirstLoad(t *testing.T) {
 		t.Fatalf("once serving: %q; want no load, and the window's fill with its reused share", line)
 	}
 }
+
+// TestStatusLineShowsAMove: a turn moved off this machine's model under memory pressure says so until its server
+// serves.
+func TestStatusLineShowsAMove(t *testing.T) {
+	var s Status
+	s.Apply(event(t, proto.EvModelStatus, proto.ModelStatus{Server: "nobara", State: "moved", Message: "memory pressure is critical on this machine; using nobara"}))
+	if line := s.Line(); !strings.Contains(line, "using nobara") || !strings.Contains(line, "nobara") {
+		t.Fatalf("after a move: %q", line)
+	}
+	s.Apply(event(t, proto.EvModelStatus, proto.ModelStatus{Server: "nobara", State: "ready"}))
+	if line := s.Line(); strings.Contains(line, "using nobara") {
+		t.Fatalf("once serving: %q", line)
+	}
+}

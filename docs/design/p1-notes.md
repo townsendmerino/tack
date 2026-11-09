@@ -246,3 +246,14 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
 - **Not done here:**
   - installing the units on nobara;
   - changing the night queue's hook to stop the socket as well. Its README says why: night.py holds the lock per job.
+- **Moving a session to nobara under memory pressure** (owner, 2026-11-08 18:23; DESIGN §8.1). A `goinfer-child` may
+  name a `fallback`, another machine's server, in `config.toml`. Turns then go through `models.Fallback`:
+  - While this machine's memory pressure is normal, a turn starts on the child.
+  - At warning or worse, it starts on the fallback, and subscribers hear a live `model.status` "moved". At warning
+    no new job starts on the Mac's model; at critical the child's tick has already unloaded it.
+  - Back at normal, turns return to the child.
+  - A move costs the turn the cached prefix of the server it left.
+  - A move happens only at a turn's start. A turn the critical unload cuts off ends in error, and the next turn
+    moves.
+  - A fallback that cannot serve (busy, down) is the turn's error. The turn never goes back to the model the
+    pressure keeps it off.
