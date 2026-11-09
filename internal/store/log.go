@@ -44,13 +44,14 @@ func (s *Store) Root() string { return s.root }
 // Log is one session's append-only event log. One Log per session per process: the daemon is its only writer. Its
 // methods are safe for concurrent use.
 type Log struct {
-	mu      sync.Mutex
-	id      proto.SessionID
-	path    string
-	f       *os.File // nil when closed or idle
-	idle    bool     // Idle gave up the lock; the next persisted Append takes it back
-	lastSeq int64
-	now     func() time.Time
+	mu       sync.Mutex
+	id       proto.SessionID
+	path     string
+	f        *os.File // nil when closed or idle
+	idle     bool     // Idle gave up the lock; the next persisted Append takes it back
+	unsynced bool     // an append since the last fsync wrote data not yet durable: Idle and Close sync only then
+	lastSeq  int64
+	now      func() time.Time
 	// sync makes the file durable; tests count calls through it.
 	sync   func(*os.File) error
 	onSync func(proto.EventType, time.Duration)
@@ -271,12 +272,13 @@ func (l *Log) Append(typ proto.EventType, cause int64, payload any) (proto.Event
 	if _, err := l.f.Write(append(b, '\n')); err != nil {
 		return proto.Event{}, err
 	}
-	l.lastSeq = ev.Seq
+	l.lastSeq, l.unsynced = ev.Seq, true
 	if spec.Fsync {
 		t0 := time.Now()
 		if err := l.sync(l.f); err != nil {
 			return proto.Event{}, err
 		}
+		l.unsynced = false
 		if l.onSync != nil {
 			l.onSync(typ, time.Since(t0))
 		}
@@ -304,7 +306,7 @@ func (l *Log) Head() int64 {
 // ID is the session the log belongs to.
 func (l *Log) ID() proto.SessionID { return l.id }
 
-// Close fsyncs and closes the log.
+// Close closes the log for good, fsyncing first what an append left unsynced.
 func (l *Log) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -312,12 +314,7 @@ func (l *Log) Close() error {
 	if l.f == nil {
 		return nil
 	}
-	err := l.sync(l.f)
-	if cerr := l.f.Close(); err == nil {
-		err = cerr
-	}
-	l.f = nil
-	return err
+	return l.closeFile()
 }
 
 // Interrupted is what a log says about a turn a crash cut short (DESIGN §6.1).
@@ -403,7 +400,7 @@ func ValidSessionID(id proto.SessionID) bool {
 }
 
 // Idle gives up the writer's lock until the next persisted Append, so that between turns another process (tack rewind)
-// may write the log. The file is fsynced and closed. The next Append opens it again, takes the lock (ErrLogBusy while
+// may write the log. The file is closed, fsynced first if an append left data unsynced. The next Append opens it again, takes the lock (ErrLogBusy while
 // another holds it), and reads past what others appended, so seqs stay dense; it holds the lock until the next Idle.
 // Idle on a closed or idle Log does nothing.
 func (l *Log) Idle() error {
@@ -412,11 +409,21 @@ func (l *Log) Idle() error {
 	if l.f == nil {
 		return nil
 	}
-	err := l.sync(l.f)
+	err := l.closeFile()
+	l.idle = true
+	return err
+}
+
+// closeFile fsyncs the open file if an append left data unsynced, and closes it. l.mu is held.
+func (l *Log) closeFile() error {
+	var err error
+	if l.unsynced {
+		err = l.sync(l.f)
+	}
 	if cerr := l.f.Close(); err == nil {
 		err = cerr
 	}
-	l.f, l.idle = nil, true
+	l.f, l.unsynced = nil, false
 	return err
 }
 

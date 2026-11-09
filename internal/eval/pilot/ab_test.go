@@ -74,3 +74,11 @@ func TestSectionSearchIsNotAnArmSetting(t *testing.T) {
 		t.Fatal("section_search is an arm setting")
 	}
 }
+
+// TestRecentlyChangedIsNotAnArmSetting: no E1 arm adds recently_changed until a screen registers it; an arm's tool set,
+// and so its fixed prompt, stays as calibrated.
+func TestRecentlyChangedIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["recently_changed"] {
+		t.Fatal("recently_changed is an arm setting")
+	}
+}

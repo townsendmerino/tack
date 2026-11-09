@@ -13,6 +13,15 @@ import (
 // drainLimit is how long Drain waits for a turn it cancelled to record its end before giving up on it.
 const drainLimit = 5 * time.Second
 
+// BeginDrain starts a shutdown without waiting: from now on new connections (initialize) and new turns are refused
+// with CodeShuttingDown. Drain does it too; a daemon calls it first, before it stops accepting, so that a connection
+// accepted just before is not initialized by a daemon on its way out.
+func (c *Core) BeginDrain() {
+	c.mu.Lock()
+	c.draining = true
+	c.mu.Unlock()
+}
+
 // Drain stops the Core for a shutdown (DESIGN §6.1). New turns are refused with CodeShuttingDown. Each running turn
 // finishes the tool call it is running, starts no other, and ends before its next model request (loop.Session.Drain).
 // A turn still running when grace ends is cancelled with loop.ErrShutdown, which kills its commands; Drain then waits
