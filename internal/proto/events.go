@@ -352,14 +352,21 @@ type Rewind struct {
 // Prompt and Window are the last prompt's tokens and the served window when it ran. Masked is each tool result
 // replaced, with the text that replaced it, so replaying the log rebuilds the request. Before and After are the replaced
 // results' total bytes.
+//
+// A summarizing compaction (DESIGN §7.6, the summarizing step) also replaces the oldest messages with one user message,
+// Summary, word for word as the model is sent it. Summarized is the seq of every event the summary covers, in order;
+// the messages kept start at the first assistant.message after the last of them. Both are absent from a compaction
+// that only masks.
 type Compaction struct {
-	Request int            `json:"request"`
-	Trigger string         `json:"trigger"`
-	Prompt  int            `json:"prompt"`
-	Window  int            `json:"window"`
-	Masked  []MaskedResult `json:"masked"`
-	Before  int            `json:"before"`
-	After   int            `json:"after"`
+	Request    int            `json:"request"`
+	Trigger    string         `json:"trigger"`
+	Prompt     int            `json:"prompt"`
+	Window     int            `json:"window"`
+	Masked     []MaskedResult `json:"masked"`
+	Before     int            `json:"before"`
+	After      int            `json:"after"`
+	Summary    string         `json:"summary,omitempty"`
+	Summarized []int64        `json:"summarized,omitempty"`
 }
 
 // MaskedResult is one tool result a compaction replaced: the call's ID and the stub sent in its place.

@@ -188,3 +188,17 @@ func (c *Conversation) ReplaceResult(id, text string) bool {
 	}
 	return false
 }
+
+// Summarize replaces the messages before msgs[keep] with one user message, text: a summarizing compaction (DESIGN
+// §7.6). msgs[keep] must be an assistant message, so the roles still alternate, and every tool call kept keeps its
+// result. Like ReplaceResult it rewrites the history, so only a compaction may call it.
+func (c *Conversation) Summarize(keep int, text string) error {
+	switch {
+	case keep <= 0 || keep >= len(c.msgs):
+		return fmt.Errorf("server: summarize keeps from message %d of %d", keep, len(c.msgs))
+	case c.msgs[keep].Role != Assistant:
+		return fmt.Errorf("server: summarize keeps from message %d, a %s message, not the assistant's", keep, c.msgs[keep].Role)
+	}
+	c.msgs = append([]Message{{Role: User, Content: []Block{TextBlock(text)}}}, c.msgs[keep:]...)
+	return nil
+}

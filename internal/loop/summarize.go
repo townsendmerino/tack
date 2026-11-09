@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -169,3 +170,37 @@ func summaryText(all []proto.Event, body string) string {
 	}
 	return strings.Join(parts, "\n\n")
 }
+
+// summaryCuts finds where a summarizing compaction cuts the history: the message index of each assistant.message, as
+// it is now. The live loop and Rebuild both keep one, so both cut at the same message.
+type summaryCuts struct {
+	at    []int64       // the assistant.message seqs, in order
+	index map[int64]int // each one's message index when it was added
+	shift int           // how far earlier summaries moved every index down
+}
+
+// add notes that the assistant.message at seq became message index.
+func (c *summaryCuts) add(seq int64, index int) {
+	if c.index == nil {
+		c.index = map[int64]int{}
+	}
+	c.at = append(c.at, seq)
+	c.index[seq] = index + c.shift
+}
+
+// cut is the index, as it is now, of the first assistant.message after every seq in summarized.
+func (c *summaryCuts) cut(summarized []int64) (int, error) {
+	if len(summarized) == 0 {
+		return 0, fmt.Errorf("a summary that covers no event")
+	}
+	last := slices.Max(summarized)
+	for _, seq := range c.at {
+		if seq > last {
+			return c.index[seq] - c.shift, nil
+		}
+	}
+	return 0, fmt.Errorf("a summary covering up to seq %d keeps no assistant message after it", last)
+}
+
+// summarized notes that a summary replaced the messages before keep with one.
+func (c *summaryCuts) summarized(keep int) { c.shift += keep - 1 }

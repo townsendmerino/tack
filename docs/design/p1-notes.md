@@ -47,7 +47,9 @@ The order the owner approved, each step with its exit check:
        it; the system prompt stays byte-identical.
      - **Built so far:** the anchor list, the fallback summary and the headings check (`internal/loop/summary.go`); the
        summarizer call (`loop.Summarize`): the thinking-off alias the server lists, in chunks of about 4,000 tokens, each
-       updating the last body, any failure keeping the previous body. Nothing is wired yet.
+       updating the last body, any failure keeping the previous body; and the record and its replay: `proto.Compaction`'s
+       `Summary` and `Summarized`, `server.Conversation.Summarize`, and `loop.Rebuild` applying a logged summary. The live
+       trigger and the `[run]` setting (S3b) are not built.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
