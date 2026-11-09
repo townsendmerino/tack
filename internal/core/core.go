@@ -154,6 +154,10 @@ type Core struct {
 }
 
 type session struct {
+	// wmu is held from taking the log back to appending to it, by a turn's start and by Halt, and around a turn's
+	// end giving it up. So a log taken back is not given up before its append, and what another process wrote while
+	// it was idle reaches subscribers before anything appended after it. Taken before mu.
+	wmu     sync.Mutex
 	mu      sync.Mutex
 	id      proto.SessionID
 	log     *store.Log
@@ -433,13 +437,8 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		return "", fmt.Errorf("ken: %w", err)
 	}
 	id := store.NewSessionID(time.Now())
-	log, err := c.opt.Store.Create(id)
+	log, hold, err := c.opt.Store.CreateHeld(id)
 	if err != nil {
-		return "", err
-	}
-	hold, err := c.opt.Store.Hold(id)
-	if err != nil {
-		c.opt.Store.Discard(log)
 		return "", err
 	}
 	discard := func() {
@@ -677,6 +676,7 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	// Take the log back first, and pass on what another process wrote while it was idle (tack rewind's event), so
 	// subscribers see it before this turn's own events. The loop needs nothing from it: a rewind changes files, and
 	// edit checks a file's current text against what the model saw.
+	s.wmu.Lock()
 	foreign, err := s.log.Wake()
 	if err == nil {
 		for _, ev := range foreign {
@@ -687,31 +687,38 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	if err == nil {
 		seq, err = s.loop.Start(text.String())
 	}
+	s.mu.Lock()
 	if err != nil {
-		cancel(nil)
-		s.mu.Lock()
 		s.running, s.cancel = false, nil
 		_ = s.log.Idle()
-		s.mu.Unlock()
+	} else {
+		// Only once the user.message is logged: a prompt refused here added nothing, so the next one is still the
+		// first. s.running kept any other prompt out until now.
+		s.prompted = true
+	}
+	s.mu.Unlock()
+	s.wmu.Unlock()
+	if err != nil {
+		cancel(nil)
 		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
 			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
 		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
-	// Only once the user.message is logged: a prompt refused above added nothing, so the next one is still the first.
-	// s.running keeps any other prompt out until then.
-	s.mu.Lock()
-	s.prompted = true
-	s.mu.Unlock()
 	go func() {
 		_, _ = s.loop.Run(ctx)
 		cancel(nil)
-		// Under s.mu with the end of running, so a Halt never sees a turn that has let its log go, nor idles one that
-		// has not.
+		if h := turnEndHook.Load(); h != nil {
+			(*h)()
+		}
+		// Under wmu, so not between a Halt's wake and append; and under s.mu with the end of running, so a Halt never
+		// sees a turn that has let its log go, nor idles one that has not.
+		s.wmu.Lock()
 		s.mu.Lock()
 		_ = s.log.Idle() // between turns another process may write the log (tack rewind)
 		s.running, s.cancel = false, nil
 		s.mu.Unlock()
+		s.wmu.Unlock()
 	}()
 	return proto.SessionPromptResult{Seq: seq}, nil
 }
@@ -769,20 +776,35 @@ func (c *Core) Halt(h proto.DaemonHalted) {
 		for _, p := range listed {
 			ev.Processes = append(ev.Processes, proto.HaltProcess{PID: p.PID, Name: p.Name, Start: p.Start})
 		}
-		if foreign, err := s.log.Wake(); err == nil {
-			for _, ev := range foreign {
-				s.emit(ev)
-			}
-		}
-		if e, err := s.log.Append(proto.EvDaemonHaltRefused, 0, ev); err == nil {
-			s.emit(e)
-		}
-		s.mu.Lock() // the check and the idle together, as a turn's end does them
-		if !s.running {
-			_ = s.log.Idle() // the append took the lock back; a running turn keeps it
-		}
-		s.mu.Unlock()
+		s.recordAside(proto.EvDaemonHaltRefused, ev)
 	}
+}
+
+// recordAside appends an event to the session's log from outside a turn's own writes (Halt's daemon.halt_refused) and
+// passes it on, after what another process wrote while the log was idle. While another process is writing the log
+// the event goes unrecorded: appending would take the log back and swallow what that process wrote. A running turn
+// keeps its log; an idle session's is given up again.
+func (s *session) recordAside(typ proto.EventType, payload any) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	foreign, err := s.log.Wake()
+	if err != nil {
+		return
+	}
+	for _, ev := range foreign {
+		s.emit(ev)
+	}
+	if haltHook != nil {
+		haltHook()
+	}
+	if e, err := s.log.Append(typ, 0, payload); err == nil {
+		s.emit(e)
+	}
+	s.mu.Lock() // the check and the idle together, as a turn's end does them
+	if !s.running {
+		_ = s.log.Idle() // the append took the lock back; a running turn keeps it
+	}
+	s.mu.Unlock()
 }
 
 // Resume lets new turns start again.

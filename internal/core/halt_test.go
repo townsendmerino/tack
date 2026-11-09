@@ -143,3 +143,102 @@ func TestHaltLeavesLogsAsTurnsNeedThem(t *testing.T) {
 		t.Fatalf("the log ends %s, want daemon.halt_refused", evs[len(evs)-1].Type)
 	}
 }
+
+// TestHaltPassesOnWhatIsWrittenAroundIt: a turn ending while Halt records a refused sweep cannot give the log up
+// between Halt taking it back and appending to it, so nothing tack rewind writes is swallowed: every event in the log
+// reaches the subscriber.
+func TestHaltPassesOnWhatIsWrittenAroundIt(t *testing.T) {
+	inRequest := make(chan struct{}, 1)
+	probes := goinfertest.NewScripted("m", 16384)
+	f := newFixtureOn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			probes.ServeHTTP(w, r)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case inRequest <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	st := f.core.opt.Store
+	id := f.session(t)
+	ws := f.workspace(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
+		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
+	}
+	between := make(chan struct{})
+	turnEnd := func() { // the turn ends only once Halt has taken the log back
+		select {
+		case <-between:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	turnEndHook.Store(&turnEnd)
+	haltHook = func() { // and tack rewind writes the moment the log is free
+		close(between)
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if rw, err := st.OpenLog(id); err == nil {
+				rw.Append(proto.EvRewind, 1, proto.Rewind{To: 1, Workspace: ws})
+				rw.Close()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	t.Cleanup(func() { turnEndHook.Store(nil); haltHook = nil })
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("hello")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-inRequest:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn never reached the model server")
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	heard := map[int64]bool{}
+	for deadline := time.After(5 * time.Second); !heard[-1]; {
+		select {
+		case ev := <-f.events:
+			heard[ev.Seq] = true
+			if ev.Type == proto.EvDaemonHaltRefused {
+				heard[-1] = true
+			}
+		case <-deadline:
+			t.Fatalf("no daemon.halt_refused; heard %v", heard)
+		}
+	}
+	// The turn's end comes after Halt's record, and gives the log back; what it emitted follows.
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		l, err := st.OpenLog(id)
+		if err == nil {
+			l.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the session's log once the turn ended: %v, want it free", err)
+		}
+	}
+	for quiet := false; !quiet; {
+		select {
+		case ev := <-f.events:
+			heard[ev.Seq] = true
+		case <-time.After(100 * time.Millisecond):
+			quiet = true
+		}
+	}
+	evs, err := st.Events(id, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if !heard[ev.Seq] {
+			t.Errorf("the subscriber never heard %s at seq %d", ev.Type, ev.Seq)
+		}
+	}
+}

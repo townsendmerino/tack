@@ -51,3 +51,26 @@ func (h *Hold) Release() error {
 	h.f = nil
 	return err
 }
+
+// CreateHeld is Create for a session core: it also takes the session's hold, which the caller releases. The hold is
+// taken first, before the log exists, so Sessions lists no new session a core does not already hold, and every core
+// takes a session's hold before its log's lock.
+func (s *Store) CreateHeld(id proto.SessionID) (*Log, *Hold, error) {
+	p, err := s.logPath(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := mkdirAllSynced(filepath.Dir(p), 0o700); err != nil {
+		return nil, nil, err
+	}
+	h, err := s.Hold(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	l, err := s.Create(id)
+	if err != nil {
+		h.Release() // the directory, holding only the hold's file, is listed by no one
+		return nil, nil, err
+	}
+	return l, h, nil
+}
