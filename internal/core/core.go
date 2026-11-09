@@ -600,7 +600,19 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			}
 			if len(pages) > 0 {
 				know = window.NewKnowledge(ws.Root(), pages, w, budget)
-				index = know.Index()
+				if prompted {
+					// A reopened session's tracker is rebuilt from its log before anything is priced: its index as
+					// logged, each page's freshness as the session judged it, and what it loaded.
+					if err := know.Replay(history); err != nil {
+						c.unregister(id)
+						if s.kit != nil {
+							s.kit()
+						}
+						return nil, err
+					}
+				} else {
+					index = know.Index()
+				}
 			}
 		}
 		if c.opt.SectionInstructions {
@@ -631,17 +643,9 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.loop = loop.New(cfg)
 		return s, nil
 	}
-	// A reopened session's section and knowledge trackers are rebuilt from its log, so what is already in its window is
-	// not loaded again. Each takes back only its own notes' share of the budget they share.
-	if s.know != nil {
-		if err = s.know.Replay(history); err != nil {
-			c.unregister(id)
-			if s.kit != nil {
-				s.kit()
-			}
-			return nil, err
-		}
-	}
+	// A reopened session's section tracker is rebuilt from its log, so what is already in its window is not loaded
+	// again; its knowledge tracker was rebuilt as it was made, before anything was priced. Each takes back only its own
+	// share of the budget they share.
 	if s.sections != nil {
 		if err = s.sections.Replay(history); err != nil {
 			c.unregister(id)

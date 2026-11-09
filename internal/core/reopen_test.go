@@ -1000,11 +1000,20 @@ func TestAReopenedSessionKeepsItsPages(t *testing.T) {
 	if r := results(untilTurnEnd(t, events)); len(r) != 1 || !strings.Contains(r[0], "A is empty on purpose.") {
 		t.Fatalf("the first daemon's read should load the page: %q", r)
 	}
+	used := func(c *Core) int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.sessions[sess.Session].know.Budget().Used
+	}
+	before := used(first)
 	first.Close()
 	os.WriteFile(filepath.Join(ws, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644) // the session's edit, say
-	_, cl2, events2 := daemonOn(t, st, ts.URL, know)
+	c2, cl2, events2 := daemonOn(t, st, ts.URL, know)
 	cl2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
 	untilTurnEnd(t, events2) // the replay
+	if after := used(c2); after != before {
+		t.Errorf("the reopened session's budget is %d, the session left it at %d", after, before)
+	}
 	cl2.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("two")}}, nil)
 	r := results(untilTurnEnd(t, events2))
 	if len(r) == 0 || strings.Contains(r[len(r)-1], "Knowledge page") {

@@ -344,6 +344,14 @@ func (in *Instructions) Initial() string {
 	for len(firstLines) > 1 && !fits() {
 		firstLines, cut = firstLines[:len(firstLines)-1], true
 	}
+	// With little left, the outline's count of headings goes too; with less, there are no first-message notes at all,
+	// so the budget is never passed.
+	if !fits() {
+		more = 0
+	}
+	if !fits() {
+		return ""
+	}
 	text := build(firstLines, cut, always, outline, more)
 	// The opening counts as in even when cut: the cut says which lines to read, and it cannot come whole.
 	for i := range first {
