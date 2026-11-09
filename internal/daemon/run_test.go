@@ -321,6 +321,10 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	// The stopping record says how long the drain may take, so the next daemon waits that long.
+	if h := ReadHolder(dir); !h.Stopping || time.Until(h.Until) < o.Grace {
+		t.Fatalf("the record while it drains: %+v; want it stopping, with an Until past the grace window", h)
+	}
 	next := make(chan error, 1)
 	go func() { // a client found the socket gone and started the next daemon
 		l, err := Acquire(dir, "next")
@@ -352,12 +356,11 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
 	dir := shortDir(t)
 	o := runOptions(t, dir)
-	var ended atomic.Bool
-	var heldAtEnd bool
+	var ended, heldAtEnd atomic.Bool
 	o.Watch = func(ctx context.Context, _ *core.Core) {
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
-		heldAtEnd = ReadHolder(dir).PID == os.Getpid()
+		heldAtEnd.Store(ReadHolder(dir).PID == os.Getpid())
 		ended.Store(true)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -371,7 +374,7 @@ func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
 	if !ended.Load() {
 		t.Fatal("Run returned while the watcher beside the core still ran")
 	}
-	if !heldAtEnd {
+	if !heldAtEnd.Load() {
 		t.Fatal("the lock was released before the watcher beside the core ended")
 	}
 }

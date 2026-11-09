@@ -41,6 +41,7 @@ func Run(ctx context.Context, o RunOptions) error {
 		return err
 	}
 	defer l.Release()
+	l.SetShutdown(DrainWait(o.Grace)) // the stopping record says so, and a start waits that long for the lock
 	tok, err := l.NewToken()
 	if err != nil {
 		return err

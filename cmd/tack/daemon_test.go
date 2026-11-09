@@ -90,7 +90,7 @@ func TestDaemonCommands(t *testing.T) {
 // TestRunDaemonRefusesInProcessFlags: what only an in-process run can do is refused with --daemon, before anything
 // starts.
 func TestRunDaemonRefusesInProcessFlags(t *testing.T) {
-	for _, flags := range [][]string{{"--edit"}, {"--instructions", "whole"}, {"--server", "x"}, {"--replay", "c.json"}} {
+	for _, flags := range [][]string{{"--edit"}, {"--instructions", "whole"}, {"--server", "x"}, {"--record", "c.json"}, {"--replay", "c.json"}} {
 		var out, errb bytes.Buffer
 		args := append(append([]string{"run", "--daemon"}, flags...), "q")
 		if code := dispatch(args, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "in this process only") {
@@ -99,8 +99,8 @@ func TestRunDaemonRefusesInProcessFlags(t *testing.T) {
 	}
 }
 
-// TestReleasedWaitsForTheLock: tack daemon stop waits until the daemon it stopped has let go of the lock, not only
-// until its socket stops answering, which a shutdown takes away first.
+// TestReleasedWaitsForTheLock: tack daemon stop waits until the daemon it stopped has let go of the lock itself: not
+// only until its socket stops answering, which a shutdown takes away first, nor until its record is gone.
 func TestReleasedWaitsForTheLock(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "tack-")
 	if err != nil {
@@ -113,6 +113,13 @@ func TestReleasedWaitsForTheLock(t *testing.T) {
 	}
 	if released(filepath.Join(dir, "s"), os.Getpid(), 200*time.Millisecond) {
 		t.Fatal("released while the lock is held")
+	}
+	// Release removes the record just before it unlocks, and a record may be unreadable: the flock is what says.
+	if err := os.Remove(filepath.Join(dir, "s", daemon.HolderName)); err != nil {
+		t.Fatal(err)
+	}
+	if released(filepath.Join(dir, "s"), os.Getpid(), 200*time.Millisecond) {
+		t.Fatal("released while the lock is held, its record gone")
 	}
 	l.Release()
 	if !released(filepath.Join(dir, "s"), os.Getpid(), time.Second) {

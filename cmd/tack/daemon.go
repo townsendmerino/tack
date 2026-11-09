@@ -27,11 +27,10 @@ const (
 	exitNotServing = 4
 )
 
-// drainWait is how long a client waits on a daemon that shuts down with grace: the grace window, then time for it to
-// record the turns it cancels (core.Drain gives that 5s), close the core and let go of the lock. tack daemon stop waits
-// this long for the lock; a client that starts a daemon waits this long for the socket, since a daemon started while
-// another drains binds it only once that one lets go.
-func drainWait(grace time.Duration) time.Duration { return grace + 15*time.Second }
+// drainWait is how long a client waits on a daemon that shuts down with grace (daemon.DrainWait). tack daemon stop
+// waits this long for the lock; a client that starts a daemon waits this long for the socket, since a daemon started
+// while another drains binds it only once that one lets go.
+func drainWait(grace time.Duration) time.Duration { return daemon.DrainWait(grace) }
 
 var cliClient = proto.ClientInfo{Name: "tack-cli", Version: version}
 
@@ -238,12 +237,16 @@ func holderLine(h daemon.Holder) string {
 	return fmt.Sprintf("tack daemon %s, pid %d, since %s: %s", h.Version, h.PID, h.Start.Local().Format(time.DateTime), state)
 }
 
-// released waits up to wait for the daemon with pid to let go of stateDir's lock: its holder record gone (Release
-// removes it just before unlocking), or naming another daemon. The socket says less: a shutdown takes it away first.
+// released waits up to wait for the daemon with pid to let go of stateDir's lock: the lock free, or held by another
+// daemon that has recorded itself. Neither the socket nor the record says it alone: a shutdown takes the socket away
+// first, and Release removes the record just before it unlocks.
 func released(stateDir string, pid int, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {
-		if daemon.ReadHolder(stateDir).PID != pid {
+		if daemon.LockFree(stateDir) {
+			return true
+		}
+		if h := daemon.ReadHolder(stateDir); h.PID != 0 && h.PID != pid { // the next daemon has it already
 			return true
 		}
 		if time.Now().After(deadline) {
