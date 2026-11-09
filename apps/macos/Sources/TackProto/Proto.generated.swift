@@ -98,6 +98,8 @@ public struct Compaction: Codable, Equatable, Sendable {
     public var masked: [MaskedResult]
     public var before: Int
     public var after: Int
+    public var summary: String?
+    public var summarized: [Int64]?
 
     enum CodingKeys: String, CodingKey {
         case request = "request"
@@ -107,6 +109,8 @@ public struct Compaction: Codable, Equatable, Sendable {
         case masked = "masked"
         case before = "before"
         case after = "after"
+        case summary = "summary"
+        case summarized = "summarized"
     }
 }
 

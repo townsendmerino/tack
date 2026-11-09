@@ -20,6 +20,7 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 	conv := &server.Conversation{Model: base.Model, System: base.System, Tools: base.Tools, MaxTokens: base.MaxTokens,
 		Sampling: base.Sampling, ToolChoice: base.ToolChoice}
 	var results []server.ToolResult
+	var cuts summaryCuts
 	turns := 0
 	flush := func() error {
 		if len(results) == 0 {
@@ -45,6 +46,7 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 			}
 			turns++
 		case proto.AssistantMessage:
+			cuts.add(ev.Seq, len(conv.Messages()))
 			if err := conv.AddResponse(p.Content); err != nil {
 				return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 			}
@@ -60,6 +62,17 @@ func Rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 				if !conv.ReplaceResult(m.ID, m.Stub) {
 					return nil, fmt.Errorf("rebuild: seq %d: compaction masks %q, which no result answers", ev.Seq, m.ID)
 				}
+			}
+			// Masks first, as the live loop applies them: one may name a result the summary then removes.
+			if p.Summary != "" {
+				keep, err := cuts.cut(p.Summarized)
+				if err == nil {
+					err = conv.Summarize(keep, p.Summary)
+				}
+				if err != nil {
+					return nil, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
+				}
+				cuts.summarized(keep)
 			}
 		case proto.ErrorEvent:
 			if p.Class == NoToolCallClass {

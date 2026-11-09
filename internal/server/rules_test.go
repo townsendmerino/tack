@@ -57,3 +57,26 @@ func TestReplaceResult(t *testing.T) {
 		t.Fatalf("result block %+v", b)
 	}
 }
+
+// TestSummarizeKeepsFromAnAssistantMessage: a summary replaces the messages before an assistant message with one user
+// message, and refuses any other cut.
+func TestSummarizeKeepsFromAnAssistantMessage(t *testing.T) {
+	c := &Conversation{}
+	c.BeginTurn("one", false)
+	c.AddResponse([]proto.ModelBlock{{Type: "text", Text: "a"}})
+	c.EndTurn()
+	c.BeginTurn("two", false)
+	c.AddResponse([]proto.ModelBlock{{Type: "text", Text: "b"}})
+	for _, keep := range []int{0, 2, 4, -1} { // the start, a user message, past the end
+		if err := c.Summarize(keep, "S"); err == nil {
+			t.Errorf("keep %d: no error", keep)
+		}
+	}
+	if err := c.Summarize(3, "S"); err != nil {
+		t.Fatal(err)
+	}
+	m := c.Messages()
+	if len(m) != 2 || m[0].Role != User || m[0].Content[0].Text != "S" || m[1].Content[0].Text != "b" {
+		t.Errorf("messages %+v", m)
+	}
+}
