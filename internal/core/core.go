@@ -265,26 +265,146 @@ func (c *Core) Close() error {
 	return errors.Join(errs...)
 }
 
+// sendQueue is how many messages a connection holds that its client has not read yet; sendTimeout is how long a send
+// waits for room before the connection is dropped. A send runs under a session's locks (an event's fan-out), so a
+// client whose socket stops draining stalls that session for at most sendTimeout, once. A replay waits for room
+// rather than overflowing, so a long log reaches a client that reads.
+var (
+	sendQueue   = 256
+	sendTimeout = 5 * time.Second
+)
+
+// errDropped is a send to a connection that was dropped or has ended.
+var errDropped = errors.New("core: the connection was dropped: its client stopped reading")
+
 // conn is one client connection. privileged is set by an initialize that presented the client token; requests on a
-// connection are handled in order, so it needs no lock.
+// connection are handled in order, so it needs no lock. What is sent goes out in order through one writer.
 type conn struct {
-	mu         sync.Mutex
-	enc        *json.Encoder
 	privileged bool
+	out        chan any      // what waits to be written
+	stopped    chan struct{} // closed when nothing more is written: the connection was dropped, or Serve ended
+	stop       sync.Once
+	closing    chan struct{} // closed by Serve's end: the writer writes what is queued, then ends
+	written    chan struct{} // closed when the writer ends
+	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
+	timeout    time.Duration // sendTimeout when the connection was made
 }
 
+// newConn is a connection writing to w, closed through w when a stuck client is dropped.
+func newConn(w io.Writer) *conn {
+	cn := &conn{out: make(chan any, sendQueue), stopped: make(chan struct{}), closing: make(chan struct{}),
+		written: make(chan struct{}), timeout: sendTimeout}
+	cn.closer, _ = w.(io.Closer)
+	go cn.write(json.NewEncoder(w))
+	return cn
+}
+
+// flushMark, queued by flush, is closed by the writer once everything queued before it is written.
+type flushMark chan struct{}
+
+// write is the connection's writer: each message one line, the protocol's framing.
+func (cn *conn) write(enc *json.Encoder) {
+	defer close(cn.written)
+	for {
+		select {
+		case v := <-cn.out:
+			if m, ok := v.(flushMark); ok {
+				close(m)
+				continue
+			}
+			if enc.Encode(v) != nil {
+				cn.drop()
+				return
+			}
+		case <-cn.closing:
+			for {
+				select {
+				case v := <-cn.out:
+					if m, ok := v.(flushMark); ok {
+						close(m)
+						continue
+					}
+					if enc.Encode(v) != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
+		case <-cn.stopped:
+			return
+		}
+	}
+}
+
+// send queues v for the client, waiting up to sendTimeout for room; a client that has not made room by then is
+// dropped, and every later send fails at once.
 func (cn *conn) send(v any) error {
-	cn.mu.Lock()
-	defer cn.mu.Unlock()
-	return cn.enc.Encode(v) // Encode writes one line: the protocol's framing
+	select {
+	case <-cn.stopped:
+		return errDropped
+	default:
+	}
+	select {
+	case cn.out <- v:
+		return nil
+	default:
+	}
+	t := time.NewTimer(cn.timeout)
+	defer t.Stop()
+	select {
+	case cn.out <- v:
+		return nil
+	case <-cn.stopped:
+		return errDropped
+	case <-t.C:
+		cn.drop()
+		return errDropped
+	}
+}
+
+// flush waits until everything sent before it is written, the connection is dropped, or sendTimeout passes.
+func (cn *conn) flush() {
+	m := make(flushMark)
+	if cn.send(m) != nil {
+		return
+	}
+	select {
+	case <-m:
+	case <-cn.stopped:
+	case <-time.After(cn.timeout):
+	}
+}
+
+// drop stops writing and closes the connection, which ends its Serve and so its subscriptions. The client may
+// connect again and subscribe from the last seq it heard; the replay gives it what it missed.
+func (cn *conn) drop() {
+	cn.stop.Do(func() {
+		close(cn.stopped)
+		if cn.closer != nil {
+			_ = cn.closer.Close()
+		}
+	})
+}
+
+// finish ends the connection's writing at Serve's end: what is queued is written, for up to sendTimeout, and later
+// sends fail at once.
+func (cn *conn) finish() {
+	close(cn.closing)
+	select {
+	case <-cn.written:
+	case <-time.After(cn.timeout):
+	}
+	cn.stop.Do(func() { close(cn.stopped) })
 }
 
 // Serve speaks the protocol on rw until it closes or ctx ends. Requests are handled in order.
 func (c *Core) Serve(ctx context.Context, rw io.ReadWriter) error {
-	cn := &conn{enc: json.NewEncoder(rw)}
+	cn := newConn(rw)
 	sc := bufio.NewScanner(rw)
 	sc.Buffer(make([]byte, 1<<20), 1<<26)
-	defer c.unsubscribeAll(cn)
+	defer cn.finish()
+	defer c.unsubscribeAll(cn) // first, so no event is queued for a connection that is ending
 	for sc.Scan() {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -316,7 +436,8 @@ func (c *Core) Serve(ctx context.Context, rw io.ReadWriter) error {
 			c.replay(cn, req)
 		}
 		if req.Method == proto.MethodDaemonShutdown && perr == nil {
-			c.shutdown.Do(func() { go c.opt.Shutdown() }) // answered first: the shutdown closes this connection
+			cn.flush() // answered first, and written: the shutdown closes this connection
+			c.shutdown.Do(func() { go c.opt.Shutdown() })
 		}
 	}
 	return sc.Err()
@@ -556,7 +677,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	symbols, _ := searcher.(tools.Symbols)
 	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, EndTurn: s.endTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
@@ -690,12 +811,12 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	return s, nil
 }
 
-// endTurn is the loop's EndTurn: it holds wmu across the recording of the turn's turn.end, its append and its fan-out
-// (emitTurn), so a Halt's record lands wholly before the turn.end or wholly after it. Under wmu, the next turn, which
-// takes wmu before its first event, cannot reach a subscriber before this turn.end either: emit skips an event at or
-// below a subscriber's last seq, so either order inverted would drop one.
-func (s *session) endTurn(record func() error) error {
-	if h := turnEndHook.Load(); h != nil {
+// recordTurn is the loop's Record: it holds wmu across each event the turn records, its append and its fan-out
+// (emitTurn). Halt's records (recordAside) and the next turn's first take wmu too, so each lands wholly before or
+// wholly after a turn's event. emit skips an event at or below a subscriber's last seq, so a higher seq that went out
+// first would drop the lower one for every live subscriber. A turn.end frees the session inside the bracket.
+func (s *session) recordTurn(typ proto.EventType, record func() error) error {
+	if h := turnEndHook.Load(); h != nil && typ == proto.EvTurnEnd {
 		(*h)()
 	}
 	s.wmu.Lock()
@@ -703,10 +824,13 @@ func (s *session) endTurn(record func() error) error {
 	return record()
 }
 
-// emitTurn is the loop's Emit. A turn.end, which comes only through endTurn with wmu held, frees the session before
+// emitTurn is the loop's Emit. A turn.end, which comes only through recordTurn with wmu held, frees the session before
 // any subscriber hears it: turn.end is a client's signal that it may prompt again, so a prompt sent on it is never
 // refused as busy. Foreign events, another process's turn.end among them, go through emit.
 func (s *session) emitTurn(ev proto.Event) {
+	if h := emitHook.Load(); h != nil {
+		(*h)(ev)
+	}
 	if ev.Type != proto.EvTurnEnd {
 		s.emit(ev)
 		return
