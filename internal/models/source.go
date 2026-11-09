@@ -11,6 +11,7 @@ import (
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/goinfer"
+	"github.com/townsendmerino/tack/internal/server/openai"
 )
 
 // Ticker is a Source with idle rules to apply, a supervised child: a daemon calls Tick periodically.
@@ -75,6 +76,15 @@ func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, e
 			return NewOnDemand(name, s.URL, tok, s.Model, s.Start, offer, hc), nil
 		}
 		return NewRemote(name, s.URL, tok, s.Model, hc), nil
+	case config.KindOpenAI:
+		tok := ""
+		if s.TokenFile != "" {
+			var err error
+			if tok, err = config.ReadToken(s.TokenFile); err != nil {
+				return nil, err
+			}
+		}
+		return NewOpenAI(name, s.URL, tok, s.Model, hc), nil
 	}
 	return nil, fmt.Errorf("models: server %q has kind %q", name, s.Kind)
 }
@@ -96,7 +106,7 @@ func (c *childSource) Window() int {
 // Remote is a goinfer-serve tack does not manage (DESIGN §8.2): it reads the served window and checks the model is
 // there; goinfer's own guards on that box decide memory.
 type Remote struct {
-	client *goinfer.Client
+	client server.Server // goinfer's Messages API, or an OpenAI-compatible server
 	model  string
 
 	mu     sync.Mutex
@@ -107,6 +117,11 @@ type Remote struct {
 // when the server serves exactly one model. hc nil means a default client.
 func NewRemote(name, url, token, model string, hc *http.Client) *Remote {
 	return &Remote{client: goinfer.New("goinfer@"+name, url, token, hc), model: model}
+}
+
+// NewOpenAI returns a source for the OpenAI-compatible server at url (config.KindOpenAI), as NewRemote does for goinfer.
+func NewOpenAI(name, url, token, model string, hc *http.Client) *Remote {
+	return &Remote{client: openai.New("openai@"+name, url, token, hc), model: model}
 }
 
 // Ensure checks the server answers and serves the model, and records its window.

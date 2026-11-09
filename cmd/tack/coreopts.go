@@ -103,5 +103,11 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 	if cfg.Run.SummaryRetrieve {
 		opts.SummaryRetrieve = cfg.Run.SummaryRetrieveShare
 	}
+	if cfg.Run.Subagents {
+		opts.Subagents = true
+		opts.SubagentBudget = loop.Budget{MaxRequests: cfg.Run.SubagentRequests, MaxToolCalls: cfg.Run.SubagentToolCalls,
+			MaxWall: cfg.Run.SubagentWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.SubagentTokens,
+			MaxErrors: cfg.Run.SubagentErrors, SessionTokens: cfg.Run.SubagentTokens, SessionToolCalls: cfg.Run.SubagentToolCalls}
+	}
 	return opts
 }

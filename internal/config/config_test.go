@@ -46,6 +46,10 @@ model = "qwen2.5-7b-instruct-q4_k_m"
 	if c.Run.TurnTokens != 200_000 || c.Run.MaxErrors != 8 || c.Run.SessionTokens != 2_000_000 || c.Run.SessionToolCalls != 1000 {
 		t.Fatalf("budget defaults: %+v", c.Run)
 	}
+	if c.Run.Subagents || c.Run.SubagentRequests != 20 || c.Run.SubagentToolCalls != 50 || c.Run.SubagentTokens != 100_000 ||
+		c.Run.SubagentErrors != 4 || c.Run.SubagentWall.Duration != 10*time.Minute {
+		t.Fatalf("subagent defaults: off, half the per-turn budget: %+v", c.Run)
+	}
 	if c.Run.SummaryRetrieve || c.Run.SummaryRetrieveShare != DefaultSummaryRetrieveShare {
 		t.Fatalf("re-retrieval defaults: off, at %d%%: %v, %d", DefaultSummaryRetrieveShare, c.Run.SummaryRetrieve, c.Run.SummaryRetrieveShare)
 	}
@@ -68,6 +72,7 @@ func TestLoadFailsLoudly(t *testing.T) {
 		"best_of over the cap":       {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = 6\n", "best_of is 6"},
 		"best_of negative":           {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nbest_of = -1\n", "best_of is -1"},
 		"a share over 50":            {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nsummary_retrieve_share = 60\n", "summary_retrieve_share is 60"},
+		"a negative subagent budget": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nsubagent_requests = -1\n", "a budget is negative"},
 		"retrieve without summarize": {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[run]\nsummary_retrieve = true\n", "summary_retrieve needs summarize"},
 		"sandbox read relative":      {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"models\"]\n", "sandbox.read[0]"},
 		"sandbox read root":          {"[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n[sandbox]\nread = [\"/\"]\n", "not ~ or a directory holding it"},
@@ -327,5 +332,22 @@ func TestFindRelatedIsOffUnlessAsked(t *testing.T) {
 	c, err = load(t, remote+"[run]\nfind_related = true\n")
 	if err != nil || !c.Run.FindRelated {
 		t.Fatalf("find_related = true: %v; want on", err)
+	}
+}
+
+// TestAnOpenAIServer: an openai-remote takes a url, a token file and a model, and refuses what is for goinfer alone.
+func TestAnOpenAIServer(t *testing.T) {
+	c, err := load(t, "[servers.box]\nkind = \"openai-remote\"\nurl = \"http://box:8000\"\nmodel = \"qwen\"\n")
+	if err != nil || c.Servers["box"].Kind != KindOpenAI || c.Servers["box"].Model != "qwen" {
+		t.Fatalf("%+v, %v", c, err)
+	}
+	for name, body := range map[string]string{
+		"no url":    "[servers.box]\nkind = \"openai-remote\"\n",
+		"on demand": "[servers.box]\nkind = \"openai-remote\"\nurl = \"u\"\non_demand = true\n",
+		"a binary":  "[servers.box]\nkind = \"openai-remote\"\nurl = \"u\"\nbinary = \"/x\"\n",
+	} {
+		if _, err := load(t, body); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
 	}
 }

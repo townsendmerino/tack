@@ -54,6 +54,10 @@ The order the owner approved, each step with its exit check:
        `[run] summary_retrieve` (share `summary_retrieve_share`, default 10% of the window; coordinator, 2026-11-09,
        logged for the owner): the summary's open threads are searched through ken and the hits end the summary message.
        The E1 screen of summarize and re-retrieval is not registered yet.
+   - **Subagents (2026-11-09):** the `task` tool behind `[run] subagents`, off by default (coordinator's decisions,
+     logged for the owner): the child is its own stored session with `SessionCreated.Parent`, in plan mode, read-only,
+     depth 1, under `[run] subagent_*` (half the per-turn budget); its tokens count toward the parent's budgets through
+     `ToolFinished.Tokens`; a halt of the parent cancels it.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time.
@@ -64,6 +68,8 @@ The order the owner approved, each step with its exit check:
      dependency).
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **The adapter built (2026-11-09)** as `kind = "openai-remote"` (`internal/server/openai`), tested against
+     hand-written wire fixtures; the cassettes recorded against goinfer's endpoint are a recipe to the coordinator.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
      the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
      config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,

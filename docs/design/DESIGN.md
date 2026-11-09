@@ -477,7 +477,11 @@ Around the turn:
   decodes one request at a time per model (its work-queue design keeps one worker per model,
   `docs/tasks/task-work-queue-2026-09.md`). They buy a clean context, not speed. *Hypothesis for E1:* ken removes most
   reasons to spawn an exploration subagent; E1 counts subagents per task, per arm.
-- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
+  - **Built** behind `[run] subagents`, off by default and not an E1 arm setting (P1 step 6; `internal/tools/task.go`,
+    `internal/core/subagent.go`). The child is its own stored session (`SessionCreated.Parent`) in plan mode, with the
+    read-only tools and no `task` of its own. Its budget is `[run] subagent_*`, half the per-turn defaults. It runs on
+    the parent turn's context, so a halt reaches it. Its tokens count toward the parent's budgets
+    (`ToolFinished.Tokens`), and the usage table counts them once, from the child's own log.- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
   cost and asks first.
 - **Plan mode.** Mutating tools are refused when they run (the tool list itself never changes, §7.2); the model proposes
   a plan; the user approves and the mode changes.
@@ -558,7 +562,11 @@ the OpenAI-compatible adapter — each with a cassette test:
   adapter. tack loses some things there: tool calls are only as reliable as that server's parsing; token counts are
   estimates calibrated against the server's reported prompt tokens; prefix reuse is as good as the server's own (E0
   measures it); and tack does not manage the server's lifecycle or memory.
-- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
+  - **Built** (P1 step 7; `internal/server/openai`) as `kind = "openai-remote"` in `[servers]`: url, token_file
+    and model, nothing on demand. It streams `/v1/chat/completions` with `include_usage` (`cached_tokens` as reuse), and
+    maps tool calls both ways. Thinking is not sent back, since the API has no field for it, and `reasoning_content` is
+    kept as thinking. CountTokens has no endpoint here, so the ledger estimates. Tested against hand-written wire
+    fixtures; recorded cassettes against goinfer's endpoint are a run still to come.- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
   and keeps server-specific fields opaque.
 - **Model registry.** Per model and machine: the served window, max output, thinking support, tool-call reliability
   (from `serve check` and E0), speed (prefill tokens per second at 4k, 8k and 16k prompts; decode tokens per second),
