@@ -970,3 +970,7 @@ func computedTokens(u proto.Usage) int {
 	}
 	return u.Prompt + u.Output
 }
+
+// Tokens is what the server computed for the session's requests so far, as its budget counts them: a task's caller
+// counts a child session's toward its own (tools.SubagentAnswer).
+func (s *Session) Tokens() int { return s.tokens }

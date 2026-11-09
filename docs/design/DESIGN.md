@@ -477,7 +477,11 @@ Around the turn:
   decodes one request at a time per model (its work-queue design keeps one worker per model,
   `docs/tasks/task-work-queue-2026-09.md`). They buy a clean context, not speed. *Hypothesis for E1:* ken removes most
   reasons to spawn an exploration subagent; E1 counts subagents per task, per arm.
-- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
+  - **Built** behind `[run] subagents`, off by default and not an E1 arm setting (P1 step 6; `internal/tools/task.go`,
+    `internal/core/subagent.go`). The child is its own stored session (`SessionCreated.Parent`) in plan mode, with the
+    read-only tools and no `task` of its own. Its budget is `[run] subagent_*`, half the per-turn defaults. It runs on
+    the parent turn's context, so a halt reaches it. Its tokens count toward the parent's budgets
+    (`ToolFinished.Tokens`), and the usage table counts them once, from the child's own log.- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
   cost and asks first.
 - **Plan mode.** Mutating tools are refused when they run (the tool list itself never changes, §7.2); the model proposes
   a plan; the user approves and the mode changes.
