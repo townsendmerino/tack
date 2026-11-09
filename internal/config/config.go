@@ -71,6 +71,9 @@ type Sandbox struct {
 const (
 	KindChild  = "goinfer-child"  // a goinfer-serve tack starts and supervises on this machine (DESIGN §8.1)
 	KindRemote = "goinfer-remote" // a goinfer-serve running elsewhere, e.g. on nobara (DESIGN §8.2)
+	// KindOpenAI is a server speaking the OpenAI-compatible /v1/chat/completions (internal/server/openai; P1 step 7):
+	// goinfer's own, or another. It takes url, token_file and model, as a goinfer-remote does, and nothing on demand.
+	KindOpenAI = "openai-remote"
 )
 
 // Server is one model server.
@@ -366,8 +369,15 @@ func (c *Config) validate() error {
 			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
 				return fmt.Errorf("servers.%s: binary, model_path, ctx, args and allow_devel are for %s", name, KindChild)
 			}
+		case KindOpenAI:
+			if s.URL == "" {
+				return fmt.Errorf("servers.%s: a %s needs url", name, KindOpenAI)
+			}
+			if s.OnDemand || len(s.Start) > 0 || s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
+				return fmt.Errorf("servers.%s: a %s takes url, token_file and model only", name, KindOpenAI)
+			}
 		default:
-			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)
+			return fmt.Errorf("servers.%s: kind %q, want %q, %q or %q", name, s.Kind, KindChild, KindRemote, KindOpenAI)
 		}
 		c.Servers[name] = s
 	}

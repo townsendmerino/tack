@@ -562,7 +562,11 @@ the OpenAI-compatible adapter — each with a cassette test:
   adapter. tack loses some things there: tool calls are only as reliable as that server's parsing; token counts are
   estimates calibrated against the server's reported prompt tokens; prefix reuse is as good as the server's own (E0
   measures it); and tack does not manage the server's lifecycle or memory.
-- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
+  - **Built** (P1 step 7; `internal/server/openai`) as `kind = "openai-remote"` in `[servers]`: url, token_file
+    and model, nothing on demand. It streams `/v1/chat/completions` with `include_usage` (`cached_tokens` as reuse), and
+    maps tool calls both ways. Thinking is not sent back, since the API has no field for it, and `reasoning_content` is
+    kept as thinking. CountTokens has no endpoint here, so the ledger estimates. Tested against hand-written wire
+    fixtures; recorded cassettes against goinfer's endpoint are a run still to come.- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
   and keeps server-specific fields opaque.
 - **Model registry.** Per model and machine: the served window, max output, thinking support, tool-call reliability
   (from `serve check` and E0), speed (prefill tokens per second at 4k, 8k and 16k prompts; decode tokens per second),
