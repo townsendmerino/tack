@@ -159,6 +159,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
 	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
 	opts.Knowledge = cfg.Run.Knowledge && !cfg.Run.NoInstructions
+	opts.SectionSearch = cfg.Run.SectionSearch
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true
@@ -255,7 +256,7 @@ func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
+	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError

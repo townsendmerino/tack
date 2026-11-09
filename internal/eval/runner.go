@@ -814,23 +814,8 @@ func (r *runner) settle(ctx context.Context, arm Arm) models.Pressure {
 // settlePoll is how often settle re-reads memory pressure.
 var settlePoll = 2 * time.Second
 
-// DecodePathFor is the decode path an arm with these goinfer-serve flags measures: metal-resident or cuda-resident for
-// a GPU backend (goinfer has no staged GPU path), cpu for the CPU, and "" when the flags name no backend.
-func DecodePathFor(args []string) string {
-	backend := ""
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "-backend" || args[i] == "--backend" {
-			backend = args[i+1]
-		}
-	}
-	switch backend {
-	case "metal", "cuda":
-		return backend + "-resident"
-	case "cpu":
-		return "cpu"
-	}
-	return ""
-}
+// DecodePathFor is the decode path an arm with these goinfer-serve flags measures (models.DecodePathFor).
+func DecodePathFor(args []string) string { return models.DecodePathFor(args) }
 
 // VoidPath reports why a server whose banner gave decode path got is not measuring want, or "" when got begins with
 // want. A banner that gives no decode path is void too: nothing shows the arm runs on the path it names. goinfer

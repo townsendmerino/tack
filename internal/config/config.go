@@ -147,6 +147,11 @@ type Run struct {
 	// Knowledge reads the workspace's .agents/knowledge/ pages on demand (core.Options.Knowledge; ADR-007). Default off,
 	// and no E1 arm may turn it on (pilot.RunSettings leaves it out): one run's notes must never reach another.
 	Knowledge bool `toml:"knowledge"`
+	// SectionSearch asks ken, before each prompt, for the instruction file's sections that match the message, and adds
+	// them to it (core.Options.SectionSearch; DESIGN §2.3, ken's route). Default off: the search runs on the critical
+	// path, and its registered latency rule (p95 ≤ 100 ms inline) has not been measured yet
+	// (docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md, the night run spec). Not an E1 arm setting.
+	SectionSearch bool `toml:"section_search"`
 	// RecentlyChanged gives sessions the recently_changed tool: uncommitted changes and recent commits, from git
 	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
 	// setting until one is registered.

@@ -129,6 +129,10 @@ type Options struct {
 	// end of the session's first message. tack's design loads them by section (DESIGN §7.4, K9); this is the stopgap
 	// until that is built, matching what opencode loads.
 	WholeInstructions bool
+	// SectionSearch adds ken's route to SectionInstructions: before each prompt, ken's hits for the message in the
+	// instruction file bring their sections into it (window.Instructions.ForHits). It needs a searcher that is a
+	// window.SectionSearcher, and does nothing for a file loaded whole.
+	SectionSearch bool
 	// SectionInstructions reads the workspace's instruction file by section instead (window.Instructions; DESIGN §2.3):
 	// the first message carries what Initial gives, before the task, and each tool call that ran adds the sections it
 	// brings in to its result. WholeInstructions wins when both are set.
@@ -194,6 +198,8 @@ type session struct {
 	notesFirst   bool
 	// know is the workspace's knowledge tracker under Knowledge, nil otherwise; a reopened session rebuilds it.
 	know *window.Knowledge
+	// sectionSearch finds the instruction file's sections for a user message (ken's exact SearchFiles); nil without ken.
+	sectionSearch window.SectionSearcher
 	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
 	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
 	sections *window.Instructions
@@ -624,6 +630,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 				in := window.NewInstructions(name, content, budget)
 				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
 				s.sections = in
+				s.sectionSearch, _ = searcher.(window.SectionSearcher)
 			}
 		}
 		if know != nil && prompted {
@@ -766,6 +773,12 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "repo_map: " + err.Error()}
 		}
 	}
+	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
+	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
+	var paths [][]string
+	if c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
+		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
+	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
 	c.mu.Lock()
 	if h := c.halted; h != nil {
@@ -786,18 +799,28 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	s.running, s.cancel = true, cancel
 	// The instructions, the map and the injection join the first message itself, so the log holds exactly what the model
 	// was sent. Map and injection sit after the head and before the task, so the message still ends with the task.
+	// The sections ken found go last before the task, so the message still ends with it and Replay finds their note's
+	// end at window.MessageTask.
 	statement := text.String()
+	hits := ""
+	if len(paths) > 0 {
+		hits = s.sections.ForHits(paths)
+	}
 	switch {
 	case s.prompted:
+		if hits != "" {
+			text.Reset()
+			text.WriteString(hits + window.MessageTask + statement)
+		}
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
-		text.WriteString(s.instructions + "\n\n")
+		text.WriteString(s.instructions)
 		for _, part := range []string{repoMap, inject} {
 			if part != "" {
-				text.WriteString(part + "\n\n")
+				text.WriteString("\n\n" + part)
 			}
 		}
-		text.WriteString(headTaskLabel + statement)
+		text.WriteString(hits + window.MessageTask + statement)
 	case repoMap != "" || inject != "":
 		text.Reset()
 		for _, part := range []string{repoMap, inject} {

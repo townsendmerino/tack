@@ -22,6 +22,7 @@ import (
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/shell"
+	"github.com/townsendmerino/tack/internal/tools"
 	"github.com/townsendmerino/tack/internal/window"
 )
 
@@ -658,5 +659,84 @@ func TestSectionInstructionsWholeFileFollowsTheTask(t *testing.T) {
 	}
 	if !strings.HasPrefix(first, "Add a test.\n\nProject instructions, from CLAUDE.md:") {
 		t.Fatalf("first message %q", first)
+	}
+}
+
+// pathsSearcher is ken for the core: no hits from search, and from the instruction file the heading paths it is set
+// to, recording what it was asked.
+type pathsSearcher struct {
+	paths [][]string
+	asked []string
+}
+
+func (p *pathsSearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
+
+func (p *pathsSearcher) SectionPaths(_ context.Context, query string, _ int, file string) ([][]string, error) {
+	p.asked = append(p.asked, file+": "+query)
+	return p.paths, nil
+}
+
+// TestSectionsForAMessageThroughTheCore: with ken, the instruction file's sections for the user's message join the
+// first message before the task; a later message's join its own; the message still ends with the task.
+func TestSectionsForAMessageThroughTheCore(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	ws := gitWorkspace(t, "# notes\n\nIntro.\n\n## Testing\n\nRun go test with -v.\n\n## Releases\n\nTag from main.\n\n## Filler\n\n"+
+		strings.Repeat("a line of filler text to push the file over its budget\n", 300))
+	ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+	f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, true
+	f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+	sid, err := f.sessionIn(t, ws, proto.ModePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	messages := func() []string {
+		var out []string
+		for _, ev := range f.waitTurnEnd(t) {
+			if v, _ := ev.Decode(); ev.Type == proto.EvUserMessage {
+				out = append(out, v.(proto.UserMessage).Content[0].Text)
+			}
+		}
+		return out
+	}
+	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+	first := messages()
+	if len(first) != 1 || !strings.Contains(first[0], "[Project rules from CLAUDE.md for this message:]\n\n## Testing\n\nRun go test with -v.") ||
+		!strings.HasSuffix(first[0], "\n\nTask: How do I test?") || !strings.HasPrefix(first[0], "Project notes from CLAUDE.md") {
+		t.Fatalf("first message %q", first)
+	}
+	ps.paths = [][]string{{"notes", "Testing"}, {"notes", "Releases"}}
+	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("And releases?")}}, nil)
+	second := messages()
+	if len(second) != 1 || second[0] != "\n\n[Project rules from CLAUDE.md for this message:]\n\n## Releases\n\nTag from main.\n\n\nTask: And releases?" {
+		t.Fatalf("second message %q", second)
+	}
+	if len(ps.asked) != 2 || ps.asked[0] != "CLAUDE.md: How do I test?" {
+		t.Errorf("asked %q", ps.asked)
+	}
+}
+
+// TestSectionSearchIsOffByDefaultAndSkipsAWholeFile: without SectionSearch ken is not asked; with it, a file loaded
+// whole is not searched either, since nothing could load.
+func TestSectionSearchIsOffByDefaultAndSkipsAWholeFile(t *testing.T) {
+	for name, c := range map[string]struct {
+		search bool
+		md     string
+	}{"off": {false, "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Filler\n\n" + strings.Repeat("filler line of text\n", 400)},
+		"whole": {true, "# notes\n\n## Testing\n\nRun go test.\n"}} {
+		f := newFixture(t, goinfertest.Says("one"))
+		ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+		f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, c.search
+		f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+		sid, err := f.sessionIn(t, gitWorkspace(t, c.md), proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+		f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil)
+		f.waitTurnEnd(t)
+		if len(ps.asked) != 0 {
+			t.Errorf("%s: ken was asked %q", name, ps.asked)
+		}
 	}
 }

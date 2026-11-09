@@ -16,12 +16,18 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/townsendmerino/tack/internal/config"
 )
 
 // The supervisor's tests run this test binary as the child: with TACK_FAKE_GOINFER=1 it behaves as a small
 // goinfer-serve (the flags, auth and admin routes the supervisor uses, after goinfer's internal/serveapp) and writes
 // what it observed to <session-dir>/../fake.json.
 func TestMain(m *testing.M) {
+	if dir := os.Getenv("TACK_FAKE_DAEMON"); dir != "" {
+		fakeDaemon(dir)
+		return
+	}
 	if os.Getenv("TACK_FAKE_GOINFER") == "1" {
 		fakeGoinfer(os.Args[1:])
 		return
@@ -34,6 +40,7 @@ type fakeReport struct {
 	EnvKey     bool     `json:"env_key"`
 	Loads      int      `json:"loads"`
 	Unloads    int      `json:"unloads"`
+	Fits       int      `json:"fits"`
 	BadAuth    int      `json:"bad_auth"`
 	SessionDir string   `json:"session_dir"`
 }
@@ -75,6 +82,26 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 	})
 	admin := http.NewServeMux()
+	admin.HandleFunc("POST /admin/models/fit", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Name, Path string }
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		rep.Fits++
+		save()
+		mu.Unlock()
+		switch {
+		case strings.Contains(req.Path, "nofit"):
+			fmt.Fprint(w, `{"fits":false,"decline":"KV needs 9.0 GB at this context; 2.1 GB is free","decode_path":"unknown"}`)
+		case strings.Contains(req.Path, "streams"):
+			fmt.Fprint(w, `{"fits":false,"decline":"weights do not fit","retry":"the load retries with -stream-weights","decode_path":"unknown"}`)
+		case strings.Contains(req.Path, "cpufit"):
+			fmt.Fprint(w, `{"fits":true,"decode_path":"cpu (int4): metal declines this quantization"}`)
+		case strings.Contains(req.Path, "resident"):
+			fmt.Fprint(w, `{"fits":true,"decode_path":"metal-resident (int4)"}`)
+		default:
+			fmt.Fprint(w, `{"fits":null,"unknown":"the .giw is not built yet","decode_path":"unknown"}`)
+		}
+	})
 	admin.HandleFunc("POST /admin/models/load", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Name, Path string }
 		json.NewDecoder(r.Body).Decode(&req)
@@ -89,7 +116,11 @@ func fakeGoinfer(args []string) {
 		loaded[req.Name] = true
 		rep.Loads++
 		save()
-		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  decode path: cpu (int4)\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, *ctxN)
+		path := "cpu (int4)"
+		if strings.Contains(req.Path, "resident") {
+			path = "metal-resident (int4)"
+		}
+		fmt.Fprintf(os.Stderr, "loaded %q: 4-layer model\n  decode path: %s\n  fit: %d-token cap needs 0.5 GB KV (weights 1.0 GB, budget 9.0 GB, 7.5 GB left for a request's own prefill)\n", req.Name, path, *ctxN)
 		json.NewEncoder(w).Encode(map[string]any{"id": req.Name, "status": "loaded"})
 	})
 	admin.HandleFunc("POST /admin/models/unload", func(w http.ResponseWriter, r *http.Request) {
@@ -141,15 +172,32 @@ func (c *clock) add(d time.Duration) {
 // and a controllable clock and memory pressure.
 func newSup(t *testing.T, modelPath string) (*Supervisor, *clock, *Pressure) {
 	t.Helper()
-	t.Setenv("TACK_FAKE_GOINFER", "1")
-	t.Setenv("GOINFER_API_KEY", "leaked-from-the-parent")
+	return newSupArgs(t, modelPath, []string{"-backend", "cpu"})
+}
+
+// newSupArgs is newSup with the child's extra flags.
+func newSupArgs(t *testing.T, modelPath string, args []string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "tksup")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
+	return newSupIn(t, dir, modelPath, args)
+}
+
+// newSupDir is newSup with the child's directory given.
+func newSupDir(t *testing.T, dir string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
+	return newSupIn(t, dir, "/m/model.gguf", []string{"-backend", "cpu"})
+}
+
+func newSupIn(t *testing.T, dir, modelPath string, args []string) (*Supervisor, *clock, *Pressure) {
+	t.Helper()
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	t.Setenv("GOINFER_API_KEY", "leaked-from-the-parent")
 	s, err := NewSupervisor(ChildConfig{Binary: os.Args[0], ModelPath: modelPath, Model: "m", Ctx: 8192,
-		Args: []string{"-backend", "cpu"}, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute})
+		Args: args, Dir: dir, IdleUnload: 10 * time.Minute, IdleExit: 30 * time.Minute, Admission: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,5 +402,118 @@ func TestRemote(t *testing.T) {
 	}
 	if _, err := NewRemote("nobara", ts.URL, "wrong", "qwen", nil).Ensure(ctx); err == nil {
 		t.Fatal("a bad token was accepted")
+	}
+}
+
+// TestFitDeclineRefusesTheLoad: before each load goinfer is asked whether it would fit (G2, POST /admin/models/fit,
+// p1-notes "P1's order and decisions"). fits:false is refused with goinfer's decline, and nothing loads; fits:null
+// loads, to find out; fits:false with a retry loads too, since goinfer's own load would not refuse it.
+func TestFitDeclineRefusesTheLoad(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := newSup(t, "/m/nofit.gguf")
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "KV needs 9.0 GB") {
+		t.Fatalf("Ensure on a load that does not fit: %v, want goinfer's decline", err)
+	}
+	if r := report(t, s); r.Fits != 1 || r.Loads != 0 {
+		t.Fatalf("fit asked %d times, %d loads; want 1 and 0", r.Fits, r.Loads)
+	}
+	for _, path := range []string{"/m/notbuilt.gguf", "/m/streams.gguf"} {
+		s, _, _ := newSup(t, path)
+		if _, err := s.Ensure(ctx); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+		if r := report(t, s); r.Fits != 1 || r.Loads != 1 {
+			t.Errorf("%s: fit asked %d times, %d loads; want 1 and 1", path, r.Fits, r.Loads)
+		}
+	}
+}
+
+// TestDecodePathIsChecked: a load meant for the GPU that would decode on the CPU is refused. When fit already knows,
+// it is refused before the load; when only the load can tell, it is refused after, from goinfer's banner, and the
+// model is unloaded. A load that lands on the path its flags ask for is kept.
+func TestDecodePathIsChecked(t *testing.T) {
+	ctx := context.Background()
+	metal := []string{"-backend", "metal"}
+	s, _, _ := newSupArgs(t, "/m/cpufit.giw", metal)
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "cpu (int4)") || !strings.Contains(err.Error(), "metal-resident") {
+		t.Fatalf("fit says cpu for a metal load: %v, want refused before the load", err)
+	}
+	if r := report(t, s); r.Loads != 0 {
+		t.Fatalf("%d loads; want none", r.Loads)
+	}
+	s, _, _ = newSupArgs(t, "/m/fallsback.giw", metal)
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "banner") {
+		t.Fatalf("a metal load the banner puts on the cpu: %v, want refused after the load", err)
+	}
+	if r := report(t, s); r.Loads != 1 || r.Unloads != 1 {
+		t.Fatalf("%d loads, %d unloads; want the fallen-back load unloaded", r.Loads, r.Unloads)
+	}
+	if _, loaded := s.Running(); loaded {
+		t.Fatal("the supervisor counts the refused load as loaded")
+	}
+	s, _, _ = newSupArgs(t, "/m/resident.giw", metal)
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatalf("a load that lands on metal: %v", err)
+	}
+}
+
+// TestWithoutAdmissionAFallbackIsKept: measurement (E0's runner) leaves admission off. A GPU load that falls back to
+// the CPU loads and is kept, its decode path in the plan for the arm to judge, and goinfer is not asked fit.
+func TestWithoutAdmissionAFallbackIsKept(t *testing.T) {
+	s, _, _ := newSupArgs(t, "/m/fallsback.giw", []string{"-backend", "metal"})
+	s.cfg.Admission = false
+	if _, err := s.Ensure(context.Background()); err != nil {
+		t.Fatalf("a fallback without admission: %v, want it loaded", err)
+	}
+	if p, _ := s.Plan(); !strings.HasPrefix(p.DecodePath, "cpu") {
+		t.Fatalf("plan %+v; want the banner's cpu decode path", p)
+	}
+	if r := report(t, s); r.Fits != 0 || r.Unloads != 0 {
+		t.Fatalf("fit asked %d times, %d unloads; want neither", r.Fits, r.Unloads)
+	}
+}
+
+// TestOpenAdmitsTacksOwnLoads: the child a session's config makes (Open) goes through admission; only measurement,
+// which makes its supervisor itself, leaves it off.
+func TestOpenAdmitsTacksOwnLoads(t *testing.T) {
+	cfg := &config.Config{Servers: map[string]config.Server{"mac": {Kind: config.KindChild, Binary: "/bin/goinfer-serve",
+		ModelPath: "/m/q.gguf", Model: "q", Ctx: 16384}}}
+	src, err := Open(cfg, "mac", "/tmp/tk", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := src.(*childSource); !ok || !c.sup.cfg.Admission {
+		t.Fatalf("Open made %T without admission", src)
+	}
+}
+
+// TestCriticalPressureUnloads: at critical memory pressure the idle tick unloads the model, generating or not, and the
+// next load waits for the pressure to fall (DESIGN §8.1, memory guard: at critical the model unloads). Measurement,
+// with admission off, is left alone.
+func TestCriticalPressureUnloads(t *testing.T) {
+	ctx := context.Background()
+	s, _, p := newSup(t, "/m/busy.gguf") // busy: a generation is in flight
+	if _, err := s.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*p = PressureCritical
+	if err := s.Tick(ctx); err == nil || !strings.Contains(err.Error(), "critical") {
+		t.Fatalf("Tick at critical pressure: %v, want the unload reported", err)
+	}
+	if _, loaded := s.Running(); loaded || report(t, s).Unloads != 1 {
+		t.Fatalf("loaded %v, %d unloads; want the model unloaded", loaded, report(t, s).Unloads)
+	}
+	if _, err := s.Ensure(ctx); err == nil || !strings.Contains(err.Error(), "memory pressure") {
+		t.Fatalf("a load at critical pressure: %v, want refused", err)
+	}
+
+	m, _, mp := newSup(t, "/m/busy.gguf")
+	m.cfg.Admission = false
+	if _, err := m.Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*mp = PressureCritical
+	if err := m.Tick(ctx); err != nil || report(t, m).Unloads != 0 {
+		t.Fatalf("measurement at critical pressure: %v, %d unloads; want it left alone", err, report(t, m).Unloads)
 	}
 }

@@ -270,6 +270,40 @@ func TestSpawnDetached(t *testing.T) {
 	}
 }
 
+// tickingSource is a remote source that counts the idle ticks it is given, as a supervised child would apply them.
+type tickingSource struct {
+	*models.Remote
+	ticks *atomic.Int32
+}
+
+func (s tickingSource) Tick(context.Context) error { s.ticks.Add(1); return nil }
+
+// TestRunTicksTheCore: the daemon applies its model sources' idle rules on an interval, so a supervised child unloads
+// and exits when idle (DESIGN §8.1).
+func TestRunTicksTheCore(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384))
+	t.Cleanup(ts.Close)
+	var ticks atomic.Int32
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return tickingSource{models.NewRemote("local", ts.URL, "", "", nil), &ticks}, nil
+	})
+	o.TickEvery = 10 * time.Millisecond
+	start(t, o)
+	c := dialSoon(t, dir)
+	ws := t.TempDir()
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for ticks.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d ticks in 5s at a 10ms interval", ticks.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // stuckModel serves /v1/models and answers no /v1/messages until the request is cancelled.
 func stuckModel() http.Handler {
 	models := goinfertest.NewScripted("m", 16384)
@@ -355,28 +389,52 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 	}
 }
 
-// TestRunEndsItsWatcherBeforeLettingGo: the core's context ends, and Run waits for the watcher beside the core to
-// return, before it closes the core and releases the lock; nothing of the daemon's runs on after Run returns.
+// closeWatch is a model source that records when the core closes it, which the core does as it closes.
+type closeWatch struct {
+	models.Source
+	closed *atomic.Bool
+}
+
+func (s closeWatch) Close() error { s.closed.Store(true); return s.Source.Close() }
+
+// TestRunEndsItsWatcherBeforeLettingGo: Run waits for its watcher to return before it closes the core and releases
+// the lock, so a watcher ending slowly still sees an open core (its model source not yet closed) and the lock held.
 func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
 	dir := shortDir(t)
-	o := runOptions(t, dir)
-	var ended, heldAtEnd atomic.Bool
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var coreClosed atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return closeWatch{models.NewRemote("local", ts.URL, "", "", nil), &coreClosed}, nil
+	})
+	var ended, heldAtEnd, openAtEnd atomic.Bool
 	o.Watch = func(ctx context.Context, _ *core.Core) {
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
 		heldAtEnd.Store(ReadHolder(dir).PID == os.Getpid())
+		openAtEnd.Store(!coreClosed.Load())
 		ended.Store(true)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, o) }()
-	dialSoon(t, dir).Close()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens its model source, which it closes as it closes
+	}
+	c.Close()
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if !ended.Load() {
 		t.Fatal("Run returned while the watcher beside the core still ran")
+	}
+	if !coreClosed.Load() {
+		t.Fatal("Run returned with the core's source open; the check below would prove nothing")
+	}
+	if !openAtEnd.Load() {
+		t.Fatal("the core was closed before the watcher beside it ended")
 	}
 	if !heldAtEnd.Load() {
 		t.Fatal("the lock was released before the watcher beside the core ended")
@@ -435,5 +493,59 @@ func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
 	var pe *proto.Error
 	if !errors.As(initErr, &pe) || pe.Code != proto.CodeShuttingDown {
 		t.Fatalf("an initialize as the daemon stopped accepting: %v; want code %d", initErr, proto.CodeShuttingDown)
+	}
+}
+
+// slowTicker is a model source whose idle rules take a while to apply, and which records a Close that comes while
+// they are being applied.
+type slowTicker struct {
+	models.Source
+	ticking, closedMidTick *atomic.Bool
+}
+
+func (s slowTicker) Tick(context.Context) error {
+	s.ticking.Store(true)
+	time.Sleep(100 * time.Millisecond)
+	s.ticking.Store(false)
+	return nil
+}
+
+func (s slowTicker) Close() error {
+	if s.ticking.Load() {
+		s.closedMidTick.Store(true)
+	}
+	return s.Source.Close()
+}
+
+// TestRunEndsItsTicksBeforeClosingTheCore: a tick of the model sources' idle rules still running when the daemon shuts
+// down ends before the core closes those sources (Run waits for its ticker as for its watcher).
+func TestRunEndsItsTicksBeforeClosingTheCore(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var ticking, closedMidTick atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return slowTicker{models.NewRemote("local", ts.URL, "", "", nil), &ticking, &closedMidTick}, nil
+	})
+	o.TickEvery = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens the source, which it ticks from now on
+	}
+	c.Close()
+	for deadline := time.Now().Add(5 * time.Second); !ticking.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never ticked its model source")
+		}
+	}
+	cancel() // mid-tick
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if closedMidTick.Load() {
+		t.Fatal("the core closed its model source while a tick of its idle rules still ran")
 	}
 }

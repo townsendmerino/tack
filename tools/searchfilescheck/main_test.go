@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/townsendmerino/tack/internal/kensearch"
 )
 
 // TestCheckPassesOnASmallIndex: under 5,000 chunks SearchFiles is the exact answer.
@@ -15,8 +17,7 @@ func TestCheckPassesOnASmallIndex(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n\n## Staging\n\nStage and commit.\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\n// run the tests\nfunc A() {}\n"), 0o644)
 	var out bytes.Buffer
-	if code := run([]string{"-root", dir, "-files", "./CLAUDE.md"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") ||
-		strings.Contains(out.String(), "said inexact") {
+	if code := run([]string{"-root", dir, "-files", "./CLAUDE.md"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }
@@ -32,20 +33,36 @@ func TestCheckFailsOnAnUnreadableFile(t *testing.T) {
 	}
 }
 
-// TestCheckFailsPastTheCap: an index past ken's 5,000-candidate cap whose instruction-file hit ranks below it gives a
-// SearchFiles answer that is not exact, and the check says FAIL. Every Go file repeats the query word, so each outranks
-// the instruction file's one, in its heading.
-func TestCheckFailsPastTheCap(t *testing.T) {
+// dropping drops every hit SearchFile returns past the first, as ken's capped SearchFiles did past 5,000 candidates.
+type dropping struct{ fileSearcher }
+
+func (d dropping) SearchFile(ctx context.Context, q string, k int, f string) ([]kensearch.SectionHit, error) {
+	hits, err := d.fileSearcher.SearchFile(ctx, q, k, f)
+	return hits[:min(len(hits), 1)], err
+}
+
+// TestCheckFailsWhenHitsAreMissing: a SearchFile that loses hits fails the check, so the gate can go red.
+func TestCheckFailsWhenHitsAreMissing(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Zebra\n\nonce, among many other words of prose here.\n"), 0o644)
-	for i := range 5100 {
-		os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d.go", i)), []byte(fmt.Sprintf("package p\n\n// zebra zebra zebra\nfunc F%d() {}\n", i)), 0o644)
-	}
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n\n## More testing\n\nRun the tests again.\n"), 0o644)
+	wrap = func(s fileSearcher) fileSearcher { return dropping{s} }
+	t.Cleanup(func() { wrap = func(s fileSearcher) fileSearcher { return s } })
 	var out bytes.Buffer
-	code := run([]string{"-root", dir, "-files", "CLAUDE.md"}, &out, &bytes.Buffer{})
-	if code != 1 || !strings.Contains(out.String(), "VERDICT: FAIL") || !strings.Contains(out.String(), `differs: "Zebra"`) ||
-		!strings.Contains(out.String(), "SearchFile said inexact") {
+	if code := run([]string{"-root", dir, "-files", "CLAUDE.md"}, &out, &bytes.Buffer{}); code != 1 || !strings.Contains(out.String(), "VERDICT: FAIL") ||
+		!strings.Contains(out.String(), "differs:") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// TestMeasurementChunkerHasNoTimeout: the measurement tool parses with no timeout, so its index does not depend on the
+// box's load, and the live path keeps its 1 s guard.
+func TestMeasurementChunkerHasNoTimeout(t *testing.T) {
+	if parseTimeoutMicros != 0 {
+		t.Errorf("searchfilescheck's parse timeout is %d µs, want 0", parseTimeoutMicros)
+	}
+	live, err := os.ReadFile(filepath.Join("..", "..", "cmd", "tack", "ken.go"))
+	if err != nil || !strings.Contains(string(live), "treesitter.WithParseTimeoutMicros(1_000_000)") {
+		t.Errorf("cmd/tack/ken.go should keep the 1 s guard: %v", err)
 	}
 }
 

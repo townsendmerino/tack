@@ -98,3 +98,29 @@ about it.
   - The do-nothing arm is the deterministic route alone, which costs no search.
 - **Expected wall time:** about 15 minutes: index load about 1 minute, then 2 modes × 94 calls × 20 rounds, with
   hybrid well under 0.5 s a call.
+
+## Rerun on ken v1.13.0 (2026-11-09): exact
+
+ken v1.13.0 makes `SearchFiles` exact at any index size: the requested files' chunks are ordered with the whole
+ranking's own scores and ranks, with no candidate cap. The same check on the same tree:
+
+| file | k | answers that differ | exact hits returned |
+|---|---|---|---|
+| `CLAUDE.md` | 5 | 0 of 25 | 117 of 117 |
+| `CLAUDE.md` | 20 | 0 of 25 | 299 of 299 |
+| `internal/runtime/scheduler/CLAUDE.md` | 5, 20 | 0 of 11 | 9 of 9 |
+| `internal/runtime/mem/CLAUDE.md` | 5, 20 | 0 of 11 | 11 of 11 |
+
+`VERDICT: PASS — searchfilescheck: 94 of 94 answers exact over 79919 chunks`.
+
+- **Setup:** bm25, read-only, untimed, on mbp2 at load 0.79. The log is
+  `~/tack-runs/p1s5/searchfilescheck-goinfer-9f95557ad-bm25-ken1.13.0.log`.
+- **The tool now parses with no tree-sitter timeout** (`parseTimeoutMicros = 0`; the coordinator's decision, 2026-11-09:
+  no ken change). Measurement indexes then don't depend on the box's load. cmd/tack's live path keeps its 1 s guard,
+  and `TestMeasurementChunkerHasNoTimeout` holds both.
+  - With no timeout the index is 79,919 chunks, the count of the earlier run at load 3.0, so the 79,355 at load 6.0 was
+    files the 1 s timeout cut under load.
+- **The gate can still go red** (`TestCheckFailsWhenHitsAreMissing`, a searcher that drops hits). ken's own cap no
+  longer provides a failing case.
+- **ken's route to sections is now wired** (`window.Instructions.ForHits`, through `kensearch.Searcher.SectionPaths`).
+  The night latency run (the spec above) measures v1.13.0's `SearchFiles`.

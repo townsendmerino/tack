@@ -30,7 +30,9 @@ The order the owner approved, each step with its exit check:
    - Until this step, nothing runs on nobara by day.
 5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
    - By day: an exactness check of `SearchFiles` on goinfer. **Done 2026-11-08: not exact.** 63 of 94 answers differ
-     over about 80,000 chunks (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`).
+     over about 80,000 chunks (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). **ken v1.13.0 (2026-11-09)
+     is exact:** 94 of 94. tack pins it, and ken's route to sections is wired (`window.Instructions.ForHits`), behind
+     `[run] section_search`, default off until the night latency run reads.
    - At night: `SearchFiles`'s latency on goinfer. Its run spec is in the same record; it waits for the exact version.
    - **Decided** (ADR-007, 2026-11-08; proposed in DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
@@ -72,6 +74,11 @@ The order the owner approved, each step with its exit check:
         nobara, 91 of 118. `decode_path` is `unknown` on every model on both boxes.
       - **Step 4 therefore:** asks `fit` before a load; refuses on `fits: false` with `decline`; treats null as "load
         to find out"; and keeps the decode-path check after the load.
+      - **Built in step 4** (`internal/models/supervisor.go:checkFit`, `load`), for tack's own sessions
+        (`ChildConfig.Admission`; measurement leaves it off, since a fallback is what an arm records).
+        - A `fits: false` that goinfer's load would retry (`retry`, weight streaming) still loads.
+        - A decode path `fit` already knows, off the one the flags ask for, is refused before the load; a banner off it
+          after the load is unloaded and refused.
       - **Not settled by `fit`:** on Metal the served context can differ from the `ctx` that `fit` priced, so the
         banner remains the authority.
       - **Stage 2,** after G6, settles the decode path and the Metal or CUDA residency before the load.

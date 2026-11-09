@@ -12,6 +12,11 @@ import (
 	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
 
+// Ticker is a Source with idle rules to apply, a supervised child: a daemon calls Tick periodically.
+type Ticker interface {
+	Tick(ctx context.Context) error
+}
+
 // Source gives the loop a ready model server: a supervised child on this machine, or a remote goinfer.
 type Source interface {
 	// Ensure returns a server with the model ready to answer, starting or loading it if needed.
@@ -37,7 +42,7 @@ func Open(cfg *config.Config, name, stateDir string, hc *http.Client) (Source, e
 	case config.KindChild:
 		sup, err := NewSupervisor(ChildConfig{Binary: s.Binary, ModelPath: s.ModelPath, Model: s.Model, Ctx: s.Ctx,
 			Args: s.Args, Dir: filepath.Join(stateDir, "goinfer", name), IdleUnload: s.IdleUnload.Duration,
-			IdleExit: s.IdleExit.Duration, HTTPClient: hc})
+			IdleExit: s.IdleExit.Duration, HTTPClient: hc, Admission: true})
 		if err != nil {
 			return nil, err
 		}
@@ -62,6 +67,7 @@ type childSource struct {
 func (c *childSource) Ensure(ctx context.Context) (server.Server, error) { return c.sup.Ensure(ctx) }
 func (c *childSource) Model() string                                     { return c.sup.cfg.Model }
 func (c *childSource) Touch()                                            { c.sup.Touch() }
+func (c *childSource) Tick(ctx context.Context) error                    { return c.sup.Tick(ctx) }
 func (c *childSource) Close() error                                      { return c.sup.Stop() }
 func (c *childSource) Window() int {
 	p, _ := c.sup.Plan()

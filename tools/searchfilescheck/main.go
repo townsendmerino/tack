@@ -1,7 +1,8 @@
 // Command searchfilescheck is P1 step 5's by-day exactness check of ken's SearchFiles (DESIGN §12, K9 "On adoption";
-// docs/design/p1-notes.md, step 5). ken's SearchFiles pulls at most 5,000 candidates from the whole repository's
-// ranking and keeps those in the files asked for, so on a larger index it can miss a hit. For each query, this compares
-// kensearch.SearchFile with the exact answer, the whole ranking (k = the index's size) filtered to the file, at each k.
+// docs/design/p1-notes.md, step 5). Before ken v1.13.0, SearchFiles took at most 5,000 candidates from the whole
+// repository's ranking and kept those in the files asked for, so on a larger index it missed hits. For each query, this
+// compares kensearch.SearchFile with the exact answer, the whole ranking (k = the index's size) filtered to the file,
+// at each k.
 //
 //	go run ./tools/searchfilescheck -root DIR [-files CLAUDE.md,AGENTS.md] [-mode bm25] [-model-dir DIR]
 //
@@ -51,10 +52,25 @@ var messages = []string{
 	"write the measurement record for this run",
 }
 
-// The tool registers the chunker as cmd/tack does, once.
+// parseTimeoutMicros is the tree-sitter chunker's per-parse timeout in this measurement tool: 0, none, so the index is
+// the same whatever the box's load (the chunk counts in docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md
+// differed under load). cmd/tack's live path keeps its 1 s guard (cmd/tack/ken.go). TestMeasurementChunkerHasNoTimeout
+// holds both.
+const parseTimeoutMicros = 0
+
+// The tool registers the chunker once.
 func init() {
-	chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(1_000_000)))
+	chunk.Register(kensearch.Chunker, treesitter.New(treesitter.WithParseTimeoutMicros(parseTimeoutMicros)))
 }
+
+// fileSearcher is what the check asks: kensearch.Searcher, or a test's stand-in.
+type fileSearcher interface {
+	SearchFile(ctx context.Context, query string, k int, file string) ([]kensearch.SectionHit, error)
+	Search(ctx context.Context, query string, k int) ([]tools.Hit, error)
+}
+
+// wrap lets a test stand in for the searcher the check runs over.
+var wrap = func(s fileSearcher) fileSearcher { return s }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -77,8 +93,9 @@ func run(args []string, w, logw io.Writer) int {
 	}
 	defer s.Close()
 	n := s.Chunks()
-	fmt.Fprintf(w, "index: %d chunks, mode %s (SearchFiles is exact by construction up to 5000)\n", n, *mode)
-	checked, wrong, inexact := 0, 0, 0
+	fmt.Fprintf(w, "index: %d chunks, mode %s\n", n, *mode)
+	checked, wrong := 0, 0
+	src := wrap(s)
 	whole := map[string][]tools.Hit{} // each query's whole ranking, for every file and k
 	for f := range strings.SplitSeq(*files, ",") {
 		f = path.Clean(filepath.ToSlash(strings.TrimSpace(f)))
@@ -98,23 +115,19 @@ func run(args []string, w, logw io.Writer) int {
 			}
 		}
 		for _, k := range ks {
-			r, err := check(ctx, s, f, queries, k, n, whole)
+			r, err := check(ctx, src, f, queries, k, n, whole)
 			if err != nil {
 				fmt.Fprintln(w, gate.Verdict(gate.Fail, fmt.Sprintf("searchfilescheck: %s: %v", f, err)))
 				return 1
 			}
 			checked += len(queries)
 			wrong += len(r.differs)
-			inexact += r.inexact
 			fmt.Fprintf(w, "%s k=%d: %d queries, %d differ, %d with no hit; %d of %d exact hits returned; deepest rank an exact "+
 				"answer needed: %d\n", f, k, len(queries), len(r.differs), r.empty, r.found, r.exact, r.deepest)
 			for _, d := range r.differs {
 				fmt.Fprintf(w, "  differs: %q\n", d)
 			}
 		}
-	}
-	if inexact > 0 {
-		fmt.Fprintf(w, "SearchFile said inexact for %d of %d answers (an index over 5000 chunks)\n", inexact, checked)
 	}
 	switch {
 	case checked == 0:
@@ -131,7 +144,6 @@ func run(args []string, w, logw io.Writer) int {
 type result struct {
 	differs []string
 	empty   int
-	inexact int // answers SearchFile itself said were inexact
 	exact   int // hits in the exact answers
 	found   int // of those, the ones SearchFile returned
 	deepest int // the deepest whole-ranking rank among the exact answers' hits
@@ -139,15 +151,12 @@ type result struct {
 
 // check compares SearchFile with the whole ranking filtered to file, for each query at k. whole caches each query's
 // whole ranking (k = n) across calls.
-func check(ctx context.Context, s *kensearch.Searcher, file string, queries []string, k, n int, whole map[string][]tools.Hit) (result, error) {
+func check(ctx context.Context, s fileSearcher, file string, queries []string, k, n int, whole map[string][]tools.Hit) (result, error) {
 	var r result
 	for _, q := range queries {
-		got, exact, err := s.SearchFile(ctx, q, k, file)
+		got, err := s.SearchFile(ctx, q, k, file)
 		if err != nil {
 			return r, err
-		}
-		if !exact {
-			r.inexact++
 		}
 		all, ok := whole[q]
 		if !ok {
