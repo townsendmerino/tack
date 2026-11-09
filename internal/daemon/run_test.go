@@ -471,3 +471,57 @@ func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
 		t.Fatalf("an initialize as the daemon stopped accepting: %v; want code %d", initErr, proto.CodeShuttingDown)
 	}
 }
+
+// slowTicker is a model source whose idle rules take a while to apply, and which records a Close that comes while
+// they are being applied.
+type slowTicker struct {
+	models.Source
+	ticking, closedMidTick *atomic.Bool
+}
+
+func (s slowTicker) Tick(context.Context) error {
+	s.ticking.Store(true)
+	time.Sleep(100 * time.Millisecond)
+	s.ticking.Store(false)
+	return nil
+}
+
+func (s slowTicker) Close() error {
+	if s.ticking.Load() {
+		s.closedMidTick.Store(true)
+	}
+	return s.Source.Close()
+}
+
+// TestRunEndsItsTicksBeforeClosingTheCore: a tick of the model sources' idle rules still running when the daemon shuts
+// down ends before the core closes those sources (Run waits for its ticker as for its watcher).
+func TestRunEndsItsTicksBeforeClosingTheCore(t *testing.T) {
+	dir := shortDir(t)
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384, goinfertest.Says("hi")))
+	t.Cleanup(ts.Close)
+	var ticking, closedMidTick atomic.Bool
+	o := runOptions(t, dir, func(string) (models.Source, error) {
+		return slowTicker{models.NewRemote("local", ts.URL, "", "", nil), &ticking, &closedMidTick}, nil
+	})
+	o.TickEvery = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	c := dialSoon(t, dir)
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &proto.SessionNewResult{}); err != nil {
+		t.Fatal(err) // the core opens the source, which it ticks from now on
+	}
+	c.Close()
+	for deadline := time.Now().Add(5 * time.Second); !ticking.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the daemon never ticked its model source")
+		}
+	}
+	cancel() // mid-tick
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if closedMidTick.Load() {
+		t.Fatal("the core closed its model source while a tick of its idle rules still ran")
+	}
+}

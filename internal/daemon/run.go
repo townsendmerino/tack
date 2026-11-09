@@ -85,20 +85,22 @@ func Run(ctx context.Context, o RunOptions) error {
 	if every == 0 {
 		every = 30 * time.Second
 	}
-	go func() { // the model sources' idle rules: a supervised child unloads, then exits, when idle (DESIGN §8.1)
+	// The model sources' idle rules: a supervised child unloads, then exits, when idle (DESIGN §8.1). In the watcher
+	// group under the core's context, so a tick is over before the core closes its sources.
+	watching.Go(func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
 			select {
-			case <-sctx.Done():
+			case <-cctx.Done():
 				return
 			case <-t.C:
-				if err := c.Tick(sctx); err != nil {
+				if err := c.Tick(cctx); err != nil {
 					fmt.Fprintln(log, "tack daemon: idle rules:", err)
 				}
 			}
 		}
-	}()
+	})
 	fmt.Fprintf(log, "tack daemon %s: serving on %s\n", o.Version, SocketPath(o.StateDir))
 
 	var serveErr error
