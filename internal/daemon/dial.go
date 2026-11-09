@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -32,45 +33,73 @@ func (c *Conn) Close() error { return c.nc.Close() }
 // Dial connects to the daemon in stateDir and initializes the connection, presenting the client token when this
 // client can read it (privileged) and none when it cannot. When no daemon answers and spawn is not nil, Dial calls
 // spawn once (the first tack that finds no daemon starts one, DESIGN §6.1) and waits up to wait for the socket. With
-// spawn nil it returns ErrNotRunning.
+// spawn nil it returns ErrNotRunning. A socket this client cannot reach for another reason is that error, not
+// ErrNotRunning.
+//
+// A daemon restarting between the dial and the token's read leaves this client connected to the one that is going,
+// with its successor's token or none: the token is refused there, or missing. Dial then connects again, once, waiting
+// up to wait for the successor's socket.
 func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait time.Duration) (*Conn, error) {
 	path := SocketPath(stateDir)
-	nc, err := net.Dial("unix", path)
-	if err != nil {
-		if spawn == nil {
-			return nil, fmt.Errorf("%w (%s: %v)", ErrNotRunning, path, err)
+	nc, err := connect(path, spawn, wait)
+	for attempt := 1; ; attempt++ {
+		if err != nil {
+			return nil, err
 		}
+		cl := core.NewClient(nc)
+		var init proto.InitializeResult
+		tok, terr := ReadToken(stateDir) // a client that cannot read it connects unprivileged
+		err = cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: client, Protocol: proto.Version, Token: tok}, &init)
+		var pe *proto.Error
+		restarted := errors.Is(terr, fs.ErrNotExist) || errors.As(err, &pe) && pe.Code == proto.CodeUnauthorized
+		if restarted && attempt == 1 {
+			nc.Close()
+			nc, err = connect(path, nil, wait)
+			continue
+		}
+		if err != nil {
+			nc.Close()
+			return nil, err
+		}
+		return &Conn{Client: cl, Init: init, Warning: versionWarning(proto.Version, init), nc: nc}, nil
+	}
+}
+
+// connect dials the socket at path. When no daemon answers and spawn is not nil, it calls spawn once and waits up to
+// wait for the socket; with spawn nil it waits up to wait for one that is starting, and then returns ErrNotRunning.
+func connect(path string, spawn func() error, wait time.Duration) (net.Conn, error) {
+	nc, err := net.Dial("unix", path)
+	if err == nil {
+		return nc, nil
+	}
+	if !notRunning(err) {
+		return nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
+	}
+	if spawn != nil {
 		if err := spawn(); err != nil {
 			return nil, fmt.Errorf("daemon: starting it: %w", err)
 		}
-		deadline := time.Now().Add(wait)
-		for {
-			if nc, err = net.Dial("unix", path); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				return nil, fmt.Errorf("daemon: started it, but %s did not answer within %s: %w", path, wait, err)
-			}
-			time.Sleep(50 * time.Millisecond)
+	}
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if nc, err = net.Dial("unix", path); err == nil {
+			return nc, nil
+		}
+		if !notRunning(err) {
+			return nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
 		}
 	}
-	cl := core.NewClient(nc)
-	var init proto.InitializeResult
-	err = initialize(cl, stateDir, client, &init)
-	var pe *proto.Error
-	if errors.As(err, &pe) && pe.Code == proto.CodeUnauthorized {
-		err = initialize(cl, stateDir, client, &init) // the daemon restarted between reading the token and presenting it
+	if spawn != nil {
+		return nil, fmt.Errorf("daemon: started it, but %s did not answer within %s: %w", path, wait, err)
 	}
-	if err != nil {
-		nc.Close()
-		return nil, err
-	}
-	return &Conn{Client: cl, Init: init, Warning: versionWarning(proto.Version, init), nc: nc}, nil
+	return nil, fmt.Errorf("%w (%s: %v)", ErrNotRunning, path, err)
 }
 
-func initialize(cl *core.Client, stateDir string, client proto.ClientInfo, init *proto.InitializeResult) error {
-	tok, _ := ReadToken(stateDir) // a client that cannot read it connects unprivileged
-	return cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: client, Protocol: proto.Version, Token: tok}, init)
+// notRunning says whether a dial's error means no daemon is serving: no socket, or one nobody listens on (a daemon
+// that crashed left it).
+func notRunning(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // versionWarning says what a client speaking own should tell its user about the daemon init describes: nothing when

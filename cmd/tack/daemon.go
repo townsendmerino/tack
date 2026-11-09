@@ -23,8 +23,11 @@ import (
 // Exit codes for tack daemon status: 0 a daemon answered, 3 none is running.
 const exitNotRunning = 3
 
-// spawnWait is how long a client that started a daemon waits for its socket.
-const spawnWait = 10 * time.Second
+// drainWait is how long a client waits on a daemon that shuts down with grace: the grace window, then time for it to
+// record the turns it cancels (core.Drain gives that 5s), close the core and let go of the lock. tack daemon stop waits
+// this long for the lock; a client that starts a daemon waits this long for the socket, since a daemon started while
+// another drains binds it only once that one lets go.
+func drainWait(grace time.Duration) time.Duration { return grace + 15*time.Second }
 
 var cliClient = proto.ClientInfo{Name: "tack-cli", Version: version}
 
@@ -50,7 +53,7 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return daemonRun(cfg, path, stateDir, stderr)
 	case "start":
-		c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWait)
+		c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
 		if err != nil {
 			fmt.Fprintln(stderr, "tack daemon start:", err)
 			return exitError
@@ -112,10 +115,8 @@ func daemonRun(cfg *config.Config, cfgPath, stateDir string, stderr io.Writer) i
 		<-ctx.Done()
 		stop() // the next signal takes its default action: the process ends
 	}()
-	coreCtx, cancel := context.WithCancel(context.Background()) // turns run under it through the drain
-	defer cancel()
 	err := daemon.Run(ctx, daemon.RunOptions{StateDir: stateDir, Version: version, Grace: cfg.Daemon.ShutdownGrace.Duration, Log: stderr,
-		NewCore: func(token string, shutdown func()) (*core.Core, error) {
+		NewCore: func(coreCtx context.Context, token string, shutdown func()) (*core.Core, error) {
 			st, err := store.Open(stateDir)
 			if err != nil {
 				return nil, err
@@ -123,10 +124,12 @@ func daemonRun(cfg *config.Config, cfgPath, stateDir string, stderr io.Writer) i
 			opts := coreOptions(cfg, cfg.Main, stateDir, st, nil, stderr)
 			opts.ClientToken, opts.Shutdown = token, shutdown
 			opts.Edit = editKit(stateDir, filepath.Dir(cfgPath), cfg.Sandbox.Read)
-			c := core.New(coreCtx, opts)
-			go halt.Watch(coreCtx, stateDir, halt.Interval, c.Halt, c.Resume)
-			return c, nil
-		}})
+			return core.New(coreCtx, opts), nil
+		},
+		Watch: func(coreCtx context.Context, c *core.Core) {
+			halt.Watch(coreCtx, stateDir, halt.Interval, c.Halt, c.Resume)
+		},
+	})
 	var he *daemon.HeldError
 	if errors.As(err, &he) {
 		fmt.Fprintf(stderr, "tack daemon: %v; not starting another\n", err)
@@ -195,7 +198,7 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError
 	}
-	wait := grace + 15*time.Second
+	wait := drainWait(grace)
 	if !released(stateDir, st.PID, wait) {
 		fmt.Fprintf(stderr, "tack daemon stop: pid %d still holds the lock after %s\n", st.PID, wait)
 		return exitError

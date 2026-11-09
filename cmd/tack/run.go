@@ -86,9 +86,10 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "tack run: --daemon asks the daemon's main server in plan mode; --edit, --instructions, --server, --record and --replay run in this process only")
 			return exitUsage
 		}
-		ws := *wsFlag
-		if ws == "" {
-			ws = gitRoot()
+		ws, err := clientWorkspace(*wsFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
 		}
 		return runViaDaemon(*cfgPath, ws, question, *jsonOut, stdout, stderr)
 	}
@@ -246,12 +247,12 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 
 // runViaDaemon asks question through the daemon (tack run --daemon), starting it if none is running.
 func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.Writer) int {
-	_, path, stateDir, err := loadConfig(cfgPath)
+	cfg, path, stateDir, err := loadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWait)
+	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
@@ -337,6 +338,13 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 	var reason string
 	select {
 	case reason = <-done:
+	case <-cl.Done():
+		select {
+		case reason = <-done: // the turn.end came before the connection closed
+		default:
+			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended\n", sess.Session)
+			return exitError
+		}
 	case <-ctx.Done():
 		if detached {
 			fmt.Fprintf(stderr, "tack run: left session %s running in the daemon\n", sess.Session)
@@ -369,4 +377,13 @@ func gitRoot() string {
 	}
 	wd, _ := os.Getwd()
 	return filepath.Clean(wd)
+}
+
+// clientWorkspace is the workspace a --daemon run asks for: --workspace made absolute in this process's directory, or
+// the git root of it. The daemon runs in another directory, where a relative path would name something else.
+func clientWorkspace(flag string) (string, error) {
+	if flag == "" {
+		return gitRoot(), nil
+	}
+	return filepath.Abs(flag)
 }

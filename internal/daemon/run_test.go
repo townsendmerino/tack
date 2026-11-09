@@ -35,13 +35,11 @@ func runOptions(t *testing.T, dir string, source ...func(string) (models.Source,
 	if len(source) > 0 {
 		src = source[0]
 	}
-	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(token string, shutdown func()) (*core.Core, error) {
+	return RunOptions{StateDir: dir, Version: "1.2.3", Grace: time.Second, NewCore: func(ctx context.Context, token string, shutdown func()) (*core.Core, error) {
 		st, err := store.Open(dir)
 		if err != nil {
 			return nil, err
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
 		return core.New(ctx, core.Options{Store: st, Version: "1.2.3", ClientToken: token, Shutdown: shutdown,
 			Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20, MaxErrors: 8,
 				SessionTokens: 1 << 20, SessionToolCalls: 100},
@@ -346,5 +344,34 @@ func TestAShutdownStopsAcceptingFirst(t *testing.T) {
 	}
 	if err := <-next; err != nil {
 		t.Fatalf("the daemon started during the shutdown: %v, want it to wait and take the lock", err)
+	}
+}
+
+// TestRunEndsItsWatcherBeforeLettingGo: the core's context ends, and Run waits for the watcher beside the core to
+// return, before it closes the core and releases the lock; nothing of the daemon's runs on after Run returns.
+func TestRunEndsItsWatcherBeforeLettingGo(t *testing.T) {
+	dir := shortDir(t)
+	o := runOptions(t, dir)
+	var ended atomic.Bool
+	var heldAtEnd bool
+	o.Watch = func(ctx context.Context, _ *core.Core) {
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // a watcher that takes a moment to stop
+		heldAtEnd = ReadHolder(dir).PID == os.Getpid()
+		ended.Store(true)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	dialSoon(t, dir).Close()
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !ended.Load() {
+		t.Fatal("Run returned while the watcher beside the core still ran")
+	}
+	if !heldAtEnd {
+		t.Fatal("the lock was released before the watcher beside the core ended")
 	}
 }

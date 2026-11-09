@@ -20,13 +20,14 @@ type Client struct {
 	next    int
 	pending map[string]chan proto.Response
 	closed  error
+	done    chan struct{} // closed when the connection is
 
 	OnEvent func(proto.SessionEventParams)
 }
 
 // NewClient starts reading rw. Set OnEvent before the first call that can produce events.
 func NewClient(rw io.ReadWriter) *Client {
-	c := &Client{enc: json.NewEncoder(rw), pending: map[string]chan proto.Response{}}
+	c := &Client{enc: json.NewEncoder(rw), pending: map[string]chan proto.Response{}, done: make(chan struct{})}
 	go c.read(rw)
 	return c
 }
@@ -69,7 +70,12 @@ func (c *Client) read(r io.Reader) {
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+	close(c.done)
 }
+
+// Done is closed once the connection has closed (the other end went away, or the read failed), after the last event
+// it carried has gone to OnEvent.
+func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Call sends a request and decodes its result into result (which may be nil).
 func (c *Client) Call(method string, params, result any) error {

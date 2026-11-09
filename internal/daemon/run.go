@@ -17,17 +17,20 @@ type RunOptions struct {
 	Version  string
 	// Grace is how long a shutdown lets running tool calls finish before it cancels their turns (core.Drain).
 	Grace time.Duration
-	// NewCore makes the daemon's core. It must set core.Options.ClientToken to token and core.Options.Shutdown to
-	// shutdown, and it owns the core's context: the core's turns run under it until Run returns.
-	NewCore func(token string, shutdown func()) (*core.Core, error)
+	// NewCore makes the daemon's core under ctx. It must set core.Options.ClientToken to token and
+	// core.Options.Shutdown to shutdown. Run ends ctx once the drain is over, and before it closes the core.
+	NewCore func(ctx context.Context, token string, shutdown func()) (*core.Core, error)
+	// Watch, when set, runs beside the core from before it serves (halt.Watch) until ctx ends; Run waits for it to
+	// return before it closes the core and releases the lock.
+	Watch func(ctx context.Context, c *core.Core)
 	// Log is told what the daemon does: what it recovered, refused connections, the drain. nil discards it.
 	Log io.Writer
 }
 
 // Run is the daemon (DESIGN §6.1). It takes the lock, or returns a *HeldError naming the daemon that has it; makes a
 // fresh client token; makes the core and recovers the turns a crash left open; binds the socket; and serves until ctx
-// ends or a privileged client asks daemon/shutdown. Then it drains the core within Grace, closes the connections and
-// the core, and releases the lock (closing the socket first).
+// ends or a privileged client asks daemon/shutdown. Then it stops accepting, drains the core within
+// Grace, closes the connections, ends the core's context and its watcher, closes the core, and releases the lock.
 func Run(ctx context.Context, o RunOptions) error {
 	log := o.Log
 	if log == nil {
@@ -44,11 +47,22 @@ func Run(ctx context.Context, o RunOptions) error {
 	}
 	stop := make(chan struct{})
 	var once sync.Once
-	c, err := o.NewCore(tok, func() { once.Do(func() { close(stop) }) })
+	cctx, ccancel := context.WithCancel(context.Background())
+	defer ccancel()
+	c, err := o.NewCore(cctx, tok, func() { once.Do(func() { close(stop) }) })
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	// Deferred after Close, so it runs first: the core's context and its watcher end before the core closes.
+	var watching sync.WaitGroup
+	defer func() {
+		ccancel()
+		watching.Wait()
+	}()
+	if o.Watch != nil {
+		watching.Go(func() { o.Watch(cctx, c) })
+	}
 	ids, err := c.Recover()
 	for _, id := range ids {
 		fmt.Fprintf(log, "tack daemon: %s was inside a turn when tack stopped; it is marked interrupted\n", id)
