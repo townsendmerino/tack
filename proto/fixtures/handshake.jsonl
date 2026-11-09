@@ -1,5 +1,5 @@
-{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-macos","version":"0.1.0"},"protocol":1}}}
-{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@nobara"]}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-macos","version":"0.1.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@nobara"]},"privileged":true}}}
 {"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"workspace":"~/tmcode/ken","model":"main","mode":"ask"}}}
 {"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"session":"s_01JAFIXTURE0000000000000001"}}}
 {"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/subscribe","params":{"session":"s_01JAFIXTURE0000000000000001","from_seq":0}}}
