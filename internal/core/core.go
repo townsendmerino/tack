@@ -628,7 +628,10 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if c.opt.SectionInstructions {
 			if name, content := readInstructionFile(ws.Root()); name != "" {
 				in := window.NewInstructions(name, content, budget)
-				parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
+				if first := in.Initial(); first != "" { // with no room at all, Initial gives nothing
+					parts = append(parts, first)
+				}
+				loads, wholeFile = append(loads, in), in.Whole()
 				s.sections = in
 				s.sectionSearch, _ = searcher.(window.SectionSearcher)
 			}
@@ -662,8 +665,9 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.loop = loop.New(cfg)
 		return s, nil
 	}
-	// A reopened session's section tracker is rebuilt from its log, so sections already in its window are not loaded
-	// again.
+	// A reopened session's section tracker is rebuilt from its log, so what is already in its window is not loaded
+	// again; its knowledge tracker was rebuilt as it was made, before anything was priced. Each takes back only its own
+	// share of the budget they share.
 	if s.sections != nil {
 		if err = s.sections.Replay(history); err != nil {
 			c.unregister(id)
@@ -774,9 +778,17 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 	}
 	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
-	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
+	// a search can take a moment. One that fails brings none: the tool calls' sections still come. A prompt the checks
+	// below will refuse (a halt, a drain, a turn already running) is not searched for: a first look here, under the
+	// locks, spares that search, and the checks below still decide.
+	c.mu.Lock()
+	refused := c.halted != nil || c.draining
+	c.mu.Unlock()
+	s.mu.Lock()
+	refused = refused || s.running
+	s.mu.Unlock()
 	var paths [][]string
-	if c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
+	if !refused && c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
 		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
 	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
@@ -810,17 +822,17 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.prompted:
 		if hits != "" {
 			text.Reset()
-			text.WriteString(hits + window.MessageTask + statement)
+			text.WriteString(strings.Trim(hits, "\n") + window.MessageTask + statement)
 		}
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
 		text.WriteString(s.instructions)
-		for _, part := range []string{repoMap, inject} {
+		for _, part := range []string{repoMap, inject, strings.Trim(hits, "\n")} {
 			if part != "" {
 				text.WriteString("\n\n" + part)
 			}
 		}
-		text.WriteString(hits + window.MessageTask + statement)
+		text.WriteString(window.MessageTask + statement)
 	case repoMap != "" || inject != "":
 		text.Reset()
 		for _, part := range []string{repoMap, inject} {

@@ -708,7 +708,7 @@ func TestSectionsForAMessageThroughTheCore(t *testing.T) {
 	ps.paths = [][]string{{"notes", "Testing"}, {"notes", "Releases"}}
 	f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("And releases?")}}, nil)
 	second := messages()
-	if len(second) != 1 || second[0] != "\n\n[Project rules from CLAUDE.md for this message:]\n\n## Releases\n\nTag from main.\n\n\nTask: And releases?" {
+	if len(second) != 1 || second[0] != "[Project rules from CLAUDE.md for this message:]\n\n## Releases\n\nTag from main.\n\nTask: And releases?" {
 		t.Fatalf("second message %q", second)
 	}
 	if len(ps.asked) != 2 || ps.asked[0] != "CLAUDE.md: How do I test?" {
@@ -738,5 +738,24 @@ func TestSectionSearchIsOffByDefaultAndSkipsAWholeFile(t *testing.T) {
 		if len(ps.asked) != 0 {
 			t.Errorf("%s: ken was asked %q", name, ps.asked)
 		}
+	}
+}
+
+// TestSectionSearchSkipsAPromptThatWillBeRefused: a prompt to a halted tack is refused without asking ken.
+func TestSectionSearchSkipsAPromptThatWillBeRefused(t *testing.T) {
+	f := newFixture(t)
+	ps := &pathsSearcher{paths: [][]string{{"notes", "Testing"}}}
+	f.core.opt.SectionInstructions, f.core.opt.SectionSearch = true, true
+	f.core.opt.OpenSearcher = func(context.Context, string) (tools.Searcher, error) { return ps, nil }
+	sid, err := f.sessionIn(t, gitWorkspace(t, "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n## Filler\n\n"+strings.Repeat("filler line of text\n", 400)), proto.ModePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("How do I test?")}}, nil); err == nil {
+		t.Fatal("a halted tack took a prompt")
+	}
+	if len(ps.asked) != 0 {
+		t.Errorf("ken was asked for a refused prompt: %q", ps.asked)
 	}
 }

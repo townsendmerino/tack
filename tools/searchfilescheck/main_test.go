@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,15 +58,39 @@ func TestCheckFailsWhenHitsAreMissing(t *testing.T) {
 	}
 }
 
-// TestMeasurementChunkerHasNoTimeout: the measurement tool parses with no timeout, so its index does not depend on the
-// box's load, and the live path keeps its 1 s guard.
-func TestMeasurementChunkerHasNoTimeout(t *testing.T) {
-	if parseTimeoutMicros != 0 {
-		t.Errorf("searchfilescheck's parse timeout is %d µs, want 0", parseTimeoutMicros)
+// timeoutArgs is the arguments of every treesitter.WithParseTimeoutMicros call in a Go file, as written.
+func timeoutArgs(t *testing.T, path string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	live, err := os.ReadFile(filepath.Join("..", "..", "cmd", "tack", "ken.go"))
-	if err != nil || !strings.Contains(string(live), "treesitter.WithParseTimeoutMicros(1_000_000)") {
-		t.Errorf("cmd/tack/ken.go should keep the 1 s guard: %v", err)
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "WithParseTimeoutMicros" {
+			var b strings.Builder
+			printer.Fprint(&b, fset, call.Args[0])
+			out = append(out, b.String())
+		}
+		return true
+	})
+	return out
+}
+
+// TestMeasurementChunkerHasNoTimeout: the measurement tool registers the chunker with no parse timeout, so its index
+// does not depend on the box's load, and the live path keeps its 1 s guard. Both are read from the code that
+// registers them: the call's argument, not a nearby string.
+func TestMeasurementChunkerHasNoTimeout(t *testing.T) {
+	if got := timeoutArgs(t, "main.go"); len(got) != 1 || got[0] != "parseTimeoutMicros" || parseTimeoutMicros != 0 {
+		t.Errorf("searchfilescheck registers the chunker with %q (parseTimeoutMicros %d); want parseTimeoutMicros, 0", got, parseTimeoutMicros)
+	}
+	if got := timeoutArgs(t, filepath.Join("..", "..", "cmd", "tack", "ken.go")); len(got) != 1 || got[0] != "1_000_000" {
+		t.Errorf("cmd/tack/ken.go registers the chunker with %q; want the 1 s guard, 1_000_000", got)
 	}
 }
 
@@ -71,6 +99,18 @@ func TestCheckWithNoFileIsInconclusive(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o644)
 	var out bytes.Buffer
 	if code := run([]string{"-root", dir, "-files", "CLAUDE.md"}, &out, &bytes.Buffer{}); code != 2 || !strings.Contains(out.String(), "VERDICT: INCONCLUSIVE") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// TestCheckSkipsEmptyEntriesAndRepeats: an empty -files entry names no file, and a heading the file repeats is queried
+// once.
+func TestCheckSkipsEmptyEntriesAndRepeats(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# notes\n\n## Testing\n\nRun the tests.\n\n## Testing\n\nAgain.\n"), 0o644)
+	var out bytes.Buffer
+	if code := run([]string{"-root", dir, "-files", "CLAUDE.md,,"}, &out, &bytes.Buffer{}); code != 0 || !strings.Contains(out.String(), "VERDICT: PASS") ||
+		!strings.Contains(out.String(), "CLAUDE.md k=5: 12 queries") {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
 }

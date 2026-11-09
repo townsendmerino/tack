@@ -85,10 +85,13 @@ about it.
     tree-sitter parse timeout off, as ken's CLI does, so the index doesn't depend on how busy the box is (the chunk
     counts above differed under load). It is built twice, and the job stops unless both builds give the same chunk
     count.
-  - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it makes
-    `searchfilescheck`'s 94 calls: 47 (file, query) pairs (25 for the root `CLAUDE.md`, 11 for each nested one) at
-    k=5 and at k=20. Each runs 20 rounds, interleaved A B B A across modes. p95 is taken over the k=5 calls, the size
-    ken's route asks for; k=20 is recorded beside it.
+  - Then, under the timing lock, for each mode in {bm25, hybrid (model from `~/models`, never the archive)}, it times
+    what ken's route runs per user message: `kensearch.Searcher.SectionPaths` at k=5 (20 hits from ken, cut to 5
+    distinct sections), the call core makes, its `Sections` check on the file included. It times it over
+    `searchfilescheck`'s ten task-like messages (not its heading queries, which no user sends) for each of the three
+    instruction files: 30 calls. Each runs 20 rounds, interleaved A B B A across modes, and p95 is taken over them.
+    (Amended 2026-11-09, before any run: the spec had named all 94 of the exactness check's calls, headings included,
+    and the bare `SearchFiles`.)
 - **Records:** per cell, the load average and free memory at its start, p50, p95 and max per call, and the index's
   chunk count. A cell started at a load average above 2 is void.
 - **Decision rule (pre-registered; approved, as above):**
@@ -96,8 +99,8 @@ about it.
   - **100–400 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
   - **> 400 ms:** it runs off the critical path or not at all. The deterministic route stays.
   - The do-nothing arm is the deterministic route alone, which costs no search.
-- **Expected wall time:** about 15 minutes: index load about 1 minute, then 2 modes × 94 calls × 20 rounds, with
-  hybrid well under 0.5 s a call.
+- **Expected wall time:** about 10 minutes: two snapshot builds about 2 minutes, then 2 modes × 30 calls × 20 rounds,
+  with hybrid well under 0.5 s a call.
 
 ## Rerun on ken v1.13.0 (2026-11-09): exact
 

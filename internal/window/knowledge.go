@@ -262,14 +262,7 @@ func (k *Knowledge) indexLine(i int) string {
 // page whose pins did not match is named once as possibly out of date. A compaction that stubs id's result must call
 // Masked.
 func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
-	files := map[string]bool{}
-	for _, kind := range callKinds(tool, input) {
-		for _, p := range []string{"read:", "edit:"} {
-			if f, ok := strings.CutPrefix(kind, p); ok {
-				files[f] = true
-			}
-		}
-	}
+	files := callFiles(tool, input)
 	var out strings.Builder
 	var touched []int
 	for i, pg := range k.pages {
@@ -381,17 +374,24 @@ func (k *Knowledge) ReplayIndex(evs []proto.Event) error {
 
 // ReplayNotes is Replay's second half: the notes of the calls that ran, in log order, and the compactions.
 func (k *Knowledge) ReplayNotes(evs []proto.Event) error {
+	calls := map[string][]proto.ToolCall{} // per id, in log order, so a reused id pairs each result with its call
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
 			return fmt.Errorf("window: replay seq %d: %w", ev.Seq, err)
 		}
 		switch p := v.(type) {
+		case proto.ToolCall:
+			calls[p.ID] = append(calls[p.ID], p)
 		case proto.ToolFinished:
+			var files map[string]bool // nil: the log does not hold the call, and any page may be read back
+			if q := calls[p.ID]; len(q) > 0 {
+				files, calls[p.ID] = callFiles(q[0].Name, q[0].Input), q[1:]
+			}
 			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
 				continue // the loop asks only about calls that ran
 			}
-			k.replayResult(p.ID, p.Result)
+			k.replayResult(p.ID, p.Result, files)
 		case proto.Compaction:
 			ids := make([]string, len(p.Masked))
 			for i, m := range p.Masked {
@@ -445,16 +445,27 @@ func (k *Knowledge) opens(i int) (body, stale, noRoom string) {
 // replayResult records the note one result holds: the texts ForCall gave, which run from the first page frame to the
 // result's end or edit's current-symbol note after it, charged as they stand, and the pages they carry or name. A
 // result with none gets an empty note, as ForCall gives one.
-func (k *Knowledge) replayResult(id, result string) {
-	start := strings.Index(result, "\n\n[Knowledge page ")
-	if start < 0 {
+func (k *Knowledge) replayResult(id, result string, files map[string]bool) {
+	// The texts sit at the result's tail, before edit's current-symbol note if there is one, after the tool's own
+	// output, which can quote a page frame (a read of knowledge.go, say). So they are read back from the end, frame by
+	// frame, while each piece is one ForCall could have given; the first piece that is not stops the walk.
+	end := len(result)
+	if c := strings.LastIndex(result, tools.CurrentSymbolOpen); c >= 0 {
+		end = c
+	}
+	start := end
+	for {
+		s := strings.LastIndex(result[:start], "\n\n[Knowledge page ")
+		if s < 0 || !k.isPiece(result[s:start], files) {
+			break
+		}
+		start = s
+	}
+	if start == end {
 		k.record(id, nil, "")
 		return
 	}
-	seg := result[start:]
-	if c := strings.Index(seg, tools.CurrentSymbolOpen); c >= 0 {
-		seg = seg[:c]
-	}
+	seg := result[start:end]
 	var touched []int
 	for i := range k.pages {
 		if k.state[i] == pageIn || k.state[i] == pageStale {
@@ -482,6 +493,23 @@ func (k *Knowledge) replayResult(id, result string) {
 	k.record(id, touched, seg)
 }
 
+// isPiece says whether piece is one text ForCall gives for a call touching files: a page's text, framed (its body may
+// have changed since), or its stale or no-room notice, exactly, for a page pinned to one of files (any page when files
+// is nil).
+func (k *Knowledge) isPiece(piece string, files map[string]bool) bool {
+	for i, pg := range k.pages {
+		if files != nil && !pinnedTo(pg, files) {
+			continue
+		}
+		body, _, _ := k.opens(i)
+		_, stale, noRoom := k.texts(i)
+		if strings.HasPrefix(piece, body) || piece == stale || piece == noRoom {
+			return true
+		}
+	}
+	return false
+}
+
 // Budget is the budget this tracker draws on, shared with the instruction sections.
 func (k *Knowledge) Budget() *Budget { return k.b }
 
@@ -494,6 +522,19 @@ func (k *Knowledge) Own() int {
 		}
 	}
 	return n
+}
+
+// callFiles is the files a call reads or edits, as ForCall matches pins against them.
+func callFiles(tool string, input json.RawMessage) map[string]bool {
+	files := map[string]bool{}
+	for _, kind := range callKinds(tool, input) {
+		for _, p := range []string{"read:", "edit:"} {
+			if f, ok := strings.CutPrefix(kind, p); ok {
+				files[f] = true
+			}
+		}
+	}
+	return files
 }
 
 func pinnedTo(pg Page, files map[string]bool) bool {

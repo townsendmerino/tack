@@ -163,7 +163,7 @@ func TestInstructionsBudgetIsCumulative(t *testing.T) {
 
 func TestCallKinds(t *testing.T) {
 	got := strings.Join(callKinds("bash", bash(`FOO=1 /usr/bin/git -C x status | grep "go test"; go test ./...`)), "|")
-	if got != "bash:git -C x status|bash:git status|bash:grep go test|bash:go test ./..." {
+	if got != "bash:git -C x status|bash:git status|bash:grep go\u00a0test|bash:go test ./..." {
 		t.Errorf("kinds %q", got)
 	}
 	if !kindMatches("edit:*_test.go", "edit:a/b_test.go") || kindMatches("edit:*_test.go", "edit:a/b.go") ||
@@ -621,6 +621,59 @@ func TestForHitsLoadsAMessagesSections(t *testing.T) {
 	}
 }
 
+// TestInlineCodeIsBody: a section whose only text is inline code has a body, so the opening stops there.
+func TestInlineCodeIsBody(t *testing.T) {
+	src := "# notes\n\n`go test ./...`\n\n## Testing\n\nRun with -v.\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); strings.Contains(got, "Run with -v.") || !strings.Contains(got, "`go test ./...`") {
+		t.Errorf("an inline-code opening took in the next section:\n%s", got)
+	}
+}
+
+// TestOneSectionFileIsNotHalved: a file that is all opening is cut to the budget, not to half of it: there are no
+// other sections to keep room for.
+func TestOneSectionFileIsNotHalved(t *testing.T) {
+	src := "# notes\n\n" + strings.Repeat("an opening line that goes on and on.\n", 200)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	if in.Used() < in.Budget()*3/4 {
+		t.Errorf("used %d of %d: a lone opening was halved", in.Used(), in.Budget())
+	}
+}
+
+// TestReplayTellsIdenticalSectionsApart: two subsections with the same text under differently marked parents; a note
+// carrying the second is read as the second when the log holds the call (its own matches decide), and a section whose
+// text begins another's does not stop the second being read.
+func TestReplayTellsIdenticalSectionsApart(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Bench\n<!-- tack:on bash:bench -->\nb\n\n### Notes\n\nSame rule.\n\n" +
+		"## Night\n<!-- tack:on bash:night -->\nn\n\n### Notes\n\nSame rule.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	night := in.wantFor(callKinds("bash", bash("night x")))
+	second := -1
+	for i, s := range in.secs {
+		if s.Heading() == "Notes" && night[i] {
+			second = i
+		}
+	}
+	note := in.render([]int{second}, nil, "call")
+	if got, _, _, ok := in.noteIn("output"+note, map[int]bool{second: true}); !ok || !slices.Equal(got, []int{second}) {
+		t.Errorf("with the call's matches: got %v ok %v, want [%d]", got, ok, second)
+	}
+	prefix := "# notes\n\nIntro.\n\n## A\n<!-- tack:on bash:a -->\na\n\n### T\n\nFirst part.\n## B\n<!-- tack:on bash:b -->\nb\n\n" +
+		"### T\n\nFirst part.\n\nSecond part.\n\n" + filler
+	in = NewInstructions("CLAUDE.md", prefix, NewBudget(4096))
+	in.Initial()
+	long := -1
+	for i, s := range in.secs {
+		if strings.Contains(s.Text, "Second part.") {
+			long = i
+		}
+	}
+	if got, _, _, ok := in.noteIn("output"+in.render([]int{long}, nil, "call"), nil); !ok || !slices.Equal(got, []int{long}) {
+		t.Errorf("a prefix section: got %v ok %v, want [%d]", got, ok, long)
+	}
+}
+
 // TestReplayReadsTheFirstMessageFromTheLog: when the instruction file changed between the session and its resume
 // (a section marked always since, and a longer opening), the rebuilt tracker holds what the first message held, as
 // logged, not what Initial would give now.
@@ -631,6 +684,7 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 	changed := strings.Replace(bigFile(), "## Testing\n\nRun go test with -v.", "## Testing\n<!-- tack:always -->\nRun go test with -v.", 1)
 	changed = strings.Replace(changed, "Intro: read this first.", "Intro: read this first, and this new line too.", 1)
 	re := NewInstructions("CLAUDE.md", changed, NewBudget(4096))
+	re.Initial() // as core makes a reopened session's tracker, over the file as it is now
 	if err := re.Replay([]proto.Event{ev}); err != nil {
 		t.Fatal(err)
 	}
@@ -644,6 +698,74 @@ func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
 	}
 	if ri[testing] || ru != lu {
 		t.Errorf("rebuilt from the file as it is now: Testing in %v, used %d, want the logged first message's %d", ri[testing], ru, lu)
+	}
+}
+
+// TestCallKindsKeepSubcommandFlagsAndQuotes: -c after the subcommand is the subcommand's flag, kept; a quoted word
+// stays one word, so text inside it is never taken for a flag.
+func TestCallKindsKeepSubcommandFlagsAndQuotes(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Branching\n<!-- tack:on bash:git switch -c -->\nName branches feat/x.\n\n## Amending\n<!-- tack:on bash:git commit --amend -->\nNever amend a pushed commit.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	if s := in.ForCall("c1", "bash", bash("git -C dir switch -c feat/x")); !strings.Contains(s, "Name branches") {
+		t.Errorf("git switch -c lost its -c:\n%s", s)
+	}
+	if s := in.ForCall("c2", "bash", bash(`git commit -m "fix --amend handling"`)); strings.Contains(s, "Never amend") {
+		t.Errorf("a quoted message was taken for the --amend flag:\n%s", s)
+	}
+}
+
+// TestInitialWithAMarkedFirstSection: a file whose first section waits for its call opens with no blank run.
+func TestInitialWithAMarkedFirstSection(t *testing.T) {
+	src := "# Night\n<!-- tack:on bash:night -->\nQueue.\n\n## Other\n\nx\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); strings.Contains(got, "\n\n\n") {
+		t.Errorf("a blank run:\n%q", got[:min(len(got), 120)])
+	}
+}
+
+// TestReplayKeepsTheSessionsFileShape: a file the session read by sections that now fits whole is still read by
+// sections after a reopen, as its logged first message shows.
+func TestReplayKeepsTheSessionsFileShape(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial() + "\n\nTask: x")}})
+	small := "# notes\n\nIntro: read this first.\n\n## Staging and committing\n\nNever git add -A.\n"
+	re := NewInstructions("CLAUDE.md", small, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	if s := re.ForCall("c1", "bash", bash("git status")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("the reopened tracker took the file as whole:\n%q", s)
+	}
+}
+
+// TestReplayPairsAReusedIDInOneTurn: two calls with one id, both logged before their results, are paired with their
+// results in order, so each note is read against its own call's matches.
+func TestReplayPairsAReusedIDInOneTurn(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Bench\n<!-- tack:on bash:bench -->\nb\n\n### Notes\n\nSame rule.\n\n" +
+		"## Night\n<!-- tack:on bash:night -->\nn\n\n### Notes\n\nSame rule.\n\n" + filler
+	live := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	first := live.Initial()
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c", Name: "bash", Input: bash("bench run")})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c", Name: "bash", Input: bash("night add")})
+	for _, cmd := range []string{"bench run", "night add"} {
+		add(proto.EvToolFinished, proto.ToolFinished{ID: "c", Outcome: proto.OutcomeOK, Result: "output" + live.ForCall("c", "bash", bash(cmd))})
+	}
+	re := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, _, _, lu := live.Loaded()
+	ri, _, _, ru := re.Loaded()
+	if !slices.Equal(li, ri) || lu != ru {
+		t.Errorf("live in %v used %d; rebuilt in %v used %d", li, lu, ri, ru)
 	}
 }
 
@@ -668,5 +790,67 @@ func TestForHitsKeepsKensOrder(t *testing.T) {
 	s := in.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}})
 	if !strings.Contains(s, "late.") || !strings.Contains(s, "(Early)") {
 		t.Errorf("ken's best hit should load and the other be named:\n%s", s)
+	}
+}
+
+// TestReplayReadsAMessageNoteAsCoreWritesIt: a message note written as core writes it (trimmed, after parts that can
+// quote a header) reads back; one whose loaded section changed since is skipped whole, not taken for its notice.
+func TestReplayReadsAMessageNoteAsCoreWritesIt(t *testing.T) {
+	part := strings.Repeat("a rule of some length. ", 40)
+	src := "# notes\n\nIntro.\n\n## Early\n\n" + part + "\n\n## Late\n\n" + part + "late.\n\n" + filler
+	live := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	first := live.Initial()
+	note := live.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}}) // Late loads, Early is named
+	quoted := "Code that may be relevant: \"[Project rules from CLAUDE.md for this message:]\" appears in docs."
+	msg := first + "\n\n" + quoted + "\n\n" + strings.Trim(note, "\n") + MessageTask + "x"
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(msg)}})
+	re := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, _, lu := live.Loaded()
+	ri, ro, _, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || lu != ru {
+		t.Errorf("live in %v offered %v used %d; rebuilt in %v offered %v used %d", li, lo, lu, ri, ro, ru)
+	}
+	changed := strings.Replace(src, "late.", "later.", 1)
+	re = NewInstructions("CLAUDE.md", changed, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ro, _, _ := re.Loaded(); slices.Contains(ro, true) {
+		t.Errorf("a note whose section changed was taken for its notice: offered %v", ro)
+	}
+}
+
+// TestReplayFirstMessageWithMarkersInTheFile: an instruction file whose own text holds a "Task:" line and a repository
+// map's title is read back whole from the logged first message, sectioned (it ends where its outline does) or whole
+// (it runs to the end).
+func TestReplayFirstMessageWithMarkersInTheFile(t *testing.T) {
+	sectioned := "# notes\n\nIntro.\n\nTask: write the test first.\n\n" + RepoMapTitle + " is what tack calls its map.\n\n## Testing\n\nRun go test.\n\n" + filler
+	whole := "# notes\n\nIntro.\n\nTask: write the test first.\n\n## Testing\n\nRun go test.\n"
+	for name, c := range map[string]struct {
+		src    string
+		window int
+	}{"sectioned": {sectioned, 4096}, "whole": {whole, 16384}} {
+		live := NewInstructions("CLAUDE.md", c.src, NewBudget(c.window))
+		first := live.Initial()
+		msg := first + MessageTask + "x"
+		if live.Whole() {
+			msg = "x\n\n" + first // a whole file follows the task
+		}
+		ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(msg)}})
+		re := NewInstructions("CLAUDE.md", c.src, NewBudget(c.window))
+		re.Initial()
+		if err := re.Replay([]proto.Event{ev}); err != nil {
+			t.Fatal(err)
+		}
+		li, _, _, lu := live.Loaded()
+		ri, _, _, ru := re.Loaded()
+		if !slices.Equal(li, ri) || lu != ru {
+			t.Errorf("%s: live in %v used %d; rebuilt in %v used %d", name, li, lu, ri, ru)
+		}
 	}
 }

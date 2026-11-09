@@ -269,6 +269,113 @@ func TestKnowledgeDropKeepsAnEarlierNotice(t *testing.T) {
 	}
 }
 
+// sharedSession is instruction sections and knowledge pages on one budget, made as core makes them: the index priced
+// first, then the first message.
+func sharedSession(root string, pages []Page) (*Instructions, *Knowledge, *Budget, string) {
+	b := NewBudget(4096)
+	k := NewKnowledge(root, pages, 4096, b)
+	idx := k.Index()
+	in := NewInstructions("CLAUDE.md", bigFile(), b)
+	return in, k, b, in.Initial() + "\n\n" + idx
+}
+
+// TestReplayOnASharedBudget: a reopened session's two trackers, replayed from the log on one budget, equal the live
+// ones and leave the budget where the live session left it.
+func TestReplayOnASharedBudget(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	in, k, b, first := sharedSession(root, pages)
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	call := func(id, tool string, input json.RawMessage) {
+		r := "output" + in.ForCall(id, tool, input) + k.ForCall(id, tool, input)
+		add(proto.EvToolFinished, proto.ToolFinished{ID: id, Outcome: proto.OutcomeOK, Result: r})
+	}
+	call("c1", "bash", bash("git status"))
+	call("c2", "read", editOf("internal/loop/loop.go"))
+	call("c3", "bash", bash("ls"))
+	in.Masked([]string{"c1"})
+	k.Masked([]string{"c1"})
+	add(proto.EvCompaction, proto.Compaction{Masked: []proto.MaskedResult{{ID: "c1", Stub: "[masked]"}}})
+	call("c4", "edit", editOf("internal/x/x_test.go"))
+	// The session's own edit of a pinned file, then a reopen as core does it: knowledge rebuilt from the log as it is
+	// made, the instruction file made over what is left, its tracker replayed.
+	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
+	rb := NewBudget(4096)
+	rk := NewKnowledge(root, pages, 4096, rb)
+	if err := rk.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	rin := NewInstructions("CLAUDE.md", bigFile(), rb)
+	rin.Initial()
+	if err := rin.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lby, lu := in.Loaded()
+	ri, ro, rby, ru := rin.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lby, rby) || lu != ru {
+		t.Errorf("sections differ: live %v %v %q %d, rebuilt %v %v %q %d", li, lo, lby, lu, ri, ro, rby, ru)
+	}
+	if k.Own() != rk.Own() || !slices.Equal(k.state, rk.state) || b.Used != rb.Used {
+		t.Errorf("knowledge own %d/%d, states %v/%v, budget %d/%d", k.Own(), rk.Own(), k.state, rk.state, b.Used, rb.Used)
+	}
+}
+
+// TestReusedIDsAcrossTrackers: when one call id is used twice, once bringing a page and once a section, in either
+// order, a compaction of the first frees what the first brought and leaves what the second did.
+func TestReusedIDsAcrossTrackers(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	page := struct {
+		tool  string
+		input json.RawMessage
+	}{"read", editOf("internal/loop/loop.go")}
+	section := page
+	section.tool, section.input = "bash", bash("git status")
+	for name, order := range map[string][2]struct {
+		tool  string
+		input json.RawMessage
+	}{"page first": {page, section}, "section first": {section, page}} {
+		in, k, _, _ := sharedSession(root, pages)
+		for _, c := range order {
+			in.ForCall("c", c.tool, c.input)
+			k.ForCall("c", c.tool, c.input)
+		}
+		in.Masked([]string{"c"})
+		k.Masked([]string{"c"})
+		sectionBack := in.ForCall("d", "bash", bash("git diff")) != ""
+		pageBack := strings.Contains(k.ForCall("e", "read", editOf("internal/loop/loop.go")), "Run ends a turn")
+		if wantPage := name == "page first"; sectionBack == wantPage || pageBack != wantPage {
+			t.Errorf("%s: after the first c is stubbed, section free %v, page free %v", name, sectionBack, pageBack)
+		}
+	}
+}
+
+// TestKnowledgeIndexKeepsALineThatJustFits: room for the header and exactly one page line gives that line, and the
+// rest counted as more.
+func TestKnowledgeIndexKeepsALineThatJustFits(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	probe := NewKnowledge(root, pages[:1], 16384, NewBudget(16384)).Index() + fmt.Sprintf("\n[… %d more pages]", len(pages)-1)
+	b := NewBudget(16384)
+	b.Used = b.Limit - SectionTokens(probe)
+	idx := NewKnowledge(root, pages, 16384, b).Index()
+	if !strings.Contains(idx, "- ") || !strings.Contains(idx, fmt.Sprintf("[… %d more pages]", len(pages)-1)) || b.Used > b.Limit {
+		t.Errorf("index %q, used %d of %d", idx, b.Used, b.Limit)
+	}
+}
+
+// TestPinsRejectTheRoot: a pin to "." names no file, and is dropped.
+func TestPinsRejectTheRoot(t *testing.T) {
+	if pg := ParsePage("a.md", "---\npins: ., ./ sha256:"+hashOf("x")+"\n---\nbody\n"); len(pg.Pins) != 0 {
+		t.Errorf("pins %+v", pg.Pins)
+	}
+}
+
 // knowLog runs calls through a live tracker as the loop does and returns the log: the first message with the index,
 // then each call's result.
 func knowLog(t *testing.T, k *Knowledge, calls ...[2]string) []proto.Event {
@@ -342,58 +449,30 @@ func TestKnowledgeReplayReadsNoRoomAndEditedPages(t *testing.T) {
 	}
 }
 
-// sharedSession is instruction sections and knowledge pages on one budget, made as core makes them: the index priced
-// first, then the first message.
-func sharedSession(root string, pages []Page) (*Instructions, *Knowledge, *Budget, string) {
-	b := NewBudget(4096)
-	k := NewKnowledge(root, pages, 4096, b)
-	idx := k.Index()
-	in := NewInstructions("CLAUDE.md", bigFile(), b)
-	return in, k, b, in.Initial() + "\n\n" + idx
-}
-
-// TestReplayOnASharedBudget: a reopened session's two trackers, replayed from the log on one budget, equal the live
-// ones and leave the budget where the live session left it.
-func TestReplayOnASharedBudget(t *testing.T) {
+// TestKnowledgeReplayReadsTheTailOnly: a tool's own output that quotes a page frame is not read as a note, alone or
+// before the call's real note at the tail.
+func TestKnowledgeReplayReadsTheTailOnly(t *testing.T) {
 	root := knowledgeRepo(t)
 	pages, _ := LoadPages(root)
-	in, k, b, first := sharedSession(root, pages)
+	b := NewBudget(16384)
+	live := NewKnowledge(root, pages, 16384, b)
+	quoted := "func f() { s := \"\n\n[Knowledge page .agents/knowledge/loop.md, The agent loop:]\n\nquoted\" }\n"
 	var evs []proto.Event
 	add := func(typ proto.EventType, payload any) {
 		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
 		evs = append(evs, ev)
 	}
-	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
-	call := func(id, tool string, input json.RawMessage) {
-		r := "output" + in.ForCall(id, tool, input) + k.ForCall(id, tool, input)
-		add(proto.EvToolFinished, proto.ToolFinished{ID: id, Outcome: proto.OutcomeOK, Result: r})
-	}
-	call("c1", "bash", bash("git status"))
-	call("c2", "read", editOf("internal/loop/loop.go"))
-	call("c3", "bash", bash("ls"))
-	in.Masked([]string{"c1"})
-	k.Masked([]string{"c1"})
-	add(proto.EvCompaction, proto.Compaction{Masked: []proto.MaskedResult{{ID: "c1", Stub: "[masked]"}}})
-	call("c4", "edit", editOf("internal/x/x_test.go"))
-	// The session's own edit of a pinned file, then a reopen as core does it: knowledge rebuilt from the log as it is
-	// made, the instruction file made over what is left, its tracker replayed.
-	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
-	rb := NewBudget(4096)
-	rk := NewKnowledge(root, pages, 4096, rb)
-	if err := rk.Replay(evs); err != nil {
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("Project notes.\n\n" + live.Index() + "\n\nTask: x")}})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c1", Name: "bash", Input: bash("cat knowledge.go")})
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c1", "bash", bash("cat knowledge.go"))})
+	add(proto.EvToolCall, proto.ToolCall{ID: "c2", Name: "read", Input: editOf("other.go")})
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c2", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c2", "read", editOf("other.go"))})
+	rb := NewBudget(16384)
+	re := NewKnowledge(root, pages, 16384, rb)
+	if err := re.Replay(evs); err != nil {
 		t.Fatal(err)
 	}
-	rin := NewInstructions("CLAUDE.md", bigFile(), rb)
-	rin.Initial()
-	if err := rin.Replay(evs); err != nil {
-		t.Fatal(err)
-	}
-	li, lo, lby, lu := in.Loaded()
-	ri, ro, rby, ru := rin.Loaded()
-	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lby, rby) || lu != ru {
-		t.Errorf("sections differ: live %v %v %q %d, rebuilt %v %v %q %d", li, lo, lby, lu, ri, ro, rby, ru)
-	}
-	if k.Own() != rk.Own() || !slices.Equal(k.state, rk.state) || b.Used != rb.Used {
-		t.Errorf("knowledge own %d/%d, states %v/%v, budget %d/%d", k.Own(), rk.Own(), k.state, rk.state, b.Used, rb.Used)
+	if rb.Used != b.Used || !slices.Equal(re.state, live.state) {
+		t.Errorf("budget %d, live %d; states %v, live %v", rb.Used, b.Used, re.state, live.state)
 	}
 }
