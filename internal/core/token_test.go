@@ -63,6 +63,14 @@ func TestInitializeChecksTheClientToken(t *testing.T) {
 	if perr := initOn("0123456789abcdeX"); perr == nil || perr.Code != proto.CodeUnauthorized || cn.privileged {
 		t.Errorf("a wrong token on a privileged connection: %v, privileged %v; want refused, and the privilege gone", perr, cn.privileged)
 	}
+	// A re-initialize that fails for any other reason drops the privilege too: here, a protocol two versions on.
+	if perr := initOn("0123456789abcdef"); perr != nil || !cn.privileged {
+		t.Fatalf("the right token again: %v, privileged %v", perr, cn.privileged)
+	}
+	p, _ := json.Marshal(proto.InitializeParams{Protocol: proto.Version + 2, Token: "0123456789abcdef"})
+	if _, perr := withToken.dispatch(cn, proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodInitialize, Params: p}); perr == nil || cn.privileged {
+		t.Errorf("a re-initialize refused for its version: %v, privileged %v; want the privilege gone", perr, cn.privileged)
+	}
 	noToken := New(ctx, Options{Store: st, Version: "test"})
 	if _, err := initialize(connect(noToken), "0123456789abcdef"); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("a token to a Core without one: %v, want code %d", err, proto.CodeUnauthorized)

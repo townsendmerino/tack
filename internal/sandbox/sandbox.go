@@ -71,44 +71,60 @@ var Secrets = []string{
 	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
 }
 
-// real is p with symlinks resolved, as Seatbelt matches paths, and ".." taken as the kernel takes it: the parent of
-// what the path so far resolves to, never cleaned away first. A path that does not exist yet has its existing part
-// resolved and the rest kept, so a rule for it still matches once it is made.
+// real is p as the kernel will resolve it, as Seatbelt matches paths: walked from / one name at a time, each
+// symlink followed where it is met (one whose target does not exist yet too), and each ".." the parent of what the
+// path so far resolves to, never cleaned away first. Past a name that does not exist nothing can be a link, so the
+// rest is kept, with a ".." cancelling the missing name before it; a rule for the path still matches once it is made.
 func real(p string) string {
+	sep := string(filepath.Separator)
 	if !filepath.IsAbs(p) {
 		if wd, err := os.Getwd(); err == nil {
-			p = wd + string(filepath.Separator) + p
+			p = wd + sep + p
 		}
 	}
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
-	}
-	var parts []string
-	for _, c := range strings.Split(p, string(filepath.Separator)) {
-		if c != "" && c != "." {
-			parts = append(parts, c)
+	names := func(s string) []string {
+		var out []string
+		for _, c := range strings.Split(s, sep) {
+			if c != "" && c != "." {
+				out = append(out, c)
+			}
 		}
+		return out
 	}
-	cur := string(filepath.Separator)
-	for i, name := range parts {
-		if name == ".." {
+	cur, rest, missing, links := sep, names(p), []string(nil), 0
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		switch {
+		case name == ".." && len(missing) > 0:
+			missing = missing[:len(missing)-1]
+			continue
+		case name == "..":
 			cur = filepath.Dir(cur)
 			continue
+		case len(missing) > 0:
+			missing = append(missing, name)
+			continue
 		}
-		r, err := filepath.EvalSymlinks(filepath.Join(cur, name))
-		if err != nil { // missing from here on, so none of the rest is a symlink
-			for _, n := range parts[i:] {
-				if n == ".." {
-					cur = filepath.Dir(cur)
-				} else {
-					cur = filepath.Join(cur, n)
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			missing = append(missing, name)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 && links < 40 {
+			if target, err := os.Readlink(next); err == nil {
+				links++
+				if filepath.IsAbs(target) {
+					cur = sep
 				}
+				rest = append(names(target), rest...)
+				continue
 			}
-			return cur
 		}
-		cur = r
+		cur = next
 	}
-	return cur
+	return filepath.Join(append([]string{cur}, missing...)...)
 }
 
 func q(p string) string { return fmt.Sprintf("%q", real(p)) }
