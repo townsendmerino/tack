@@ -33,24 +33,22 @@ func TestReadPaths(t *testing.T) {
 }
 
 // TestRealResolvesAPathThatDoesNotExistYet: Seatbelt matches real paths, so a profile path must be real even when it
-// does not exist yet, as a state directory under /tmp (which is /private/tmp) may not: the deepest existing ancestor is
-// resolved, and the rest kept.
+// does not exist yet, as a state directory may not: the existing part is resolved, through a symlink here, and the rest
+// kept.
 func TestRealResolvesAPathThatDoesNotExistYet(t *testing.T) {
-	dir, err := os.MkdirTemp("/tmp", "tack-")
-	if err != nil {
+	dir, _ := filepath.EvalSymlinks(t.TempDir())
+	target := filepath.Join(dir, "target")
+	os.Mkdir(target, 0o700)
+	link := filepath.Join(dir, "link") // the test's own symlink: it needs no /tmp that is one
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
-	resolved, _ := filepath.EvalSymlinks(dir)
-	if resolved == dir {
-		t.Fatalf("%s is its own real path; the test needs one reached through a symlink", dir)
-	}
 	for _, c := range []struct{ in, want string }{
-		{dir, resolved},
-		{filepath.Join(dir, "state"), filepath.Join(resolved, "state")},
-		{filepath.Join(dir, "state", "a", "b"), filepath.Join(resolved, "state", "a", "b")},
-		{dir + "/x/../state", filepath.Join(resolved, "state")}, // written uncleaned: x does not exist
-		{dir + "/state/", filepath.Join(resolved, "state")},
+		{link, target},
+		{filepath.Join(link, "state"), filepath.Join(target, "state")},
+		{filepath.Join(link, "state", "a", "b"), filepath.Join(target, "state", "a", "b")},
+		{link + "/x/../state", filepath.Join(target, "state")}, // written uncleaned: x does not exist
+		{link + "/state/", filepath.Join(target, "state")},
 	} {
 		if got := real(c.in); got != c.want {
 			t.Errorf("real(%q) = %q, want %q", c.in, got, c.want)

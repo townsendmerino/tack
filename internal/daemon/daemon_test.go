@@ -371,7 +371,7 @@ func TestADaemonStartedDuringAShutdownWaits(t *testing.T) {
 		}
 		next <- err
 	}()
-	time.Sleep(200 * time.Millisecond) // the stopping daemon finishes its shutdown
+	time.Sleep(1500 * time.Millisecond) // the stopping daemon drains: longer than a start waits on a holder it cannot name
 	if err := l.Release(); err != nil {
 		t.Fatal(err)
 	}

@@ -69,15 +69,12 @@ func (e *HeldError) Error() string {
 	return fmt.Sprintf("tack daemon %s (pid %d, since %s) holds the lock", h.Version, h.PID, h.Start.Local().Format(time.DateTime))
 }
 
-// currentUID is this process's uid, for privateDir; tests replace it.
-var currentUID = os.Getuid
-
 // afterLock, when set (tests), runs in Acquire between taking the lock and writing the holder record.
 var afterLock func()
 
-// Acquire takes the lock in stateDir for a daemon of version. A holder that has recorded itself is a *HeldError naming
-// it at once; while the lock is held with no valid record, a daemon starting or stopping, it is tried again for up to
-// a second (takeLock). stateDir is made if needed and checked first (privateDir).
+// Acquire takes the lock in stateDir for a daemon of version, or returns a *HeldError naming the daemon that holds it:
+// at once when that daemon is running, after waiting for it when it is starting or shutting down (takeLock). stateDir
+// is made if needed and checked first (privateDir).
 func Acquire(stateDir, version string) (*Lock, error) {
 	if err := privateDir(stateDir); err != nil {
 		return nil, err
@@ -142,11 +139,15 @@ func ReadHolder(stateDir string) Holder {
 	return h
 }
 
-// takeLock takes the exclusive flock on f, the lock file in stateDir, without blocking. Held by a daemon that has
-// recorded itself, it is a *HeldError naming that daemon at once. Held with no valid record, the holder is starting
-// (it writes its record right after taking the lock) or stopping (Release removes the record, then unlocks), so the
-// lock is tried again for up to a second: a stopping holder's lock is taken once dropped, and a starting one's record
-// read once written. Past that it is a *HeldError naming nobody.
+// takeLock takes the exclusive flock on f, the lock file in stateDir, without blocking, and tries again while the
+// holder may let go soon:
+//   - held by a daemon whose record says it is running, it is a *HeldError naming that daemon at once;
+//   - held by one whose record says it is stopping (its listener has closed, Listener.Close), it is tried again for up
+//     to stopWait, the drain's grace window and then some, and taken once released;
+//   - held with no valid record, the holder is starting (it records itself right after taking the lock) or nearly
+//     done stopping (Release removed the record), so it is tried again for up to a second.
+//
+// Past its wait it is a *HeldError naming the last holder seen, or nobody.
 func takeLock(f *os.File, stateDir string) error {
 	start := time.Now()
 	deadline := start.Add(time.Second)
@@ -185,9 +186,10 @@ func (l *Lock) Dir() string { return l.dir }
 
 // Release removes the holder record, closes the socket Listen bound, then drops the lock. The order matters:
 //   - the record goes first, so a client that finds the socket gone and starts a daemon finds no holder named, and
-//     that start waits for the lock (takeLock) instead of naming this daemon and giving up;
-//   - the socket goes before the lock, since closing the listener unlinks its path, and once the lock is dropped that
-//     path may already be the next daemon's.
+//     that start waits for the lock (takeLock) instead of naming this daemon and giving up. (When the socket closed
+//     earlier, as Serve closes it, the record already says stopping: Listener.Close.)
+//   - the socket goes before the lock, since closing it unlinks its path, and once the lock is dropped that path may
+//     already be the next daemon's.
 //
 // Releasing twice is a no-op.
 func (l *Lock) Release() error {
@@ -205,7 +207,8 @@ func (l *Lock) Release() error {
 	l.holderMu.Unlock()
 	l.tell("holder removed")
 	if l.ln != nil {
-		if err := l.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		// The raw socket, not the Listener: the record is gone already, so nothing is to be marked stopping.
+		if err := l.ln.ul.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			errs = append(errs, err)
 		}
 		l.ln = nil
@@ -260,8 +263,8 @@ func privateDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	if uid := ownerOf(abs, st); uid != currentUID() {
-		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, currentUID())
+	if uid := ownerOf(abs, st); uid != os.Getuid() {
+		return fmt.Errorf("daemon: %s belongs to uid %d, not to this user (uid %d)", dir, uid, os.Getuid())
 	}
 	if st.Mode().Perm() != 0o700 {
 		return os.Chmod(abs, 0o700)
@@ -275,12 +278,14 @@ func privateDir(dir string) error {
 // model), and every symlink must be this user's or root's. A component that does not exist yet ends the walk:
 // privateDir makes the rest, as this user's.
 func checkPath(abs string) error {
-	trusted := func(uid int) bool { return uid == currentUID() || uid == 0 }
-	checkDir := func(p string, fi fs.FileInfo) error {
+	trusted := func(uid int) bool { return uid == os.Getuid() || uid == 0 }
+	checkDir := func(p string, fi fs.FileInfo, leaf bool) error {
 		if uid := ownerOf(p, fi); !trusted(uid) {
 			return fmt.Errorf("daemon: %s belongs to uid %d; tack's state may lie only under this user's or root's directories", p, uid)
 		}
-		if fi.Mode().Perm()&0o022 != 0 && fi.Mode()&fs.ModeSticky == 0 {
+		// The sticky bit keeps others from replacing what is in a shared directory, so it may hold the state directory;
+		// it does not keep them from adding files, so the state directory itself may not be one.
+		if fi.Mode().Perm()&0o022 != 0 && (leaf || fi.Mode()&fs.ModeSticky == 0) {
 			return fmt.Errorf("daemon: %s is writable by other users, who could replace tack's state under it; run chmod go-w %s, or set state_dir elsewhere", p, p)
 		}
 		return nil
@@ -289,7 +294,7 @@ func checkPath(abs string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkDir("/", root); err != nil {
+	if err := checkDir("/", root, abs == "/"); err != nil {
 		return err
 	}
 	cur, rest, links := "/", components(abs), 0
@@ -325,7 +330,7 @@ func checkPath(abs string) error {
 			}
 			rest = append(components(target), rest...)
 		case fi.IsDir():
-			if err := checkDir(next, fi); err != nil {
+			if err := checkDir(next, fi, len(rest) == 0); err != nil {
 				return err
 			}
 			cur = next

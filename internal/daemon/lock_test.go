@@ -385,6 +385,9 @@ func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
 		if s != "socket closed" {
 			return
 		}
+		if h := ReadHolder(dir); h.PID != 0 && !h.Stopping {
+			t.Errorf("the socket is gone and the record still names %+v as running", h)
+		}
 		go func() { // as a client that just failed to dial would start one
 			l, err := Acquire(dir, "next")
 			if err == nil {
@@ -409,5 +412,33 @@ func TestAStateDirWithDotDotIsRefused(t *testing.T) {
 	base := shortDir(t)
 	if _, err := Acquire(base+"/x/../state", "1"); err == nil || !strings.Contains(err.Error(), `".."`) {
 		t.Fatalf("a state directory with ..: %v, want it refused", err)
+	}
+}
+
+// TestAWritableStateDirIsRefusedEvenSticky: the sticky bit makes a shared directory safe to hold tack's state
+// directory (others cannot replace it), not to be it: others may still have put files in it. A state directory others
+// may write is refused, sticky or not, and left as it was.
+func TestAWritableStateDirIsRefusedEvenSticky(t *testing.T) {
+	dir := shortDir(t)
+	if err := os.Mkdir(filepath.Dir(dir), 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(dir, 0o777|fs.ModeSticky)
+	if _, err := Acquire(dir, "1"); err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Fatalf("a sticky state directory anyone can write: %v, want refused", err)
+	}
+	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o777 {
+		t.Fatalf("the refused directory became %v; it must be left as it was", st.Mode().Perm())
+	}
+}
+
+// TestAStoppingHolderIsNamed: a start that waited out stopWait on a daemon that is shutting down says so.
+func TestAStoppingHolderIsNamed(t *testing.T) {
+	err := &HeldError{Holder: Holder{PID: 7, Version: "1.2.3", Stopping: true}}
+	if !strings.Contains(err.Error(), "shutting down") || !strings.Contains(err.Error(), "pid 7") {
+		t.Fatalf("%q; want the stopping daemon named as stopping", err)
 	}
 }
