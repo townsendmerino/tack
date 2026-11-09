@@ -342,3 +342,77 @@ func TestStatusAndStopAfterTheDaemonDies(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusAndStopSeeALockWithoutARecord: a lock held with no holder record (a daemon starting, which records itself
+// next, or one at the end of Release, which removes its record just before unlocking) is not "not running". status
+// says the lock is held; stop waits for it to be let go.
+func TestStatusAndStopSeeALockWithoutARecord(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	stateDir := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfg, []byte("state_dir = \""+stateDir+"\"\n[servers.local]\nkind = \"goinfer-remote\"\nurl = \"http://127.0.0.1:1\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := daemon.Acquire(stateDir, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	if err := os.Remove(filepath.Join(stateDir, daemon.HolderName)); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"daemon", "status", "-config", cfg}, &out, &errb); code != exitNotServing || !strings.Contains(out.String(), "holds the lock") {
+		t.Fatalf("status with the lock held and no record: exit %d, %q %q; want %d, the lock held", code, out.String(), errb.String(), exitNotServing)
+	}
+	go func() { time.Sleep(300 * time.Millisecond); l.Release() }()
+	out.Reset()
+	began := time.Now()
+	if code := dispatch([]string{"daemon", "stop", "-config", cfg}, &out, &errb); code != exitOK || time.Since(began) < 250*time.Millisecond {
+		t.Fatalf("stop with the lock held and no record: exit %d after %s, %q %q; want 0, once the lock was let go", code, time.Since(began), out.String(), errb.String())
+	}
+}
+
+// TestDaemonStartSpawnsOne: tack daemon start, with no daemon running, spawns one detached (this test binary standing
+// in for tack, TestMain) and prints its status once it serves; stop then ends it.
+func TestDaemonStartSpawnsOne(t *testing.T) {
+	ts := httptest.NewServer(goinfertest.NewScripted("m", 16384))
+	defer ts.Close()
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	stateDir := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	body := "state_dir = \"" + stateDir + "\"\n[daemon]\nshutdown_grace = \"1s\"\n[servers.local]\nkind = \"goinfer-remote\"\nurl = \"" + ts.URL + "\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TACK_TEST_AS_TACK", "1") // the spawned daemon is this binary, and inherits it
+	t.Cleanup(func() { dispatch([]string{"daemon", "stop", "-config", cfg}, &bytes.Buffer{}, &bytes.Buffer{}) })
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"daemon", "start", "-config", cfg}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "tack daemon "+version) {
+		t.Fatalf("start: exit %d, %q %q; want a daemon started and its status", code, out.String(), errb.String())
+	}
+	if h := daemon.ReadHolder(stateDir); h.PID == 0 || h.PID == os.Getpid() {
+		t.Fatalf("the holder after start: %+v; want another process, the spawned daemon", h)
+	}
+	out.Reset()
+	if code := dispatch([]string{"daemon", "stop", "-config", cfg}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "stopped") {
+		t.Fatalf("stop: exit %d, %q %q", code, out.String(), errb.String())
+	}
+}
+
+// TestAnUnknownDaemonCommandIsUsage: a subcommand that is not run, start, stop or status is bad usage, said before
+// the config is read, so a missing config does not turn it into another error.
+func TestAnUnknownDaemonCommandIsUsage(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"daemon", "frobnicate", "-config", filepath.Join(t.TempDir(), "absent.toml")}, &out, &errb); code != exitUsage {
+		t.Fatalf("tack daemon frobnicate: exit %d, %q; want %d", code, errb.String(), exitUsage)
+	}
+}

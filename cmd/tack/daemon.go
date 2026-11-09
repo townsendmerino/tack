@@ -41,6 +41,12 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	sub := args[0]
+	switch sub { // before the config is read, so a bad command is usage whatever the config
+	case "run", "start", "stop", "status":
+	default:
+		fmt.Fprintf(stderr, "tack daemon: unknown command %q; want run, start, stop or status\n", sub)
+		return exitUsage
+	}
 	fs := flag.NewFlagSet("daemon "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "config file (default ~/.config/tack/config.toml)")
@@ -56,7 +62,7 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return daemonRun(cfg, path, stateDir, stderr)
 	case "start":
-		c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
+		c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 		if err != nil {
 			fmt.Fprintln(stderr, "tack daemon start:", err)
 			return exitError
@@ -66,8 +72,12 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 	case "status":
 		c, err := daemon.Dial(stateDir, cliClient, nil, 0)
 		if errors.Is(err, daemon.ErrNotRunning) {
-			if h := daemon.ReadHolder(stateDir); h.PID != 0 { // no socket while it starts or drains
+			switch h, held := lockHolder(stateDir); { // no socket while it starts or drains
+			case h.PID != 0:
 				fmt.Fprintln(stdout, holderLine(h))
+				return exitNotServing
+			case held:
+				fmt.Fprintln(stdout, "tack daemon: a daemon holds the lock but its record says nothing; is one starting?")
 				return exitNotServing
 			}
 			fmt.Fprintln(stdout, "tack daemon: not running")
@@ -82,8 +92,7 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 	case "stop":
 		return daemonStop(stateDir, cfg.Daemon.ShutdownGrace.Duration, stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "tack daemon: unknown command %q; want run, start, stop or status\n", sub)
-	return exitUsage
+	return exitUsage // not reached: sub was checked first
 }
 
 // loadConfig reads the config at path (the default when empty) and returns it with its path and tack's state
@@ -189,10 +198,13 @@ func printStatus(c *daemon.Conn, stdout, stderr io.Writer) int {
 func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) int {
 	c, err := daemon.Dial(stateDir, cliClient, nil, 0)
 	if errors.Is(err, daemon.ErrNotRunning) {
-		switch h := daemon.ReadHolder(stateDir); {
-		case h.PID == 0:
+		switch h, held := lockHolder(stateDir); {
+		case h.PID == 0 && !held:
 			fmt.Fprintln(stdout, "tack daemon: not running")
 			return exitOK
+		case h.PID == 0:
+			fmt.Fprintln(stderr, "tack daemon stop: a daemon holds the lock but its record says nothing; run stop again once it serves")
+			return exitError
 		case h.Stopping: // shutting down already: its socket is gone, and the lock follows
 			return awaitRelease(stateDir, h.PID, grace, stdout, stderr)
 		default:
@@ -226,7 +238,7 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 
 // awaitRelease waits for the daemon with pid, shutting down with grace, to let go of the lock, and says so.
 func awaitRelease(stateDir string, pid int, grace time.Duration, stdout, stderr io.Writer) int {
-	wait := drainWait(grace)
+	wait := stopWaitFor(stateDir, grace)
 	if !released(stateDir, pid, wait) {
 		fmt.Fprintf(stderr, "tack daemon stop: pid %d still holds the lock after %s\n", pid, wait)
 		return exitError
@@ -262,4 +274,43 @@ func released(stateDir string, pid int, wait time.Duration) bool {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// lockHolder is the daemon that holds stateDir's lock, from its record, and whether the lock is held at all. A lock
+// held with no record is a daemon starting (it records itself just after taking the lock) or one at the end of
+// Release (it removes its record just before unlocking): lockHolder waits up to a second for either to settle.
+func lockHolder(stateDir string) (daemon.Holder, bool) {
+	deadline := time.Now().Add(time.Second)
+	for {
+		if h := daemon.ReadHolder(stateDir); h.PID != 0 {
+			return h, true
+		}
+		if daemon.LockFree(stateDir) {
+			return daemon.Holder{}, false
+		}
+		if time.Now().After(deadline) {
+			return daemon.Holder{}, true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// startHeadroom is how long a daemon started behind a stopping one takes, once it has the lock, to open its store,
+// recover interrupted turns and bind its socket.
+const startHeadroom = 10 * time.Second
+
+// stopWaitFor is how long a client waits for the daemon in stateDir to let go of its lock as it shuts down: as long as
+// its stopping record says it needs (Holder.Until), and at least what this client's grace gives (drainWait).
+func stopWaitFor(stateDir string, grace time.Duration) time.Duration {
+	w := drainWait(grace)
+	if h := daemon.ReadHolder(stateDir); h.Stopping {
+		w = max(w, time.Until(h.Until))
+	}
+	return w
+}
+
+// spawnWaitFor is how long a client that starts a daemon waits for its socket: through a daemon still stopping
+// (stopWaitFor), then the new one's start.
+func spawnWaitFor(stateDir string, grace time.Duration) time.Duration {
+	return stopWaitFor(stateDir, grace) + startHeadroom
 }

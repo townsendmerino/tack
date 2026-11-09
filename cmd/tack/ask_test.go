@@ -87,24 +87,34 @@ func TestASpawnWaitsOutADrain(t *testing.T) {
 }
 
 // TestStopWhenTheDaemonGoesMidway: a daemon that finishes shutting down while stop is talking to it closes the
-// connection; stop then waits for the lock as for any stopping daemon, and reports it stopped, not an error.
+// connection, and lets go of its lock a moment later; stop waits for the lock as for any stopping daemon, and reports
+// it stopped, not an error.
 func TestStopWhenTheDaemonGoesMidway(t *testing.T) {
 	dir, err := os.MkdirTemp("/tmp", "tack-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
+	l, err := daemon.Acquire(dir, "1") // the daemon's lock, and its record naming this process
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
 	ln, err := net.Listen("unix", daemon.SocketPath(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go func() { // a daemon that initializes the connection, then is gone
+	go func() { // a daemon that initializes the connection, then is gone: the connection, then the lock
 		nc, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer nc.Close()
+		defer func() {
+			nc.Close()
+			time.Sleep(300 * time.Millisecond)
+			l.Release()
+		}()
 		sc, enc := bufio.NewScanner(nc), json.NewEncoder(nc)
 		for sc.Scan() {
 			var req proto.Request
@@ -116,7 +126,97 @@ func TestStopWhenTheDaemonGoesMidway(t *testing.T) {
 		}
 	}()
 	var out, errb bytes.Buffer
-	if code := daemonStop(dir, time.Second, &out, &errb); code != exitOK || !strings.Contains(out.String(), "stopped") {
-		t.Fatalf("stop on a daemon gone midway: exit %d, %q %q; want 0 and stopped", code, out.String(), errb.String())
+	began := time.Now()
+	if code := daemonStop(dir, time.Second, &out, &errb); code != exitOK || !strings.Contains(out.String(), "stopped") || time.Since(began) < 250*time.Millisecond {
+		t.Fatalf("stop on a daemon gone midway: exit %d after %s, %q %q; want 0 and stopped, once the lock was let go", code, time.Since(began), out.String(), errb.String())
 	}
+}
+
+// TestClientWaitsFollowTheStoppingRecord: a client waits on a stopping daemon as long as its record says it needs
+// (Until), not only the grace this client's config gives; and a client that starts a daemon waits longer still, for the
+// new one to open its store, recover and bind its socket once the old one lets go.
+func TestClientWaitsFollowTheStoppingRecord(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	l, err := daemon.Acquire(dir, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	l.SetShutdown(2 * time.Minute) // its grace is longer than this client's config says
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // stopping, until two minutes from now
+	if w := stopWaitFor(dir, 10*time.Second); w < 2*time.Minute-time.Second {
+		t.Errorf("stop's wait on a daemon stopping for two minutes: %s; want two minutes at least", w)
+	}
+	if w := spawnWaitFor(dir, 10*time.Second); w < 2*time.Minute+5*time.Second {
+		t.Errorf("a spawn's wait behind a daemon stopping for two minutes: %s; want two minutes and room to start", w)
+	}
+}
+
+// TestAskLeavesTheDaemonsTurnOnAnInterrupt: an interrupt ends tack run --daemon but not the daemon's turn, and says
+// which session is left running.
+func TestAskLeavesTheDaemonsTurnOnAnInterrupt(t *testing.T) {
+	cl := fakeAsk(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+	code := make(chan int, 1)
+	go func() { code <- ask(ctx, cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr) }()
+	time.Sleep(100 * time.Millisecond) // prompted, the turn under way
+	cancel()
+	select {
+	case c := <-code:
+		if c != exitError || !strings.Contains(stderr.String(), "left session s_1 running in the daemon") {
+			t.Fatalf("ask after an interrupt: %d, %q; want 1 and the session named as left running", c, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ask did not return after the interrupt")
+	}
+}
+
+// TestAskOnAHaltedDaemonExits5: a halted daemon refuses the prompt (CodeHalted), and tack run --daemon exits 5, as an
+// in-process run does.
+func TestAskOnAHaltedDaemonExits5(t *testing.T) {
+	cl := fakeAsk(t, &proto.Error{Code: proto.CodeHalted, Message: "tack is halted; run tack resume"})
+	var stdout, stderr bytes.Buffer
+	if c := ask(context.Background(), cl, "/w", "q", proto.ModePlan, false, true, &stdout, &stderr); c != exitHalted {
+		t.Fatalf("ask on a halted daemon: %d, %q; want %d", c, stderr.String(), exitHalted)
+	}
+}
+
+// fakeAsk is a client of a daemon that makes session s_1 and answers its prompt with refuse, or takes it and never
+// ends the turn when refuse is nil.
+func fakeAsk(t *testing.T, refuse *proto.Error) *core.Client {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close(); b.Close() })
+	go func() {
+		sc, enc := bufio.NewScanner(b), json.NewEncoder(b)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			resp := proto.Response{JSONRPC: "2.0", ID: req.ID}
+			var result any = struct{}{}
+			switch req.Method {
+			case proto.MethodSessionNew:
+				result = proto.SessionNewResult{Session: "s_1"}
+			case proto.MethodSessionPrompt:
+				result = proto.SessionPromptResult{Seq: 2}
+				resp.Error = refuse
+			}
+			if resp.Error == nil {
+				resp.Result, _ = json.Marshal(result)
+			}
+			enc.Encode(resp)
+		}
+	}()
+	return core.NewClient(a)
 }

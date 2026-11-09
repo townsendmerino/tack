@@ -254,7 +254,7 @@ func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
+	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
