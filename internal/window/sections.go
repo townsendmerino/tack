@@ -185,12 +185,13 @@ type Instructions struct {
 	name    string
 	secs    []Section
 	whole   bool
-	budget  int // tokens
-	used    int
+	b       *Budget
 	in      []bool     // the section's text is in the window
 	offered []bool     // a note in the window names the section as not loaded
 	by      []int      // the note that carries or names the section: an index into notes, or -1 for the first message
 	notes   []callNote // every note ForCall gave, in order
+	initial int        // what the first message's text took of the budget
+	initIn  []bool     // which sections the first message holds, once Initial has run (nil before)
 }
 
 // callNote is one call's note: the call's id (which a model may leave empty or use again), what it took of the budget, and
@@ -201,16 +202,23 @@ type callNote struct {
 	live bool
 }
 
-// NewInstructions is name's content read by section for a window of window tokens. name is the file's path from the
-// workspace root, as the model's read tool takes it.
-func NewInstructions(name, content string, window int) *Instructions {
-	in := &Instructions{name: name, secs: ParseSections(content), budget: window * SectionShare / 100}
+// Budget is the share of the window that instruction sections and knowledge pages take together, in tokens: Limit is
+// SectionShare of the served window, and Used goes down when a compaction stubs a result that carried some.
+type Budget struct{ Limit, Used int }
+
+// NewBudget is the budget for a window of window tokens.
+func NewBudget(window int) *Budget { return &Budget{Limit: window * SectionShare / 100} }
+
+// NewInstructions is name's content read by section, drawing on b. name is the file's path from the workspace root, as
+// the model's read tool takes it. A file within what b has left, framing included, is loaded whole.
+func NewInstructions(name, content string, b *Budget) *Instructions {
+	in := &Instructions{name: name, secs: ParseSections(content), b: b}
 	n := len(in.secs)
 	in.in, in.offered, in.by = make([]bool, n), make([]bool, n), make([]int, n)
 	for i := range in.by {
 		in.by[i] = -1
 	}
-	in.whole = SectionTokens(in.wholeText()) <= in.budget
+	in.whole = SectionTokens(in.wholeText()) <= b.Limit-b.Used
 	return in
 }
 
@@ -219,11 +227,11 @@ func (in *Instructions) wholeText() string {
 	return "Project instructions, from " + in.name + ":\n\n" + in.join(0, len(in.secs))
 }
 
-// Used is the tokens the sections in the window take, of Budget.
-func (in *Instructions) Used() int { return in.used }
+// Used is the tokens the budget's loads take, of Budget.
+func (in *Instructions) Used() int { return in.b.Used }
 
-// Budget is the sections' budget in tokens.
-func (in *Instructions) Budget() int { return in.budget }
+// Budget is the budget's limit in tokens.
+func (in *Instructions) Budget() int { return in.b.Limit }
 
 // firstSection is how many sections the opening takes: the preamble and the sections up to and including the first one
 // with text beyond its heading, so a file that opens with only its title takes in the section after it.
@@ -255,7 +263,9 @@ func (in *Instructions) Initial() string {
 			in.in[i] = true
 		}
 		text := in.wholeText()
-		in.used = SectionTokens(text)
+		in.initial = SectionTokens(text)
+		in.b.Used += in.initial
+		in.initIn = slices.Clone(in.in)
 		return text
 	}
 	first := in.firstSection()
@@ -313,9 +323,11 @@ func (in *Instructions) Initial() string {
 		return strings.TrimSuffix(b.String(), "\n")
 	}
 	outline, more, cut := rest, 0, false
-	fits := func() bool { return SectionTokens(build(firstLines, cut, always, outline, more)) <= in.budget }
+	fits := func() bool {
+		return SectionTokens(build(firstLines, cut, always, outline, more)) <= in.b.Limit-in.b.Used
+	}
 	// An opening over half the budget is cut to half first, so the outline and the calls' sections keep room.
-	for len(firstLines) > 1 && SectionTokens(strings.Join(firstLines, "\n")) > in.budget/2 {
+	for len(firstLines) > 1 && SectionTokens(strings.Join(firstLines, "\n")) > (in.b.Limit-in.b.Used)/2 {
 		firstLines, cut = firstLines[:len(firstLines)-1], true
 	}
 	for len(always) > 0 && !fits() {
@@ -339,7 +351,9 @@ func (in *Instructions) Initial() string {
 			in.in[i] = true
 		}
 	}
-	in.used = SectionTokens(text)
+	in.initial = SectionTokens(text)
+	in.b.Used += in.initial
+	in.initIn = slices.Clone(in.in)
 	return text
 }
 
@@ -395,8 +409,8 @@ var valueFlags = map[string]map[string]bool{"git": {"-C": true, "-c": true}, "go
 
 // callKinds is what a tool call is, for matching: each simple command of a bash command as "bash:" and its words
 // (name first, as its base name), once as written and once without its flags, so "go -C pkg test" is also
-// "bash:go test"; and an edit or write as "edit:<path>". A quoted word is its text; a word whose text is not known
-// before it runs ($VAR, $(cmd)) is "?".
+// "bash:go test"; an edit or write as "edit:<path>"; and a read as "read:<path>". A quoted word is its text; a word
+// whose text is not known before it runs ($VAR, $(cmd)) is "?".
 func callKinds(tool string, input json.RawMessage) []string {
 	switch tool {
 	case "bash":
@@ -443,14 +457,18 @@ func callKinds(tool string, input json.RawMessage) []string {
 			return true
 		})
 		return out
-	case "edit", "write":
+	case "edit", "write", "read":
 		var in struct {
 			Path string `json:"path"`
 		}
 		if json.Unmarshal(input, &in) != nil || in.Path == "" {
 			return nil
 		}
-		return []string{"edit:" + path.Clean(in.Path)}
+		kind := "edit:"
+		if tool == "read" {
+			kind = "read:"
+		}
+		return []string{kind + path.Clean(in.Path)}
 	}
 	return nil
 }
@@ -587,11 +605,9 @@ func (in *Instructions) within(i, j int) bool {
 // lines, once. It is "" when nothing is wanted, and always "" for a file loaded whole. A compaction that stubs id's
 // result must call Masked.
 func (in *Instructions) ForCall(id, tool string, input json.RawMessage) string {
-	if in.whole {
-		return ""
-	}
 	kinds := callKinds(tool, input)
-	if len(kinds) == 0 {
+	if in.whole || len(kinds) == 0 {
+		in.record(id, nil, nil, "") // every call that ran gets a note, empty here, so reused ids pair right (record)
 		return ""
 	}
 	want := map[int]bool{}
@@ -668,7 +684,7 @@ func (in *Instructions) load(want map[int]bool, id, what string) string {
 			continue
 		}
 		next := body + "\n\n" + in.secs[i].Text
-		if in.used+SectionTokens(header+next) > in.budget {
+		if in.b.Used+SectionTokens(header+next) > in.b.Limit {
 			left = append(left, i)
 			continue
 		}
@@ -676,12 +692,15 @@ func (in *Instructions) load(want map[int]bool, id, what string) string {
 		got = append(got, i)
 	}
 	if len(got) == 0 && len(left) == 0 {
+		if what == "call" {
+			in.record(id, nil, nil, "")
+		}
 		return ""
 	}
 	note := func() string { return in.render(got, left, what) }
 	// The notice of what was left out must fit too: loaded sections give way to it from the last. A notice alone may
 	// pass the budget, so the model always hears what it is missing.
-	for len(left) > 0 && len(got) > 0 && in.used+SectionTokens(note()) > in.budget {
+	for len(left) > 0 && len(got) > 0 && in.b.Used+SectionTokens(note()) > in.b.Limit {
 		last := got[len(got)-1]
 		got = got[:len(got)-1]
 		left = append(left, last)
@@ -732,7 +751,9 @@ func (in *Instructions) render(got, left []int, what string) string {
 	return out.String()
 }
 
-// record makes call id's note a new note in the window: got in, left named, its text's tokens charged.
+// record makes call id's note a new note in the window: got in, left named, its text's tokens charged. Every call that
+// ran gets one, empty when it brought nothing, so a compaction of a model's reused or empty id frees the note of the
+// call it stubbed.
 func (in *Instructions) record(id string, got, left []int, text string) {
 	k := len(in.notes)
 	for _, i := range got {
@@ -741,13 +762,16 @@ func (in *Instructions) record(id string, got, left []int, text string) {
 	for _, i := range left {
 		in.offered[i], in.by[i] = true, k
 	}
-	cost := SectionTokens(text)
-	in.used += cost
+	cost := 0
+	if text != "" {
+		cost = SectionTokens(text)
+	}
+	in.b.Used += cost
 	in.notes = append(in.notes, callNote{id: id, cost: cost, live: true})
 }
 
 // Replay rebuilds which sections are in the window from a session's log, for a session resumed after loop.Rebuild
-// (core's open calls it before loop.Resume, with the log from seq 1). It starts over from Initial, then takes each
+// (core's open calls it before loop.Resume, with the log from seq 1). It starts over from the first message, then takes each
 // tool.finished result's note in log order, and each compaction's stubbed ids through Masked.
 //
 // A note is taken only when it can be read back exactly. That means: the sections that follow the header, one after
@@ -757,11 +781,23 @@ func (in *Instructions) record(id string, got, left []int, text string) {
 // when the file changed since the session read it, and the skipped sections come in again at their next matching call.
 // The tracker must be built from the instruction file as the session read it.
 func (in *Instructions) Replay(evs []proto.Event) error {
-	for i := range in.secs {
-		in.in[i], in.offered[i], in.by[i] = false, false, -1
+	// The first message is kept as Initial made it, when it has run (core makes a reopened session's trackers before it
+	// replays them, the knowledge index priced first); the notes are rebuilt. Only this tracker's own notes' share of
+	// the budget, which knowledge pages may share, is taken back.
+	for _, c := range in.notes {
+		if c.live {
+			in.b.Used -= c.cost
+		}
 	}
-	in.used, in.notes = 0, nil
-	in.Initial()
+	in.notes = nil
+	for i := range in.secs {
+		in.offered[i], in.by[i] = false, -1
+	}
+	if in.initIn == nil {
+		in.Initial()
+	} else {
+		copy(in.in, in.initIn)
+	}
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
@@ -777,8 +813,13 @@ func (in *Instructions) Replay(evs []proto.Event) error {
 				in.record(MessageID, got, left, note)
 			}
 		case proto.ToolFinished:
+			if p.Outcome != proto.OutcomeOK && p.Outcome != proto.OutcomeError {
+				continue // the loop asks only about calls that ran
+			}
 			if got, left, text, ok := in.noteIn(p.Result); ok {
 				in.record(p.ID, got, left, text)
+			} else {
+				in.record(p.ID, nil, nil, "")
 			}
 		case proto.Compaction:
 			ids := make([]string, len(p.Masked))
@@ -901,7 +942,8 @@ func (in *Instructions) noteAt(note, what string) (got, left []int, text string,
 }
 
 // Loaded is which sections are in the window and which are named as not loaded, by index into the file's sections;
-// the id of the call whose note carries or names each, "" for the first message's; and the tokens the notes take.
+// the id of the call whose note carries or names each, "" for the first message's; and the tokens this tracker's
+// texts take of the budget (own).
 func (in *Instructions) Loaded() (loaded, offered []bool, by []string, used int) {
 	by = make([]string, len(in.by))
 	for i, k := range in.by {
@@ -909,7 +951,18 @@ func (in *Instructions) Loaded() (loaded, offered []bool, by []string, used int)
 			by[i] = in.notes[k].id
 		}
 	}
-	return slices.Clone(in.in), slices.Clone(in.offered), by, in.used
+	return slices.Clone(in.in), slices.Clone(in.offered), by, in.own()
+}
+
+// own is what this tracker's texts in the window take of the budget: the first message's and its live notes'.
+func (in *Instructions) own() int {
+	n := in.initial
+	for _, c := range in.notes {
+		if c.live {
+			n += c.cost
+		}
+	}
+	return n
 }
 
 // Masked tells the sections a compaction stubbed the results of these tool calls: for each id, the oldest note still
@@ -939,7 +992,7 @@ func (in *Instructions) Drop(id string) {
 
 func (in *Instructions) free(k int) {
 	in.notes[k].live = false
-	in.used -= in.notes[k].cost
+	in.b.Used -= in.notes[k].cost
 	for i := range in.secs {
 		if in.by[i] == k {
 			in.in[i], in.offered[i], in.by[i] = false, false, -1

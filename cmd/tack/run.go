@@ -222,6 +222,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
 	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
+	opts.Knowledge = cfg.Run.Knowledge && !cfg.Run.NoInstructions
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true

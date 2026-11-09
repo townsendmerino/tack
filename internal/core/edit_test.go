@@ -3,6 +3,8 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -576,7 +578,7 @@ func TestSectionInstructionsThroughTheCore(t *testing.T) {
 	if err != nil || live == nil {
 		t.Fatalf("events %v, tracker %v", err, live)
 	}
-	re := window.NewInstructions("CLAUDE.md", md, 16384)
+	re := window.NewInstructions("CLAUDE.md", md, window.NewBudget(16384))
 	if err := re.Replay(logged); err != nil {
 		t.Fatal(err)
 	}
@@ -584,6 +586,46 @@ func TestSectionInstructionsThroughTheCore(t *testing.T) {
 	ri, ro, rb, ru := re.Loaded()
 	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru || !slices.Contains(lb, "w1") {
 		t.Fatalf("rebuilt tracker differs:\nlive    %v %v %q %d\nrebuilt %v %v %q %d", li, lo, lb, lu, ri, ro, rb, ru)
+	}
+}
+
+// TestKnowledgeThroughTheCore: with Knowledge, the first message carries the index of .agents/knowledge/ and a read of
+// a page's pinned file brings the page into that read's result; without it (every measured run), neither.
+func TestKnowledgeThroughTheCore(t *testing.T) {
+	sum := sha256.Sum256([]byte("package a\n"))
+	page := "---\ntitle: Package a\npins: a.go sha256:" + hex.EncodeToString(sum[:])[:16] + "\n---\nA is empty on purpose.\n"
+	for _, on := range []bool{true, false} {
+		f := newFixture(t, goinfertest.Calls("", "r1", "read", `{"path":"a.go"}`), goinfertest.Says("It is empty."))
+		ws := gitWorkspace(t, "")
+		os.MkdirAll(filepath.Join(ws, ".agents", "knowledge"), 0o755)
+		os.WriteFile(filepath.Join(ws, ".agents", "knowledge", "a.md"), []byte(page), 0o644)
+		f.core.opt.Knowledge = on
+		sid, err := f.sessionIn(t, ws, proto.ModePlan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid,
+			Content: []proto.ContentBlock{proto.Text("What is in a.go?")}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		var first string
+		var results []string
+		for _, ev := range f.waitTurnEnd(t) {
+			switch v, _ := ev.Decode(); p := v.(type) {
+			case proto.UserMessage:
+				first = p.Content[0].Text
+			case proto.ToolFinished:
+				results = append(results, p.Result)
+			}
+		}
+		hasIndex := strings.Contains(first, "- Package a (.agents/knowledge/a.md; pinned to a.go)")
+		hasPage := len(results) == 1 && strings.Contains(results[0], "A is empty on purpose.")
+		if hasIndex != on || hasPage != on || !strings.HasSuffix(first, "What is in a.go?") {
+			t.Errorf("knowledge %v: index %v, page %v\nfirst %q\nresults %q", on, hasIndex, hasPage, first, results)
+		}
 	}
 }
 

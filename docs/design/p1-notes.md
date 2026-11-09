@@ -33,7 +33,7 @@ The order the owner approved, each step with its exit check:
      over about 80,000 chunks (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). **ken v1.13.0 (2026-11-09)
      is exact:** 94 of 94. tack pins it, and ken's route to sections is wired (`window.Instructions.ForHits`).
    - At night: `SearchFiles`'s latency on goinfer. Its run spec is in the same record; it waits for the exact version.
-   - *Proposed* (DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
+   - **Decided** (ADR-007, 2026-11-08; proposed in DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
