@@ -67,3 +67,38 @@ func TestRunPilotRefusesABadComparison(t *testing.T) {
 		}
 	}
 }
+
+// TestArmsRunWithKnowledgeOff: no arm can turn on .agents/knowledge/ (ADR-007; DESIGN §6.7, "Measured runs start with
+// memory off and empty"): it is not a RunSettings name, and an arm's config with every setting on leaves it off.
+func TestArmsRunWithKnowledgeOff(t *testing.T) {
+	if RunSettings["knowledge"] {
+		t.Fatal("knowledge is an arm setting: one run's notes could reach another")
+	}
+	out := t.TempDir()
+	os.WriteFile(filepath.Join(out, "token"), []byte("k\n"), 0o600)
+	p := filepath.Join(out, "config.toml")
+	var all []string
+	for s := range RunSettings {
+		all = append(all, s)
+	}
+	os.WriteFile(p, []byte(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, out, all...)), 0o600)
+	c, err := config.Load(p)
+	if err != nil || c.Run.Knowledge {
+		t.Fatalf("an arm's config: knowledge %v, %v", c.Run.Knowledge, err)
+	}
+}
+
+// TestSectionSearchIsNotAnArmSetting: no E1 arm asks ken for instruction sections before its latency is measured.
+func TestSectionSearchIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["section_search"] {
+		t.Fatal("section_search is an arm setting")
+	}
+}
+
+// TestRecentlyChangedIsNotAnArmSetting: no E1 arm adds recently_changed until a screen registers it; an arm's tool set,
+// and so its fixed prompt, stays as calibrated.
+func TestRecentlyChangedIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["recently_changed"] {
+		t.Fatal("recently_changed is an arm setting")
+	}
+}

@@ -29,13 +29,26 @@ The order the owner approved, each step with its exit check:
    - The TUI's status shows the first request's load ("loading model on nobara").
    - Until this step, nothing runs on nobara by day.
 5. **Instruction files by section on ken v1.10.0**, pinned at the start of this step.
-   - By day: an exactness check of `SearchFiles` on goinfer.
-   - At night: `SearchFiles`'s latency on goinfer.
-   - *Proposed* (DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
+   - By day: an exactness check of `SearchFiles` on goinfer. **Done 2026-11-08: not exact.** 63 of 94 answers differ
+     over about 80,000 chunks (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). **ken v1.13.0 (2026-11-09)
+     is exact:** 94 of 94. tack pins it, and ken's route to sections is wired (`window.Instructions.ForHits`), behind
+     `[run] section_search`, default off until the night latency run reads.
+   - At night: `SearchFiles`'s latency on goinfer. Its run spec is in the same record; it waits for the exact version.
+   - **Decided** (ADR-007, 2026-11-08; proposed in DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
+   - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
+     by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
+     them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
+     `usage/summary` come with the daemon.
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
+     the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
+     config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,
+     submodules' own), and denying them by name kept missing ways in (`internal/tools/recent.go`). Costs: a file under a
+     filter can show as modified, a rename shows as a delete and an add, and a partial clone's missing object is an
+     error, not a fetch.
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
 
 **Decisions:**

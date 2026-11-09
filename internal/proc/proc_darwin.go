@@ -1,4 +1,4 @@
-package daemon
+package proc
 
 import (
 	"fmt"
@@ -10,9 +10,9 @@ import (
 // szomb is a zombie's p_stat (sys/proc.h).
 const szomb = 5
 
-// procInfo is when pid started, as an opaque string two processes with the same pid never share, and whether it is
+// Info is when pid started, as an opaque string two processes with the same pid never share, and whether it is
 // still running: a zombie, exited and not yet reaped, is not.
-func procInfo(pid int) (start string, live bool, err error) {
+func Info(pid int) (start string, live bool, err error) {
 	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
 		return "", false, err

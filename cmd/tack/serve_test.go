@@ -21,8 +21,10 @@ func TestServeListenerTakesSystemdsSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	env := map[string]string{"LISTEN_PID": "4242", "LISTEN_FDS": "1"}
-	ln, err := serveListener(func(k string) string { return env[k] }, 4242, f.Fd(), "")
+	env := map[string]string{"LISTEN_PID": "4242", "LISTEN_FDS": "1", "LISTEN_FDNAMES": "tack-serve.socket"}
+	var unsets []string
+	unset := func(k string) error { unsets = append(unsets, k); return nil }
+	ln, err := serveListener(func(k string) string { return env[k] }, unset, 4242, f.Fd(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,14 +32,18 @@ func TestServeListenerTakesSystemdsSocket(t *testing.T) {
 	if ln.Addr().String() != passed.Addr().String() {
 		t.Fatalf("listening on %s, want systemd's socket %s", ln.Addr(), passed.Addr())
 	}
-	if _, err := serveListener(func(k string) string { return env[k] }, 1, f.Fd(), ""); err == nil || !strings.Contains(err.Error(), "listen") {
+	// As sd_listen_fds(3) with unset_environment: the children it starts (goinfer-serve) do not see them.
+	if got := strings.Join(unsets, " "); got != "LISTEN_PID LISTEN_FDS LISTEN_FDNAMES" {
+		t.Fatalf("unset %q after taking the socket; want LISTEN_PID LISTEN_FDS LISTEN_FDNAMES", got)
+	}
+	if _, err := serveListener(func(k string) string { return env[k] }, unset, 1, f.Fd(), ""); err == nil || !strings.Contains(err.Error(), "listen") {
 		t.Fatalf("activation meant for another process, and no listen: %v, want refused", err)
 	}
 	env["LISTEN_FDS"] = "2"
-	if _, err := serveListener(func(k string) string { return env[k] }, 4242, f.Fd(), ""); err == nil {
+	if _, err := serveListener(func(k string) string { return env[k] }, unset, 4242, f.Fd(), ""); err == nil {
 		t.Fatal("two sockets from systemd were taken")
 	}
-	own, err := serveListener(func(string) string { return "" }, os.Getpid(), 0, "127.0.0.1:0")
+	own, err := serveListener(func(string) string { return "" }, func(string) error { return nil }, os.Getpid(), 0, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

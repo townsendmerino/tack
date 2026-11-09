@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,3 +104,51 @@ func (s *Searcher) Close() error {
 }
 
 var _ tools.Searcher = (*Searcher)(nil)
+
+// SectionHit is a hit inside one markdown file, with its section's heading path (K9's Hit.HeadingPath).
+type SectionHit struct {
+	StartLine, EndLine int
+	Score              float64
+	HeadingPath        []string
+}
+
+// SearchFile is the top k hits for query inside file, a path from the workspace root, in the workspace's mode, ranked as
+// the whole repository's search ranks them: ken's SearchFiles, exact at any index size since ken v1.13.0 (the
+// 5,000-candidate cap measured in docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md is gone). It errors
+// when file is not in the index: ken's search alone would answer an unindexed path with no hits (DESIGN §12, K9 "On
+// adoption").
+func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file string) ([]SectionHit, error) {
+	if _, err := s.ws.Sections(ctx, file); err != nil {
+		return nil, err
+	}
+	found, _, err := s.ws.SearchFiles(ctx, query, k, s.ws.Status().Mode, []string{file})
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]SectionHit, len(found))
+	for i, h := range found {
+		hits[i] = SectionHit{StartLine: h.StartLine, EndLine: h.EndLine, Score: h.Score, HeadingPath: h.HeadingPath}
+	}
+	return hits, nil
+}
+
+// SectionPaths implements window.SectionSearcher: the heading paths of the top k hits for query in file, best first,
+// each once.
+func (s *Searcher) SectionPaths(ctx context.Context, query string, k int, file string) ([][]string, error) {
+	hits, err := s.SearchFile(ctx, query, k, file)
+	if err != nil {
+		return nil, err
+	}
+	var out [][]string
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if key := strings.Join(h.HeadingPath, "\x00"); len(h.HeadingPath) > 0 && !seen[key] {
+			seen[key] = true
+			out = append(out, h.HeadingPath)
+		}
+	}
+	return out, nil
+}
+
+// Chunks is the number of chunks in the index.
+func (s *Searcher) Chunks() int { return s.ws.Status().ChunkCount }
