@@ -25,6 +25,11 @@ type anySearcher struct{}
 
 func (anySearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
 
+// anySearcher relates too, so find_related's schema is counted.
+func (anySearcher) Relates() bool { return true }
+
+func (anySearcher) Related(context.Context, string, int, int) ([]tools.Hit, error) { return nil, nil }
+
 type anyBlobs struct{}
 
 func (anyBlobs) Get(string) ([]byte, error) { return nil, nil }
@@ -38,7 +43,7 @@ func (anyShell) Run(context.Context, string, time.Duration) (shell.Result, error
 // fixedPromptRequest is the largest fixed prompt as goinfer renders it: the edit task's system prompt, the longer of
 // the two, every tool's schema including done, and a one-word user message, the least a request can carry.
 func fixedPromptRequest(model string) server.Request {
-	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, LineEdits: true, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true, RecentlyChanged: true}).Specs(),
+	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, LineEdits: true, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true, RecentlyChanged: true, FindRelated: true}).Specs(),
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 

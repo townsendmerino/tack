@@ -1,5 +1,5 @@
 {
-  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-11-08",
+  "note": "goinfer-serve count_tokens, qwen2.5-coder-0.5b-instruct-q4_k_m on CPU (Qwen2.5 tokenizer and chat template, as the default qwen2.5-7b-instruct); recorded 2026-11-09",
   "interactions": [
     {
       "request": {
@@ -134,6 +134,28 @@
                     "type": "integer"
                   }
                 }
+              }
+            },
+            {
+              "name": "find_related",
+              "description": "Find code similar in meaning to the code at path:line.",
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "k": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path",
+                  "line"
+                ]
               }
             },
             {
@@ -308,7 +330,7 @@
       "response": {
         "status": 200,
         "content_type": "application/json",
-        "body": "{\"input_tokens\":1254}\n"
+        "body": "{\"input_tokens\":1316}\n"
       }
     }
   ]

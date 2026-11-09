@@ -199,6 +199,10 @@ type Run struct {
 	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
 	// setting until one is registered.
 	RecentlyChanged bool `toml:"recently_changed"`
+	// FindRelated gives sessions the find_related tool: code similar in meaning to a place in the repository, from ken's
+	// vectors (tools.Options.FindRelated; DESIGN §6.5). It is listed only when ken runs in semantic or hybrid mode. Default
+	// off, so measured runs keep their tool set, and not an E1 arm setting until one is registered.
+	FindRelated bool `toml:"find_related"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`

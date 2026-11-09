@@ -74,3 +74,49 @@ func TestOpenRefusesWhatItCannotServe(t *testing.T) {
 		}
 	}
 }
+
+// TestBM25DoesNotRelate: a bm25 index has no vectors, so it says it cannot answer find_related, and tack does not
+// offer the tool (tools.Options.FindRelated).
+func TestBM25DoesNotRelate(t *testing.T) {
+	s, err := Open(context.Background(), slice, Options{Mode: "bm25"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Relates() {
+		t.Fatal("a bm25 index says it relates")
+	}
+}
+
+// TestHybridRelates: in hybrid mode, find_related's hits for a chunk are other chunks, not the one asked about, with
+// the file's own lines as their text (K10).
+func TestHybridRelates(t *testing.T) {
+	if *kenModel == "" {
+		t.Skip("needs -ken-model")
+	}
+	s, err := Open(context.Background(), slice, Options{Mode: "hybrid", ModelDir: *kenModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if !s.Relates() {
+		t.Fatal("a hybrid index says it does not relate")
+	}
+	src, err := s.Search(context.Background(), "tokenize", 1)
+	if err != nil || len(src) == 0 {
+		t.Fatalf("a chunk to start from: %v, %v", src, err)
+	}
+	from := src[0]
+	hits, err := s.Related(context.Background(), from.File, from.StartLine, 5)
+	if err != nil || len(hits) == 0 {
+		t.Fatalf("Related(%s:%d): %v, %v", from.File, from.StartLine, hits, err)
+	}
+	for _, h := range hits {
+		if h.File == from.File && h.StartLine == from.StartLine && h.EndLine == from.EndLine {
+			t.Errorf("the chunk asked about came back: %s:%d-%d", h.File, h.StartLine, h.EndLine)
+		}
+		if h.Text == "" || h.EndLine < h.StartLine {
+			t.Errorf("hit %+v", h)
+		}
+	}
+}

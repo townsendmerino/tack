@@ -315,3 +315,17 @@ func TestAllowDevel(t *testing.T) {
 		t.Fatalf("allow_devel on a remote: %v, want refused", err)
 	}
 }
+
+// TestFindRelatedIsOffUnlessAsked: [run] find_related adds a tool, which changes the fixed prompt, so it is off unless
+// the config says so.
+func TestFindRelatedIsOffUnlessAsked(t *testing.T) {
+	const remote = "[servers.a]\nkind = \"goinfer-remote\"\nurl = \"u\"\n"
+	c, err := load(t, remote)
+	if err != nil || c.Run.FindRelated {
+		t.Fatalf("without the setting: %v, find_related %v; want off", err, c != nil && c.Run.FindRelated)
+	}
+	c, err = load(t, remote+"[run]\nfind_related = true\n")
+	if err != nil || !c.Run.FindRelated {
+		t.Fatalf("find_related = true: %v; want on", err)
+	}
+}
