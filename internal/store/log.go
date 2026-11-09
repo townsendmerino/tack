@@ -180,6 +180,19 @@ func (s *Store) Events(id proto.SessionID, fromSeq int64) ([]proto.Event, error)
 // readEvents parses a log from the start. good is the byte length of its complete lines; anything after it is a torn
 // tail.
 func readEvents(r io.Reader) (evs []proto.Event, good int64, err error) {
+	good, err = scanEvents(r, func(ev proto.Event) error {
+		evs = append(evs, ev)
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	return evs, good, nil
+}
+
+// scanEvents parses a log from the start, handing each complete line's event to fn in order, and returns the byte
+// length of the complete lines. An error from fn stops the scan and is returned.
+func scanEvents(r io.Reader, fn func(proto.Event) error) (good int64, err error) {
 	br := bufio.NewReaderSize(r, 1<<16)
 	var want int64 = 1
 	for {
@@ -189,22 +202,40 @@ func readEvents(r io.Reader) (evs []proto.Event, good int64, err error) {
 			dec := json.NewDecoder(bytes.NewReader(line))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&ev); err != nil {
-				return nil, 0, fmt.Errorf("line %d: %w", want, err)
+				return 0, fmt.Errorf("line %d: %w", want, err)
 			}
 			if ev.Seq != want {
-				return nil, 0, fmt.Errorf("line %d has seq %d: the log's seqs must be dense from 1", want, ev.Seq)
+				return 0, fmt.Errorf("line %d has seq %d: the log's seqs must be dense from 1", want, ev.Seq)
 			}
-			evs = append(evs, ev)
+			if err := fn(ev); err != nil {
+				return 0, err
+			}
 			good += int64(len(line))
 			want++
 		}
 		if rerr == io.EOF {
-			return evs, good, nil
+			return good, nil
 		}
 		if rerr != nil {
-			return nil, 0, rerr
+			return 0, rerr
 		}
 	}
+}
+
+// Scan hands a session's persisted events to fn in order, one at a time, without holding the log; a torn last line is
+// ignored. An error from fn stops the scan and is returned.
+func (s *Store) Scan(id proto.SessionID, fn func(proto.Event) error) error {
+	p, err := s.logPath(id)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = scanEvents(f, fn)
+	return err
 }
 
 // Append records an event of type typ answering cause (0 for none), with payload of typ's registered type, and returns

@@ -34,6 +34,10 @@ The order the owner approved, each step with its exit check:
    - *Proposed* (DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
+   - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
+     by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
+     them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
+     `usage/summary` come with the daemon.
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
