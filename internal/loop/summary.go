@@ -141,32 +141,7 @@ func (a Anchors) Text() string {
 
 // FallbackSummary is the summary of evs built without the summarizer: every user message word for word, the task (the
 // first) under its own heading, then the anchor list. It never drops a turn with nothing in its place.
-func FallbackSummary(evs []proto.Event) string {
-	var msgs []string
-	for _, ev := range evs {
-		if ev.Type != proto.EvUserMessage {
-			continue
-		}
-		if v, err := ev.Decode(); err == nil {
-			var t []string
-			for _, b := range v.(proto.UserMessage).Content {
-				t = append(t, b.Text)
-			}
-			msgs = append(msgs, strings.Join(t, "\n"))
-		}
-	}
-	var parts []string
-	if len(msgs) > 0 {
-		parts = append(parts, "## Task\n\n"+msgs[0])
-	}
-	if len(msgs) > 1 {
-		parts = append(parts, "## Later messages\n\n"+strings.Join(msgs[1:], "\n\n"))
-	}
-	if a := AnchorsOf(evs).Text(); a != "" {
-		parts = append(parts, a)
-	}
-	return strings.Join(parts, "\n\n")
-}
+func FallbackSummary(evs []proto.Event) string { return summaryText(evs, "") }
 
 // HasSummaryHeadings reports whether text has each of SummaryHeadings as a "## " line, in order. A summarizer's text
 // without them is not used; the fallback is.
