@@ -185,7 +185,10 @@ type session struct {
 	// head, instructions.go; the sections); else it follows the prompt.
 	instructions string
 	notesFirst   bool
-	prompted     bool
+	// sections is the instruction file's section tracker under SectionInstructions, nil otherwise. A session resumed
+	// from its log after loop.Rebuild rebuilds it with Replay over the same events before its next turn.
+	sections *window.Instructions
+	prompted bool
 	// injectRoot is the workspace the first prompt's injection is built over (Options.InjectContext); "" for none.
 	injectRoot string
 	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
@@ -578,12 +581,23 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 				// A whole file follows the task, as WholeInstructions puts it; a sectioned one is notes before it.
 				s.instructions, s.notesFirst = initial, !in.Whole()
 			}
-			cfg.Sections = in
+			cfg.Sections, s.sections = in, in
 		}
 	}
 	if history == nil {
 		s.loop = loop.New(cfg)
 		return s, nil
+	}
+	// A reopened session's section tracker is rebuilt from its log, so sections already in its window are not loaded
+	// again.
+	if s.sections != nil {
+		if err = s.sections.Replay(history); err != nil {
+			c.unregister(id)
+			if s.kit != nil {
+				s.kit()
+			}
+			return nil, err
+		}
 	}
 	if s.loop, err = loop.Resume(cfg, history); err != nil {
 		c.unregister(id)

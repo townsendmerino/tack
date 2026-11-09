@@ -3,8 +3,13 @@ package window
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 func bash(cmd string) json.RawMessage {
@@ -241,6 +246,67 @@ func TestKindMatchesCleansPaths(t *testing.T) {
 	}
 }
 
+// replayLog runs calls through a live tracker as the loop does, each result the tool's own output, then the note, then
+// an unrelated note after it (edit's current-symbol note sits there), and returns the events the log holds.
+func replayLog(t *testing.T, live *Instructions, calls []struct{ id, cmd string }, masked map[int][]string) []proto.Event {
+	t.Helper()
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, err := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial() + "\n\nTask: x")}})
+	for n, c := range calls {
+		result := "output of " + c.cmd + live.ForCall(c.id, "bash", bash(c.cmd)) + tools.CurrentSymbolOpen + "F in a.go, lines 1-2 …]"
+		add(proto.EvToolFinished, proto.ToolFinished{ID: c.id, Outcome: proto.OutcomeOK, Result: result})
+		if ids := masked[n]; ids != nil {
+			ms := make([]proto.MaskedResult, len(ids))
+			for i, id := range ids {
+				ms[i] = proto.MaskedResult{ID: id, Stub: "[masked]"}
+			}
+			live.Masked(ids)
+			add(proto.EvCompaction, proto.Compaction{Masked: ms})
+		}
+	}
+	return evs
+}
+
+// TestReplayRebuildsTheLiveTracker: a tracker rebuilt from the log equals the live one, sections in, named and charged,
+// through loads, a notice of what did not fit, a compaction and a call with no note; and the two answer the next call
+// alike.
+func TestReplayRebuildsTheLiveTracker(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("# notes\n\nIntro.\n\n## Staging and committing\n\nNever git add -A.\n\n")
+	for i := range 4 {
+		fmt.Fprintf(&b, "## Testing part %d\n\n%s\n\n", i, strings.Repeat("rule text for this testing part. ", 25))
+	}
+	b.WriteString(filler)
+	src := b.String()
+	live := NewInstructions("CLAUDE.md", src, 4096)
+	evs := replayLog(t, live, []struct{ id, cmd string }{{"c1", "git status"}, {"c2", "go test ./..."}, {"c3", "ls"},
+		{"c4", "go test ./x"}, {"c5", "git diff"}}, map[int][]string{3: {"c1"}})
+	re := NewInstructions("CLAUDE.md", src, 4096)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lb, lu := live.Loaded()
+	ri, ro, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lb, rb) || lu != ru {
+		t.Fatalf("rebuilt differs:\nlive    in %v offered %v by %q used %d\nrebuilt in %v offered %v by %q used %d", li, lo, lb, lu, ri, ro, rb, ru)
+	}
+	if !slices.Contains(lo, true) || !slices.Contains(lb, "c5") {
+		t.Fatalf("the log should hold a notice and c5's reload: offered %v by %q", lo, lb)
+	}
+	live.Masked([]string{"c2"})
+	re.Masked([]string{"c2"})
+	if a, b := live.ForCall("c6", "bash", bash("go test ./...")), re.ForCall("c6", "bash", bash("go test ./...")); a != b || a == "" {
+		t.Errorf("the next call differs:\nlive    %q\nrebuilt %q", a, b)
+	}
+}
+
 // TestFirstSectionSkipsFrontmatterAndUnderlines: frontmatter, and a setext title's underline, are not the opening's
 // body; the opening runs on to the first section with text.
 func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
@@ -329,6 +395,70 @@ func TestWholeFileChargesItsFraming(t *testing.T) {
 	in := NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test.\n", 16384)
 	if got := in.Initial(); in.Used() != SectionTokens(got) || !in.Whole() {
 		t.Errorf("used %d, the text's %d, whole %v", in.Used(), SectionTokens(got), in.Whole())
+	}
+}
+
+// replayOne loads one note for cmd into a live tracker over src, logs it, and replays the log into a tracker over
+// changed, the file as it is at the resume.
+func replayOne(t *testing.T, src, changed string, window int, cmds ...string) (live, re *Instructions) {
+	t.Helper()
+	live = NewInstructions("CLAUDE.md", src, window)
+	var calls []struct{ id, cmd string }
+	for i, c := range cmds {
+		calls = append(calls, struct{ id, cmd string }{fmt.Sprintf("c%d", i+1), c})
+	}
+	evs := replayLog(t, live, calls, nil)
+	re = NewInstructions("CLAUDE.md", changed, window)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	return live, re
+}
+
+// TestReplaySkipsANoteThatDoesNotReadBack: a note whose sections changed since is skipped whole, never recorded in
+// part, whether the changed section was loaded or named.
+func TestReplaySkipsANoteThatDoesNotReadBack(t *testing.T) {
+	two := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Flakes\n\nRetry once.\n\n" + filler
+	changed := strings.Replace(two, "Retry once.", "Retry twice.", 1)
+	_, re := replayOne(t, two, changed, 4096, "go test ./...")
+	in, _, _, used := re.Loaded()
+	if slices.Contains(in[1:], true) || used != SectionTokens(NewInstructions("CLAUDE.md", changed, 4096).Initial()) {
+		t.Errorf("a note with a changed loaded section was recorded in part: in %v used %d", in, used)
+	}
+	var b strings.Builder
+	b.WriteString("# notes\n\nIntro.\n\n## Testing one\n\n" + strings.Repeat("short rule. ", 60) + "\n\n## Testing two\n\n" +
+		strings.Repeat("a long rule that will not fit. ", 120) + "\n\n" + filler)
+	named := b.String()
+	live, re := replayOne(t, named, strings.Replace(named, "short rule. ", "short rules. ", 1), 4096, "go test ./...")
+	if _, lo, _, _ := live.Loaded(); !slices.Contains(lo, true) {
+		t.Fatal("the live note should name Testing two")
+	}
+	if _, ro, _, _ := re.Loaded(); slices.Contains(ro, true) {
+		t.Errorf("a note whose loaded section changed kept its notice: offered %v", ro)
+	}
+}
+
+// TestReplayReadsIdenticalSections: two sections with the same text, loaded by one note, both read back.
+func TestReplayReadsIdenticalSections(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nSame rule.\n\n## Testing\n\nSame rule.\n\n" + filler
+	live, re := replayOne(t, src, src, 4096, "go test ./...")
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru || !li[1] || !li[2] {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+}
+
+// TestReplayIgnoresTextQuotedInsideALoadedSection: a section whose text a loaded section quotes is not read as loaded,
+// and the note still reads back.
+func TestReplayIgnoresTextQuotedInsideALoadedSection(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test. Releases look like this:\n\n```\n\n## Release\n\nTag it.\n\n```\n\n" +
+		"## Release\n\nTag it.\n" + filler
+	live, re := replayOne(t, src, src, 4096, "go test ./...")
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
 	}
 }
 
@@ -433,5 +563,54 @@ func TestMarkedTitleBringsItsSubtree(t *testing.T) {
 	}
 	if s := in.ForCall("c1", "bash", bash("night add x")); !strings.Contains(s, "Queue long jobs.") || !strings.Contains(s, "Fit-check first.") {
 		t.Errorf("the marked title should bring its subsection:\n%s", s)
+	}
+}
+
+// TestReplayFindsTheNoteAtTheEnd: a result whose tool output holds text like a note's header, a read of the
+// instruction file say, still reads its own note back from its end.
+func TestReplayFindsTheNoteAtTheEnd(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(live.Initial())}})
+	quoted := "a file that quotes a note:\n\n[Project rules from CLAUDE.md for this call:]\n\nnot a section\n"
+	add(proto.EvToolFinished, proto.ToolFinished{ID: "c1", Outcome: proto.OutcomeOK, Result: quoted + live.ForCall("c1", "bash", bash("git status"))})
+	re := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	if err := re.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, _, lb, lu := live.Loaded()
+	ri, _, rb, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lb, rb) || lu != ru {
+		t.Errorf("live in %v by %q used %d; rebuilt in %v by %q used %d", li, lb, lu, ri, rb, ru)
+	}
+}
+
+// TestReplayReadsTheFirstMessageFromTheLog: when the instruction file changed between the session and its resume
+// (a section marked always since, and a longer opening), the rebuilt tracker holds what the first message held, as
+// logged, not what Initial would give now.
+func TestReplayReadsTheFirstMessageFromTheLog(t *testing.T) {
+	live := NewInstructions("CLAUDE.md", bigFile(), 4096)
+	first := live.Initial()
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	changed := strings.Replace(bigFile(), "## Testing\n\nRun go test with -v.", "## Testing\n<!-- tack:always -->\nRun go test with -v.", 1)
+	changed = strings.Replace(changed, "Intro: read this first.", "Intro: read this first, and this new line too.", 1)
+	re := NewInstructions("CLAUDE.md", changed, 4096)
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, lu := live.Loaded()
+	ri, _, _, ru := re.Loaded()
+	testing := -1
+	for i, s := range re.secs {
+		if s.Heading() == "Testing" {
+			testing = i
+		}
+	}
+	if ri[testing] || ru != lu {
+		t.Errorf("rebuilt from the file as it is now: Testing in %v, used %d, want the logged first message's %d", ri[testing], ru, lu)
 	}
 }
