@@ -138,3 +138,13 @@ func TestNoAliasOrTooFewLogsIsInconclusive(t *testing.T) {
 		t.Errorf("too few logs: exit %d:\n%s", code, out.String())
 	}
 }
+
+// TestAModelNotListedIsNamed: an unmatched -model says it is not listed and what is, rather than that there is no alias.
+func TestAModelNotListedIsNamed(t *testing.T) {
+	ts, sc := fakeServer(t, false)
+	var out bytes.Buffer
+	code := run([]string{"-server", ts.URL, "-logs", logs(t), "-model", "nope"}, &out)
+	if code != 2 || !strings.Contains(out.String(), `model "nope" not listed: the server lists m`) || len(sc.Requests) != 0 {
+		t.Errorf("exit %d, %d requests:\n%s", code, len(sc.Requests), out.String())
+	}
+}
