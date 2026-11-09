@@ -17,6 +17,7 @@ type relatingSearcher struct{}
 
 func (relatingSearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
 func (relatingSearcher) Relates() bool                                            { return true }
+func (relatingSearcher) Sync(context.Context, []string) (bool, error)             { return false, nil }
 func (relatingSearcher) Related(context.Context, string, int, int) ([]tools.Hit, error) {
 	return nil, nil
 }
