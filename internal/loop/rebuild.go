@@ -163,9 +163,12 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 			}
 		case proto.Usage:
 			s.tokens += computedTokens(p) // the summarizer's too, as the live loop counts them
+		case proto.ToolFinished:
+			s.tokens += p.Tokens // a task's child, as the live loop counts it
+			s.calls += p.Calls
 		}
 	}
-	s.calls = callsRan(history)
+	s.calls += callsRan(history) // on top of the children's, summed above
 	return s, nil
 }
 

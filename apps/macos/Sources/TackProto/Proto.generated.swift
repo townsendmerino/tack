@@ -379,11 +379,13 @@ public struct SessionCreated: Codable, Equatable, Sendable {
     public var workspace: String
     public var model: String
     public var mode: Mode
+    public var parent: SessionID?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
         case model = "model"
         case mode = "mode"
+        case parent = "parent"
     }
 }
 
@@ -472,6 +474,8 @@ public struct ToolFinished: Codable, Equatable, Sendable {
     public var truncated: Bool
     public var blob: String?
     public var redacted: [String]?
+    public var tokens: Int?
+    public var calls: Int?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -480,6 +484,8 @@ public struct ToolFinished: Codable, Equatable, Sendable {
         case truncated = "truncated"
         case blob = "blob"
         case redacted = "redacted"
+        case tokens = "tokens"
+        case calls = "calls"
     }
 }
 

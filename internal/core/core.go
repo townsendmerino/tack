@@ -76,6 +76,10 @@ type Options struct {
 	MaskObservations bool
 	// Summarize adds compaction's summarizing step (loop.Config.Summarize).
 	Summarize bool
+	// Subagents gives each session the task tool (tools.Subagent; DESIGN §6.3): a child session in plan mode, with the
+	// read-only tools and SubagentBudget, answers one question in the parent's turn. A child gets no task tool.
+	Subagents      bool
+	SubagentBudget loop.Budget
 	// SummaryRetrieve is re-retrieval's share of the window after each summary, 0 for none (loop.Config.SummaryRetrieve).
 	SummaryRetrieve int
 	// ResultNotes adds the loop's notes to tool results (loop.Config.ResultNotes).
@@ -791,6 +795,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	}
 	symbols, _ := searcher.(tools.Symbols)
 	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
+	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: searcher, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
@@ -804,10 +809,11 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			c.unregister(id)
 			return nil, fmt.Errorf("auto mode: %w", err)
 		}
-		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
+		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
-			RecentlyChanged: c.opt.RecentlyChanged})
+			RecentlyChanged: c.opt.RecentlyChanged}
+		cfg.Tools = tools.New(to)
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
@@ -816,6 +822,13 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if c.opt.Snapshots {
 			cfg.Snapshots = snapshot.New(c.opt.Store.Root(), root, c.opt.SnapshotMaxBytes)
 		}
+	}
+	switch {
+	case created.Parent != "": // a child: its own budget, and no task of its own (depth 1)
+		cfg.Budget = c.opt.SubagentBudget
+	case c.opt.Subagents:
+		to.Subagent = c.subagent(id, ws, created)
+		cfg.Tools = tools.New(to)
 	}
 	switch {
 	case prompted: // the instructions joined the first prompt, which the log holds

@@ -51,6 +51,12 @@ type Result struct {
 	// Base is set by a read or grep run with WithWiden: the same call's output at its base cap, from the same pass, so
 	// the loop steps widening on it, or shows it instead when the output changed (loop.Config.CompactAtCliff).
 	Base string
+	// Tokens is what the server computed for requests made on the call's behalf (task's child session): the loop counts
+	// it toward the turn's and the session's budgets, and records it on the call's tool.finished.
+	Tokens int
+	// Calls is the tool calls run on the call's behalf (task's child): the loop counts them toward the turn's and the
+	// session's tool-call budgets, and records them on the call's tool.finished.
+	Calls int
 	// ShowWide is set with Base by a widened read: the loop calls it when it shows the widened view, so the workspace
 	// records those lines as shown (it records the base view's lines itself).
 	ShowWide func()
@@ -102,6 +108,8 @@ type Options struct {
 	LeanResults bool
 	// RecentlyChanged adds recently_changed: the workspace's uncommitted changes and recent commits, from git (recent.go).
 	RecentlyChanged bool
+	// Subagent, when set, adds task, which runs it (task.go). Give it only to a parent session: a child gets none.
+	Subagent Subagent
 }
 
 // NewSet builds the read-only set. searcher may be nil; with one, the search tool is included.
@@ -140,6 +148,9 @@ func New(o Options) *Set {
 	}
 	if o.Done {
 		ts = append(ts, doneTool{})
+	}
+	if o.Subagent != nil {
+		ts = append(ts, taskTool{run: o.Subagent})
 	}
 	s := &Set{byName: map[string]Tool{}}
 	for _, t := range ts {
