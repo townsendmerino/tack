@@ -561,11 +561,17 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 	case c.opt.WholeInstructions:
 		s.instructions = readInstructions(ws.Root())
-	} else if c.opt.SectionInstructions {
+	}
+	// Sections are tracked in a resumed session too: its tool calls still bring them in. Its first message, which the
+	// log holds, is not built again.
+	if c.opt.SectionInstructions && !c.opt.WholeInstructions {
 		if name, content := readInstructionFile(ws.Root()); name != "" {
 			in := window.NewInstructions(name, content, servedWindow(c.ctx, src))
-			// A whole file follows the task, as WholeInstructions puts it; a sectioned one is notes before it.
-			s.instructions, s.notesFirst = in.Initial(), !in.Whole()
+			initial := in.Initial()
+			if !prompted {
+				// A whole file follows the task, as WholeInstructions puts it; a sectioned one is notes before it.
+				s.instructions, s.notesFirst = initial, !in.Whole()
+			}
 			cfg.Sections = in
 		}
 	}
