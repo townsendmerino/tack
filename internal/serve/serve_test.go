@@ -56,6 +56,12 @@ func fakeGoinfer(args []string) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
+	api.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_MESSAGES_SLEEP")); err == nil {
+			time.Sleep(d) // a long prefill and generation
+		}
+		fmt.Fprint(w, `{}`)
+	})
 	admin := http.NewServeMux()
 	admin.HandleFunc("POST /admin/models/fit", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"fits":null,"unknown":"not built","decode_path":"unknown"}`)
@@ -207,5 +213,21 @@ func TestServeReturnsWhenIdle(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Serve did not return when idle")
+	}
+}
+
+// TestALongRequestCountsAsUseUntilItEnds: a proxied request longer than the idle timeout is use until its end, not
+// only at its start: a tick just after it ends keeps the model and the child.
+func TestALongRequestCountsAsUseUntilItEnds(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER_MESSAGES_SLEEP", "600ms")
+	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	if code, body := get(t, ts, "POST", "/v1/messages", key); code != http.StatusOK {
+		t.Fatalf("the proxied request: %d %s", code, body)
+	}
+	f.Tick(context.Background())
+	if child, loaded := f.sup.Running(); !child || !loaded || f.Status().State != Ready {
+		t.Fatalf("a tick just after a long request: child %v, loaded %v, state %+v; want the model kept", child, loaded, f.Status())
 	}
 }
