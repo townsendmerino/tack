@@ -59,6 +59,19 @@ func fakeGoinfer(args []string) {
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
 	api.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_STREAM_SLEEP")); err == nil {
+			w.Header().Set("Content-Type", "text/event-stream") // the stream opens, then its body comes slowly
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			for range 20 {
+				time.Sleep(d / 20)
+				if _, err := fmt.Fprint(w, "data: {}\n\n"); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+			}
+			return
+		}
 		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_MESSAGES_SLEEP")); err == nil {
 			time.Sleep(d) // a long prefill and generation
 		}
@@ -288,5 +301,31 @@ func TestTheIdleTickStopsTheModelForATimedRun(t *testing.T) {
 	}
 	if code, body := get(t, ts, "GET", "/tack/status", key); code != http.StatusOK || !strings.Contains(body, `"busy"`) {
 		t.Fatalf("status under the timing lock: %d %s; want busy", code, body)
+	}
+}
+
+// TestARequestTheClientDropsStillCountsAsUse: a client that hangs up mid-stream ends the proxied request with
+// http.ErrAbortHandler; the request still counts as use until then, so a tick just after keeps the model.
+func TestARequestTheClientDropsStillCountsAsUse(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER_STREAM_SLEEP", "2s")
+	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/v1/messages", nil)
+	req.Header.Set("x-api-key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	resp.Body.Read(buf) // the stream has begun
+	time.Sleep(600 * time.Millisecond)
+	cancel() // the client hangs up, past the idle timeout from the request's start
+	resp.Body.Close()
+	time.Sleep(200 * time.Millisecond) // the proxy notices, and its handler ends
+	f.Tick(context.Background())
+	if child, loaded := f.sup.Running(); !child || !loaded {
+		t.Fatalf("a tick just after a dropped request: child %v, loaded %v; want the model kept", child, loaded)
 	}
 }

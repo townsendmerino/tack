@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -372,10 +373,10 @@ func TestPressureSettlesBeforeAnArm(t *testing.T) {
 	t.Setenv(tokenEnv, "")
 	defer func(p time.Duration) { settlePoll = p }(settlePoll)
 	settlePoll = 10 * time.Millisecond
-	calls := 0
+	// The runner's settle loop and its sampler goroutine both read the pressure, so the count is atomic.
+	var calls atomic.Int32
 	pressure := func() (models.Pressure, error) {
-		calls++
-		if calls <= 2 {
+		if calls.Add(1) <= 2 {
 			return models.PressureWarning, nil
 		}
 		return models.PressureNormal, nil

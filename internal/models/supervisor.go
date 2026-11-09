@@ -88,18 +88,20 @@ type Supervisor struct {
 	pressure func() (Pressure, error)
 	now      func() time.Time
 
-	mu          sync.Mutex
-	cmd         *exec.Cmd
-	exited      chan struct{} // closed when the child exits
-	exitErr     error         // written before exited closes; read only after
-	baseURL     string
-	key         string
-	loaded      bool
-	plan        Plan
-	lastUse     time.Time
-	fitLines    chan string
-	checked     os.FileInfo // the binary checkVersion last passed, as stat saw it; nil before
-	statusFails int         // Tick's status calls that failed in a row
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	exited   chan struct{} // closed when the child exits
+	exitErr  error         // written before exited closes; read only after
+	baseURL  string
+	key      string
+	loaded   bool
+	plan     Plan
+	lastUse  time.Time
+	fitLines chan string
+	checked  os.FileInfo // the binary checkVersion last passed, as stat saw it; nil before
+	// statusFails counts Tick's status calls that failed in a row, before and past the idle_exit line alike: one failure
+	// before it and one after stop the child. A success, or a new child, resets it.
+	statusFails int
 }
 
 // NewSupervisor validates cfg and returns a supervisor; nothing starts until Ensure.
@@ -111,12 +113,8 @@ func NewSupervisor(cfg ChildConfig) (*Supervisor, error) {
 		return nil, fmt.Errorf("models: admin socket path is %d bytes; Unix sockets allow 103", n)
 	}
 	// A binary named without a directory, or relative, is found once, now: the version check keys on the file
-	// (checkBinary), and a later start must run the same one.
-	if p, err := exec.LookPath(cfg.Binary); err == nil {
-		if abs, err := filepath.Abs(p); err == nil {
-			cfg.Binary = abs
-		}
-	}
+	// (checkBinary), and a later start must run the same one. One not found yet is looked for again at a start.
+	cfg.Binary = resolveBinary(cfg.Binary)
 	pressure := cfg.Pressure
 	if pressure == nil {
 		pressure = MemoryPressure
@@ -325,7 +323,8 @@ banner:
 // unloaded or stopped for idleness while a generation is in flight, except that a child whose admin status does not
 // answer within tickAdminTimeout is stopped once past IdleExit. With Admission it also applies the memory guard: at
 // critical pressure the model unloads at once, and Tick reports that as its error. A tick that finds an Ensure under
-// way does nothing. A daemon calls it periodically.
+// way does nothing. An unload holds the supervisor's lock for up to unloadTimeout (2 minutes), and every Ensure
+// waits on it. A daemon calls it periodically.
 func (s *Supervisor) Tick(ctx context.Context) error {
 	// An Ensure holds the lock while it checks, starts and loads, which is use, not idleness: this tick skips rather
 	// than hold up the daemon's ticker behind it, and the next one applies the rules.
@@ -598,9 +597,24 @@ func (s *Supervisor) checkFit(ctx context.Context, want string) error {
 // release changes it.
 const GoinferVersion = "v0.24.1"
 
+// resolveBinary is name as an absolute path, found on PATH when it has no directory; name itself when it is not found.
+func resolveBinary(name string) string {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return name
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
 // checkBinary runs checkVersion before a child starts, unless it already passed for this very file: the same file
 // (os.SameFile), unchanged in size and modification time. A goinfer-serve replaced on disk is checked again.
 func (s *Supervisor) checkBinary(ctx context.Context) error {
+	if !filepath.IsAbs(s.cfg.Binary) { // not on PATH when the supervisor was made: perhaps installed since
+		s.cfg.Binary = resolveBinary(s.cfg.Binary)
+	}
 	fi, err := os.Stat(s.cfg.Binary)
 	if err == nil && s.checked != nil && os.SameFile(fi, s.checked) && fi.Size() == s.checked.Size() &&
 		fi.ModTime().Equal(s.checked.ModTime()) {
