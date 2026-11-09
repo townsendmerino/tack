@@ -3,9 +3,11 @@ package window
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -337,5 +339,61 @@ func TestKnowledgeReplayReadsNoRoomAndEditedPages(t *testing.T) {
 	rb.Used = 0
 	if s := re.ForCall("c10", "read", editOf("big.go")); !strings.Contains(s, "a long note about big") {
 		t.Errorf("big.md, named for want of room, should load fresh once there is room:\n%s", s)
+	}
+}
+
+// sharedSession is instruction sections and knowledge pages on one budget, made as core makes them: the index priced
+// first, then the first message.
+func sharedSession(root string, pages []Page) (*Instructions, *Knowledge, *Budget, string) {
+	b := NewBudget(4096)
+	k := NewKnowledge(root, pages, 4096, b)
+	idx := k.Index()
+	in := NewInstructions("CLAUDE.md", bigFile(), b)
+	return in, k, b, in.Initial() + "\n\n" + idx
+}
+
+// TestReplayOnASharedBudget: a reopened session's two trackers, replayed from the log on one budget, equal the live
+// ones and leave the budget where the live session left it.
+func TestReplayOnASharedBudget(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	in, k, b, first := sharedSession(root, pages)
+	var evs []proto.Event
+	add := func(typ proto.EventType, payload any) {
+		ev, _ := proto.NewEvent(int64(len(evs)+1), time.Time{}, typ, 0, payload)
+		evs = append(evs, ev)
+	}
+	add(proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(first + "\n\nTask: x")}})
+	call := func(id, tool string, input json.RawMessage) {
+		r := "output" + in.ForCall(id, tool, input) + k.ForCall(id, tool, input)
+		add(proto.EvToolFinished, proto.ToolFinished{ID: id, Outcome: proto.OutcomeOK, Result: r})
+	}
+	call("c1", "bash", bash("git status"))
+	call("c2", "read", editOf("internal/loop/loop.go"))
+	call("c3", "bash", bash("ls"))
+	in.Masked([]string{"c1"})
+	k.Masked([]string{"c1"})
+	add(proto.EvCompaction, proto.Compaction{Masked: []proto.MaskedResult{{ID: "c1", Stub: "[masked]"}}})
+	call("c4", "edit", editOf("internal/x/x_test.go"))
+	// The session's own edit of a pinned file, then a reopen as core does it: knowledge rebuilt from the log as it is
+	// made, the instruction file made over what is left, its tracker replayed.
+	os.WriteFile(filepath.Join(root, "internal", "loop", "loop.go"), []byte("package loop\n\nfunc Run() { edited() }\n"), 0o644)
+	rb := NewBudget(4096)
+	rk := NewKnowledge(root, pages, 4096, rb)
+	if err := rk.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	rin := NewInstructions("CLAUDE.md", bigFile(), rb)
+	rin.Initial()
+	if err := rin.Replay(evs); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, lby, lu := in.Loaded()
+	ri, ro, rby, ru := rin.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || !slices.Equal(lby, rby) || lu != ru {
+		t.Errorf("sections differ: live %v %v %q %d, rebuilt %v %v %q %d", li, lo, lby, lu, ri, ro, rby, ru)
+	}
+	if k.Own() != rk.Own() || !slices.Equal(k.state, rk.state) || b.Used != rb.Used {
+		t.Errorf("knowledge own %d/%d, states %v/%v, budget %d/%d", k.Own(), rk.Own(), k.state, rk.state, b.Used, rb.Used)
 	}
 }
