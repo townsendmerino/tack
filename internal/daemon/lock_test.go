@@ -599,3 +599,42 @@ func TestMakeDirsMakesOnlyWhatIsMissing(t *testing.T) {
 		t.Fatalf("mkdir called for %v; want only %v", made, want)
 	}
 }
+
+// TestAStartWaitsAsLongAsAStoppingDaemonSaid: a daemon whose shutdown may take longer than a start's own wait (a long
+// shutdown_grace) says in its stopping record when it expects to let go, and a start waits that long for the lock.
+func TestAStartWaitsAsLongAsAStoppingDaemonSaid(t *testing.T) {
+	dir := shortDir(t)
+	orig := stopWait
+	stopWait = 100 * time.Millisecond // a start's own wait, shorter than this shutdown
+	t.Cleanup(func() { stopWait = orig })
+	l := acquire(t, dir)
+	l.SetShutdown(time.Second)
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close() // the shutdown begins: the record says stopping, until a second from now
+	if h := ReadHolder(dir); !h.Stopping || time.Until(h.Until) < 500*time.Millisecond {
+		t.Fatalf("the stopping record: %+v; want it stopping, with an Until about a second away", h)
+	}
+	next := make(chan error, 1)
+	go func() {
+		n, err := Acquire(dir, "next")
+		if err == nil {
+			defer n.Release()
+		}
+		next <- err
+	}()
+	time.Sleep(400 * time.Millisecond) // past stopWait, within what the stopping daemon said
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-next:
+		if err != nil {
+			t.Fatalf("a start during a shutdown longer than stopWait: %v; want it to wait as the record said, and take the lock", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start never returned")
+	}
+}

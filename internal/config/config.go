@@ -30,6 +30,15 @@ type Config struct {
 	StateDir string `toml:"state_dir"`
 	// Sandbox widens what sandboxed commands may read (DESIGN §6.6).
 	Sandbox Sandbox `toml:"sandbox"`
+	// Daemon configures `tack daemon` (DESIGN §6.1).
+	Daemon Daemon `toml:"daemon"`
+}
+
+// Daemon is [daemon].
+type Daemon struct {
+	// ShutdownGrace is how long a shutdown lets running tool calls finish before it cancels their turns (default 10s;
+	// 0s cancels them at once).
+	ShutdownGrace Duration `toml:"shutdown_grace"`
 }
 
 // Sandbox is [sandbox]. With none of it, a sandboxed command reads only the system, the toolchains and the workspace.
@@ -164,7 +173,10 @@ type Run struct {
 const MaxBestOf = 5
 
 // Duration is a time.Duration written as a string ("10m").
-type Duration struct{ time.Duration }
+type Duration struct {
+	time.Duration
+	set bool // the config file gave it, so a zero is meant, not absent
+}
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (d *Duration) UnmarshalText(b []byte) error {
@@ -172,9 +184,12 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	if err != nil {
 		return err
 	}
-	d.Duration = v
+	d.Duration, d.set = v, true
 	return nil
 }
+
+// Set says whether the config file gave the duration: a default fills only one it did not.
+func (d Duration) Set() bool { return d.set }
 
 // Path is the config file's location: ~/.config/tack/config.toml on every platform.
 func Path() (string, error) {
@@ -337,6 +352,12 @@ func (c *Config) validate() error {
 		if k.Mode != "bm25" && k.ModelDir == "" {
 			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
 		}
+	}
+	switch g := c.Daemon.ShutdownGrace; {
+	case g.Duration < 0:
+		return fmt.Errorf("daemon.shutdown_grace is %s; it may not be negative", g.Duration)
+	case !g.Set():
+		c.Daemon.ShutdownGrace.Duration = 10 * time.Second
 	}
 	// As written: expand cleans the path as text, which would drop the "..".
 	if slices.Contains(strings.Split(c.StateDir, string(filepath.Separator)), "..") {

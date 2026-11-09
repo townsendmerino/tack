@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,19 +20,15 @@ import (
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/core"
+	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/halt"
-	"github.com/townsendmerino/tack/internal/kensearch"
-	"github.com/townsendmerino/tack/internal/loop"
-	"github.com/townsendmerino/tack/internal/models"
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
-	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/server/cassette"
 	"github.com/townsendmerino/tack/internal/shell"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
-	"github.com/townsendmerino/tack/internal/window"
 )
 
 // Exit codes for tack run: 0 the model finished; 1 an error or a cancel; 2 bad usage; 3 a budget tripped; 4 the answer
@@ -62,7 +58,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	preflight := fs.String("preflight", "", "with --edit: run this command in the sandbox, as bash would, before the model starts; exit 8 if it fails")
 	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question; "+
 		"\"sections\": add it by section, within 15% of the window, its other sections arriving with the tool calls they bear on")
-	fs.Bool("no-daemon", true, "run the core in this process (the only mode until the daemon exists)")
+	fs.Bool("no-daemon", true, "run the core in this process (the default)")
+	viaDaemon := fs.Bool("daemon", false, "ask through the daemon, starting it if none is running: plan mode, on its main server")
 	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
 	replay := fs.String("replay", "", "development: answer every model request from this cassette instead of a server")
 	if err := fs.Parse(args); err != nil {
@@ -85,6 +82,18 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	question := fs.Arg(0)
+	if *viaDaemon {
+		if *edit || *instructions != "" || *serverName != "" || *record != "" || *replay != "" {
+			fmt.Fprintln(stderr, "tack run: --daemon asks the daemon's main server in plan mode; --edit, --instructions, --server, --record and --replay run in this process only")
+			return exitUsage
+		}
+		ws, err := clientWorkspace(*wsFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "tack run:", err)
+			return exitError
+		}
+		return runViaDaemon(*cfgPath, ws, question, *jsonOut, stdout, stderr)
+	}
 
 	if *cfgPath == "" {
 		p, err := config.Path()
@@ -146,80 +155,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	var servers []string
-	for n := range cfg.Servers {
-		servers = append(servers, "goinfer@"+n)
-	}
-	sort.Strings(servers)
-	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, MaskObservations: cfg.Run.MaskObservations, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead,
-		RefuseDuplicateEdits: cfg.Run.RefuseDuplicateEdits,
-		VerifyDone:           cfg.Run.VerifyDone,
-		BuildAfterEdit:       cfg.Run.BuildAfterEdit,
-		RestateTask:          cfg.Run.RestateTask,
-		EditLines:            cfg.Run.EditLines,
-		CurrentSymbol:        cfg.Run.CurrentSymbol,
-		EditTolerances:       cfg.Run.EditTolerances,
-		LeanResults:          cfg.Run.LeanResults,
-		CompactAtCliff:       cfg.Run.CompactAtCliff,
-		WidenRepeats:         cfg.Run.WidenRepeats,
-		InjectContext:        cfg.Run.InjectContext,
-		RepoMap:              cfg.Run.RepoMap,
-		Snapshots:            *cfg.Run.Snapshots,
-		SnapshotMaxBytes:     cfg.Run.SnapshotMaxBytes,
-		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
-			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
-			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},
-		Source: func(model string) (models.Source, error) {
-			if model != "main" {
-				return nil, fmt.Errorf("model %q: only the main role is configured", model)
-			}
-			return models.Open(cfg, name, stateDir, hc)
-		}}
-	if k := cfg.Ken; k != nil {
-		// One-shot: build (or load the snapshot of) the index, no watcher. The daemon will watch.
-		opts.OpenSearcher = func(ctx context.Context, root string) (tools.Searcher, error) {
-			fmt.Fprintf(stderr, "tack: opening ken (%s) over %s\n", k.Mode, root)
-			return kensearch.Open(ctx, root, kensearch.Options{Mode: k.Mode, ModelDir: k.ModelDir, Snapshot: true, Log: stderr})
-		}
-	}
-	if cfg.Run.CurrentSymbol && cfg.Ken == nil {
-		// The spans alone, for current_symbol: bm25 needs no model, and no snapshot leaves the workspace as it was.
-		opts.OpenSpans = func(ctx context.Context, root string) (tools.Symbols, error) {
-			start := time.Now()
-			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
-			if err != nil {
-				fmt.Fprintf(stderr, "tack: current_symbol: opening ken (bm25) over %s: %v\n", root, err)
-				return nil, err
-			}
-			fmt.Fprintf(stderr, "tack: current_symbol: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
-			return s, nil
-		}
-	}
-	if cfg.Run.InjectContext {
-		// The injection's own index: bm25 needs no model, adds no tool, and no snapshot leaves the workspace as it was.
-		opts.OpenInject = func(ctx context.Context, root string) (window.InjectIndex, error) {
-			start := time.Now()
-			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
-			if err != nil {
-				return nil, err
-			}
-			fmt.Fprintf(stderr, "tack: inject_context: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
-			return s, nil
-		}
-	}
-	if cfg.Run.RepoMap {
-		// The map's own index, as inject_context's: bm25, no tool, no snapshot.
-		opts.OpenRepoMap = func(ctx context.Context, root string) (window.MapIndex, error) {
-			start := time.Now()
-			s, err := kensearch.Open(ctx, root, kensearch.Options{Mode: "bm25", Log: stderr})
-			if err != nil {
-				return nil, err
-			}
-			fmt.Fprintf(stderr, "tack: repo_map: opened ken (bm25) over %s in %s\n", root, time.Since(start).Round(time.Millisecond))
-			return s, nil
-		}
-	}
-	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
+	opts := coreOptions(cfg, name, stateDir, st, hc, stderr)
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
 	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
 	mode := proto.ModePlan
@@ -231,9 +167,6 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 				return code
 			}
 		}
-	}
-	if s, ok := cfg.Servers[name]; ok {
-		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
 	}
 	c := core.New(ctx, opts)
 	defer c.Close()
@@ -306,6 +239,39 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 	defer a.Close()
 	go func() { _ = c.Serve(ctx, b); b.Close() }()
 	cl := core.NewClient(a)
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tack-cli", Version: version},
+		Protocol: proto.Version}, nil); err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	return ask(ctx, cl, ws, question, mode, jsonOut, false, stdout, stderr)
+}
+
+// runViaDaemon asks question through the daemon (tack run --daemon), starting it if none is running.
+func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.Writer) int {
+	cfg, path, stateDir, err := loadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), drainWait(cfg.Daemon.ShutdownGrace.Duration))
+	if err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	defer c.Close()
+	if c.Warning != "" {
+		fmt.Fprintln(stderr, "tack:", c.Warning)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return ask(ctx, c.Client, ws, question, proto.ModePlan, jsonOut, true, stdout, stderr)
+}
+
+// ask runs one turn on an initialized connection: a new session in ws, subscribed, prompted with question, until its
+// turn.end, whose stop reason is the exit code. When ctx ends, an in-process turn is cancelled with it and ask waits
+// for its end; a detached one (the daemon's) runs on, and ask leaves it.
+func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.Mode, jsonOut, detached bool, stdout, stderr io.Writer) int {
 
 	var mu sync.Mutex
 	done := make(chan string, 1)
@@ -354,11 +320,6 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 		}
 	}
 
-	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tack-cli", Version: version},
-		Protocol: proto.Version}, nil); err != nil {
-		fmt.Fprintln(stderr, "tack run:", err)
-		return exitError
-	}
 	var sess proto.SessionNewResult
 	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
@@ -371,12 +332,26 @@ func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mo
 	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session,
 		Content: []proto.ContentBlock{proto.Text(question)}}, nil); err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
+		if pe, ok := errors.AsType[*proto.Error](err); ok && pe.Code == proto.CodeHalted {
+			return exitHalted
+		}
 		return exitError
 	}
 	var reason string
 	select {
 	case reason = <-done:
+	case <-cl.Done():
+		select {
+		case reason = <-done: // the turn.end came before the connection closed
+		default:
+			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended\n", sess.Session)
+			return exitError
+		}
 	case <-ctx.Done():
+		if detached {
+			fmt.Fprintf(stderr, "tack run: left session %s running in the daemon\n", sess.Session)
+			return exitError
+		}
 		reason = <-done // the turn records its cancel and ends
 	}
 	switch reason {
@@ -404,4 +379,13 @@ func gitRoot() string {
 	}
 	wd, _ := os.Getwd()
 	return filepath.Clean(wd)
+}
+
+// clientWorkspace is the workspace a --daemon run asks for: --workspace made absolute in this process's directory, or
+// the git root of it. The daemon runs in another directory, where a relative path would name something else.
+func clientWorkspace(flag string) (string, error) {
+	if flag == "" {
+		return gitRoot(), nil
+	}
+	return filepath.Abs(flag)
 }
