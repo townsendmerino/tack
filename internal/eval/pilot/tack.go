@@ -82,6 +82,8 @@ var RunSettings = map[string]bool{
 	"lean_results":           true, // §16.1, C10's leaner exploration results
 	"compact_at_cliff":       true, // §16.2, C10's compaction at the nearly-full note
 	"widen_repeats":          true, // §16.2's widening, split out (Francis 2026-11-01 18:00): its own later screen
+	"summarize":              true, // §18, C12's summarizing compaction
+	"summary_retrieve":       true, // §18, C12's re-retrieval after a summary (needs summarize)
 }
 
 // runLines is the config lines that switch settings on, under the [run] table tackConfig ends with.

@@ -322,7 +322,7 @@ func TestBandEdges(t *testing.T) {
 		{6.36, "shown"}, {math.Nextafter(6.36, 0), "parked"}, {7, "shown"},
 		{3.18, "parked"}, {math.Nextafter(3.18, 0), "not shown"}, {0, "not shown"},
 	} {
-		if got := band(c.d, 3.18); !strings.HasPrefix(got, c.want) {
+		if got := band(c.d, 3.18, "A", "B"); !strings.HasPrefix(got, c.want) {
 			t.Errorf("band(%v, 3.18) = %q, want %s", c.d, got, c.want)
 		}
 	}
@@ -367,5 +367,40 @@ func TestReadStepsSkipsTheSummarizersRequests(t *testing.T) {
 	steps, requests, _, err := readSteps(p)
 	if err != nil || requests != 2 || len(steps) != 1 || steps[0].req != 2 {
 		t.Fatalf("requests %d, steps %+v, %v; want 2 requests and the step at request 2", requests, steps, err)
+	}
+}
+
+// TestRulePairReadsCMinusB: pair=B:C reads C12's second contrast, C − B, from a three-arm job, A's runs in neither
+// count; a pair that names one arm twice, or is not two arms, is refused.
+func TestRulePairReadsCMinusB(t *testing.T) {
+	var recs []pilot.Record
+	for _, a := range []struct {
+		arm  string
+		pass int
+	}{{"A", 30}, {"B", 10}, {"C", 14}} {
+		for i := 1; i <= 36; i++ {
+			r := rec(1, a.arm, i <= a.pass, "done")
+			r.Rep = i
+			recs = append(recs, r)
+		}
+	}
+	p := writeResults(t, recs)
+	var out strings.Builder
+	if code := run([]string{"-rule", "sd=2.0,n=36,pair=B:C", p}, &out); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	s := out.String()
+	for _, want := range []string{"- B: 10 passes of 36", "- C: 14 passes of 36", "d = C − B = +4; edges 2 (1 sd) and 4 (2 sd)", "verdict: shown: C beats B"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("want %q in\n%s", want, s[strings.Index(s, "## The registered rule"):])
+		}
+	}
+	if strings.Contains(s[strings.Index(s, "## The registered rule"):], "- A: ") {
+		t.Errorf("A is counted in the B:C contrast:\n%s", s)
+	}
+	for _, bad := range []string{"pair=B:B", "pair=B", "pair=B:C:D", "pair=:C"} {
+		if code := run([]string{"-rule", "sd=2.0,n=36," + bad, p}, &out); code != 2 {
+			t.Errorf("%s: exit %d, want 2 (refused)", bad, code)
+		}
 	}
 }

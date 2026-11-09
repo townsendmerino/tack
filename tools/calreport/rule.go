@@ -10,16 +10,20 @@ import (
 	"github.com/townsendmerino/tack/internal/eval/pilot"
 )
 
-// rule is §12.3's A/B decision rule as a registration fixes it: the sd of d under no effect, and the counted runs
-// each arm must have.
+// rule is §12.3's A/B decision rule as a registration fixes it: the sd of d under no effect, the counted runs each arm
+// must have, and the two arms it compares, the do-nothing arm first (A and B, or B and C for C12's second contrast,
+// calibration §18.1).
 type rule struct {
-	sd float64
-	n  int
+	sd   float64
+	n    int
+	base string // the do-nothing arm
+	try  string // the arm with the setting
 }
 
-// parseRule reads "sd=S,n=N": S a finite positive number, N a positive integer, each given once.
+// parseRule reads "sd=S,n=N[,pair=X:Y]": S a finite positive number, N a positive integer, X and Y two different arm
+// names, the do-nothing arm first (A:B when left out), each given once.
 func parseRule(s string) (rule, error) {
-	var r rule
+	r := rule{base: "A", try: "B"}
 	seen := map[string]bool{}
 	for kv := range strings.SplitSeq(s, ",") {
 		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
@@ -43,8 +47,14 @@ func parseRule(s string) (rule, error) {
 				return r, fmt.Errorf("n %q: want a positive integer", v)
 			}
 			r.n = n
+		case "pair":
+			x, y, ok := strings.Cut(v, ":")
+			if !ok || x == "" || y == "" || x == y || strings.Contains(y, ":") {
+				return r, fmt.Errorf("pair %q: want two different arms, X:Y, the do-nothing arm first", v)
+			}
+			r.base, r.try = x, y
 		default:
-			return r, fmt.Errorf("unknown key %q (sd, n)", k)
+			return r, fmt.Errorf("unknown key %q (sd, n, pair)", k)
 		}
 	}
 	if r.sd == 0 || r.n == 0 {
@@ -53,19 +63,20 @@ func parseRule(s string) (rule, error) {
 	return r, nil
 }
 
-// band is d's verdict against sd: shown at d ≥ 2 sd, parked at sd ≤ d < 2 sd, else not shown (the do-nothing arm
-// wins ties). d and sd are compared unrounded.
-func band(d, sd float64) string {
+// band is d's verdict against sd, d being arm try's passes less arm base's: shown at d ≥ 2 sd, parked at sd ≤ d < 2 sd,
+// else not shown (the do-nothing arm, base, wins ties). d and sd are compared unrounded.
+func band(d, sd float64, base, try string) string {
 	switch {
 	case d >= 2*sd:
-		return "shown: B beats A"
+		return "shown: " + try + " beats " + base
 	case d >= sd:
 		return "parked: reported, no more runs unless Francis says so"
 	}
-	return "not shown: the do-nothing arm A wins"
+	return "not shown: the do-nothing arm " + base + " wins"
 }
 
-// d is B − A's passes; when either arm has other than n counted runs, it is rate-scaled to n, and scaled says so.
+// d is the tried arm's passes less the do-nothing arm's (B − A by default); when either arm has other than n counted
+// runs, it is rate-scaled to n, and scaled says so.
 func (r rule) d(passA, nA, passB, nB int) (d float64, scaled bool) {
 	if nA == r.n && nB == r.n {
 		return float64(passB - passA), false
@@ -101,12 +112,12 @@ func (r rule) read(w io.Writer, j *jobData) {
 		}
 		return pass, n
 	}
-	pA, nA := count("A")
-	pB, nB := count("B")
+	pA, nA := count(r.base)
+	pB, nB := count(r.try)
 	for _, a := range []struct {
 		name    string
 		pass, n int
-	}{{"A", pA, nA}, {"B", pB, nB}} {
+	}{{r.base, pA, nA}, {r.try, pB, nB}} {
 		short := ""
 		if a.n != r.n {
 			short = fmt.Sprintf(" (registered %d: %+d)", r.n, a.n-r.n)
@@ -115,13 +126,13 @@ func (r rule) read(w io.Writer, j *jobData) {
 	}
 	fmt.Fprintf(w, "- void runs, in neither count: %d\n", len(j.voids))
 	if nA == 0 || nB == 0 {
-		fmt.Fprintln(w, "- **no band:** the job needs both an A and a B arm")
+		fmt.Fprintf(w, "- **no band:** the job needs both an %s and a %s arm\n", r.base, r.try)
 		fmt.Fprintln(w)
 		return
 	}
 	d, scaled := r.d(pA, nA, pB, nB)
 	sd := r.sdFor(nA, nB)
-	how, edges := "B − A", "the registered sd"
+	how, edges := r.try+" − "+r.base, "the registered sd"
 	if scaled {
 		how = fmt.Sprintf("rate-scaled to %d: %d · (%d/%d − %d/%d)", r.n, r.n, pB, nB, pA, nA)
 		edges = fmt.Sprintf("the sd scaled for the short arm: %s · √(%d/2 · (1/%d + 1/%d))", num(r.sd), r.n, nA, nB)
@@ -131,7 +142,7 @@ func (r rule) read(w io.Writer, j *jobData) {
 		sign = "+"
 	}
 	fmt.Fprintf(w, "- d = %s = %s%s; edges %s (1 sd) and %s (2 sd), %s\n", how, sign, num(d), num(sd), num(2*sd), edges)
-	fmt.Fprintf(w, "- **verdict: %s**\n\n", band(d, sd))
+	fmt.Fprintf(w, "- **verdict: %s**\n\n", band(d, sd, r.base, r.try))
 }
 
 // voidWhy is why a run counts as void, or "": pilot voided it, or its oracle failed to run.
