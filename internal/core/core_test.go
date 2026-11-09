@@ -159,6 +159,26 @@ func (f *fixture) waitTurnEnd(t *testing.T) []proto.Event {
 	}
 }
 
+// prompt sends text to session sid and fails the test if the prompt is refused. A client hears turn.end as the loop
+// records it, and the session stays busy until the turn's goroutine returns just after (core.go:Core.prompt), so a
+// prompt sent straight after waitTurnEnd may be refused with CodeBusy. That gap is retried, as a client would, for up to
+// 2 s; any other refusal fails at once.
+func (f *fixture) prompt(t *testing.T, sid proto.SessionID, text string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var pe *proto.Error
+		err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text(text)}}, nil)
+		if err == nil {
+			return
+		}
+		if !errors.As(err, &pe) || pe.Code != proto.CodeBusy || time.Now().After(deadline) {
+			t.Fatalf("prompt %q: %v", text, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestTrafficConformsToTheProtocol runs a real turn through the core and holds every line that crossed the pipe to
 // the same checks as the golden fixtures (proto.CheckTranscript).
 func TestTrafficConformsToTheProtocol(t *testing.T) {
