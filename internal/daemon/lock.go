@@ -288,17 +288,24 @@ func privateDir(dir string) error {
 // afterCheck, when set (tests), runs in privateDir between the first check and the making of what is missing.
 var afterCheck func()
 
-// makeDirs makes the directories of p, a path checkPath resolved, that do not exist yet, one at a time: each with
-// Mkdir, which never follows a symlink already there, and each Lstat'ed as soon as it is made or found, so that a
+// mkdir is os.Mkdir; tests replace it to see which directories privateDir makes.
+var mkdir = os.Mkdir
+
+// makeDirs makes the directories of p, a path checkPath resolved, that do not exist yet, one at a time, and calls mkdir
+// on no other: an existing ancestor may be on a read-only mount, or outside what a sandbox lets tack create. Each is
+// Lstat'ed first, and made with Mkdir, which never follows a symlink already there, only if it is missing; so a
 // symlink or another user's directory planted after checkPath is refused before anything is made in it.
 func makeDirs(p string) error {
 	cur := "/"
 	for _, name := range components(p) {
 		next := filepath.Join(cur, name)
-		if err := os.Mkdir(next, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
 		fi, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := mkdir(next, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			fi, err = os.Lstat(next)
+		}
 		if err != nil {
 			return err
 		}
@@ -350,9 +357,8 @@ func checkPath(abs string) (string, error) {
 		name := rest[0]
 		rest = rest[1:]
 		switch {
-		case name == ".." && len(missing) > 0:
-			missing = missing[:len(missing)-1]
-			continue
+		case name == ".." && len(missing) > 0: // the kernel resolves it only through a directory that exists
+			return "", fmt.Errorf("daemon: %s climbs out of %s with \"..\" before that exists; name the state directory without it", abs, filepath.Join(append([]string{cur}, missing...)...))
 		case name == "..":
 			cur = filepath.Dir(cur) // cur is resolved, so its parent is the physical one
 			continue

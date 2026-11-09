@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -541,15 +542,60 @@ func TestTheStateDirMustBeThisUsers(t *testing.T) {
 	dir := shortDir(t)
 	os.MkdirAll(dir, 0o700)
 	dir, _ = filepath.EvalSymlinks(dir)
+	other := 0 // root: allowed on the way, not as the state directory
+	if os.Getuid() == 0 {
+		other = 4242 // run as root, root is this user: another user stands in
+	}
 	orig := ownerOf
 	defer func() { ownerOf = orig }()
 	ownerOf = func(path string, fi fs.FileInfo) int {
 		if path == dir {
-			return 0
+			return other
 		}
 		return orig(path, fi)
 	}
-	if _, err := checkPath(dir); err == nil || !strings.Contains(err.Error(), "belongs to uid 0") {
-		t.Fatalf("checkPath on a root-owned state directory: %v, want refused", err)
+	if _, err := checkPath(dir); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("belongs to uid %d", other)) {
+		t.Fatalf("checkPath on a state directory uid %d owns: %v, want refused", other, err)
+	}
+}
+
+// TestALinkClimbingOutOfAMissingDirIsRefused: the kernel resolves "missing/.." only once missing exists, so a state
+// directory reached through a link whose target climbs out of a directory that does not exist yet is refused, saying
+// why, rather than checked as text and then not found.
+func TestALinkClimbingOutOfAMissingDirIsRefused(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink("later/gone/../state", link); err != nil {
+		t.Fatal(err)
+	}
+	err := privateDir(link)
+	if err == nil || errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "..") {
+		t.Fatalf("privateDir through a link climbing out of a missing directory: %v; want it refused, naming the \"..\"", err)
+	}
+}
+
+// TestMakeDirsMakesOnlyWhatIsMissing: privateDir calls mkdir only for the directories that do not exist yet, never for
+// an existing ancestor, which a read-only mount or a sandbox may refuse to have mkdir called on at all.
+func TestMakeDirsMakesOnlyWhatIsMissing(t *testing.T) {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base)
+	var made []string
+	orig := mkdir
+	defer func() { mkdir = orig }()
+	mkdir = func(p string, perm os.FileMode) error {
+		if _, err := os.Lstat(p); err == nil {
+			return fmt.Errorf("mkdir %s: read-only file system (it exists)", p)
+		}
+		made = append(made, p)
+		return orig(p, perm)
+	}
+	if err := privateDir(filepath.Join(base, "a", "b")); err != nil {
+		t.Fatalf("privateDir under existing ancestors mkdir may not be called on: %v", err)
+	}
+	if want := []string{filepath.Join(base, "a"), filepath.Join(base, "a", "b")}; !slices.Equal(made, want) {
+		t.Fatalf("mkdir called for %v; want only %v", made, want)
 	}
 }

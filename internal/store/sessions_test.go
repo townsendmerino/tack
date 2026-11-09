@@ -265,3 +265,29 @@ func TestIdleSyncsOnlyWhatIsUnsynced(t *testing.T) {
 	}
 	r.Close()
 }
+
+// TestCloseSyncsOnlyWhatIsUnsynced: Close, like Idle, fsyncs before closing only when an append left data unsynced.
+func TestCloseSyncsOnlyWhatIsUnsynced(t *testing.T) {
+	s := newStore(t)
+	for _, c := range []struct {
+		id    proto.SessionID
+		typ   proto.EventType
+		value any
+		want  int // syncs in all: the append's own, then Close's
+	}{
+		{"s_1", proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}, 1},
+		{"s_2", proto.EvRequestSent, proto.RequestSent{Request: 1}, 1},
+	} {
+		l, _ := s.Create(c.id)
+		syncs := countSyncs(l)
+		if _, err := l.Append(c.typ, 0, c.value); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if *syncs != c.want {
+			t.Errorf("%s then Close: %d syncs; want %d", c.typ, *syncs, c.want)
+		}
+	}
+}
