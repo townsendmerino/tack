@@ -11,6 +11,7 @@ import (
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 // TestHalt: a halt stops the running turn mid-request (the request to the model server is cancelled), records
@@ -141,6 +142,44 @@ func TestHaltLeavesLogsAsTurnsNeedThem(t *testing.T) {
 	l.Close()
 	if evs[len(evs)-1].Type != proto.EvDaemonHaltRefused {
 		t.Fatalf("the log ends %s, want daemon.halt_refused", evs[len(evs)-1].Type)
+	}
+}
+
+// TestHaltKeepsARunningTurnsLog: a Halt that records a refused sweep while a turn is still running leaves the log
+// with the turn, which gives it up at its end.
+func TestHaltKeepsARunningTurnsLog(t *testing.T) {
+	f := newFixtureOn(t, stuckModel())
+	st := f.core.opt.Store
+	id := f.session(t)
+	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
+		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
+	}
+	release := make(chan struct{})
+	hold := func() { // the turn, cancelled by the Halt, has not ended when Halt records
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+		}
+	}
+	turnEndHook.Store(&hold)
+	t.Cleanup(func() { turnEndHook.Store(nil) })
+	if err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("x")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	if _, err := st.OpenLog(id); !errors.Is(err, store.ErrLogBusy) {
+		t.Fatalf("a running turn's log after Halt recorded beside it: %v, want ErrLogBusy, still the turn's", err)
+	}
+	close(release)
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		l, err := st.OpenLog(id)
+		if err == nil {
+			l.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the log once the turn ended: %v, want it free", err)
+		}
 	}
 }
 

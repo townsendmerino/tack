@@ -155,3 +155,31 @@ func TestResumeCountsSessionTokens(t *testing.T) {
 		t.Fatalf("a turn past the session's token budget: %q, %v; want stopped", stop, err)
 	}
 }
+
+// TestResumeCountsARepeatedIDWithoutCause: two calls a response gives one id, each run, count as two toward the
+// session's budget, as the live loop counted them, when the log has no causes to tell them apart.
+func TestResumeCountsARepeatedIDWithoutCause(t *testing.T) {
+	in := json.RawMessage(`{"pattern":"*.go"}`)
+	ev := func(seq int64, typ proto.EventType, cause int64, payload any) proto.Event {
+		e, err := proto.NewEvent(seq, time.Now(), typ, cause, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	use := proto.ModelBlock{Type: "tool_use", ID: "t1", Name: "glob", Input: in}
+	history := []proto.Event{
+		ev(1, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("x")}}),
+		ev(2, proto.EvAssistantMessage, 0, proto.AssistantMessage{Request: 1, StopReason: "tool_use", Content: []proto.ModelBlock{use, use}}),
+		ev(3, proto.EvToolCall, 2, proto.ToolCall{ID: "t1", Name: "glob", Input: in}),
+		ev(4, proto.EvToolCall, 2, proto.ToolCall{ID: "t1", Name: "glob", Input: in}),
+		ev(5, proto.EvToolStarted, 0, proto.ToolStarted{ID: "t1"}),
+		ev(6, proto.EvToolFinished, 0, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeOK, Result: "a.go"}),
+		ev(7, proto.EvToolStarted, 0, proto.ToolStarted{ID: "t1"}),
+		ev(8, proto.EvToolFinished, 0, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeOK, Result: "a.go"}),
+		ev(9, proto.EvTurnEnd, 1, proto.TurnEnd{StopReason: proto.StopEndTurn}),
+	}
+	if n := callsRan(history); n != 2 {
+		t.Fatalf("callsRan = %d; want both calls counted", n)
+	}
+}
