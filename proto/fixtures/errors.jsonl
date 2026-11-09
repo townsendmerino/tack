@@ -6,3 +6,7 @@
 {"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":6,"time":"2026-10-16T12:00:30Z","type":"budget.exceeded","cause":1,"payload":{"budget":"tool_calls","limit":20,"value":21}}}}}
 {"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":7,"time":"2026-10-16T12:00:30Z","type":"tool.finished","cause":6,"payload":{"id":"toolu_09","outcome":"cancelled","result":"error: not run: the turn's tool-call budget (20) was exceeded","truncated":false}}}}}
 {"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000003","event":{"seq":8,"time":"2026-10-16T12:00:30Z","type":"turn.end","cause":1,"payload":{"stop_reason":"budget"}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.1.0"},"protocol":1,"token":"stale0123456789abcdef0123456789abcdef0123456789abcdef0123456789"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"error":{"code":-32004,"message":"initialize: the client token is wrong; read it again from client.token"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"client":{"name":"tack-cli","version":"0.1.0"},"protocol":1}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"daemon":{"version":"0.1.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@nobara"]}}}}
