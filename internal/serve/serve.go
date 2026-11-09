@@ -153,6 +153,9 @@ func (f *Front) load(ctx context.Context, cancel context.CancelFunc) {
 // Tick applies the idle rules (models.Supervisor.Tick): after the idle timeout without a request the model unloads
 // and the child exits. It reports whether tack serve itself may exit now: no child, and idle that long.
 func (f *Front) Tick(ctx context.Context) (exit bool) {
+	if f.yield() { // a timed run holds the box: nothing of tack's stays on it
+		return f.now().Sub(f.activeAt()) >= f.o.Child.IdleUnload
+	}
 	f.mu.Lock()
 	loading := f.st.State == Loading
 	f.mu.Unlock()
@@ -192,6 +195,13 @@ func (f *Front) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !f.authorized(r) {
 			writeError(w, http.StatusUnauthorized, "authentication_error", "missing or invalid API key")
+			return
+		}
+		// A timed run holds the box: /tack/status and /tack/start answer busy, as their status, and a model request is
+		// refused.
+		if f.yield() && strings.HasPrefix(r.URL.Path, "/v1/") {
+			w.Header().Set("Retry-After", "60")
+			writeError(w, http.StatusServiceUnavailable, "overloaded_error", "tack serve: "+f.Status().Message)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -279,4 +289,35 @@ loop:
 		err = nil
 	}
 	return err
+}
+
+// yield checks goinfer's timing lock, as a start does (DESIGN §8.2, G6): while a timed run holds it, nothing of tack's
+// may run beside it on the box. So a loaded or loading model is stopped, child and all, and the front says busy. It
+// reports whether the lock is held. Every request and every tick calls it; a later start re-checks the lock, and
+// loads again once it is free.
+func (f *Front) yield() bool {
+	err := f.o.CheckLock()
+	if err == nil {
+		return false
+	}
+	f.mu.Lock()
+	if f.stopping != nil {
+		f.stopping()
+	}
+	was := f.st.State
+	f.st, f.proxy = Status{State: Busy, Message: "busy: a timed run holds goinfer's timing lock (" + err.Error() + ")"}, nil
+	f.mu.Unlock()
+	if child, _ := f.sup.Running(); child || was == Loading || was == Ready {
+		fmt.Fprintln(f.o.Log, "tack serve: stopping the model:", f.Status().Message)
+		if err := f.sup.Stop(); err != nil {
+			fmt.Fprintln(f.o.Log, "tack serve: stopping the child:", err)
+		}
+	}
+	return true
+}
+
+func (f *Front) activeAt() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active
 }
