@@ -139,8 +139,15 @@ func (c *Core) usageSummary(p proto.UsageSummaryParams) (proto.UsageSummaryResul
 		since = *p.Since
 	}
 	loc := time.Local
-	if p.UTC {
+	switch {
+	case p.UTC:
 		loc = time.UTC
+	case p.TZ != "":
+		l, err := time.LoadLocation(p.TZ)
+		if err != nil {
+			return proto.UsageSummaryResult{}, &proto.Error{Code: proto.CodeInvalidParams, Message: "usage/summary: time zone " + p.TZ + ": " + err.Error()}
+		}
+		loc = l
 	}
 	var rows []proto.UsageRow
 	var err error

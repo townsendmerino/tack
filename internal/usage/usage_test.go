@@ -2,11 +2,14 @@ package usage
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 func ip(n int) *int { return &n }
@@ -104,5 +107,23 @@ func TestPrintMarksWhatIsUnknown(t *testing.T) {
 	b.Reset()
 	if Print(&b, nil); !strings.Contains(b.String(), "(no requests in range)") {
 		t.Errorf("empty table:\n%s", b.String())
+	}
+}
+
+// TestFromStoreSkipsALogDeletedWhileReading: a session deleted between the listing and its read leaves the table, as
+// one deleted before the listing does; it does not fail it.
+func TestFromStoreSkipsALogDeletedWhileReading(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendUsage(t, st, "s_a", 1, "goinfer@local")
+	appendUsage(t, st, "s_b", 1, "goinfer@nobara")
+	listed = func() { os.RemoveAll(filepath.Join(dir, "sessions", "s_b")) }
+	t.Cleanup(func() { listed = nil })
+	rows, err := FromStore(st, time.Time{}, time.UTC)
+	if err != nil || len(rows) != 1 || rows[0].Server != "goinfer@local" {
+		t.Fatalf("with a log deleted while the table was read: %+v, %v; want s_a's row alone", rows, err)
 	}
 }
