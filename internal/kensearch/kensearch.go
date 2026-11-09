@@ -39,6 +39,7 @@ type Options struct {
 type Searcher struct {
 	ws   *engine.Workspace
 	root string // absolute
+	mode string // ken's mode: find_related needs one with vectors (Relates)
 	// opened is when Open began: ken's index holds every file as it was at Open, so a file not modified since is current.
 	opened time.Time
 
@@ -75,12 +76,31 @@ func Open(ctx context.Context, root string, o Options) (*Searcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Searcher{ws: ws, root: abs, opened: opened, synced: map[string]string{}}, nil
+	return &Searcher{ws: ws, root: abs, mode: o.Mode, opened: opened, synced: map[string]string{}}, nil
 }
 
 // Search implements tools.Searcher.
 func (s *Searcher) Search(ctx context.Context, query string, k int) ([]tools.Hit, error) {
 	hits, err := s.ws.Search(ctx, query, k)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tools.Hit, len(hits))
+	for i, h := range hits {
+		out[i] = tools.Hit{File: h.File, StartLine: h.StartLine, EndLine: h.EndLine, Text: h.Text, Hash: h.Hash,
+			Score: h.Score, Rank: h.Rank, Gen: h.Gen}
+	}
+	return out, nil
+}
+
+// Relates says whether this index can answer Related: ken's semantic and hybrid modes hold the Model2Vec vectors
+// FindRelated queries with; bm25 does not.
+func (s *Searcher) Relates() bool { return s.mode != "bm25" }
+
+// Related is ken's FindRelated: the k chunks nearest in meaning to the chunk holding path:line (path relative to the
+// root, with forward slashes, as hits name files), that chunk left out. None when no chunk holds the line.
+func (s *Searcher) Related(ctx context.Context, path string, line, k int) ([]tools.Hit, error) {
+	hits, err := s.ws.FindRelated(ctx, path, line, k)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +123,10 @@ func (s *Searcher) Close() error {
 	return s.ws.Close()
 }
 
-var _ tools.Searcher = (*Searcher)(nil)
+var (
+	_ tools.Searcher = (*Searcher)(nil)
+	_ tools.Relater  = (*Searcher)(nil)
+)
 
 // SectionHit is a hit inside one markdown file, with its section's heading path (K9's Hit.HeadingPath).
 type SectionHit struct {

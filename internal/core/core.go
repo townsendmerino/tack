@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/townsendmerino/tack/internal/halt"
@@ -78,6 +79,12 @@ type Options struct {
 	MaskObservations bool
 	// Summarize adds compaction's summarizing step (loop.Config.Summarize).
 	Summarize bool
+	// Subagents gives each session the task tool (tools.Subagent; DESIGN §6.3): a child session in plan mode, with the
+	// read-only tools and SubagentBudget, answers one question in the parent's turn. A child gets no task tool.
+	Subagents      bool
+	SubagentBudget loop.Budget
+	// SummaryRetrieve is re-retrieval's share of the window after each summary, 0 for none (loop.Config.SummaryRetrieve).
+	SummaryRetrieve int
 	// ResultNotes adds the loop's notes to tool results (loop.Config.ResultNotes).
 	ResultNotes bool
 	// EditMessages makes a failed edit say where the text or the file is instead (tools.Options.EditMessages).
@@ -107,6 +114,8 @@ type Options struct {
 	LeanResults bool
 	// RecentlyChanged gives every session the recently_changed tool (tools.Options.RecentlyChanged).
 	RecentlyChanged bool
+	// FindRelated gives every session the find_related tool when its searcher can answer it (tools.Options.FindRelated).
+	FindRelated bool
 	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// WidenRepeats widens a repeated whole read or grep (loop.Config.WidenRepeats).
@@ -278,6 +287,9 @@ var (
 	sendQueue   = 1024
 	sendTimeout = 5 * time.Second
 	fanOutWait  = 100 * time.Millisecond
+	// catchUpWait is how long a connection catching up on a replay may go without a write before a live event gives up
+	// on it: longer than a slow client takes to read one message.
+	catchUpWait = time.Second
 )
 
 // errDropped is a send to a connection that was dropped or has ended.
@@ -294,16 +306,28 @@ type conn struct {
 	written    chan struct{} // closed when the writer ends
 	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
 	onDrop     func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
-	timeout    time.Duration // sendTimeout when the connection was made
-	fanOutWait time.Duration // fanOutWait when the connection was made
+	// catchingUp is set while what a replay queued is still being written: live events then wait longer for room, so a
+	// client reading its replay is not dropped for a full queue it is draining. It ends when the writer reaches
+	// catchTarget (the replay's last message written), or at catchUntil (unix nanoseconds, sendTimeout after it began),
+	// whichever comes first: a client that reads slowly holds the session to its pace for one sendTimeout at most.
+	catchingUp  atomic.Bool
+	catchTarget atomic.Int64
+	catchUntil  atomic.Int64
+	writes      atomic.Int64 // messages written
+	// progress is the bytes written, counted as each chunk of a message goes out (progressWriter): a wait tells a client
+	// that reads, even one slow to take a large message, from one that does not.
+	progress    atomic.Int64
+	timeout     time.Duration // sendTimeout when the connection was made
+	fanOutWait  time.Duration // fanOutWait when the connection was made
+	catchUpWait time.Duration // catchUpWait when the connection was made
 }
 
 // newConn is a connection writing to w, closed through w when a stuck client is dropped; onDrop, when not nil, runs then.
 func newConn(w io.Writer, onDrop func()) *conn {
 	cn := &conn{out: make(chan any, sendQueue), stopped: make(chan struct{}), closing: make(chan struct{}),
-		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, onDrop: onDrop}
+		written: make(chan struct{}), timeout: sendTimeout, fanOutWait: fanOutWait, catchUpWait: catchUpWait, onDrop: onDrop}
 	cn.closer, _ = w.(io.Closer)
-	go cn.write(json.NewEncoder(w))
+	go cn.write(json.NewEncoder(progressWriter{w: w, n: &cn.progress}))
 	return cn
 }
 
@@ -318,11 +342,13 @@ func (cn *conn) write(enc *json.Encoder) {
 		case v := <-cn.out:
 			if m, ok := v.(flushMark); ok {
 				close(m)
-				continue
-			}
-			if enc.Encode(v) != nil {
+			} else if enc.Encode(v) != nil {
 				cn.drop()
 				return
+			}
+			// A flush mark counts as written too: catchUp's target counts everything queued.
+			if n := cn.writes.Add(1); cn.catchingUp.Load() && n >= cn.catchTarget.Load() {
+				cn.catchingUp.Store(false) // the replay is written: live events wait fanOutWait again
 			}
 		case <-cn.closing:
 			for {
@@ -345,8 +371,68 @@ func (cn *conn) write(enc *json.Encoder) {
 	}
 }
 
-// fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room.
-func (cn *conn) fanOut(v any) error { return cn.sendWithin(v, cn.fanOutWait) }
+// fanOut sends v as an event's fan-out does, under the session's locks: waiting at most fanOutWait for room. While
+// the connection is catching up on a replay it waits longer, until catching up ends, but only while the client is
+// reading: each catchUpWait with no bytes written ends the wait, so a client that stopped reading costs the session one
+// catchUpWait, once.
+func (cn *conn) fanOut(v any) error {
+	until := time.Unix(0, cn.catchUntil.Load())
+	if cn.catchingUp.Load() && !time.Now().Before(until) {
+		cn.catchingUp.Store(false) // its time is up: a slow reader no longer sets the session's pace
+	}
+	if !cn.catchingUp.Load() {
+		return cn.sendWithin(v, cn.fanOutWait)
+	}
+	for {
+		bytes := cn.progress.Load()
+		if sent, err := cn.offer(v, min(cn.catchUpWait, max(time.Until(until), 0))); sent || err != nil {
+			return err
+		}
+		if cn.progress.Load() == bytes {
+			cn.drop() // no byte written in a catchUpWait: it stopped reading
+			return errDropped
+		}
+		if !time.Now().Before(until) { // still reading, but its time is up: an ordinary wait, as any connection gets
+			cn.catchingUp.Store(false)
+			return cn.sendWithin(v, cn.fanOutWait)
+		}
+	}
+}
+
+// catchUp marks the connection as draining a replay: what is queued, and more messages about to be, are the replay.
+// Catching up lasts until they are written, or sendTimeout from now. It is per connection, not per subscription: a second
+// subscribe's replay on one connection starts it again for the connection's other subscriptions too. A client subscribes
+// to one session per connection in practice (tack run, the TUI).
+func (cn *conn) catchUp(more int) {
+	if n := len(cn.out) + more; n > 0 {
+		cn.catchTarget.Store(cn.writes.Load() + int64(n))
+		cn.catchUntil.Store(time.Now().Add(cn.timeout).UnixNano())
+		cn.catchingUp.Store(true)
+	}
+}
+
+// progressWriter writes to w in chunks of progressChunk bytes, adding each to n: a large message shows progress as it
+// goes, not only once it is all written.
+type progressWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+const progressChunk = 64 << 10
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	wrote := 0
+	for len(b) > 0 {
+		k, err := p.w.Write(b[:min(len(b), progressChunk)])
+		wrote += k
+		p.n.Add(int64(k))
+		if err != nil {
+			return wrote, err
+		}
+		b = b[k:]
+	}
+	return wrote, nil
+}
 
 // send queues v for the client, waiting up to sendTimeout for room.
 func (cn *conn) send(v any) error { return cn.sendWithin(v, cn.timeout) }
@@ -354,26 +440,36 @@ func (cn *conn) send(v any) error { return cn.sendWithin(v, cn.timeout) }
 // sendWithin queues v for the client, waiting up to wait for room; a client that has not made room by then is dropped,
 // and every later send fails at once.
 func (cn *conn) sendWithin(v any, wait time.Duration) error {
+	sent, err := cn.offer(v, wait)
+	if !sent && err == nil {
+		cn.drop()
+		return errDropped
+	}
+	return err
+}
+
+// offer queues v for the client if there is room within wait. It says whether it did; err is errDropped for a connection
+// already dropped. A wait that runs out drops nothing.
+func (cn *conn) offer(v any, wait time.Duration) (bool, error) {
 	select {
 	case <-cn.stopped:
-		return errDropped
+		return false, errDropped
 	default:
 	}
 	select {
 	case cn.out <- v:
-		return nil
+		return true, nil
 	default:
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case cn.out <- v:
-		return nil
+		return true, nil
 	case <-cn.stopped:
-		return errDropped
+		return false, errDropped
 	case <-t.C:
-		cn.drop()
-		return errDropped
+		return false, nil
 	}
 }
 
@@ -411,7 +507,9 @@ func (cn *conn) finish() {
 	select {
 	case <-cn.written:
 	case <-time.After(cn.timeout):
-		cn.drop() // the writer is stuck in a write: closing the transport makes it return
+		// The writer is stuck in a write. Closing the transport makes it return; a transport core cannot close (no
+		// io.Closer) keeps it blocked until the write returns of itself, and nothing is written after.
+		cn.drop()
 		return
 	}
 	cn.stop.Do(func() { close(cn.stopped) })
@@ -701,9 +799,11 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged,
+		FindRelated: c.opt.FindRelated}
+	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: searcher, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
@@ -715,10 +815,11 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			c.unregister(id)
 			return nil, fmt.Errorf("auto mode: %w", err)
 		}
-		cfg.Tools = tools.New(tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
+		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
-			RecentlyChanged: c.opt.RecentlyChanged})
+			RecentlyChanged: c.opt.RecentlyChanged, FindRelated: c.opt.FindRelated}
+		cfg.Tools = tools.New(to)
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
@@ -727,6 +828,13 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if c.opt.Snapshots {
 			cfg.Snapshots = snapshot.New(c.opt.Store.Root(), root, c.opt.SnapshotMaxBytes)
 		}
+	}
+	switch {
+	case created.Parent != "": // a child: its own budget, and no task of its own (depth 1)
+		cfg.Budget = c.opt.SubagentBudget
+	case c.opt.Subagents:
+		to.Subagent = c.subagent(id, ws, created)
+		cfg.Tools = tools.New(to)
 	}
 	switch {
 	case prompted: // the instructions joined the first prompt, which the log holds
@@ -895,21 +1003,41 @@ func notification(id proto.SessionID, ev proto.Event) proto.Request {
 	return proto.Request{JSONRPC: "2.0", Method: proto.MethodSessionEvent, Params: p}
 }
 
-// replay sends a new subscriber the persisted events from from_seq, then registers it for live ones. Both happen under
-// the session's lock, so no event falls between them; one appended during the replay is skipped live by seq.
+// replay sends a new subscriber the persisted events from from_seq, then registers it for live ones. The log so far
+// goes out without the session's lock, so a slow client's long replay holds up no turn. Then, under the lock, what was
+// appended meanwhile goes out and the subscriber is registered, so no event falls between the two: one appended after
+// the first read is in the store for the second, and its live fan-out, if it comes later, is skipped by seq. A
+// connection dropped before it is registered is not registered: its unsubscribe may already have run.
+// Live-only events (seq 0, assistant.delta) emitted before it is registered never reach it; the persisted message
+// that follows them does.
 func (c *Core) replay(cn *conn, req proto.Request) {
 	p, _ := params[proto.SessionSubscribeParams](req)
 	s, perr := c.session(p.Session)
 	if perr != nil {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	sub := &subscriber{conn: cn, last: max(p.FromSeq-1, 0)} // nothing before from_seq, replayed or live
 	evs, _ := c.opt.Store.Events(s.id, p.FromSeq)
 	for _, ev := range evs {
-		_ = cn.send(notification(s.id, ev))
+		if cn.send(notification(s.id, ev)) != nil {
+			return // dropped
+		}
 		sub.last = ev.Seq
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	more, _ := c.opt.Store.Events(s.id, sub.last+1)
+	cn.catchUp(len(more)) // phase one may have filled the queue; phase two's events are the replay too
+	for _, ev := range more {
+		if cn.fanOut(notification(s.id, ev)) != nil {
+			return
+		}
+		sub.last = ev.Seq
+	}
+	select {
+	case <-cn.stopped:
+		return // dropped before it was registered: nothing would unsubscribe it
+	default:
 	}
 	s.subs[sub] = true
 }

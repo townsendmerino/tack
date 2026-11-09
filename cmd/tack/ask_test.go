@@ -365,3 +365,101 @@ func TestAskPrintsWhatTheGapMissed(t *testing.T) {
 		t.Errorf("stdout %q, want the whole answer once", stdout.String())
 	}
 }
+
+// TestAskCountsOnlyDropsInARow: a daemon that drops the connection more than askRedials times, but hands over events
+// between drops, does not end ask: only drops in a row count.
+func TestAskCountsOnlyDropsInARow(t *testing.T) {
+	var evs []proto.Event
+	payloads := []struct {
+		typ     proto.EventType
+		payload any
+	}{{proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}}}}
+	for range askRedials + 2 {
+		payloads = append(payloads, struct {
+			typ     proto.EventType
+			payload any
+		}{proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{{Type: "text", Text: "."}}}})
+	}
+	payloads = append(payloads, struct {
+		typ     proto.EventType
+		payload any
+	}{proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn}})
+	for i, p := range payloads {
+		ev, err := proto.NewEvent(int64(i+1), time.Unix(0, 0), p.typ, 0, p.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, ev)
+	}
+	redials := 0
+	redial := func() (*core.Client, error) { // each hands over one more event and drops, until the last
+		redials++
+		if n := redials + 1; n < len(evs) {
+			return fakeDaemon(t, evs[:n], 0, true, nil), nil
+		}
+		return fakeDaemon(t, evs, 0, false, nil), nil
+	}
+	var stdout, stderr bytes.Buffer
+	c := ask(context.Background(), fakeDaemon(t, evs, 1, true, nil), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	if c != exitOK || redials <= askRedials {
+		t.Fatalf("ask = %d after %d redials; stderr %q", c, redials, stderr.String())
+	}
+}
+
+// TestANewDaemonIsNamed: a redial that reached another daemon says the old one's turn ended with it.
+func TestANewDaemonIsNamed(t *testing.T) {
+	if n := newDaemonNote(100, 200); !strings.Contains(n, "pid 200") || !strings.Contains(n, "ended with it") {
+		t.Errorf("note %q", n)
+	}
+	for _, c := range [][2]int{{100, 100}, {0, 200}, {100, 0}} {
+		if n := newDaemonNote(c[0], c[1]); n != "" {
+			t.Errorf("newDaemonNote(%d, %d) = %q, want nothing", c[0], c[1], n)
+		}
+	}
+}
+
+// chattyDaemon answers a resubscribe with one live-only event (an assistant.delta, seq 0) and then drops the
+// connection: chatter, never progress.
+func chattyDaemon(t *testing.T) *core.Client {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go func() {
+		defer b.Close()
+		sc, enc := bufio.NewScanner(b), json.NewEncoder(b)
+		for sc.Scan() {
+			var req proto.Request
+			if json.Unmarshal(sc.Bytes(), &req) != nil {
+				continue
+			}
+			r, _ := json.Marshal(struct{}{})
+			enc.Encode(proto.Response{JSONRPC: "2.0", ID: req.ID, Result: r})
+			ev, _ := proto.NewEvent(0, time.Unix(0, 0), proto.EvAssistantDelta, 0, proto.AssistantDelta{Kind: "text", Text: "."})
+			p, _ := json.Marshal(proto.SessionEventParams{Session: "s_1", Event: ev})
+			enc.Encode(proto.Request{JSONRPC: "2.0", Method: proto.MethodSessionEvent, Params: p})
+			return
+		}
+	}()
+	return core.NewClient(a)
+}
+
+// TestChatterIsNotProgress: live-only events after each redial do not start the count again, so a daemon that only
+// chatters and drops still ends ask after askRedials.
+func TestChatterIsNotProgress(t *testing.T) {
+	ev, _ := proto.NewEvent(1, time.Unix(0, 0), proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("q")}})
+	redials := 0
+	redial := func() (*core.Client, error) { redials++; return chattyDaemon(t), nil }
+	code := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
+	go func() {
+		code <- ask(context.Background(), fakeDaemon(t, []proto.Event{ev}, 1, true, nil), "/w", "q", proto.ModePlan, false, true, &stdout, &stderr, redial)
+	}()
+	select {
+	case c := <-code:
+		if c != exitError || redials != askRedials {
+			t.Fatalf("ask = %d after %d redials", c, redials)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ask still redialling after %d: chatter counted as progress", redials)
+	}
+}

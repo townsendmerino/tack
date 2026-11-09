@@ -96,6 +96,12 @@ type Config struct {
 	// has reached 75% of the window and masking cannot bring it under, the oldest half of the turns before the last 3
 	// requests become one summary message, written by the model's thinking-off alias. Off, no summary is made.
 	Summarize bool
+	// SummaryRetrieve, when above 0, re-retrieves after each summary (summary_retrieve.go; DESIGN §7.6, step 3): its open
+	// threads are searched through Searcher, and the hits, within SummaryRetrieve percent of the window, become the
+	// summary message's last section. It needs Summarize and a Searcher; 0 is off.
+	SummaryRetrieve int
+	// Searcher is ken's, as the search tool has it; nil without ken.
+	Searcher tools.Searcher
 	// CompactAtCliff makes the loop react when stuck (mask.go; calibration §16.2):
 	//   - at the turn's first FitWindow nearly-full note where something can be stubbed, it compacts before the next
 	//     request: besides what MaskObservations stubs, grep and glob output and whole-file reads from before the last
@@ -562,9 +568,15 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 						}
 					}
 				}
-				if fin, full, ran, err = s.runTool(tools.WithWiden(shell.WithApproval(ctx, by), level), b, callEv.Seq, room, pick); err != nil {
+				rem := Remaining{Tokens: min(bud.TurnTokens-tokens, bud.SessionTokens-s.tokens),
+					ToolCalls: min(bud.MaxToolCalls-calls, bud.SessionToolCalls-s.calls)} // after this call: what a task's child may take
+				if fin, full, ran, err = s.runTool(withRemaining(tools.WithWiden(shell.WithApproval(ctx, by), level), rem), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
 				}
+				tokens += fin.Tokens // a task's child: it counts toward this turn's and this session's budgets
+				s.tokens += fin.Tokens
+				calls += fin.Calls
+				s.calls += fin.Calls
 				ranTool = fin.Outcome == proto.OutcomeOK || fin.Outcome == proto.OutcomeError
 				if widenable {
 					// The chain steps on the base-cap view. A note or a cut (ToolFinished.Truncated) was not shown whole: it
@@ -792,7 +804,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	}
 	r, rerr := t.Run(ctx, s.cfg.WS, b.Input)
 	if rerr != nil {
-		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true}
+		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true, Tokens: r.Tokens, Calls: r.Calls} // a cancelled task still spent them
 	}
 	// Redaction comes first, so neither the model, the log nor the blob store ever holds a credential it caught.
 	var kinds []string
@@ -811,7 +823,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if pick != nil { // chooses, on redacted and escaped text, what is shown (Config.CompactAtCliff's widening)
 		pick(&r)
 	}
-	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds}
+	fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeOK, Result: r.Text, Redacted: kinds, Tokens: r.Tokens, Calls: r.Calls}
 	if r.IsError {
 		fin.Outcome = proto.OutcomeError
 	}
@@ -962,3 +974,15 @@ func computedTokens(u proto.Usage) int {
 	}
 	return u.Prompt + u.Output
 }
+
+// Tokens is what the server computed for the session's requests so far, as its budget counts them: a task's caller
+// counts a child session's toward its own (tools.SubagentAnswer).
+func (s *Session) Tokens() int { return s.tokens }
+
+// ToolCalls is the tool calls the session has run so far, as its budget counts them: a task's caller counts a child's
+// toward its own.
+func (s *Session) ToolCalls() int { return s.calls }
+
+// Limit tightens the session's budget before a turn: a task's child is held to what its parent has left
+// (loop.RemainingFrom). Every limit must stay positive.
+func (s *Session) Limit(b Budget) { s.cfg.Budget = b }

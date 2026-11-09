@@ -272,6 +272,9 @@ func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.
 		if err != nil {
 			return nil, err
 		}
+		if note := newDaemonNote(c.PID, next.PID); note != "" {
+			fmt.Fprintln(stderr, note)
+		}
 		c.Close()
 		c = next
 		return next.Client, nil
@@ -279,7 +282,8 @@ func runViaDaemon(cfgPath, ws, question string, jsonOut bool, stdout, stderr io.
 	return ask(ctx, c.Client, ws, question, proto.ModePlan, jsonOut, true, stdout, stderr, redial)
 }
 
-// askRedials is how many times ask connects again to a daemon that closed its connection mid-turn.
+// askRedials is how many times in a row ask connects again to a daemon that closed its connection mid-turn: a
+// connection that carried events starts the count again.
 const askRedials = 3
 
 // ask runs one turn on an initialized connection: a new session in ws, subscribed, prompted with question, until its
@@ -294,6 +298,7 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 	redial func() (*core.Client, error)) int {
 	var mu sync.Mutex
 	var last int64 // the last persisted seq heard, under mu
+	heard := false // an event arrived since the last redial, under mu: the redials count again from 0
 	done := make(chan string, 1)
 	var answer strings.Builder
 	noRewind := map[string]bool{}
@@ -301,7 +306,9 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 		mu.Lock()
 		defer mu.Unlock()
 		ev := p.Event
-		last = max(last, ev.Seq)
+		if ev.Seq > last { // progress is a persisted event not heard before; live-only (seq 0) chatter is not
+			last, heard = ev.Seq, true
+		}
 		if jsonOut {
 			b, _ := json.Marshal(ev)
 			fmt.Fprintf(stdout, "%s\n", b)
@@ -396,6 +403,12 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 			continue
 		default:
 		}
+		mu.Lock()
+		if heard {
+			redials = 0 // the last connection carried events: only drops in a row count
+		}
+		heard = false
+		mu.Unlock()
 		if redial == nil || redials == askRedials {
 			fmt.Fprintf(stderr, "tack run: the connection to the daemon closed before session %s's turn ended\n", sess.Session)
 			return exitError
@@ -451,4 +464,13 @@ func clientWorkspace(flag string) (string, error) {
 		return gitRoot(), nil
 	}
 	return filepath.Abs(flag)
+}
+
+// newDaemonNote is what tack run says when a redial reached a daemon other than the one it lost (by PID), "" when it is
+// the same one or either PID is unknown. The old daemon's turn ended with it: the new one's recovery closes it.
+func newDaemonNote(oldPID, newPID int) string {
+	if oldPID == 0 || newPID == 0 || oldPID == newPID {
+		return ""
+	}
+	return fmt.Sprintf("tack run: a new daemon (pid %d) has taken over from pid %d; the turn the old one was running ended with it", newPID, oldPID)
 }

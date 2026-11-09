@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"path/filepath"
@@ -25,6 +26,11 @@ type anySearcher struct{}
 
 func (anySearcher) Search(context.Context, string, int) ([]tools.Hit, error) { return nil, nil }
 
+// anySearcher relates too, so find_related's schema is counted.
+func (anySearcher) Relates() bool { return true }
+
+func (anySearcher) Related(context.Context, string, int, int) ([]tools.Hit, error) { return nil, nil }
+
 type anyBlobs struct{}
 
 func (anyBlobs) Get(string) ([]byte, error) { return nil, nil }
@@ -38,7 +44,7 @@ func (anyShell) Run(context.Context, string, time.Duration) (shell.Result, error
 // fixedPromptRequest is the largest fixed prompt as goinfer renders it: the edit task's system prompt, the longer of
 // the two, every tool's schema including done, and a one-word user message, the least a request can carry.
 func fixedPromptRequest(model string) server.Request {
-	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, LineEdits: true, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true, RecentlyChanged: true}).Specs(),
+	return server.Request{Model: model, System: EditSystemPrompt, Tools: tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, LineEdits: true, Write: true, Shell: anyShell{}, Blobs: anyBlobs{}, Plan: true, Done: true, RecentlyChanged: true, FindRelated: true}).Specs(),
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock("hi")}}}}
 }
 
@@ -93,4 +99,34 @@ func TestCheckBudgetFailsOverTheLine(t *testing.T) {
 	if b != 3276 || checkBudget(b) != nil || checkBudget(b+1) == nil {
 		t.Fatal("checkBudget does not hold the line at a fifth of the design window")
 	}
+}
+
+// TestTheTaskToolFitsTheBudget: with subagents on, the fixed prompt gains task's schema. The recorded count is for the
+// default tools (TestFixedPromptBudget), so task's schema is added at 3 bytes a token, more than Qwen's tokenizer takes,
+// and the sum must stay within the budget. A real count of that prompt is a re-record, a run.
+func TestTheTaskToolFitsTheBudget(t *testing.T) {
+	cs, err := cassette.Load(filepath.Join("testdata", "fixed-prompt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := cassette.NewReplayer(cs)
+	c := goinfer.New("goinfer@count", "http://cassette.invalid", "", rep.Client())
+	n, err := c.CountTokens(context.Background(), fixedPromptRequest("qwen2.5-coder-0.5b-instruct-q4_k_m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := tools.New(tools.Options{Subagent: func(context.Context, string) (tools.SubagentAnswer, error) { return tools.SubagentAnswer{}, nil }})
+	var spec []byte
+	for _, s := range set.Specs() {
+		if s.Name == "task" {
+			spec, _ = json.Marshal(s)
+		}
+	}
+	if len(spec) == 0 {
+		t.Fatal("no task tool in a set with a Subagent")
+	}
+	if err := checkBudget(n + len(spec)/3); err != nil {
+		t.Errorf("with task (%d bytes of schema): %v", len(spec), err)
+	}
+	t.Logf("fixed prompt with task: about %d tokens of %d", n+len(spec)/3, FixedPromptBudget(DesignWindow))
 }

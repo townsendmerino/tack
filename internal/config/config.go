@@ -71,6 +71,9 @@ type Sandbox struct {
 const (
 	KindChild  = "goinfer-child"  // a goinfer-serve tack starts and supervises on this machine (DESIGN §8.1)
 	KindRemote = "goinfer-remote" // a goinfer-serve running elsewhere, e.g. on nobara (DESIGN §8.2)
+	// KindOpenAI is a server speaking the OpenAI-compatible /v1/chat/completions (internal/server/openai; P1 step 7):
+	// goinfer's own, or another. It takes url, token_file and model, as a goinfer-remote does, and nothing on demand.
+	KindOpenAI = "openai-remote"
 )
 
 // Server is one model server.
@@ -126,10 +129,19 @@ type Run struct {
 	MaxWall      Duration `toml:"max_wall"`       // wall time per turn (default 30m)
 	MaxTokens    int      `toml:"max_tokens"`     // output tokens per request (default 2048; it comes out of the window)
 	// TurnTokens and SessionTokens count the tokens the server computes: prefilled plus output (loop.Budget).
-	TurnTokens       int `toml:"turn_tokens"`        // per turn (default 200000)
-	MaxErrors        int `toml:"max_errors"`         // tool calls in a row ending in an error or a denial (default 8)
-	SessionTokens    int `toml:"session_tokens"`     // per session (default 2000000)
-	SessionToolCalls int `toml:"session_tool_calls"` // per session (default 1000)
+	TurnTokens int `toml:"turn_tokens"` // per turn (default 200000)
+	MaxErrors  int `toml:"max_errors"`  // tool calls in a row ending in an error or a denial (default 8)
+	// Subagents gives a session the task tool: a child session, read-only, with its own context and the budget below,
+	// answers a question (core.Options.Subagents; DESIGN §6.3). Its tokens count toward the parent's budgets. Default off,
+	// and not an E1 arm setting until a screen registers it.
+	Subagents         bool     `toml:"subagents"`
+	SubagentRequests  int      `toml:"subagent_requests"`   // a child's model requests (default 20)
+	SubagentToolCalls int      `toml:"subagent_tool_calls"` // a child's tool calls (default 50)
+	SubagentWall      Duration `toml:"subagent_wall"`       // a child's wall time (default 10m)
+	SubagentTokens    int      `toml:"subagent_tokens"`     // the tokens a child's server computes (default 100000)
+	SubagentErrors    int      `toml:"subagent_errors"`     // a child's failed calls in a row (default 4)
+	SessionTokens     int      `toml:"session_tokens"`      // per session (default 2000000)
+	SessionToolCalls  int      `toml:"session_tool_calls"`  // per session (default 1000)
 	// FitWindow caps each tool result at the room the window has left (loop.Config.FitWindow). Default off until the
 	// calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.6).
 	FitWindow bool `toml:"fit_window"`
@@ -144,6 +156,13 @@ type Run struct {
 	// It needs the server to list a thinking-off alias, or the summary is the user messages and anchors alone. Default
 	// off, and not an E1 arm setting until a screen registers it.
 	Summarize bool `toml:"summarize"`
+	// SummaryRetrieve re-retrieves after each summary: the summary's open threads are searched through ken, and the hits,
+	// within SummaryRetrieveShare percent of the window, become its last section (loop.Config.SummaryRetrieve; DESIGN
+	// §7.6, step 3). It needs summarize. Default off, and not an E1 arm setting until a screen registers it.
+	SummaryRetrieve bool `toml:"summary_retrieve"`
+	// SummaryRetrieveShare is re-retrieval's budget, in percent of the window: 1 to 50, default 10 (DESIGN §7.4's
+	// auto-context share). It comes out of what the summary frees.
+	SummaryRetrieveShare int `toml:"summary_retrieve_share"`
 	// ResultNotes says what to do after an empty search or an unchanged repeat (loop.Config.ResultNotes). Default off until
 	// the calibration adopts it (e1-calibration-preregistration-2026-10-18.md §4.4).
 	ResultNotes bool `toml:"result_notes"`
@@ -192,6 +211,10 @@ type Run struct {
 	// (tools.Options.RecentlyChanged; DESIGN §6.5). Default off, so measured runs keep their tool set, and not an E1 arm
 	// setting until one is registered.
 	RecentlyChanged bool `toml:"recently_changed"`
+	// FindRelated gives sessions the find_related tool: code similar in meaning to a place in the repository, from ken's
+	// vectors (tools.Options.FindRelated; DESIGN §6.5). It is listed only when ken runs in semantic or hybrid mode. Default
+	// off, so measured runs keep their tool set, and not an E1 arm setting until one is registered.
+	FindRelated bool `toml:"find_related"`
 	// CompactAtCliff makes the loop react when stuck: it compacts at fit_window's nearly-full note and when a repeat loop
 	// meets it, and widens a repeated whole read or grep (loop.Config.CompactAtCliff; calibration §16.2). Default off.
 	CompactAtCliff bool `toml:"compact_at_cliff"`
@@ -219,6 +242,9 @@ type Run struct {
 
 // MaxBestOf is the most attempts best_of may ask for.
 const MaxBestOf = 5
+
+// DefaultSummaryRetrieveShare is summary_retrieve_share's default, in percent of the window.
+const DefaultSummaryRetrieveShare = 10
 
 // Duration is a time.Duration written as a string ("10m").
 type Duration struct {
@@ -347,8 +373,15 @@ func (c *Config) validate() error {
 			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
 				return fmt.Errorf("servers.%s: binary, model_path, ctx, args and allow_devel are for %s", name, KindChild)
 			}
+		case KindOpenAI:
+			if s.URL == "" {
+				return fmt.Errorf("servers.%s: a %s needs url", name, KindOpenAI)
+			}
+			if s.OnDemand || len(s.Start) > 0 || s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 || s.AllowDevel {
+				return fmt.Errorf("servers.%s: a %s takes url, token_file and model only", name, KindOpenAI)
+			}
 		default:
-			return fmt.Errorf("servers.%s: kind %q, want %q or %q", name, s.Kind, KindChild, KindRemote)
+			return fmt.Errorf("servers.%s: kind %q, want %q, %q or %q", name, s.Kind, KindChild, KindRemote, KindOpenAI)
 		}
 		c.Servers[name] = s
 	}
@@ -391,18 +424,31 @@ func (c *Config) validate() error {
 	for _, d := range []struct {
 		v   *int
 		def int
-	}{{&c.Run.TurnTokens, 200_000}, {&c.Run.MaxErrors, 8}, {&c.Run.SessionTokens, 2_000_000}, {&c.Run.SessionToolCalls, 1000}} {
+	}{{&c.Run.TurnTokens, 200_000}, {&c.Run.MaxErrors, 8}, {&c.Run.SessionTokens, 2_000_000}, {&c.Run.SessionToolCalls, 1000},
+		{&c.Run.SubagentRequests, 20}, {&c.Run.SubagentToolCalls, 50}, {&c.Run.SubagentTokens, 100_000}, {&c.Run.SubagentErrors, 4}} {
 		if *d.v == 0 {
 			*d.v = d.def
 		}
 	}
+	if c.Run.SubagentWall.Duration == 0 {
+		c.Run.SubagentWall.Duration = 10 * time.Minute
+	}
 	r := c.Run
-	if min(r.MaxRequests, r.MaxToolCalls, r.MaxTokens, r.TurnTokens, r.MaxErrors, r.SessionTokens, r.SessionToolCalls) < 0 ||
-		r.MaxWall.Duration < 0 {
+	if min(r.MaxRequests, r.MaxToolCalls, r.MaxTokens, r.TurnTokens, r.MaxErrors, r.SessionTokens, r.SessionToolCalls, r.SubagentRequests,
+		r.SubagentToolCalls, r.SubagentTokens, r.SubagentErrors) < 0 || r.MaxWall.Duration < 0 || r.SubagentWall.Duration < 0 {
 		return errors.New("run: a budget is negative")
 	}
 	if r.BestOf < 0 || r.BestOf > MaxBestOf {
 		return fmt.Errorf("run: best_of is %d; it must be 0 to %d", r.BestOf, MaxBestOf)
+	}
+	if c.Run.SummaryRetrieveShare == 0 { // on c.Run: r is a copy
+		c.Run.SummaryRetrieveShare, r.SummaryRetrieveShare = DefaultSummaryRetrieveShare, DefaultSummaryRetrieveShare
+	}
+	if r.SummaryRetrieveShare < 1 || r.SummaryRetrieveShare > 50 {
+		return fmt.Errorf("run: summary_retrieve_share is %d; it must be 1 to 50 (percent of the window)", r.SummaryRetrieveShare)
+	}
+	if r.SummaryRetrieve && !r.Summarize {
+		return errors.New("run: summary_retrieve needs summarize: it re-retrieves after a summary")
 	}
 	if k := c.Ken; k != nil {
 		if k.Mode == "" {

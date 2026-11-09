@@ -20,6 +20,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/eval"
 	"github.com/townsendmerino/tack/internal/models"
+	"github.com/townsendmerino/tack/internal/server/goinfer"
 )
 
 // The tests run this binary as goinfer-serve: with TACK_FAKE_GOINFER=1 it serves the flags, auth and admin routes the
@@ -54,11 +55,26 @@ func fakeGoinfer(args []string) {
 		}
 		data := []map[string]any{}
 		if loaded != "" {
-			data = append(data, map[string]any{"id": loaded, "context_window": *ctxN})
+			// fast_model as goinfer v0.24.1 advertises it, with -fast-alias on by default: the thinking-off alias the
+			// summarizer asks for.
+			data = append(data, map[string]any{"id": loaded, "context_window": *ctxN, "fast_model": loaded + "-fast"})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": data})
 	})
 	api.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_STREAM_SLEEP")); err == nil {
+			w.Header().Set("Content-Type", "text/event-stream") // the stream opens, then its body comes slowly
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			for range 20 {
+				time.Sleep(d / 20)
+				if _, err := fmt.Fprint(w, "data: {}\n\n"); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+			}
+			return
+		}
 		if d, err := time.ParseDuration(os.Getenv("TACK_FAKE_GOINFER_MESSAGES_SLEEP")); err == nil {
 			time.Sleep(d) // a long prefill and generation
 		}
@@ -225,9 +241,11 @@ func TestALongRequestCountsAsUseUntilItEnds(t *testing.T) {
 	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
 	get(t, ts, "POST", "/tack/start", key)
 	waitState(t, f, Ready)
+	began := time.Now()
 	if code, body := get(t, ts, "POST", "/v1/messages", key); code != http.StatusOK {
 		t.Fatalf("the proxied request: %d %s", code, body)
 	}
+	waitRequestEnd(t, f, began, 600*time.Millisecond)
 	f.Tick(context.Background())
 	if child, loaded := f.sup.Running(); !child || !loaded || f.Status().State != Ready {
 		t.Fatalf("a tick just after a long request: child %v, loaded %v, state %+v; want the model kept", child, loaded, f.Status())
@@ -288,5 +306,59 @@ func TestTheIdleTickStopsTheModelForATimedRun(t *testing.T) {
 	}
 	if code, body := get(t, ts, "GET", "/tack/status", key); code != http.StatusOK || !strings.Contains(body, `"busy"`) {
 		t.Fatalf("status under the timing lock: %d %s; want busy", code, body)
+	}
+}
+
+// TestARequestTheClientDropsStillCountsAsUse: a client that hangs up mid-stream ends the proxied request with
+// http.ErrAbortHandler; the request still counts as use until then, so a tick just after keeps the model.
+func TestARequestTheClientDropsStillCountsAsUse(t *testing.T) {
+	t.Setenv("TACK_FAKE_GOINFER_STREAM_SLEEP", "2s")
+	f, ts := front(t, 300*time.Millisecond, func() error { return nil })
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	began := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/v1/messages", nil)
+	req.Header.Set("x-api-key", key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	resp.Body.Read(buf) // the stream has begun
+	time.Sleep(600 * time.Millisecond)
+	cancel() // the client hangs up, past the idle timeout from the request's start
+	resp.Body.Close()
+	waitRequestEnd(t, f, began, 600*time.Millisecond) // the proxy notices, and its handler ends
+	f.Tick(context.Background())
+	if child, loaded := f.sup.Running(); !child || !loaded {
+		t.Fatalf("a tick just after a dropped request: child %v, loaded %v; want the model kept", child, loaded)
+	}
+}
+
+// waitRequestEnd waits until the front has recorded a request's end, at least d after began: the client can have the
+// whole response before the proxy's handler returns, so what the handler does at the end is not done when Do returns.
+func waitRequestEnd(t *testing.T, f *Front, began time.Time, d time.Duration) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); f.activeAt().Sub(began) < d; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the front never recorded the request's end: active %s after it began", f.activeAt().Sub(began))
+		}
+	}
+}
+
+// TestTheFastAliasReachesTheMac: the summarizer asks for the model's thinking-off alias, which goinfer lists as
+// fast_model in /v1/models (on by default since v0.24.0). Through tack serve, tack's own client still reads it: the
+// proxy passes the child's answer through as it is.
+func TestTheFastAliasReachesTheMac(t *testing.T) {
+	f, ts := front(t, time.Minute, func() error { return nil })
+	get(t, ts, "POST", "/tack/start", key)
+	waitState(t, f, Ready)
+	ms, err := goinfer.New("goinfer@nobara", ts.URL, key, nil).Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 1 || ms[0].ID != "q" || ms[0].FastModel != "q-fast" {
+		t.Fatalf("/v1/models through tack serve: %+v; want q with its fast alias q-fast", ms)
 	}
 }

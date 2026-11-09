@@ -28,7 +28,7 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 		servers = append(servers, "goinfer@"+n)
 	}
 	sort.Strings(servers)
-	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, MaskObservations: cfg.Run.MaskObservations, Summarize: cfg.Run.Summarize, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead, RecentlyChanged: cfg.Run.RecentlyChanged,
+	opts := core.Options{Store: st, Version: version, Servers: servers, FitWindow: cfg.Run.FitWindow, StopRepeats: cfg.Run.StopRepeats, MaskObservations: cfg.Run.MaskObservations, Summarize: cfg.Run.Summarize, ResultNotes: cfg.Run.ResultNotes, EditMessages: cfg.Run.EditMessages, InstructionsHead: cfg.Run.InstructionsHead, RecentlyChanged: cfg.Run.RecentlyChanged, FindRelated: cfg.Run.FindRelated,
 		RefuseDuplicateEdits: cfg.Run.RefuseDuplicateEdits,
 		VerifyDone:           cfg.Run.VerifyDone,
 		BuildAfterEdit:       cfg.Run.BuildAfterEdit,
@@ -99,6 +99,15 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
 	if s, ok := cfg.Servers[name]; ok {
 		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
+	}
+	if cfg.Run.SummaryRetrieve {
+		opts.SummaryRetrieve = cfg.Run.SummaryRetrieveShare
+	}
+	if cfg.Run.Subagents {
+		opts.Subagents = true
+		opts.SubagentBudget = loop.Budget{MaxRequests: cfg.Run.SubagentRequests, MaxToolCalls: cfg.Run.SubagentToolCalls,
+			MaxWall: cfg.Run.SubagentWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.SubagentTokens,
+			MaxErrors: cfg.Run.SubagentErrors, SessionTokens: cfg.Run.SubagentTokens, SessionToolCalls: cfg.Run.SubagentToolCalls}
 	}
 	return opts
 }

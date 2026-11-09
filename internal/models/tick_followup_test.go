@@ -94,3 +94,39 @@ func TestABinaryOnThePathIsCheckedOnce(t *testing.T) {
 		t.Fatalf("--version ran %d times over two starts of an unchanged binary; want once", n)
 	}
 }
+
+// TestABinaryThatJoinsThePathLaterIsFoundOnce: a goinfer-serve not yet on PATH when the supervisor is made (the
+// daemon started before it was installed) is looked up again at the start that needs it, and then checked once.
+func TestABinaryThatJoinsThePathLaterIsFoundOnce(t *testing.T) {
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	log := filepath.Join(t.TempDir(), "versions")
+	t.Setenv("TACK_FAKE_GOINFER_VERSION_LOG", log)
+	t.Setenv("TACK_FAKE_GOINFER", "1")
+	dir, err := os.MkdirTemp("/tmp", "tksup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	s, err := NewSupervisor(ChildConfig{Binary: "goinfer-serve-later", ModelPath: "/m/model.gguf", Model: "m", Ctx: 8192,
+		Args: []string{"-backend", "cpu"}, Dir: dir, IdleUnload: time.Hour, IdleExit: time.Hour, Admission: true,
+		Pressure: func() (Pressure, error) { return PressureNormal, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Stop() })
+	copyFile(t, os.Args[0], filepath.Join(bin, "goinfer-serve-later")) // installed after the supervisor was made
+	ctx := context.Background()
+	for range 2 {
+		if _, err := s.Ensure(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Stop(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, _ := os.ReadFile(log)
+	if n := strings.Count(string(b), "version\n"); n != 1 {
+		t.Fatalf("--version ran %d times over two starts of a binary found on PATH late; want once", n)
+	}
+}

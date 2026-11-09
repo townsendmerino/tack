@@ -449,3 +449,59 @@ func TestAMaskingCompactionClearsTheSummaryFloor(t *testing.T) {
 		t.Errorf("the summary floor is %d after a masking compaction, want 0", h.sess.sumFloor)
 	}
 }
+
+// TestATaskWithItsOwnHeadingsKeepsTheBody: a task written in markdown, with its own "## Goal", does not shift the body:
+// the summary's body, live and on a resume, is the summarizer's, not a span starting inside the user's text.
+func TestATaskWithItsOwnHeadingsKeepsTheBody(t *testing.T) {
+	h := maskHarness(t, false, 120,
+		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "read", bigRead),
+		goinfertest.Calls("", "t3", "read", bigRead), goinfertest.Calls("", "t4", "read", bigRead),
+		goinfertest.Says(body("read big.txt")), goinfertest.Calls("", "t5", "read", bigRead), goinfertest.Says("done"))
+	h.sess.cfg.Summarize = true
+	h.sess = New(h.sess.cfg)
+	task := "Make the reader faster.\n\n## Goal\n\nHalve the time of a whole read.\n\n## Constraints\n\nNo new dependency."
+	if _, err := h.sess.Turn(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.payloads(proto.EvCompaction)) != 1 {
+		t.Fatalf("%d compactions", len(h.payloads(proto.EvCompaction)))
+	}
+	want := body("read big.txt")
+	if h.sess.body != want {
+		t.Errorf("live body:\n%s\nwant the summarizer's:\n%s", h.sess.body, want)
+	}
+	evs, _ := h.st.Events("s_test", 0)
+	r, err := Resume(h.sess.cfg, evs)
+	if err != nil || r.body != want {
+		t.Errorf("resumed body:\n%s\n%v", r.body, err)
+	}
+}
+
+// TestFirstSummaryCutsAsTheLiveLoopDoes: on the log as it stood when the live summary ran, FirstSummary hands the
+// summarizer the stretch the live loop covered, seq for seq.
+func TestFirstSummaryCutsAsTheLiveLoopDoes(t *testing.T) {
+	h := summaryHarness(t)
+	evs, _ := h.st.Events("s_test", 0)
+	var before []proto.Event // up to the summarizer's own first request
+	for _, ev := range evs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvRequestSent && v.(proto.RequestSent).Request == 0 {
+			break
+		}
+		before = append(before, ev)
+	}
+	stretch, ok := FirstSummary(before)
+	comps := h.payloads(proto.EvCompaction)
+	if !ok || len(comps) != 1 {
+		t.Fatalf("ok %v, %d compactions", ok, len(comps))
+	}
+	var got []int64
+	for _, ev := range stretch {
+		got = append(got, ev.Seq)
+	}
+	if want := comps[0].(proto.Compaction).Summarized; !slices.Equal(got, want) {
+		t.Errorf("FirstSummary covers %v, the live summary %v", got, want)
+	}
+	if _, ok := FirstSummary(before[:4]); ok {
+		t.Error("a log with too few requests should have no summary")
+	}
+}
