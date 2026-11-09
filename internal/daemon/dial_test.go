@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -49,29 +50,59 @@ func fakeDaemon(t *testing.T, dir string, answer func(n int, req proto.Request) 
 	return &conns
 }
 
-// TestDialRedialsADaemonThatRestarted: a client that connected to a daemon on its way out and then read its
-// successor's token is refused the token there; Dial connects again, to the successor, rather than presenting the
-// token again on the connection that refused it.
-func TestDialRedialsADaemonThatRestarted(t *testing.T) {
-	dir := shortDir(t)
-	os.MkdirAll(dir, 0o700)
-	if err := os.WriteFile(filepath.Join(dir, TokenName), []byte("successor's\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ok, _ := json.Marshal(proto.InitializeResult{Protocol: proto.Version, Privileged: true})
-	conns := fakeDaemon(t, dir, func(n int, req proto.Request) proto.Response {
-		if n == 1 { // the daemon that was going
-			return proto.Response{Error: &proto.Error{Code: proto.CodeUnauthorized, Message: "initialize: the client token is wrong"}}
-		}
-		return proto.Response{Result: ok}
-	})
-	c, err := Dial(dir, testClient, nil, time.Second)
-	if err != nil {
-		t.Fatalf("Dial across a restart: %v; want it to connect again, to the daemon the token is for", err)
-	}
-	defer c.Close()
-	if n := conns.Load(); n != 2 || !c.Init.Privileged {
-		t.Fatalf("%d connections, privileged %v; want a second connection, privileged", n, c.Init.Privileged)
+// TestDialStartsOverWhenTheDaemonGoes: a client that connected to a daemon just as it shut down finds the connection
+// closed when it initializes: a daemon closes its connections before it lets go of the lock a successor needs. Dial
+// then starts over, once, as it began: it reaches a successor another client started, or spawns one itself.
+func TestDialStartsOverWhenTheDaemonGoes(t *testing.T) {
+	for _, mine := range []bool{false, true} {
+		name := map[bool]string{false: "a successor another client started", true: "a successor this client spawns"}[mine]
+		t.Run(name, func(t *testing.T) {
+			dir := shortDir(t)
+			ctx, stop := context.WithCancel(context.Background())
+			t.Cleanup(stop)
+			first := make(chan error, 1)
+			go func() { first <- Run(ctx, runOptions(t, dir)) }()
+			dialSoon(t, dir).Close()
+			startNext := func() {
+				start(t, runOptions(t, dir))
+				for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+					if nc, err := net.Dial("unix", SocketPath(dir)); err == nil {
+						nc.Close()
+						return
+					}
+				}
+				t.Error("the successor never served")
+			}
+			fired := false
+			dialHook = func() {
+				if fired {
+					return
+				}
+				fired = true
+				stop()
+				<-first // the daemon this client reached is gone: its connections closed, its lock let go
+				if !mine {
+					startNext()
+				}
+			}
+			t.Cleanup(func() { dialHook = nil })
+			var spawn func() error
+			spawns := 0
+			if mine {
+				spawn = func() error { spawns++; startNext(); return nil }
+			}
+			c, err := Dial(dir, testClient, spawn, 5*time.Second)
+			if err != nil {
+				t.Fatalf("Dial as its daemon went: %v; want it to reach the next one", err)
+			}
+			defer c.Close()
+			if err := c.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); err != nil {
+				t.Fatalf("status on the connection Dial returned: %v", err)
+			}
+			if mine && spawns != 1 {
+				t.Fatalf("%d spawns; want this client to start the next daemon once", spawns)
+			}
+		})
 	}
 }
 

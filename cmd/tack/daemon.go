@@ -20,8 +20,12 @@ import (
 	"github.com/townsendmerino/tack/internal/store"
 )
 
-// Exit codes for tack daemon status: 0 a daemon answered, 3 none is running.
-const exitNotRunning = 3
+// Exit codes for tack daemon status: 0 a daemon answered; 3 none is running; 4 one holds the lock but does not serve,
+// as while it starts or shuts down (it takes its socket away first).
+const (
+	exitNotRunning = 3
+	exitNotServing = 4
+)
 
 // drainWait is how long a client waits on a daemon that shuts down with grace: the grace window, then time for it to
 // record the turns it cancels (core.Drain gives that 5s), close the core and let go of the lock. tack daemon stop waits
@@ -63,6 +67,10 @@ func daemonCmd(args []string, stdout, stderr io.Writer) int {
 	case "status":
 		c, err := daemon.Dial(stateDir, cliClient, nil, 0)
 		if errors.Is(err, daemon.ErrNotRunning) {
+			if h := daemon.ReadHolder(stateDir); h.PID != 0 { // no socket while it starts or drains
+				fmt.Fprintln(stdout, holderLine(h))
+				return exitNotServing
+			}
 			fmt.Fprintln(stdout, "tack daemon: not running")
 			return exitNotRunning
 		}
@@ -181,8 +189,16 @@ func printStatus(c *daemon.Conn, stdout, stderr io.Writer) int {
 func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) int {
 	c, err := daemon.Dial(stateDir, cliClient, nil, 0)
 	if errors.Is(err, daemon.ErrNotRunning) {
-		fmt.Fprintln(stdout, "tack daemon: not running")
-		return exitOK
+		switch h := daemon.ReadHolder(stateDir); {
+		case h.PID == 0:
+			fmt.Fprintln(stdout, "tack daemon: not running")
+			return exitOK
+		case h.Stopping: // shutting down already: its socket is gone, and the lock follows
+			return awaitRelease(stateDir, h.PID, grace, stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "tack daemon stop: pid %d holds the lock but does not serve yet; run stop again once it does\n", h.PID)
+			return exitError
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
@@ -198,13 +214,28 @@ func daemonStop(stateDir string, grace time.Duration, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "tack daemon stop:", err)
 		return exitError
 	}
+	return awaitRelease(stateDir, st.PID, grace, stdout, stderr)
+}
+
+// awaitRelease waits for the daemon with pid, shutting down with grace, to let go of the lock, and says so.
+func awaitRelease(stateDir string, pid int, grace time.Duration, stdout, stderr io.Writer) int {
 	wait := drainWait(grace)
-	if !released(stateDir, st.PID, wait) {
-		fmt.Fprintf(stderr, "tack daemon stop: pid %d still holds the lock after %s\n", st.PID, wait)
+	if !released(stateDir, pid, wait) {
+		fmt.Fprintf(stderr, "tack daemon stop: pid %d still holds the lock after %s\n", pid, wait)
 		return exitError
 	}
 	fmt.Fprintln(stdout, "tack daemon: stopped")
 	return exitOK
+}
+
+// holderLine describes a daemon from its holder record, for one that holds the lock without a socket: one starting,
+// or one shutting down, which takes its socket away first.
+func holderLine(h daemon.Holder) string {
+	state := "starting, not serving yet"
+	if h.Stopping {
+		state = "shutting down"
+	}
+	return fmt.Sprintf("tack daemon %s, pid %d, since %s: %s", h.Version, h.PID, h.Start.Local().Format(time.DateTime), state)
 }
 
 // released waits up to wait for the daemon with pid to let go of stateDir's lock: its holder record gone (Release

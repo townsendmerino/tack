@@ -2,6 +2,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
+	"io/fs"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	"github.com/townsendmerino/tack/internal/daemon"
+	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
@@ -112,5 +117,87 @@ func TestReleasedWaitsForTheLock(t *testing.T) {
 	l.Release()
 	if !released(filepath.Join(dir, "s"), os.Getpid(), time.Second) {
 		t.Fatal("not released after Release")
+	}
+}
+
+// TestStatusAndStopSeeADrainingDaemon: a daemon shutting down has taken its socket away (so a new client starts the
+// next one) but still holds the lock while its turns drain. status reports it shutting down, not "not running"; stop
+// waits for it to let go of the lock.
+func TestStatusAndStopSeeADrainingDaemon(t *testing.T) {
+	inRequest := make(chan struct{}, 1)
+	models := goinfertest.NewScripted("m", 16384)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			models.ServeHTTP(w, r)
+			return
+		}
+		io.Copy(io.Discard, r.Body)
+		select {
+		case inRequest <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+	dir, err := os.MkdirTemp("/tmp", "tack-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	stateDir := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	body := "state_dir = \"" + stateDir + "\"\n[daemon]\nshutdown_grace = \"2s\"\n" +
+		"[servers.local]\nkind = \"goinfer-remote\"\nurl = \"" + ts.URL + "\"\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cli := func(args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := dispatch(args, &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	ran := make(chan int, 1)
+	go func() { ran <- dispatch([]string{"daemon", "run", "-config", cfg}, &bytes.Buffer{}, &bytes.Buffer{}) }()
+	var c *daemon.Conn
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if c, err = daemon.Dial(stateDir, cliClient, nil, 0); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon never served: %v", err)
+		}
+	}
+	var sess proto.SessionNewResult
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: t.TempDir(), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("q")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	<-inRequest // the turn is at the model, so the drain lasts its grace
+	if err := c.Call(proto.MethodDaemonShutdown, proto.DaemonShutdownParams{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(daemon.SocketPath(stateDir)); errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the socket stayed after the shutdown")
+		}
+	}
+	if code, out, errs := cli("daemon", "status", "-config", cfg); code != exitNotServing || !strings.Contains(out, "shutting down") {
+		t.Fatalf("status while it drains: exit %d, %q %q; want %d and \"shutting down\"", code, out, errs, exitNotServing)
+	}
+	if code, out, errs := cli("daemon", "stop", "-config", cfg); code != exitOK || !strings.Contains(out, "stopped") {
+		t.Fatalf("stop while it drains: exit %d, %q %q; want it to wait and say stopped", code, out, errs)
+	}
+	if h := daemon.ReadHolder(stateDir); h.PID != 0 {
+		t.Fatalf("stop returned with the lock still held by %+v", h)
+	}
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon run did not return")
 	}
 }
