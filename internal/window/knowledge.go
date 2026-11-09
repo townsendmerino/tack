@@ -55,7 +55,7 @@ type Page struct {
 }
 
 // ParsePage reads a page's frontmatter: its title (else its first heading, else its file name) and its pins. A pin
-// whose file leaves the workspace (absolute, or through "..") is dropped.
+// whose file leaves the workspace (absolute, or through "..") or names the root itself is dropped.
 func ParsePage(p, content string) Page {
 	pg := Page{Path: p, Body: content}
 	if rest, ok := strings.CutPrefix(content, "---\n"); ok {
@@ -100,7 +100,7 @@ func (pg *Page) addPin(v string) {
 		return
 	}
 	file := path.Clean(f[0])
-	if path.IsAbs(file) || file == ".." || strings.HasPrefix(file, "../") {
+	if path.IsAbs(file) || file == "." || file == ".." || strings.HasPrefix(file, "../") {
 		return
 	}
 	pin := Pin{File: file}
@@ -190,8 +190,11 @@ func NewKnowledge(root string, pages []Page, window int, b *Budget) *Knowledge {
 // matches says whether every pin of the page matches its file now.
 func (k *Knowledge) matches(pg Page) bool {
 	for _, p := range pg.Pins {
+		if p.Hash == "" {
+			return false // a pin without a hash never matches; its file is not read
+		}
 		b, err := os.ReadFile(filepath.Join(k.root, filepath.FromSlash(p.File)))
-		if err != nil || p.Hash == "" {
+		if err != nil {
 			return false
 		}
 		sum := sha256.Sum256(b)

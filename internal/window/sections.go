@@ -156,7 +156,7 @@ func ParseSections(content string) []Section {
 				l := stripCode(lines[j])
 				prose = append(prose, l)
 				heading := s.Level > 0 && (j == s.StartLine-1 || j == s.StartLine && kinds[j] == mdSetextUnderline)
-				if !heading && strings.TrimSpace(marker.ReplaceAllString(l, "")) != "" {
+				if !heading && strings.TrimSpace(marker.ReplaceAllString(lines[j], "")) != "" { // inline code is body too
 					s.body = true
 				}
 			}
@@ -326,8 +326,9 @@ func (in *Instructions) Initial() string {
 	fits := func() bool {
 		return SectionTokens(build(firstLines, cut, always, outline, more)) <= in.b.Limit-in.b.Used
 	}
-	// An opening over half the budget is cut to half first, so the outline and the calls' sections keep room.
-	for len(firstLines) > 1 && SectionTokens(strings.Join(firstLines, "\n")) > (in.b.Limit-in.b.Used)/2 {
+	// An opening over half the budget is cut to half first, so the outline and the calls' sections keep room; a file
+	// with no other section has none to keep.
+	for len(rest)+len(always) > 0 && len(firstLines) > 1 && SectionTokens(strings.Join(firstLines, "\n")) > (in.b.Limit-in.b.Used)/2 {
 		firstLines, cut = firstLines[:len(firstLines)-1], true
 	}
 	for len(always) > 0 && !fits() {

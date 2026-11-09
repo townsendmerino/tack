@@ -620,3 +620,22 @@ func TestForHitsLoadsAMessagesSections(t *testing.T) {
 		t.Error("a whole file brings nothing for a message")
 	}
 }
+
+// TestInlineCodeIsBody: a section whose only text is inline code has a body, so the opening stops there.
+func TestInlineCodeIsBody(t *testing.T) {
+	src := "# notes\n\n`go test ./...`\n\n## Testing\n\nRun with -v.\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", src, NewBudget(4096)).Initial(); strings.Contains(got, "Run with -v.") || !strings.Contains(got, "`go test ./...`") {
+		t.Errorf("an inline-code opening took in the next section:\n%s", got)
+	}
+}
+
+// TestOneSectionFileIsNotHalved: a file that is all opening is cut to the budget, not to half of it: there are no
+// other sections to keep room for.
+func TestOneSectionFileIsNotHalved(t *testing.T) {
+	src := "# notes\n\n" + strings.Repeat("an opening line that goes on and on.\n", 200)
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	if in.Used() < in.Budget()*3/4 {
+		t.Errorf("used %d of %d: a lone opening was halved", in.Used(), in.Budget())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -340,5 +341,26 @@ func TestReusedIDsAcrossTrackers(t *testing.T) {
 		if wantPage := name == "page first"; sectionBack == wantPage || pageBack != wantPage {
 			t.Errorf("%s: after the first c is stubbed, section free %v, page free %v", name, sectionBack, pageBack)
 		}
+	}
+}
+
+// TestKnowledgeIndexKeepsALineThatJustFits: room for the header and exactly one page line gives that line, and the
+// rest counted as more.
+func TestKnowledgeIndexKeepsALineThatJustFits(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	probe := NewKnowledge(root, pages[:1], 16384, NewBudget(16384)).Index() + fmt.Sprintf("\n[… %d more pages]", len(pages)-1)
+	b := NewBudget(16384)
+	b.Used = b.Limit - SectionTokens(probe)
+	idx := NewKnowledge(root, pages, 16384, b).Index()
+	if !strings.Contains(idx, "- ") || !strings.Contains(idx, fmt.Sprintf("[… %d more pages]", len(pages)-1)) || b.Used > b.Limit {
+		t.Errorf("index %q, used %d of %d", idx, b.Used, b.Limit)
+	}
+}
+
+// TestPinsRejectTheRoot: a pin to "." names no file, and is dropped.
+func TestPinsRejectTheRoot(t *testing.T) {
+	if pg := ParsePage("a.md", "---\npins: ., ./ sha256:"+hashOf("x")+"\n---\nbody\n"); len(pg.Pins) != 0 {
+		t.Errorf("pins %+v", pg.Pins)
 	}
 }
