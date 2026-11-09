@@ -59,7 +59,7 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if !ok {
 		return fail(proto.CodeInvalidParams, errors.New("its log does not begin with session.created, so it predates tack's daemon"))
 	}
-	closed, err := closeInterrupted(log, evs)
+	closed, err := closeInterrupted(log, evs, c.orphanCost(id, evs))
 	if err != nil {
 		return fail(proto.CodeInternalError, err)
 	}
@@ -98,12 +98,15 @@ func sessionCreated(evs []proto.Event) (proto.SessionCreated, bool) {
 // reuses a tool-call id across a turn's steps is told apart. An event without a cause (a log from before causes) is
 // matched to the latest open call with its id. A tool_use of the turn's last response with no tool.call (the crash
 // came between the two appends) gets its tool.call recorded first, from the block, and is answered not run.
-func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) {
+//
+// childCost, when set, is what a task call's child spent, for a started task call the crash cut off: its child's
+// tokens and tool calls go on the call's tool.finished, so the parent's budgets count them on a resume (Core.orphanCost).
+func closeInterrupted(log *store.Log, evs []proto.Event, childCost func() (tokens, calls int)) ([]proto.Event, error) {
 	if !store.Inspect(evs).InTurn {
 		return nil, nil
 	}
 	type call struct {
-		id            string
+		id, name      string
 		seq           int64
 		started, done bool
 	}
@@ -151,7 +154,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 				}
 			}
 		case proto.ToolCall:
-			calls = append(calls, &call{id: p.ID, seq: ev.Seq})
+			calls = append(calls, &call{id: p.ID, name: p.Name, seq: ev.Seq})
 			if i := slices.IndexFunc(uses, func(b proto.ModelBlock) bool { return b.ID == p.ID }); i >= 0 {
 				uses = slices.Delete(uses, i, i+1) // this block only: a response may repeat an id
 			}
@@ -172,7 +175,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 			return out, err
 		}
 		out = append(out, ev)
-		calls = append(calls, &call{id: b.ID, seq: ev.Seq})
+		calls = append(calls, &call{id: b.ID, name: b.Name, seq: ev.Seq})
 	}
 	for _, cl := range calls {
 		if cl.done {
@@ -181,6 +184,9 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 		fin := proto.ToolFinished{ID: cl.id, Outcome: proto.OutcomeCancelled, Result: notRunResult}
 		if cl.started {
 			fin = proto.ToolFinished{ID: cl.id, Outcome: proto.OutcomeUnknown, Result: unknownResult}
+			if cl.name == "task" && childCost != nil {
+				fin.Tokens, fin.Calls = childCost()
+			}
 		}
 		ev, err := log.Append(proto.EvToolFinished, cl.seq, fin)
 		if err != nil {
@@ -259,7 +265,7 @@ func (c *Core) recoverOne(id proto.SessionID) (bool, error) {
 	if recoverHook != nil {
 		recoverHook(id)
 	}
-	closed, err := closeInterrupted(log, evs)
+	closed, err := closeInterrupted(log, evs, c.orphanCost(id, evs))
 	if cerr := log.Close(); err == nil {
 		err = cerr
 	}

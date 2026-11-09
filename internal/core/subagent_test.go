@@ -155,6 +155,9 @@ func TestUsageCountsAParentAndChildOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	tot := usage.Total(rows)
+	if tot.Sessions != 1 {
+		t.Errorf("the table counts %d sessions for a parent and its child, want 1: a child is not a session the user had", tot.Sessions)
+	}
 	if got := tot.Prompt + tot.Output; got != want || fin.Tokens == 0 {
 		t.Errorf("the table's total %d, the two logs' usage %d (the call recorded %d for the child)", got, want, fin.Tokens)
 	}
@@ -195,5 +198,118 @@ func TestAChildCannotSpendPastTheParentsBudget(t *testing.T) {
 	}
 	if spent > 300+120 {
 		t.Errorf("the parent's turn spent %d tokens with its child, past its 300 by more than one 120-token request", spent)
+	}
+}
+
+// TestADrainReachesARunningChild: a drain that begins while a child's request runs ends the child before its next
+// request, as it ends any turn, so the parent's turn can end with it.
+func TestADrainReachesARunningChild(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	inChild, release := make(chan struct{}), make(chan struct{})
+	probes := goinfertest.NewScripted("m", 16384)
+	f := newFixtureOn(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			probes.ServeHTTP(w, r)
+			return
+		}
+		io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		n++
+		i := n
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch i {
+		case 1: // the parent's: call task
+			io.WriteString(w, goinfertest.Calls("", "t1", "task", `{"prompt":"look twice"}`).Body)
+		case 2: // the child's first: held until the drain has begun, then a read
+			close(inChild)
+			<-release
+			io.WriteString(w, goinfertest.Calls("", "c1", "read", `{"path":"a.go"}`).Body)
+		default: // a child that ignored the drain asks again
+			io.WriteString(w, goinfertest.Says("still going").Body)
+		}
+	}))
+	f.core.opt.Subagents, f.core.opt.SubagentBudget = true, f.core.opt.Budget
+	id := f.session(t)
+	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.prompt(t, id, "go")
+	select {
+	case <-inChild:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never reached the model")
+	}
+	drained := make(chan []proto.SessionID, 1)
+	go func() { drained <- f.core.Drain(5 * time.Second) }()
+	time.Sleep(50 * time.Millisecond) // the drain has begun
+	close(release)
+	select {
+	case cancelled := <-drained:
+		if len(cancelled) != 0 {
+			t.Errorf("Drain had to cancel %v: the child did not stop at its next request", cancelled)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Drain did not return")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 2 {
+		t.Errorf("%d model requests, want 2: the drained child asked again", n)
+	}
+}
+
+// TestRecoveryChargesACutOffTaskWithItsChild: a crash during a child leaves the parent's task call open and the
+// child's turn open. Recovery closes both, and the parent's closed call carries the child's spend, so a resume counts
+// it toward the parent's budgets.
+func TestRecoveryChargesACutOffTaskWithItsChild(t *testing.T) {
+	f := newFixture(t)
+	st := f.core.opt.Store
+	parent, child := proto.SessionID("s_01JAPARENT0000000000000001"), proto.SessionID("s_01JACHILD00000000000000002")
+	write := func(id proto.SessionID, evs ...any) {
+		log, err := st.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cause := int64(0)
+		for i := 0; i < len(evs); i += 2 {
+			ev, err := log.Append(evs[i].(proto.EventType), cause, evs[i+1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evs[i].(proto.EventType) == proto.EvToolCall {
+				cause = ev.Seq // the tool.started that follows names its call
+			}
+		}
+		log.Close()
+	}
+	write(parent,
+		proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan},
+		proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}},
+		proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{{Type: "tool_use", ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)}}},
+		proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)},
+		proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
+	write(child,
+		proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan, Parent: parent},
+		proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("look")}},
+		proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"},
+		proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: 1000, Output: 50})
+	if _, err := f.core.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pevs, _ := st.Events(parent, 0)
+	var fin proto.ToolFinished
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+			fin = v.(proto.ToolFinished)
+		}
+	}
+	if fin.Outcome != proto.OutcomeUnknown || fin.Tokens != 1050 {
+		t.Errorf("the parent's cut-off task finished %+v; want unknown, charged the child's 1,050 tokens", fin)
+	}
+	cevs, _ := st.Events(child, 0)
+	if last := cevs[len(cevs)-1]; last.Type != proto.EvTurnEnd {
+		t.Errorf("the child's log ends %s, want its turn closed", last.Type)
 	}
 }

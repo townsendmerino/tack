@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +23,10 @@ import (
 // calls count toward the parent's budgets (tools.SubagentAnswer). The child is not in the core's sessions, so no client
 // subscribes to it live and its log opens later like any other; its halt target is registered (open), as every
 // session's is.
+//
+// The child gets no workspace instructions (CLAUDE.md, sections, knowledge pages), by design: it is read-only and
+// answers one question, project rules are mostly about changing things, which it cannot, and its window is better
+// spent on the question. The task tool's description asks the parent to put what the helper needs in the prompt.
 func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.SessionCreated) tools.Subagent {
 	return func(ctx context.Context, prompt string) (tools.SubagentAnswer, error) {
 		// The child takes no more than the parent has left, tokens and tool calls both, so a task cannot carry the
@@ -59,6 +65,20 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 			hold.Release()
 		}()
 		child.loop.Limit(b)
+		c.mu.Lock()
+		draining := c.draining
+		if !draining {
+			c.children[child.loop] = true // under c.mu, as Drain reads it: a Drain either sees it or came first
+		}
+		c.mu.Unlock()
+		if draining {
+			return tools.SubagentAnswer{}, errors.New("the daemon is shutting down: no helper starts now")
+		}
+		defer func() {
+			c.mu.Lock()
+			delete(c.children, child.loop)
+			c.mu.Unlock()
+		}()
 		reason, err := child.loop.Turn(ctx, prompt)
 		a := tools.SubagentAnswer{Text: lastAnswer(child), Tokens: child.loop.Tokens(), Calls: child.loop.ToolCalls(), Session: string(id)}
 		switch {
@@ -87,4 +107,45 @@ func lastAnswer(s *session) string {
 		return b.String()
 	}
 	return ""
+}
+
+var childLine = regexp.MustCompile(`\[subagent session (s_[0-9A-Za-z]+)\]`)
+
+// orphanCost is what the children of session parent spent that no finished task call in its log names: the child a
+// crash cut off with its task call (tool calls run one at a time, and a child has no task of its own). Crash recovery
+// charges that call with it (closeInterrupted), so the parent's budgets still count it on a resume. Children are found
+// by their SessionCreated.Parent; their own logs are closed by the same recovery.
+func (c *Core) orphanCost(parent proto.SessionID, evs []proto.Event) func() (int, int) {
+	return func() (int, int) {
+		named := map[string]bool{}
+		for _, ev := range evs {
+			if v, err := ev.Decode(); err == nil && ev.Type == proto.EvToolFinished {
+				for _, m := range childLine.FindAllStringSubmatch(v.(proto.ToolFinished).Result, -1) {
+					named[m[1]] = true
+				}
+			}
+		}
+		ids, err := c.opt.Store.Sessions()
+		if err != nil {
+			return 0, 0
+		}
+		tokens, calls := 0, 0
+		for _, id := range ids {
+			if id == parent || named[string(id)] {
+				continue
+			}
+			cevs, err := c.opt.Store.Events(id, 0)
+			if err != nil || len(cevs) == 0 {
+				continue
+			}
+			if v, err := cevs[0].Decode(); err != nil {
+				continue
+			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent {
+				continue
+			}
+			t, n := loop.Spent(cevs)
+			tokens, calls = tokens+t, calls+n
+		}
+		return tokens, calls
+	}
 }

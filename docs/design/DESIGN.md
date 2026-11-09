@@ -481,7 +481,10 @@ Around the turn:
     `internal/core/subagent.go`). The child is its own stored session (`SessionCreated.Parent`) in plan mode, with the
     read-only tools and no `task` of its own. Its budget is `[run] subagent_*`, half the per-turn defaults. It runs on
     the parent turn's context, so a halt reaches it. Its tokens count toward the parent's budgets
-    (`ToolFinished.Tokens`), and the usage table counts them once, from the child's own log.- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
+    (`ToolFinished.Tokens`), and the usage table counts them once, from the child's own log. The child gets no workspace
+    instructions, by design: it is read-only and answers one question; the parent puts what it needs in the prompt. A
+    drain reaches a running child, and crash recovery charges a cut-off task with its child's spend. A child is not
+    counted as a session in the usage table, and a session list (none yet) must leave children out too.- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
   cost and asks first.
 - **Plan mode.** Mutating tools are refused when they run (the tool list itself never changes, §7.2); the model proposes
   a plan; the user approves and the mode changes.
