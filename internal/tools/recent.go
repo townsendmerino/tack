@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	format "github.com/go-git/go-git/v5/plumbing/format/config"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/storage/filesystem/dotgit"
@@ -38,6 +39,9 @@ import (
 //   - renames show as a delete and an add;
 //   - a partial clone's missing object is an error, not a fetch;
 //   - a sparse checkout's per-worktree settings are not applied (readIgnorable).
+//
+// A .git file is followed where it points, as git follows it: a linked worktree's points outside the worktree. Only a
+// directory with a HEAD is read as a repository; anything else is "not a git repository".
 
 const (
 	recentDefault  = 10
@@ -74,14 +78,14 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	repo, err := openRepo(ws.Root())
+	repo, common, err := openRepo(ws.Root())
 	if errors.Is(err, git.ErrRepositoryNotExists) {
 		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
 	}
 	if err != nil {
 		return errorf("could not read this repository: %v", err), nil
 	}
-	text, err := recentText(ctx, repo, ws.Root(), n)
+	text, err := recentText(ctx, repo, common, ws.Root(), n)
 	if ctx.Err() != nil {
 		return Result{}, ctx.Err()
 	}
@@ -91,12 +95,13 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	return Result{Text: text}, nil
 }
 
-// recentText is the tool's text for repo, seen from the workspace root root.
-func recentText(ctx context.Context, repo *git.Repository, root string, n int) (string, error) {
+// recentText is the tool's text for repo, whose common git directory is common, seen from the workspace root root.
+func recentText(ctx context.Context, repo *git.Repository, common, root string, n int) (string, error) {
 	wt, err := repo.Worktree()
 	if err != nil {
 		return "", err
 	}
+	wt.Excludes = append(wt.Excludes, excludes(repo, common)...)
 	// Paths are from the workspace root, which may be below the repository's top.
 	prefix := ""
 	top, _ := filepath.EvalSymlinks(wt.Filesystem.Root())
@@ -104,9 +109,26 @@ func recentText(ctx context.Context, repo *git.Repository, root string, n int) (
 	if rel, err := filepath.Rel(top, here); err == nil && rel != "." {
 		prefix = filepath.ToSlash(rel) + "/"
 	}
-	status, err := wt.Status()
-	if err != nil {
-		return "", err
+	// go-git's Status takes no context and walks the whole worktree: it runs on its own, and a cancelled call returns
+	// at once, leaving it to finish and its answer to be dropped.
+	type answer struct {
+		status git.Status
+		err    error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		st, err := wt.Status()
+		done <- answer{st, err}
+	}()
+	var status git.Status
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case a := <-done:
+		if a.err != nil {
+			return "", a.err
+		}
+		status = a.status
 	}
 	var paths []string
 	for p, st := range status {
@@ -259,10 +281,10 @@ func (s readStorer) Config() (*config.Config, error) {
 // openRepo opens the repository holding root, as git.PlainOpenWithOptions does with DetectDotGit and
 // EnableDotGitCommonDir: the nearest .git at or above root, a directory or a "gitdir:" file, with its commondir. It
 // opens it through readStorer, which go-git's own open has no option for.
-func openRepo(root string) (*git.Repository, error) {
+func openRepo(root string) (repo *git.Repository, common string, err error) {
 	path, err := filepath.Abs(root)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var fi os.FileInfo
 	for {
@@ -270,11 +292,11 @@ func openRepo(root string) (*git.Repository, error) {
 			break
 		}
 		if !os.IsNotExist(err) {
-			return nil, err
+			return nil, "", err
 		}
 		parent := filepath.Dir(path)
 		if parent == path {
-			return nil, git.ErrRepositoryNotExists
+			return nil, "", git.ErrRepositoryNotExists
 		}
 		path = parent
 	}
@@ -282,11 +304,11 @@ func openRepo(root string) (*git.Repository, error) {
 	if !fi.IsDir() {
 		b, err := os.ReadFile(gitDir)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		line, ok := strings.CutPrefix(string(b), "gitdir: ")
 		if !ok {
-			return nil, fmt.Errorf(".git file has no gitdir: line")
+			return nil, "", fmt.Errorf(".git file has no gitdir: line")
 		}
 		line, _, _ = strings.Cut(line, "\n")
 		if gitDir = strings.TrimSpace(line); !filepath.IsAbs(gitDir) {
@@ -294,17 +316,63 @@ func openRepo(root string) (*git.Repository, error) {
 		}
 	}
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		return nil, git.ErrRepositoryNotExists
+		return nil, "", git.ErrRepositoryNotExists
 	}
 	dot := osfs.New(gitDir)
 	var fs billy.Filesystem = dot
+	common = gitDir
 	if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		if common := strings.TrimSpace(string(b)); common != "" {
-			if !filepath.IsAbs(common) {
+		if c := strings.TrimSpace(string(b)); c != "" {
+			if common = c; !filepath.IsAbs(common) {
 				common = filepath.Join(gitDir, common)
 			}
 			fs = dotgit.NewRepositoryFilesystem(dot, osfs.New(common))
 		}
 	}
-	return git.Open(readStorer{filesystem.NewStorage(fs, cache.NewObjectLRUDefault())}, osfs.New(path))
+	repo, err = git.Open(readStorer{filesystem.NewStorage(fs, cache.NewObjectLRUDefault())}, osfs.New(path))
+	return repo, common, err
+}
+
+// excludes is what git status leaves out beyond the worktree's .gitignore files, which go-git reads itself: the
+// repository's info/exclude (in its common directory, so a linked worktree's is its repository's), and the user's
+// excludes file: core.excludesfile from the repository's config, else from ~/.gitconfig, else git's default,
+// ~/.config/git/ignore. These are files of patterns, read and never run.
+func excludes(repo *git.Repository, common string) []gitignore.Pattern {
+	ps := patternsIn(filepath.Join(common, "info", "exclude"))
+	file := ""
+	if cfg, err := repo.Config(); err == nil && cfg.Raw != nil {
+		file = cfg.Raw.Section("core").Option("excludesfile")
+	}
+	if file == "" {
+		if g, err := gitignore.LoadGlobalPatterns(osfs.New("/")); err == nil && len(g) > 0 {
+			return append(ps, g...)
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			file = filepath.Join(home, ".config", "git", "ignore")
+		}
+	}
+	if rest, ok := strings.CutPrefix(file, "~/"); ok {
+		if home, err := os.UserHomeDir(); err == nil {
+			file = filepath.Join(home, rest)
+		}
+	}
+	if file != "" {
+		ps = append(ps, patternsIn(file)...)
+	}
+	return ps
+}
+
+// patternsIn is the gitignore patterns in file, none when it cannot be read.
+func patternsIn(file string) []gitignore.Pattern {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	var ps []gitignore.Pattern
+	for l := range strings.SplitSeq(string(b), "\n") {
+		if l = strings.TrimRight(l, "\r"); strings.TrimSpace(l) != "" && !strings.HasPrefix(l, "#") {
+			ps = append(ps, gitignore.ParsePattern(l, nil))
+		}
+	}
+	return ps
 }
