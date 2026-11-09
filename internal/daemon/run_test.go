@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -401,5 +402,38 @@ func TestTheDaemonsLogTakesWritesAtOnce(t *testing.T) {
 	}
 	if SyncWriter(w) != w {
 		t.Fatal("SyncWriter wrapped a writer it had made already")
+	}
+}
+
+// TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting: a connection the daemon accepted just before its shutdown
+// cannot be initialized in the moment between the listener closing and the drain: the core refuses it from before
+// the listener closes, so the client goes on to the next daemon instead of starting work on this one.
+func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
+	dir := shortDir(t)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, runOptions(t, dir)) }()
+	dialSoon(t, dir).Close()
+	nc, err := net.Dial("unix", SocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	late := core.NewClient(nc)
+	if err := late.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); err != nil {
+		t.Fatal(err) // the daemon has accepted it and serves it
+	}
+	var initErr error
+	stopHook = func() { // the listener has just closed; the drain has not begun
+		initErr = late.Call(proto.MethodInitialize, proto.InitializeParams{Client: testClient, Protocol: proto.Version}, nil)
+	}
+	t.Cleanup(func() { stopHook = nil })
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if !errors.As(initErr, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("an initialize as the daemon stopped accepting: %v; want code %d", initErr, proto.CodeShuttingDown)
 	}
 }

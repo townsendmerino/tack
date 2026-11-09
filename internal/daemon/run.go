@@ -87,10 +87,16 @@ func Run(ctx context.Context, o RunOptions) error {
 	case serveErr = <-served:
 		served = nil
 	}
-	// Stop accepting first: closing the listener marks the record stopping, then unlinks the socket, so a new client
-	// starts the next daemon, which waits for this one's lock (takeLock), instead of reaching one that refuses it. The
-	// connections already open stay, and see their turns drain.
+	// Refuse new work, then stop accepting. The core refuses initialize and new turns from the first step, so a
+	// connection the listener accepted just before it closes goes on to the next daemon (Dial) instead of starting
+	// work here. Closing the listener marks the record stopping, then unlinks the socket, so a new client starts the
+	// next daemon, which waits for this one's lock (takeLock). The connections already open stay, and see their turns
+	// drain.
+	c.BeginDrain()
 	ln.Close()
+	if stopHook != nil {
+		stopHook()
+	}
 	fmt.Fprintf(log, "tack daemon: shutting down; no new connections; running tool calls have %s to finish\n", o.Grace)
 	if cancelled := c.Drain(o.Grace); len(cancelled) > 0 {
 		fmt.Fprintf(log, "tack daemon: cancelled the turns of %v after the grace window\n", cancelled)
@@ -127,3 +133,6 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// stopHook, when set (tests), runs in Run's shutdown once it has stopped accepting, before the drain.
+var stopHook func()
