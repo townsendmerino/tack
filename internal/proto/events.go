@@ -380,6 +380,9 @@ type Compaction struct {
 	After      int            `json:"after"`
 	Summary    string         `json:"summary,omitempty"`
 	Summarized []int64        `json:"summarized,omitempty"`
+	// Body is the summary's body (the summarizer's text under its fixed headings, "" for a fallback with none): the next
+	// summary's previous body, recorded rather than parsed back out of Summary, which holds the user's own text first.
+	Body string `json:"body,omitempty"`
 }
 
 // MaskedResult is one tool result a compaction replaced: the call's ID and the stub sent in its place.

@@ -383,9 +383,13 @@ func (cn *conn) fanOut(v any) error {
 		if sent, err := cn.offer(v, min(cn.catchUpWait, max(time.Until(until), 0))); sent || err != nil {
 			return err
 		}
-		if cn.progress.Load() == bytes || !time.Now().Before(until) {
-			cn.drop()
+		if cn.progress.Load() == bytes {
+			cn.drop() // no byte written in a catchUpWait: it stopped reading
 			return errDropped
+		}
+		if !time.Now().Before(until) { // still reading, but its time is up: an ordinary wait, as any connection gets
+			cn.catchingUp.Store(false)
+			return cn.sendWithin(v, cn.fanOutWait)
 		}
 	}
 }

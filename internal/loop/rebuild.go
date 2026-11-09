@@ -97,7 +97,7 @@ func rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 					return nil, st, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 				}
 				cuts.summarized(keep)
-				st.to, st.body = slices.Max(p.Summarized), bodyOf(p.Summary)
+				st.to, st.body = slices.Max(p.Summarized), p.Body // recorded, not parsed: the user's text comes first in Summary
 			}
 		case proto.ErrorEvent:
 			if p.Class == NoToolCallClass {
