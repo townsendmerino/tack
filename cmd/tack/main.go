@@ -58,7 +58,8 @@ func usage(w io.Writer) {
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
   tack halt [-reason TEXT]        stop every running turn and command; refuse new turns
   tack resume                     lift a halt
-  tack usage [-since 7d|DATE|all] the usage table: requests and tokens by day and model server
+  tack usage [-since 7d|DATE|all] [-utc] [-config PATH]
+                                  the usage table: requests and tokens by day and model server
   tack rewind [-yes [-no-undo]] <session> [seq]
                                   list a session's checkpoints, or put the files back as they were at one
   tack version

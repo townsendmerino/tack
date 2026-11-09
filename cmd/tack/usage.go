@@ -55,21 +55,15 @@ func usageCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack usage:", err)
 		return exitError
 	}
-	logs := map[proto.SessionID][]proto.Event{}
+	// Each log streams through the table one event at a time: only the table is held, never a log.
+	acc := usagetable.NewAcc(since, loc)
 	for _, id := range ids {
-		evs, err := st.Events(id, 0)
-		if err != nil {
-			fmt.Fprintln(stderr, "tack usage:", err)
+		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
+			fmt.Fprintf(stderr, "tack usage: session %s: %v\n", id, err)
 			return exitError
 		}
-		logs[id] = evs
 	}
-	rows, err := usagetable.Table(logs, since, loc)
-	if err != nil {
-		fmt.Fprintln(stderr, "tack usage:", err)
-		return exitError
-	}
-	usagetable.Print(stdout, rows)
+	usagetable.Print(stdout, acc.Rows())
 	return exitOK
 }
 

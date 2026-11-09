@@ -80,15 +80,26 @@ func TestTableGroupsByTheGivenZone(t *testing.T) {
 	}
 }
 
+// TestPrintMarksWhatIsUnknown: each of the reuse and prefill columns says "—" when no request reported it and how many
+// did when some did, independently of the other.
 func TestPrintMarksWhatIsUnknown(t *testing.T) {
 	var b bytes.Buffer
-	Print(&b, []Row{{Day: "2026-11-08", Server: "ollama", Sessions: 1, Requests: 2, Prompt: 10, WallMS: 1500},
-		{Day: "2026-11-08", Server: "goinfer", Sessions: 1, Requests: 2, Prompt: 100, Known: 1, KnownPrompt: 50, Reused: 25, PrefillKnown: 1, PrefillMS: 1200}})
+	Print(&b, []Row{{Day: "2026-11-08", Server: "none", Sessions: 1, Requests: 2, Prompt: 10, WallMS: 1500},
+		{Day: "2026-11-08", Server: "reuse-only", Sessions: 1, Requests: 2, Prompt: 100, Known: 1, KnownPrompt: 50, Reused: 25},
+		{Day: "2026-11-08", Server: "prefill-only", Sessions: 1, Requests: 4, Prompt: 100, PrefillKnown: 1, PrefillMS: 1200}})
 	out := b.String()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 5 || !strings.Contains(lines[1], "—") || !strings.Contains(lines[2], "50% (1/2)") || !strings.Contains(lines[2], "1.2") ||
-		!strings.HasPrefix(lines[4], "total") {
-		t.Errorf("table:\n%s", out)
+	col := func(line string, n int) string { return strings.Fields(strings.ReplaceAll(line, " (", "_("))[n] }
+	if len(lines) != 6 || !strings.HasPrefix(lines[5], "total") {
+		t.Fatalf("table:\n%s", out)
+	}
+	for _, c := range []struct {
+		line           int
+		reuse, prefill string
+	}{{1, "—", "—"}, {2, "50%_(1/2)", "—"}, {3, "—", "1.2_(1/4)"}} {
+		if r, p := col(lines[c.line], 6), col(lines[c.line], 7); r != c.reuse || p != c.prefill {
+			t.Errorf("line %d: reuse %q prefill %q, want %q %q\n%s", c.line, r, p, c.reuse, c.prefill, out)
+		}
 	}
 	b.Reset()
 	if Print(&b, nil); !strings.Contains(b.String(), "(no requests in range)") {
