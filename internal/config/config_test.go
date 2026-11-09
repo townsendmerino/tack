@@ -223,6 +223,31 @@ func TestDaemonSettings(t *testing.T) {
 	}
 }
 
+// TestServeSettings: [serve] names a goinfer-child to run on demand, needs a key file, unloads after 15m idle by
+// default, and checks goinfer's timing lock at ~/.goinfer-timing.lock unless told otherwise.
+func TestServeSettings(t *testing.T) {
+	const child = "[servers.local]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 16384\n"
+	c, err := load(t, child+"[serve]\nserver = \"local\"\nkey_file = \"~/k\"\nlisten = \"100.64.0.2:8091\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	s := c.Serve
+	if s == nil || s.IdleUnload.Duration != 15*time.Minute || s.KeyFile != filepath.Join(home, "k") || s.TimingLock != filepath.Join(home, ".goinfer-timing.lock") {
+		t.Fatalf("serve = %+v; want the defaults", s)
+	}
+	for name, c := range map[string]struct{ body, want string }{
+		"no server":     {child + "[serve]\nkey_file = \"/k\"\n", "serve.server"},
+		"not a child":   {child + "[servers.r]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\n[serve]\nserver = \"r\"\nkey_file = \"/k\"\n", "goinfer-child"},
+		"no key":        {child + "[serve]\nserver = \"local\"\n", "key_file"},
+		"negative idle": {child + "[serve]\nserver = \"local\"\nkey_file = \"/k\"\nidle_unload = \"-1m\"\n", "idle_unload"},
+	} {
+		if _, err := load(t, "main = \"local\"\n"+c.body); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error naming %s", name, err, c.want)
+		}
+	}
+}
+
 // TestStateDirWithDotDotIsRefused: state_dir may not hold "..", which the daemon and the sandbox would resolve
 // differently after a symlink.
 func TestStateDirWithDotDotIsRefused(t *testing.T) {
