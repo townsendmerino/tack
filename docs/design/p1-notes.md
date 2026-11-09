@@ -38,6 +38,15 @@ The order the owner approved, each step with its exit check:
    - **Decided** (ADR-007, 2026-11-08; proposed in DESIGN §2.5, 2026-10-29): read `.agents/knowledge/` files when the repo has them, on demand like
      rule sections. Writing learnings back waits for edit approval and is not in this step.
 6. **Compaction, subagents, the usage table.**
+   - **The summarizing step (DESIGN §7.6), in slices behind default-off `[run]` settings** (coordinator, 2026-11-09,
+     logged for the owner, who can overrule before the E1 registration):
+     - **Trigger:** summarize when masking at 75% of the window cannot bring the prompt under 75%; the oldest half of
+       the turns before the last 3 requests is summarized. §7.6's dead-weight trigger waits for P2's ledger.
+     - **The record:** `proto.Compaction` gains `Summary` and `Summarized` (the seqs replaced), fields added only.
+     - **The place:** the summary is the first user message after the system prompt, with the task word for word in
+       it; the system prompt stays byte-identical.
+     - **Built so far:** the anchor list, the fallback summary and the headings check (`internal/loop/summary.go`), with
+       no model call and nothing wired.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time; caching in `index.db` and the protocol's
