@@ -450,11 +450,12 @@ func TestCloseIsFinal(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatalf("a second Close: %v", err)
 	}
-	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err == nil {
-		t.Fatal("a closed Core reopened a session")
+	var pe *proto.Error
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("subscribe on a closed Core: %v, want code %d", err, proto.CodeShuttingDown)
 	}
-	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); err == nil {
-		t.Fatal("a closed Core made a session")
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeShuttingDown {
+		t.Fatalf("session/new on a closed Core: %v, want code %d", err, proto.CodeShuttingDown)
 	}
 	l, err := st.OpenLog(sess.Session)
 	if err != nil {

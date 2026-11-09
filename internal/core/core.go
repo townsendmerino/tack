@@ -320,7 +320,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 		version, ok := proto.Negotiate(p.Protocol, proto.Version)
 		if !ok {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
-				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d and %d", p.Protocol, proto.Version, proto.Version-1)}
+				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %s", p.Protocol, spoken())}
 		}
 		if p.Token != "" {
 			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
@@ -340,7 +340,11 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		id, err := c.newSession(p)
-		if err != nil {
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe):
+			return nil, pe // errClosed
+		case err != nil:
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: err.Error()}
 		}
 		return proto.SessionNewResult{Session: id}, nil
@@ -432,7 +436,7 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
-		return "", errors.New("the daemon is closing")
+		return "", errClosed
 	}
 	if madeHook != nil {
 		madeHook()
