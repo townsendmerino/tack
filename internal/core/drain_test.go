@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -272,5 +274,68 @@ func TestTickReachesTheSources(t *testing.T) {
 	}
 	if err := c.Tick(context.Background()); err != nil || ticks.Load() != 1 {
 		t.Fatalf("Tick with the session's source: %v, %d ticks; want 1", err, ticks.Load())
+	}
+}
+
+// TestAFirstLoadIsAnnounced: a turn on an on-demand server waits for its load, and the session's subscribers hear
+// "loading model on <server>" before the request goes out, then ready (DESIGN §8.2, §10), as live events.
+func TestAFirstLoadIsAnnounced(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := goinfertest.NewScripted("m", 16384, goinfertest.Says("loaded and answering"))
+	var mu sync.Mutex
+	state, polls := "idle", 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/tack/start":
+			state = "loading"
+		case "/tack/status":
+			if state == "loading" {
+				if polls++; polls > 2 {
+					state = "ready"
+				}
+			}
+		default:
+			model.ServeHTTP(w, r)
+			return
+		}
+		fmt.Fprintf(w, `{"state":%q}`, state)
+	}))
+	t.Cleanup(ts.Close)
+	_, cl, events := daemonOn(t, st, ts.URL, func(o *Options) {
+		o.Source = func(string) (models.Source, error) {
+			s := models.NewOnDemand("nobara", ts.URL, "", "", nil, nil, nil)
+			s.Poll = time.Millisecond
+			return s, nil
+		}
+	})
+	var sess proto.SessionNewResult
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sess.Session, Content: []proto.ContentBlock{proto.Text("hi")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, ev := range untilTurnEnd(t, events) {
+		switch ev.Type {
+		case proto.EvModelStatus:
+			v, _ := ev.Decode()
+			ms := v.(proto.ModelStatus)
+			seen = append(seen, ms.State+": "+ms.Message)
+		case proto.EvRequestSent:
+			seen = append(seen, "request")
+		}
+	}
+	got := strings.Join(seen, " | ")
+	if got != "loading: loading model on nobara | ready:  | request" {
+		t.Fatalf("the turn's status events: %q; want loading model on nobara once, then ready, before the request", got)
 	}
 }

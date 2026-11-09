@@ -240,3 +240,23 @@ after A1, possibly with tack's forced-call loop on the Q&A run.
     - `TestSweepTouchesNothingElse`: a sweep spares unsandboxed processes and other sessions.
     - `TestCancelReachesDetachedProcesses`: the same escape through the real shell child.
 - **Open:** `daemon.resumed` waits for the daemon; until then no session is running to record it in.
+
+## Step 4: nobara on demand, as built (2026-11-08; the shape is a proposal awaiting the owner)
+
+- **Why a tack process on nobara.** goinfer-serve takes no socket from systemd, has no idle exit, and does not check
+  the timing lock. If systemd started it directly, tack could not tell "busy" from "down", and the idle timeout could
+  not be a `config.toml` setting. So the socket unit starts `tack serve` instead (`internal/serve`,
+  `deploy/nobara/`). It does three things:
+  - It checks goinfer's timing lock before it starts anything, and answers busy, naming the holder.
+  - It runs goinfer-serve as a supervised child on loopback, with admission, and proxies to it under the child's own
+    key.
+  - It unloads and exits after `[serve] idle_unload` (15 minutes by default). systemd keeps the socket.
+- **The fallback** is `tack serve -detach` over ssh. It exits 75 while the lock is held. The Mac runs it as the
+  `start` argv of the remote server, never through a local shell.
+- **The Mac side** is `models.OnDemand` (`on_demand = true` on a `goinfer-remote`). It asks `/tack/status`, starts an
+  idle server, and waits while it loads, telling the turn's subscribers through the live `model.status` event. tack
+  run prints "loading model on nobara", and `internal/tui.Status` shows it in the status line. A busy box is a
+  `BusyError` that names the holder and offers this machine's own servers (`tack run --server mac`).
+- **Not done here:**
+  - installing the units on nobara;
+  - changing the night queue's hook to stop the socket as well. Its README says why: night.py holds the lock per job.

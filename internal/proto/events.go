@@ -44,6 +44,7 @@ const (
 	EvCompaction          EventType = "compaction"
 	EvCheckpoint          EventType = "checkpoint"
 	EvRewind              EventType = "rewind"
+	EvModelStatus         EventType = "model.status"
 )
 
 // EventSpec describes an event type: its payload, whether the log persists it (live-only events are streamed and
@@ -58,6 +59,7 @@ type EventSpec struct {
 // EventTypes is every event type this build emits. The store, the fixtures' conformance test and the Swift generator
 // read it.
 var EventTypes = map[EventType]EventSpec{
+	EvModelStatus:         {reflect.TypeFor[ModelStatus](), false, false},  // live only, for the status line
 	EvSessionCreated:      {reflect.TypeFor[SessionCreated](), true, true}, // the first event of every log
 	EvUserMessage:         {reflect.TypeFor[UserMessage](), true, true},    // opens a turn
 	EvContextAssembled:    {reflect.TypeFor[ContextAssembled](), true, false},
@@ -78,6 +80,15 @@ var EventTypes = map[EventType]EventSpec{
 	EvCompaction:          {reflect.TypeFor[Compaction](), true, false},
 	EvCheckpoint:          {reflect.TypeFor[Checkpoint](), true, false},
 	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
+}
+
+// ModelStatus is how a session's model server stands while a turn waits on it (DESIGN §8.2, §10), live only, for the
+// status line: State "loading", with Message such as "loading model on nobara", while it starts and loads, and
+// "ready" once it serves.
+type ModelStatus struct {
+	Server  string `json:"server"`
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
 }
 
 // SessionCreated is the first event of every session's log: what the session was made with, so a daemon that did not

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,6 +100,45 @@ func TestRunDaemonRefusesInProcessFlags(t *testing.T) {
 		if code := dispatch(args, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "in this process only") {
 			t.Errorf("run --daemon %v: exit %d, %q", flags, code, errb.String())
 		}
+	}
+}
+
+// TestRunSaysTheModelIsLoading: tack run on an on-demand server waits for its load and says so on stderr, as the
+// status line will: "loading model on <server>".
+func TestRunSaysTheModelIsLoading(t *testing.T) {
+	model := goinfertest.NewScripted("m", 16384, goinfertest.Says("loaded"))
+	var mu sync.Mutex
+	state := "idle"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/tack/start":
+			state = "loading"
+		case "/tack/status":
+			if state == "loading" {
+				state = "ready"
+				w.Write([]byte(`{"state":"loading"}`))
+				return
+			}
+		default:
+			model.ServeHTTP(w, r)
+			return
+		}
+		w.Write([]byte(`{"state":"` + state + `"}`))
+	}))
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	f.WriteString("on_demand = true\n")
+	f.Close()
+	ws := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"run", "--config", cfg, "--workspace", ws, "hi"}, &out, &errb); code != exitOK {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "tack: loading model on local") || !strings.Contains(out.String(), "loaded") {
+		t.Fatalf("stderr %q, stdout %q; want the load announced, then the answer", errb.String(), out.String())
 	}
 }
 

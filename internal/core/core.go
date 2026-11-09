@@ -881,8 +881,15 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 		return nil, &proto.Error{Code: proto.CodeInternalError, Message: err.Error()}
 	}
+	// A source that has to start or load first (an on-demand server) says how it stands; subscribers hear it live, for
+	// the status line's "loading model on nobara" (DESIGN §8.2, §10).
+	tctx := models.WithStatus(ctx, func(server, state, msg string) {
+		if ev, err := proto.NewEvent(0, time.Now(), proto.EvModelStatus, 0, proto.ModelStatus{Server: server, State: state, Message: msg}); err == nil {
+			s.emit(ev)
+		}
+	})
 	go func() {
-		_, _ = s.loop.Run(ctx)
+		_, _ = s.loop.Run(tctx)
 		cancel(nil)
 		if h := turnEndHook.Load(); h != nil {
 			(*h)()

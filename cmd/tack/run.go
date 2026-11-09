@@ -308,6 +308,10 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 			fmt.Fprintf(stderr, "  %s, %d lines\n", e.Outcome, strings.Count(e.Result, "\n"))
 		case proto.Checkpoint:
 			warnNoRewind(stderr, noRewind, e.Unavailable)
+		case proto.ModelStatus:
+			if e.State == "loading" && e.Message != "" {
+				fmt.Fprintf(stderr, "tack: %s\n", e.Message)
+			}
 		case proto.ErrorEvent:
 			fmt.Fprintf(stderr, "tack: %s error: %s\n", e.Class, e.Message)
 		case proto.DaemonHalted:

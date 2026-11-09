@@ -91,6 +91,12 @@ type Server struct {
 	URL string `toml:"url"`
 	// TokenFile holds the server's bearer token (mode 0600). The Keychain replaces it (DESIGN §5.3).
 	TokenFile string `toml:"token_file"`
+	// OnDemand says the server is tack serve (DESIGN §8.2): started when a session needs it, waited on while it loads,
+	// and busy while a timed run holds the box. Start, when set, is the command that starts it when nothing answers
+	// (tack serve -detach over ssh, run as these arguments, never through a local shell); without it, systemd's socket
+	// activation on the box starts it at the first connection.
+	OnDemand bool     `toml:"on_demand"`
+	Start    []string `toml:"start"`
 
 	// Sampling sent with every request, for either kind; unset leaves goinfer's default (or the model's own, where its
 	// GGUF recommends one).
@@ -304,8 +310,8 @@ func (c *Config) validate() error {
 			if s.Binary == "" || s.ModelPath == "" || s.Ctx <= 0 {
 				return fmt.Errorf("servers.%s: a %s needs binary, model_path and ctx", name, KindChild)
 			}
-			if s.URL != "" || s.TokenFile != "" {
-				return fmt.Errorf("servers.%s: url and token_file are for %s", name, KindRemote)
+			if s.URL != "" || s.TokenFile != "" || s.OnDemand || len(s.Start) > 0 {
+				return fmt.Errorf("servers.%s: url, token_file, on_demand and start are for %s", name, KindRemote)
 			}
 			if s.Model == "" {
 				s.Model = strings.TrimSuffix(filepath.Base(s.ModelPath), ".gguf")
@@ -322,6 +328,9 @@ func (c *Config) validate() error {
 		case KindRemote:
 			if s.URL == "" {
 				return fmt.Errorf("servers.%s: a %s needs url", name, KindRemote)
+			}
+			if len(s.Start) > 0 && !s.OnDemand {
+				return fmt.Errorf("servers.%s: start is for a server with on_demand = true", name)
 			}
 			if s.Binary != "" || s.ModelPath != "" || s.Ctx != 0 || len(s.Args) > 0 {
 				return fmt.Errorf("servers.%s: binary, model_path, ctx and args are for %s", name, KindChild)
