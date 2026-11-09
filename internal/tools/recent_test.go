@@ -182,14 +182,14 @@ func TestRecentlyChangedRunsNoFilterOrGPG(t *testing.T) {
 	}
 }
 
-// TestRecentlyChangedPathsInASubdirectory: renamed and quoted paths are from the workspace root, both sides of a
-// rename.
+// TestRecentlyChangedPathsInASubdirectory: paths, quoted ones too, are from the workspace root; with rename detection
+// off (it would read old blobs), a staged rename is its delete and its add.
 func TestRecentlyChangedPathsInASubdirectory(t *testing.T) {
 	root := gitRepo(t)
 	gitIn(t, root, "mv", "sub/b.go", "sub/c.go")
 	os.WriteFile(filepath.Join(root, "sub", "a b.go"), []byte("package a\n"), 0o644)
 	r := recent(t, filepath.Join(root, "sub"), `{}`)
-	if !strings.Contains(r.Text, "R  b.go -> c.go") || !strings.Contains(r.Text, "?? a b.go") || strings.Contains(r.Text, "sub/") {
+	if !strings.Contains(r.Text, "D  b.go") || !strings.Contains(r.Text, "A  c.go") || !strings.Contains(r.Text, "?? a b.go") || strings.Contains(r.Text, "sub/") {
 		t.Errorf("subdirectory paths:\n%s", r.Text)
 	}
 }
@@ -239,5 +239,65 @@ func TestRecentlyChangedCutsTheLogOnItsOwnCount(t *testing.T) {
 	log, _, cut := strings.Cut(log, "\n[… more; ask for fewer commits]")
 	if n := strings.Count(log, "\n") + 1; !cut || n != recentMaxLines {
 		t.Errorf("the log shows %d lines (cut %v), want %d", n, cut, recentMaxLines)
+	}
+}
+
+// TestRecentlyChangedRunsNothingInSubmodulesOrFetches: a submodule whose own config names a clean filter for a
+// stat-dirty file, and a partial clone whose promisor remote is a helper program that a rename's missing blob would
+// fetch through, run neither.
+func TestRecentlyChangedRunsNothingInSubmodulesOrFetches(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	bin := t.TempDir()
+	prog := filepath.Join(bin, "prog.sh")
+	os.WriteFile(prog, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755)
+	os.WriteFile(filepath.Join(bin, "git-remote-evil"), []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o755)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// A submodule with a filter of its own.
+	inner := gitRepo(t)
+	os.WriteFile(filepath.Join(inner, ".gitattributes"), []byte("*.txt filter=sub\n"), 0o644)
+	os.WriteFile(filepath.Join(inner, "f.txt"), []byte("hi\n"), 0o644)
+	gitIn(t, inner, "add", ".gitattributes", "f.txt")
+	gitIn(t, inner, "commit", "-q", "-m", "f")
+	root := gitRepo(t)
+	gitIn(t, root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "mod")
+	gitIn(t, root, "commit", "-q", "-m", "add mod")
+	gitIn(t, filepath.Join(root, "mod"), "config", "filter.sub.clean", prog)
+	time.Sleep(1100 * time.Millisecond)
+	os.WriteFile(filepath.Join(root, "mod", "f.txt"), []byte("hi\n"), 0o644) // stat-dirty in the submodule
+	recent(t, root, `{}`)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the submodule's filter ran")
+	}
+
+	// A promisor remote that is a program, and a rename whose old blob is missing.
+	lazy := gitRepo(t)
+	big := strings.Repeat("line of text\n", 50)
+	os.WriteFile(filepath.Join(lazy, "r.go"), []byte(big), 0o644)
+	gitIn(t, lazy, "add", "r.go")
+	gitIn(t, lazy, "commit", "-q", "-m", "r")
+	blob := gitIn(t, lazy, "rev-parse", "HEAD:r.go")
+	gitIn(t, lazy, "mv", "r.go", "s.go")
+	os.WriteFile(filepath.Join(lazy, "s.go"), []byte(big+"one more\n"), 0o644)
+	gitIn(t, lazy, "add", "s.go")
+	for _, kv := range [][2]string{{"remote.origin.url", "evil::x"}, {"remote.origin.promisor", "true"}, {"extensions.partialClone", "origin"}} {
+		gitIn(t, lazy, "config", kv[0], kv[1])
+	}
+	os.Remove(filepath.Join(lazy, ".git", "objects", blob[:2], blob[2:]))
+	recent(t, lazy, `{}`)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a lazy fetch ran the promisor remote's helper")
+	}
+}
+
+// TestRecentlyChangedReportsWhatWentWrong: a cancelled call is cancelled, not "not a git repository".
+func TestRecentlyChangedReportsWhatWentWrong(t *testing.T) {
+	root := gitRepo(t)
+	ws, _ := NewWorkspace(root)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r, err := recentTool{}.Run(ctx, ws, json.RawMessage(`{}`))
+	if err == nil && strings.Contains(r.Text, "not a git repository") {
+		t.Errorf("a cancelled call was reported as no repository: %+v", r)
 	}
 }

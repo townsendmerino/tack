@@ -23,10 +23,15 @@ import (
 //   - signature checks, which run gpg.program;
 //   - the clean, smudge and process commands of every filter driver the config names. git status hashes a stat-dirty
 //     file through its clean filter. The cost: a stat-dirty file under a filter (git-lfs's, for one) can show as
-//     modified when it is not.
+//     modified when it is not;
+//   - submodules, whose own configs could do all of the above: status does not recurse into them;
+//   - fetching: a partial clone's promisor remote is fetched from when a blob is missing, through any remote helper its
+//     URL names. No transport is allowed (protocol.allow=never), GIT_NO_LAZY_FETCH is set, and rename detection, the
+//     reader of old blobs here, is off.
 //
-// The environment's GIT_* variables are dropped, so the run sees only the workspace's repository, and LC_ALL=C keeps
-// git's messages in English.
+// Only the repository's own config is read: not the system's (GIT_CONFIG_NOSYSTEM) and not the user's (GIT_CONFIG_GLOBAL
+// is /dev/null). The environment's GIT_* variables are dropped, so the run sees only the workspace's repository, and
+// LC_ALL=C keeps git's messages in English.
 
 const (
 	recentDefault  = 10
@@ -63,14 +68,20 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	root := ws.Root()
 	g, err := newGit(ctx, root)
 	if err != nil {
-		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
+		return Result{}, err
 	}
 	prefix, err := g.run(ctx, "rev-parse", "--show-prefix")
-	if err != nil {
+	switch {
+	case ctx.Err() != nil:
+		return Result{}, ctx.Err()
+	case err != nil && strings.Contains(err.Error(), "not a git repository"):
 		return errorf("this workspace is not a git repository, so there is no history; use glob and grep instead"), nil
+	case err != nil:
+		return errorf("git could not read this repository: %v", err), nil
 	}
 	prefix = strings.TrimSpace(prefix)
-	status, err := g.run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", ".")
+	status, err := g.run(ctx, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=all",
+		"--no-renames", "--", ".")
 	if err != nil {
 		return Result{}, err
 	}
@@ -91,7 +102,7 @@ func (recentTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage)
 	log := ""
 	if _, err := g.run(ctx, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil { // a repository with no commits has no HEAD yet
 		if log, err = g.run(ctx, "log", "-n", fmt.Sprint(n), "--relative", "--date=short", "--format=%h %ad %s",
-			"--name-status", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--no-color", "--", "."); err != nil {
+			"--name-status", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--no-color", "--", "."); err != nil {
 			return Result{}, err
 		}
 	}
@@ -145,8 +156,12 @@ type gitRun struct {
 // newGit reads the names of the filter drivers git's config defines, so each run can blank their commands.
 func newGit(ctx context.Context, root string) (*gitRun, error) {
 	g := &gitRun{root: root, args: []string{"-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "diff.external=",
-		"-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false"}}
+		"-c", "core.hooksPath=/dev/null", "-c", "log.showSignature=false", "-c", "protocol.allow=never",
+		"-c", "submodule.recurse=false", "-c", "diff.ignoreSubmodules=all", "-c", "status.submoduleSummary=false"}}
 	list, err := g.exec(ctx, "config", "--null", "--get-regexp", `^filter\.`)
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") { // 1: no such keys
 		return nil, err
 	}
@@ -182,7 +197,8 @@ func (g *gitRun) exec(ctx context.Context, args ...string) (string, error) {
 			cmd.Env = append(cmd.Env, e)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_NO_LAZY_FETCH=1")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
