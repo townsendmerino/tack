@@ -38,11 +38,12 @@ func (c *Conn) Close() error { return c.nc.Close() }
 //
 // A daemon that shuts down between the dial and the initialize refuses it: with the connection closed (core.ErrClosed)
 // once its drain is over, since it closes its connections before it lets go of the lock, or with CodeShuttingDown
-// while it drains, as it takes no new turn. Dial then starts over, once, as it began: with spawn, and waiting up to
-// wait for a socket, which the next daemon binds once the draining one has let go.
+// while it drains, as it takes no new turn. Its socket may still be bound then, and would refuse again, so Dial first
+// waits for that socket to go or the lock to be free (awaitGone). It then starts over, once, as it began: with spawn,
+// and waiting up to wait for a socket, which the next daemon binds once the draining one has let go.
 func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait time.Duration) (*Conn, error) {
 	path := SocketPath(stateDir)
-	nc, err := connect(path, spawn, wait)
+	nc, sock, err := connect(path, spawn, wait)
 	for attempt := 1; ; attempt++ {
 		if err != nil {
 			return nil, err
@@ -58,7 +59,8 @@ func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait tim
 		going := errors.Is(err, core.ErrClosed) || errors.As(err, &pe) && pe.Code == proto.CodeShuttingDown
 		if going && attempt == 1 { // the daemon went, or is going, as this client reached it
 			nc.Close()
-			nc, err = connect(path, spawn, wait)
+			awaitGone(stateDir, sock, wait)
+			nc, sock, err = connect(path, spawn, wait)
 			continue
 		}
 		if err != nil {
@@ -71,33 +73,62 @@ func Dial(stateDir string, client proto.ClientInfo, spawn func() error, wait tim
 
 // connect dials the socket at path. When no daemon answers and spawn is not nil, it calls spawn once and waits up to
 // wait for the socket; with spawn nil it waits up to wait for one that is starting, and then returns ErrNotRunning.
-func connect(path string, spawn func() error, wait time.Duration) (net.Conn, error) {
+// With the connection it returns the socket file it dialed, as stat saw it just before the dial (nil if it could not).
+func connect(path string, spawn func() error, wait time.Duration) (net.Conn, fs.FileInfo, error) {
+	sock, _ := os.Stat(path)
 	nc, err := net.Dial("unix", path)
 	if err == nil {
-		return nc, nil
+		return nc, sock, nil
 	}
 	if !notRunning(err) {
-		return nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
+		return nil, nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
 	}
 	if spawn != nil {
 		if err := spawn(); err != nil {
-			return nil, fmt.Errorf("daemon: starting it: %w", err)
+			return nil, nil, fmt.Errorf("daemon: starting it: %w", err)
 		}
 	}
 	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
+		sock, _ = os.Stat(path)
 		if nc, err = net.Dial("unix", path); err == nil {
-			return nc, nil
+			return nc, sock, nil
 		}
 		if !notRunning(err) {
-			return nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
+			return nil, nil, fmt.Errorf("daemon: connecting to %s: %w", path, err)
 		}
 	}
 	if spawn != nil {
-		return nil, fmt.Errorf("daemon: started it, but %s did not answer within %s: %w", path, wait, err)
+		return nil, nil, fmt.Errorf("daemon: started it, but %s did not answer within %s: %w", path, wait, err)
 	}
-	return nil, fmt.Errorf("%w (%s: %v)", ErrNotRunning, path, err)
+	return nil, nil, fmt.Errorf("%w (%s: %v)", ErrNotRunning, path, err)
+}
+
+// awaitGone waits for the daemon in stateDir that refused this client to go: until the socket file sock is no longer at
+// its path (unlinked, or replaced by the next daemon's) or no daemon holds the lock. It waits up to wait, or to the
+// stopping record's Until when that is later; past that it returns anyway, and the dial that follows decides. With
+// sock nil it waits for the lock alone.
+func awaitGone(stateDir string, sock fs.FileInfo, wait time.Duration) {
+	path := SocketPath(stateDir)
+	deadline := time.Now().Add(wait)
+	for {
+		if sock != nil {
+			if now, err := os.Stat(path); err != nil || !os.SameFile(sock, now) {
+				return
+			}
+		}
+		if LockFree(stateDir) {
+			return
+		}
+		if h := ReadHolder(stateDir); h.Stopping && h.Until.After(deadline) {
+			deadline = h.Until
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // dialHook, when set (tests), runs in Dial between the connection and its initialize.
