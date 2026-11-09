@@ -205,3 +205,55 @@ func TestKnowledgeIndexAndInstructionsStayInTheBudget(t *testing.T) {
 		t.Error("a file over what is left is loaded whole")
 	}
 }
+
+// TestKnowledgeIndexWithNoRoomIsEmpty: when not one page line fits, there is no index at all, not a header over
+// "[… N more pages]".
+func TestKnowledgeIndexWithNoRoomIsEmpty(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(16384)
+	b.Used = b.Limit - 55 // room for the header and its "more pages" line, not for a page line too
+	if idx := NewKnowledge(root, pages, 16384, b).Index(); idx != "" {
+		t.Errorf("index %q", idx)
+	}
+}
+
+// TestKnowledgeNeverPassesTheBudget: a notice that does not fit what is left is not given, so the budget is never
+// passed; it is given at a later call once it fits.
+func TestKnowledgeNeverPassesTheBudget(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(16384)
+	k := NewKnowledge(root, pages, 16384, b)
+	b.Used = b.Limit - 3
+	k.ForCall("c1", "read", editOf("internal/loop/loop.go"))
+	if b.Used > b.Limit {
+		t.Fatalf("used %d of %d", b.Used, b.Limit)
+	}
+	b.Used = 0
+	if s := k.ForCall("c2", "read", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn") || !strings.Contains(s, "stale.md is possibly out of date") {
+		t.Errorf("with room, the page and the stale notice come:\n%s", s)
+	}
+}
+
+// TestKnowledgeDropKeepsAnEarlierNotice: a page named for want of room, then loaded by a call whose note is dropped,
+// is still named by the first notice, so it is not named again.
+func TestKnowledgeDropKeepsAnEarlierNotice(t *testing.T) {
+	root := bigPageRepo(t)
+	pages, _ := LoadPages(root)
+	b := NewBudget(4096)
+	k := NewKnowledge(root, pages, 4096, b)
+	b.Used = 300
+	if s := k.ForCall("c1", "read", editOf("big.go")); !strings.Contains(s, "big.md is not loaded") {
+		t.Fatalf("c1 names the page:\n%s", s)
+	}
+	b.Used -= 300
+	if s := k.ForCall("c2", "read", editOf("big.go")); !strings.Contains(s, "a long note") {
+		t.Fatalf("c2 loads it:\n%s", s)
+	}
+	k.Drop("c2")
+	b.Used += 300
+	if s := k.ForCall("c3", "read", editOf("big.go")); s != "" {
+		t.Errorf("the page, still named by c1's notice, was named again:\n%s", s)
+	}
+}

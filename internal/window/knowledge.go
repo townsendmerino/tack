@@ -146,6 +146,7 @@ type Knowledge struct {
 	fresh  []bool      // each page's pins matched their files when the session began
 	state  []pageState // where each page stands in the window
 	note   []int       // the note that carries or names each page: an index into notes
+	named  []int       // for a page loaded after a notice named it for want of room, that notice's note, else -1
 	notes  []knowNote
 }
 
@@ -172,7 +173,10 @@ type knowNote struct {
 func NewKnowledge(root string, pages []Page, window int, b *Budget) *Knowledge {
 	n := len(pages)
 	k := &Knowledge{root: root, pages: pages, window: window, b: b, fresh: make([]bool, n), state: make([]pageState, n),
-		note: make([]int, n)}
+		note: make([]int, n), named: make([]int, n)}
+	for i := range k.named {
+		k.named[i] = -1
+	}
 	for i, pg := range pages {
 		k.fresh[i] = k.matches(pg)
 	}
@@ -226,8 +230,8 @@ func (k *Knowledge) Index() string {
 		lines, more = lines[:len(lines)-1], more+1
 	}
 	text := build(lines, more)
-	if SectionTokens(text) > capTokens {
-		return ""
+	if len(lines) == 0 || SectionTokens(text) > capTokens {
+		return "" // not one page line fits: no index rather than a header over "[… N more pages]"
 	}
 	k.b.Used += SectionTokens(text)
 	return text
@@ -257,18 +261,30 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 			continue
 		}
 		body := "\n\n[Knowledge page " + pg.Path + ", " + pg.Title + ":]\n\n" + strings.TrimSpace(pg.Body)
-		switch {
+		fits := func(add string) bool { return k.b.Used+SectionTokens(out.String()+add) <= k.b.Limit }
+		// A notice that does not fit what is left is not given either; it is tried again at the next matching call.
+		switch stale := "\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed " +
+			"since it was written, so it was not loaded. Read it only to check it against the code.]"; {
 		case !k.fresh[i]:
-			out.WriteString("\n\n[Knowledge page " + pg.Path + " is possibly out of date: the code it is pinned to changed " +
-				"since it was written, so it was not loaded. Read it only to check it against the code.]")
+			if !fits(stale) {
+				continue
+			}
+			out.WriteString(stale)
 			k.state[i] = pageStale
-		case k.b.Used+SectionTokens(out.String()+body) <= k.b.Limit:
+		case fits(body):
+			if k.state[i] == pageNoRoom {
+				k.named[i] = k.note[i] // its notice stays in the window
+			}
 			out.WriteString(body)
 			k.state[i] = pageIn
 		case k.state[i] == pageNoRoom:
 			continue // named already; it waits for room
 		default:
-			out.WriteString("\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]")
+			notice := "\n\n[Knowledge page " + pg.Path + " is not loaded, the instruction budget is spent; read it if you need it.]"
+			if !fits(notice) {
+				continue
+			}
+			out.WriteString(notice)
 			k.state[i] = pageNoRoom
 		}
 		touched = append(touched, i)
@@ -323,8 +339,14 @@ func (k *Knowledge) free(n int) {
 	k.notes[n].live = false
 	k.b.Used -= k.notes[n].cost
 	for i := range k.pages {
-		if k.state[i] != pageOut && k.note[i] == n {
+		switch {
+		case k.named[i] == n: // the notice that named a page loaded since is gone
+			k.named[i] = -1
+		case k.state[i] != pageOut && k.note[i] == n:
 			k.state[i] = pageOut
+			if m := k.named[i]; m >= 0 && k.notes[m].live { // its earlier notice still names it
+				k.state[i], k.note[i], k.named[i] = pageNoRoom, m, -1
+			}
 		}
 	}
 }
