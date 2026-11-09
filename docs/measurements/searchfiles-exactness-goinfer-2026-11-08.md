@@ -100,9 +100,10 @@ about it.
   (`VERDICT: INCONCLUSIVE`).
 - **Decision rule (pre-registered; approved, as above):** read on the worst call's p95 in hybrid. Each of the 30 calls
   gets its p95 by nearest rank over its valid rounds, and the rule takes the largest. The p95 over all calls together
-  is recorded beside it, but it doesn't decide: one slow message would hide in it. (Added 2026-11-09, before any run;
-  the approved text left open which p95 decides.) `searchfileslat` ends with `VERDICT: PASS` inline,
-  `INCONCLUSIVE` parked, and `FAIL` off the critical path.
+  is recorded beside it, but it doesn't decide: one slow message would hide in it. (Added 2026-11-09, before any run,
+  where the approved text had left open which p95 decides. **Approved by Francis on 2026-11-09, through the
+  coordinator, before any run.**) `searchfileslat` ends with `VERDICT: PASS` inline, `INCONCLUSIVE` parked, and
+  `FAIL` off the critical path.
   - **p95 ≤ 100 ms** in hybrid: ken's route runs inline on every user message.
   - **100–400 ms: parked.** It runs inline only for the first message of a session, and the owner decides.
   - **> 400 ms:** it runs off the critical path or not at all. The deterministic route stays.
