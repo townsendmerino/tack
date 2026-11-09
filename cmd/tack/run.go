@@ -56,7 +56,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "stream every event as one JSON line on stdout")
 	edit := fs.Bool("edit", false, "an edit task: auto mode in the sandbox, edit, write and bash, every turn a tool call, ended by done (macOS)")
 	preflight := fs.String("preflight", "", "with --edit: run this command in the sandbox, as bash would, before the model starts; exit 8 if it fails")
-	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question")
+	instructions := fs.String("instructions", "", "\"whole\": add the workspace's AGENTS.md, CLAUDE.md or CONTEXT.md, whole, to the question; "+
+		"\"sections\": add it by section, within 15% of the window, its other sections arriving with the tool calls they bear on")
 	fs.Bool("no-daemon", true, "run the core in this process (the default)")
 	viaDaemon := fs.Bool("daemon", false, "ask through the daemon, starting it if none is running: plan mode, on its main server")
 	record := fs.String("record", "", "development: record the model server's traffic to this cassette")
@@ -64,8 +65,8 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	if *instructions != "" && *instructions != "whole" {
-		fmt.Fprintln(stderr, `tack run: --instructions takes "whole" (section loading is not built yet)`)
+	if *instructions != "" && *instructions != "whole" && *instructions != "sections" {
+		fmt.Fprintln(stderr, `tack run: --instructions takes "whole" or "sections"`)
 		return exitUsage
 	}
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
@@ -156,6 +157,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	opts := coreOptions(cfg, name, stateDir, st, hc, stderr)
 	opts.WholeInstructions = *instructions == "whole" && !cfg.Run.NoInstructions
+	opts.SectionInstructions = *instructions == "sections" && !cfg.Run.NoInstructions
 	mode := proto.ModePlan
 	if *edit {
 		mode, opts.EditTask = proto.ModeAuto, true

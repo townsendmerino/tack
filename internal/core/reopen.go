@@ -113,13 +113,27 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 	// appends, and a crash can land between them.
 	var uses []proto.ModelBlock
 	var msgSeq int64
-	find := func(cause int64, id string) *call {
-		for i := len(calls) - 1; i >= 0; i-- {
-			if cl := calls[i]; cause != 0 && cl.seq == cause || cause == 0 && cl.id == id && !cl.done {
+	// find is the call an event answers: the one its cause names; without a cause, the earliest call with its id still
+	// waiting for it (calls run in the order they were logged, and a response may repeat an id). A tool.finished
+	// answers a started call before one that never started (a refused call finishes without starting).
+	find := func(cause int64, id string, finished bool) *call {
+		var waiting *call
+		for _, cl := range calls {
+			switch {
+			case cause != 0:
+				if cl.seq == cause {
+					return cl
+				}
+			case cl.id != id || cl.done:
+			case !finished && !cl.started:
 				return cl
+			case finished && cl.started:
+				return cl
+			case finished && waiting == nil:
+				waiting = cl
 			}
 		}
-		return nil
+		return waiting
 	}
 	for _, ev := range evs {
 		v, err := ev.Decode()
@@ -142,11 +156,11 @@ func closeInterrupted(log *store.Log, evs []proto.Event) ([]proto.Event, error) 
 				uses = slices.Delete(uses, i, i+1) // this block only: a response may repeat an id
 			}
 		case proto.ToolStarted:
-			if cl := find(ev.Cause, p.ID); cl != nil {
+			if cl := find(ev.Cause, p.ID, false); cl != nil {
 				cl.started = true
 			}
 		case proto.ToolFinished:
-			if cl := find(ev.Cause, p.ID); cl != nil {
+			if cl := find(ev.Cause, p.ID, true); cl != nil {
 				cl.done = true
 			}
 		}

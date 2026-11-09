@@ -345,6 +345,7 @@ func TestServe(t *testing.T) {
 // lock and take it, not find its record and give up: closing the listener marks the record stopping first.
 func TestADaemonStartedDuringAShutdownWaits(t *testing.T) {
 	dir := shortDir(t)
+	watchBusy(t)
 	l := acquire(t, dir)
 	ln, err := l.Listen()
 	if err != nil {
@@ -371,6 +372,7 @@ func TestADaemonStartedDuringAShutdownWaits(t *testing.T) {
 		}
 		next <- err
 	}()
+	waitBusy(t)                         // the start has found the lock held, and is waiting
 	time.Sleep(1500 * time.Millisecond) // the stopping daemon drains: longer than a start waits on a holder it cannot name
 	if err := l.Release(); err != nil {
 		t.Fatal(err)
