@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -336,5 +337,50 @@ func TestServe(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Read(make([]byte, 1)); err != io.EOF {
 		t.Fatalf("read after Serve returned: %v, want EOF", err)
+	}
+}
+
+// TestADaemonStartedDuringAShutdownWaits: when Serve's context ends, the socket goes before the lock is released,
+// and a client that finds it gone starts the next daemon. That start must wait for the stopping daemon to release the
+// lock and take it, not find its record and give up: closing the listener marks the record stopping first.
+func TestADaemonStartedDuringAShutdownWaits(t *testing.T) {
+	dir := shortDir(t)
+	l := acquire(t, dir)
+	ln, err := l.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := core.New(context.Background(), core.Options{Store: st, Version: "1.2.3"})
+	served := make(chan error, 1)
+	go func() { served <- Serve(ctx, ln, c) }()
+	cancel() // the daemon is shutting down
+	<-served
+	if _, err := os.Stat(SocketPath(dir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the socket is still there after Serve returned: %v", err)
+	}
+	next := make(chan error, 1)
+	go func() { // a client found the socket gone and started a daemon
+		n, err := Acquire(dir, "next")
+		if err == nil {
+			defer n.Release()
+		}
+		next <- err
+	}()
+	time.Sleep(200 * time.Millisecond) // the stopping daemon finishes its shutdown
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-next:
+		if err != nil {
+			t.Fatalf("a daemon started during the shutdown: %v, want it to wait and take the lock", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the next daemon never took the lock")
 	}
 }

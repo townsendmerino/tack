@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +32,10 @@ type Lock struct {
 	mu sync.Mutex // held by every method throughout, Release included
 	f  *os.File   // nil once released
 	ln *Listener  // the socket Listen bound, closed by Release before the lock is dropped
+	// holderMu guards the record: rec is what was written, gone that Release removed it.
+	holderMu sync.Mutex
+	rec      Holder
+	gone     bool
 	// step, when set (tests), is told each of Release's steps as it completes: "holder removed", "socket closed",
 	// then "unlocking", just before the flock is dropped.
 	step func(string)
@@ -44,6 +49,9 @@ type Holder struct {
 	// ProcStart is when the process with PID started (procInfo), so a record whose pid a later process reused names
 	// nobody.
 	ProcStart string `json:"proc_start,omitempty"`
+	// Stopping says the daemon is shutting down: its socket is gone or going, and the lock will follow. A start that
+	// finds it waits for the lock instead of giving up (takeLock).
+	Stopping bool `json:"stopping,omitempty"`
 }
 
 // HeldError is Acquire finding another daemon holding the lock. Holder is that daemon's record, zero when it is not
@@ -54,6 +62,9 @@ func (e *HeldError) Error() string {
 	h := e.Holder
 	if h.PID == 0 {
 		return "another tack daemon holds the lock (it has not said which)"
+	}
+	if h.Stopping {
+		return fmt.Sprintf("tack daemon %s (pid %d) is shutting down and still holds the lock after %s", h.Version, h.PID, stopWait)
 	}
 	return fmt.Sprintf("tack daemon %s (pid %d, since %s) holds the lock", h.Version, h.PID, h.Start.Local().Format(time.DateTime))
 }
@@ -94,7 +105,7 @@ func Acquire(stateDir, version string) (*Lock, error) {
 		f.Close()
 		return nil, fmt.Errorf("daemon: recording the holder: %w", err)
 	}
-	return &Lock{dir: stateDir, f: f}, nil
+	return &Lock{dir: stateDir, f: f, rec: h}, nil
 }
 
 // writeHolder writes the record whole, through a rename, so a reader sees all of it or none. Only the lock's holder
@@ -137,7 +148,9 @@ func ReadHolder(stateDir string) Holder {
 // lock is tried again for up to a second: a stopping holder's lock is taken once dropped, and a starting one's record
 // read once written. Past that it is a *HeldError naming nobody.
 func takeLock(f *os.File, stateDir string) error {
-	deadline := time.Now().Add(time.Second)
+	start := time.Now()
+	deadline := start.Add(time.Second)
+	var last Holder
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -146,15 +159,26 @@ func takeLock(f *os.File, stateDir string) error {
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			return fmt.Errorf("daemon: locking %s: %w", f.Name(), err)
 		}
-		if h := ReadHolder(stateDir); h.PID != 0 {
+		h := ReadHolder(stateDir)
+		switch {
+		case h.PID != 0 && !h.Stopping:
 			return &HeldError{Holder: h}
+		case h.Stopping && !last.Stopping: // a shutdown: wait for it, through its drain
+			deadline = start.Add(stopWait)
+		}
+		if h.PID != 0 {
+			last = h
 		}
 		if time.Now().After(deadline) {
-			return &HeldError{}
+			return &HeldError{Holder: last}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// stopWait is how long a start waits for a stopping daemon to release the lock: its drain's grace window and then
+// some.
+const stopWait = time.Minute
 
 // Dir is the state directory the lock is in.
 func (l *Lock) Dir() string { return l.dir }
@@ -173,9 +197,12 @@ func (l *Lock) Release() error {
 		return nil
 	}
 	var errs []error
+	l.holderMu.Lock()
 	if err := os.Remove(filepath.Join(l.dir, HolderName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		errs = append(errs, err)
 	}
+	l.gone = true
+	l.holderMu.Unlock()
 	l.tell("holder removed")
 	if l.ln != nil {
 		if err := l.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
@@ -190,6 +217,18 @@ func (l *Lock) Release() error {
 	return errors.Join(errs...)
 }
 
+// markStopping rewrites the record to say the daemon is stopping, unless Release has removed it. Closing the listener
+// calls it, before the socket is unlinked, so a start that finds the socket gone waits for the lock.
+func (l *Lock) markStopping() {
+	l.holderMu.Lock()
+	defer l.holderMu.Unlock()
+	if l.gone || l.rec.Stopping {
+		return
+	}
+	l.rec.Stopping = true
+	_ = writeHolder(l.dir, l.rec) // at worst a start sees the record as running and names it
+}
+
 // tell reports a Release step to the test hook, if any.
 func (l *Lock) tell(step string) {
 	if l.step != nil {
@@ -201,6 +240,9 @@ func (l *Lock) tell(step string) {
 // changing nothing, a directory others own or may write, or one under a path they could redirect (checkPath): what
 // they may already have put there is not tack's to trust, so it is not narrowed. tack's state is its user's alone.
 func privateDir(dir string) error {
+	if slices.Contains(strings.Split(dir, string(filepath.Separator)), "..") {
+		return fmt.Errorf("daemon: the state directory %s holds \"..\"; name it without: after a symlink the kernel and a path cleaned as text resolve \"..\" differently", dir)
+	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return err

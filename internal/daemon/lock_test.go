@@ -22,6 +22,9 @@ func TestReleaseClearsTheHolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := l.Listen(); err != nil { // closing it marks the record stopping: Release must still leave none
+		t.Fatal(err)
+	}
 	if h := ReadHolder(dir); h.Version != "old" || h.PID != os.Getpid() {
 		t.Fatalf("while held: %+v, want this process at version old", h)
 	}
@@ -126,24 +129,37 @@ func TestLosersNameTheWinner(t *testing.T) {
 	}
 }
 
-// TestPrivateDirRefusesAnotherUsersDirectory: a state directory that belongs to another user is refused, and left as
-// it was.
+// TestPrivateDirRefusesAnotherUsersDirectory: a state directory that belongs to another user, or to root, is refused
+// and left as it was.
 func TestPrivateDirRefusesAnotherUsersDirectory(t *testing.T) {
-	dir := shortDir(t)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	base := shortDir(t)
+	os.MkdirAll(base, 0o700)
+	base, _ = filepath.EvalSymlinks(base) // the walk names paths as the kernel resolves them
+	dir := filepath.Join(base, "state")
+	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	me := currentUID
-	currentUID = func() int { return me() + 1 } // as if the directory were another user's
-	defer func() { currentUID = me }()
-	if _, err := Acquire(dir, "1"); err == nil || !strings.Contains(err.Error(), "belongs to uid") {
-		t.Fatalf("Acquire in another user's directory: %v, want a refusal naming the uid", err)
-	}
-	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o755 {
-		t.Fatalf("the refused directory became %v; it must be left as it was", st.Mode().Perm())
-	}
-	if _, err := os.Stat(filepath.Join(dir, LockName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a lock file was made in another user's directory: %v", err)
+	orig := ownerOf
+	defer func() { ownerOf = orig }()
+	// The test cannot make a directory another user owns, so the state directory alone is reported as one: its parent
+	// stays this user's, and the refusal must be of the directory under test.
+	for _, owner := range []int{4242, 0} { // another user's; root's, which the walk trusts and the leaf check does not
+		ownerOf = func(path string, fi fs.FileInfo) int {
+			if path == dir {
+				return owner
+			}
+			return orig(path, fi)
+		}
+		_, err := Acquire(dir, "1")
+		if err == nil || !strings.Contains(err.Error(), dir+" belongs to uid "+strconv.Itoa(owner)) {
+			t.Errorf("a state directory owned by uid %d: %v, want it refused, naming it", owner, err)
+		}
+		if st, _ := os.Stat(dir); st.Mode().Perm() != 0o755 {
+			t.Errorf("uid %d: the refused directory became %v; it must be left as it was", owner, st.Mode().Perm())
+		}
+		if _, err := os.Stat(filepath.Join(dir, LockName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("uid %d: a lock file was made in the refused directory: %v", owner, err)
+		}
 	}
 }
 
@@ -383,5 +399,15 @@ func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
 	}
 	if err := <-got; err != nil {
 		t.Fatalf("a start once the socket was gone: %v, want it to take the lock", err)
+	}
+}
+
+// TestAStateDirWithDotDotIsRefused: ".." in the state directory is refused. After a symlink, the kernel takes it as
+// the parent of the link's target, and a path cleaned as text (filepath.Join) as the parent of the link, so the daemon
+// and the sandbox's profile would name different directories.
+func TestAStateDirWithDotDotIsRefused(t *testing.T) {
+	base := shortDir(t)
+	if _, err := Acquire(base+"/x/../state", "1"); err == nil || !strings.Contains(err.Error(), `".."`) {
+		t.Fatalf("a state directory with ..: %v, want it refused", err)
 	}
 }

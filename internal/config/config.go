@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -338,6 +339,9 @@ func (c *Config) validate() error {
 		}
 	}
 	c.StateDir = expand(c.StateDir)
+	if slices.Contains(strings.Split(c.StateDir, string(filepath.Separator)), "..") {
+		return fmt.Errorf("state_dir = %q holds \"..\"; name it without (after a symlink the daemon and the sandbox would resolve it differently)", c.StateDir)
+	}
 	return nil
 }
 
