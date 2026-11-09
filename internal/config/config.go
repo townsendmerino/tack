@@ -338,10 +338,11 @@ func (c *Config) validate() error {
 			return fmt.Errorf("ken.model_dir is required for mode %s (tack passes it to ken explicitly)", k.Mode)
 		}
 	}
-	c.StateDir = expand(c.StateDir)
+	// As written: expand cleans the path as text, which would drop the "..".
 	if slices.Contains(strings.Split(c.StateDir, string(filepath.Separator)), "..") {
 		return fmt.Errorf("state_dir = %q holds \"..\"; name it without (after a symlink the daemon and the sandbox would resolve it differently)", c.StateDir)
 	}
+	c.StateDir = expand(c.StateDir)
 	return nil
 }
 

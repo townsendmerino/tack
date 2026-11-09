@@ -207,7 +207,6 @@ func TestReleaseIsSafeBesideListenAndNewToken(t *testing.T) {
 		wg.Go(func() { l.NewToken() })
 		wg.Go(func() { l.Release() })
 		wg.Wait()
-		l.Release()
 		if ln != nil {
 			if _, err := os.Stat(SocketPath(dir)); !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("Listen bound a socket that Release left open (stat: %v)", err)
@@ -338,6 +337,7 @@ func TestAReusedPidIsNotTheHolder(t *testing.T) {
 // of reporting a holder that has gone.
 func TestAStartRacingAReleaseWins(t *testing.T) {
 	dir := shortDir(t)
+	watchBusy(t)
 	old, err := Acquire(dir, "old")
 	if err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func TestAStartRacingAReleaseWins(t *testing.T) {
 			}
 			got <- err
 		}()
-		time.Sleep(100 * time.Millisecond) // it finds the lock held, and must not give up
+		waitBusy(t) // it has found the lock held, and must not give up
 	}
 	start := time.Now()
 	if err := old.Release(); err != nil {
@@ -373,6 +373,7 @@ func TestAStartRacingAReleaseWins(t *testing.T) {
 // record before it closes the socket, so the start waits for the lock and takes it.
 func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
 	dir := shortDir(t)
+	watchBusy(t)
 	old, err := Acquire(dir, "old")
 	if err != nil {
 		t.Fatal(err)
@@ -395,7 +396,7 @@ func TestAStartOnceTheSocketIsGoneWins(t *testing.T) {
 			}
 			got <- err
 		}()
-		time.Sleep(100 * time.Millisecond)
+		waitBusy(t)
 	}
 	if err := old.Release(); err != nil {
 		t.Fatal(err)
@@ -440,5 +441,48 @@ func TestAStoppingHolderIsNamed(t *testing.T) {
 	err := &HeldError{Holder: Holder{PID: 7, Version: "1.2.3", Stopping: true}}
 	if !strings.Contains(err.Error(), "shutting down") || !strings.Contains(err.Error(), "pid 7") {
 		t.Fatalf("%q; want the stopping daemon named as stopping", err)
+	}
+}
+
+// TestAStateDirReachedThroughDotLinksIsCheckedAsWhatItIs: a state directory named through a symlink to "." or ".."
+// is the directory the link resolves to, and that directory is checked as the state directory: a sticky one anyone
+// can write is refused, not narrowed.
+func TestAStateDirReachedThroughDotLinksIsCheckedAsWhatItIs(t *testing.T) {
+	for _, c := range []struct{ link, target string }{{"self", "."}, {"sub/up", ".."}} {
+		base := shortDir(t)
+		os.MkdirAll(filepath.Join(base, "sub"), 0o700)
+		os.Chmod(base, 0o777|fs.ModeSticky)
+		if err := os.Symlink(c.target, filepath.Join(base, c.link)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Acquire(filepath.Join(base, c.link), "1"); err == nil || !strings.Contains(err.Error(), "writable by other users") {
+			t.Errorf("a link to %q in a sticky directory anyone can write: %v, want refused", c.target, err)
+		}
+		if st, _ := os.Stat(base); st.Mode().Perm() != 0o777 {
+			t.Errorf("link to %q: the directory became %v; it must be left as it was", c.target, st.Mode().Perm())
+		}
+	}
+}
+
+// busy is told when a start first finds the lock held (lockBusy), so a race test releases only once it has: the
+// contention is certain, not left to a sleep.
+var busy chan struct{}
+
+func watchBusy(t *testing.T) {
+	busy = make(chan struct{}, 1)
+	lockBusy = func() {
+		select {
+		case busy <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { lockBusy = nil })
+}
+
+func waitBusy(t *testing.T) {
+	select {
+	case <-busy:
+	case <-time.After(10 * time.Second):
+		t.Error("the racing start never found the lock held")
 	}
 }

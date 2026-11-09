@@ -152,6 +152,7 @@ func takeLock(f *os.File, stateDir string) error {
 	start := time.Now()
 	deadline := start.Add(time.Second)
 	var last Holder
+	busy := false
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -160,6 +161,10 @@ func takeLock(f *os.File, stateDir string) error {
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			return fmt.Errorf("daemon: locking %s: %w", f.Name(), err)
 		}
+		if !busy && lockBusy != nil {
+			lockBusy()
+		}
+		busy = true
 		h := ReadHolder(stateDir)
 		switch {
 		case h.PID != 0 && !h.Stopping:
@@ -176,6 +181,9 @@ func takeLock(f *os.File, stateDir string) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// lockBusy, when set (tests), is told the first time a takeLock finds the lock held.
+var lockBusy func()
 
 // stopWait is how long a start waits for a stopping daemon to release the lock: its drain's grace window and then
 // some.
@@ -294,7 +302,7 @@ func checkPath(abs string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkDir("/", root, abs == "/"); err != nil {
+	if err := checkDir("/", root, false); err != nil {
 		return err
 	}
 	cur, rest, links := "/", components(abs), 0
@@ -330,7 +338,7 @@ func checkPath(abs string) error {
 			}
 			rest = append(components(target), rest...)
 		case fi.IsDir():
-			if err := checkDir(next, fi, len(rest) == 0); err != nil {
+			if err := checkDir(next, fi, false); err != nil {
 				return err
 			}
 			cur = next
@@ -340,7 +348,13 @@ func checkPath(abs string) error {
 			return nil // the last component is a file; privateDir says so
 		}
 	}
-	return nil
+	// Every name existed: cur is the state directory itself, however it was reached (a link to "." or ".." ends the walk
+	// on a directory first passed through), and it is checked as one.
+	fi, err := os.Lstat(cur)
+	if err != nil {
+		return err
+	}
+	return checkDir(cur, fi, true)
 }
 
 // components splits a path into its names, dropping empty ones and ".", keeping "..".
