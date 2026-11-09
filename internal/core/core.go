@@ -756,9 +756,17 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 		}
 	}
 	// The instruction file's sections for this message, through ken (DESIGN §2.3), are found before any lock is taken:
-	// a search can take a moment. One that fails brings none: the tool calls' sections still come.
+	// a search can take a moment. One that fails brings none: the tool calls' sections still come. A prompt the checks
+	// below will refuse (a halt, a drain, a turn already running) is not searched for: a first look here, under the
+	// locks, spares that search, and the checks below still decide.
+	c.mu.Lock()
+	refused := c.halted != nil || c.draining
+	c.mu.Unlock()
+	s.mu.Lock()
+	refused = refused || s.running
+	s.mu.Unlock()
 	var paths [][]string
-	if c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
+	if !refused && c.opt.SectionSearch && s.sections != nil && !s.sections.Whole() && s.sectionSearch != nil {
 		paths, _ = s.sectionSearch.SectionPaths(c.ctx, text.String(), sectionHits, s.sections.Name())
 	}
 	// c.mu is held from the halt check until the turn's cancel is in place, so a Halt cannot fall between them.
@@ -792,17 +800,17 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	case s.prompted:
 		if hits != "" {
 			text.Reset()
-			text.WriteString(hits + window.MessageTask + statement)
+			text.WriteString(strings.Trim(hits, "\n") + window.MessageTask + statement)
 		}
 	case s.notesFirst && s.instructions != "":
 		text.Reset()
 		text.WriteString(s.instructions)
-		for _, part := range []string{repoMap, inject} {
+		for _, part := range []string{repoMap, inject, strings.Trim(hits, "\n")} {
 			if part != "" {
 				text.WriteString("\n\n" + part)
 			}
 		}
-		text.WriteString(hits + window.MessageTask + statement)
+		text.WriteString(window.MessageTask + statement)
 	case repoMap != "" || inject != "":
 		text.Reset()
 		for _, part := range []string{repoMap, inject} {

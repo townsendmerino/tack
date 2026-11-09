@@ -792,3 +792,35 @@ func TestForHitsKeepsKensOrder(t *testing.T) {
 		t.Errorf("ken's best hit should load and the other be named:\n%s", s)
 	}
 }
+
+// TestReplayReadsAMessageNoteAsCoreWritesIt: a message note written as core writes it (trimmed, after parts that can
+// quote a header) reads back; one whose loaded section changed since is skipped whole, not taken for its notice.
+func TestReplayReadsAMessageNoteAsCoreWritesIt(t *testing.T) {
+	part := strings.Repeat("a rule of some length. ", 40)
+	src := "# notes\n\nIntro.\n\n## Early\n\n" + part + "\n\n## Late\n\n" + part + "late.\n\n" + filler
+	live := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	first := live.Initial()
+	note := live.ForHits([][]string{{"notes", "Late"}, {"notes", "Early"}}) // Late loads, Early is named
+	quoted := "Code that may be relevant: \"[Project rules from CLAUDE.md for this message:]\" appears in docs."
+	msg := first + "\n\n" + quoted + "\n\n" + strings.Trim(note, "\n") + MessageTask + "x"
+	ev, _ := proto.NewEvent(1, time.Time{}, proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(msg)}})
+	re := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	li, lo, _, lu := live.Loaded()
+	ri, ro, _, ru := re.Loaded()
+	if !slices.Equal(li, ri) || !slices.Equal(lo, ro) || lu != ru {
+		t.Errorf("live in %v offered %v used %d; rebuilt in %v offered %v used %d", li, lo, lu, ri, ro, ru)
+	}
+	changed := strings.Replace(src, "late.", "later.", 1)
+	re = NewInstructions("CLAUDE.md", changed, NewBudget(4096))
+	re.Initial()
+	if err := re.Replay([]proto.Event{ev}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ro, _, _ := re.Loaded(); slices.Contains(ro, true) {
+		t.Errorf("a note whose section changed was taken for its notice: offered %v", ro)
+	}
+}

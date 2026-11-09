@@ -982,23 +982,35 @@ const MessageTask = "\n\nTask: "
 // noteInMessage reads ForHits's note back from a user message: it opens with its header (or its notice) and runs to a
 // MessageTask that follows it.
 func (in *Instructions) noteInMessage(msg string) (got, left []int, text string, ok bool) {
-	for _, open := range []string{in.header("message"), in.notLoaded()} {
-		start := strings.Index(msg, open)
+	// core writes the note trimmed of its outer blank lines, as one part of the message, so each try puts back the
+	// leading "\n\n" and the trailing newlines a section's text can end with. Parts written before the note (the
+	// instructions, a map, injected code) can hold text like a header, so each place a header opens is tried, from the
+	// last back; a notice alone only in a message with no header, so a note whose sections no longer read back is
+	// skipped whole, never taken for its notice.
+	open := strings.TrimPrefix(in.header("message"), "\n\n")
+	if !strings.Contains(msg, open) {
+		open = strings.TrimPrefix(in.notLoaded(), "\n\n")
+	}
+	for end := len(msg); ; {
+		start := strings.LastIndex(msg[:end], open)
 		if start < 0 {
-			continue
+			return nil, nil, "", false
 		}
 		for from := start; ; {
 			k := strings.Index(msg[from:], MessageTask)
 			if k < 0 {
 				break
 			}
-			if got, left, text, ok := in.noteAt(msg[start:from+k], "message", nil); ok {
-				return got, left, text, true
+			body := msg[start : from+k]
+			for _, tail := range []string{"", "\n", "\n\n"} {
+				if got, left, text, ok := in.noteAt("\n\n"+body+tail, "message", nil); ok {
+					return got, left, text, true
+				}
 			}
 			from += k + 1
 		}
+		end = start
 	}
-	return nil, nil, "", false
 }
 
 // noteAt reads a note back from note, which must begin with it and hold nothing after it.

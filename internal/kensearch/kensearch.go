@@ -132,17 +132,21 @@ func (s *Searcher) SearchFile(ctx context.Context, query string, k int, file str
 	return hits, nil
 }
 
-// SectionPaths implements window.SectionSearcher: the heading paths of the top k hits for query in file, best first,
-// each once.
+// sectionHitsPerPath is how many hits SectionPaths asks for per section it gives: a long section is several chunks,
+// and its hits must not crowd the other sections out.
+const sectionHitsPerPath = 4
+
+// SectionPaths implements window.SectionSearcher: the heading paths of the best hits for query in file, best first,
+// each once, up to k distinct sections.
 func (s *Searcher) SectionPaths(ctx context.Context, query string, k int, file string) ([][]string, error) {
-	hits, err := s.SearchFile(ctx, query, k, file)
+	hits, err := s.SearchFile(ctx, query, k*sectionHitsPerPath, file)
 	if err != nil {
 		return nil, err
 	}
 	var out [][]string
 	seen := map[string]bool{}
 	for _, h := range hits {
-		if key := strings.Join(h.HeadingPath, "\x00"); len(h.HeadingPath) > 0 && !seen[key] {
+		if key := strings.Join(h.HeadingPath, "\x00"); len(h.HeadingPath) > 0 && !seen[key] && len(out) < k {
 			seen[key] = true
 			out = append(out, h.HeadingPath)
 		}

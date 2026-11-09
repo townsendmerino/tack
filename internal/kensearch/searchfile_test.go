@@ -2,6 +2,7 @@ package kensearch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,5 +49,27 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSectionPathsGivesKDistinctSections: a long section ken cuts into several chunks does not crowd the others out:
+// SectionPaths gives k distinct sections when the file has them.
+func TestSectionPathsGivesKDistinctSections(t *testing.T) {
+	dir := t.TempDir()
+	var long strings.Builder
+	for i := range 60 {
+		fmt.Fprintf(&long, "Paragraph %d about staging: stage explicit paths, never stage everything at once.\n\n", i)
+	}
+	must(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# Rules\n\n## Staging\n\n"+long.String()+
+		"## Releases\n\nTag from main after staging is clean.\n\n## Other\n\nNothing about it.\n"), 0o644))
+	s, err := Open(context.Background(), dir, Options{Mode: "bm25"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	hits, _ := s.SearchFile(context.Background(), "staging", 2, "CLAUDE.md")
+	paths, err := s.SectionPaths(context.Background(), "staging", 2, "CLAUDE.md")
+	if err != nil || len(paths) != 2 {
+		t.Errorf("hits %d, paths %q, %v; want 2 distinct sections", len(hits), paths, err)
 	}
 }
