@@ -42,4 +42,5 @@ const (
 	CodeUnknownSession = -32001 // the session id names no session
 	CodeHalted         = -32002 // the daemon is halted; no new turns until daemon/resume
 	CodeBusy           = -32003 // the session already has a running turn
+	CodeUnauthorized   = -32004 // a wrong client token, or a method that needs the token on a connection without it
 )

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ import (
 type Options struct {
 	Store   *store.Store
 	Version string
+	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
+	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
+	ClientToken string
 	// Servers names the configured model servers, for initialize's capabilities ("goinfer@nobara").
 	Servers []string
 	// Source returns the model source for a session's model: a role ("main") or a server name. The Core calls it once
@@ -218,10 +222,12 @@ func (c *Core) Close() error {
 	return errors.Join(errs...)
 }
 
-// conn is one client connection.
+// conn is one client connection. privileged is set by an initialize that presented the client token; requests on a
+// connection are handled in order, so it needs no lock.
 type conn struct {
-	mu  sync.Mutex
-	enc *json.Encoder
+	mu         sync.Mutex
+	enc        *json.Encoder
+	privileged bool
 }
 
 func (cn *conn) send(v any) error {
@@ -291,6 +297,7 @@ func params[T any](req proto.Request) (T, *proto.Error) {
 func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 	switch req.Method {
 	case proto.MethodInitialize:
+		cn.privileged = false // a re-initialize starts over, and one that fails for any reason leaves none
 		p, perr := params[proto.InitializeParams](req)
 		if perr != nil {
 			return nil, perr
@@ -299,12 +306,18 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, &proto.Error{Code: proto.CodeInvalidParams,
 				Message: fmt.Sprintf("protocol %d is not supported; this daemon speaks %d", p.Protocol, proto.Version)}
 		}
+		if p.Token != "" {
+			if c.opt.ClientToken == "" || subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.opt.ClientToken)) != 1 {
+				return nil, &proto.Error{Code: proto.CodeUnauthorized, Message: "initialize: the client token is wrong; read it again from client.token"}
+			}
+			cn.privileged = true
+		}
 		ken := ""
 		if c.opt.OpenSearcher != nil {
 			ken = "engine"
 		}
 		return proto.InitializeResult{Daemon: proto.DaemonInfo{Version: c.opt.Version}, Protocol: proto.Version,
-			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}}, nil
+			Capabilities: proto.Capabilities{Ken: ken, Servers: c.opt.Servers}, Privileged: cn.privileged}, nil
 	case proto.MethodSessionNew:
 		p, perr := params[proto.SessionNewParams](req)
 		if perr != nil {
@@ -437,9 +450,10 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		budget := window.NewBudget(w)
 		var parts []string
 		var loads multiSections
+		wholeFile := false // the instruction file is loaded whole
 		if name, content := readInstructionFile(ws.Root()); name != "" && c.opt.SectionInstructions {
 			in := window.NewInstructions(name, content, budget)
-			parts, loads = append(parts, in.Initial()), append(loads, in)
+			parts, loads, wholeFile = append(parts, in.Initial()), append(loads, in), in.Whole()
 		}
 		if c.opt.Knowledge {
 			pages, err := window.LoadPages(ws.Root())
@@ -453,7 +467,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 			}
 		}
 		if len(parts) > 0 {
-			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), true
+			// A whole file alone follows the task, as WholeInstructions puts it; sections and the knowledge index are notes
+			// before it.
+			s.instructions, s.notesFirst = strings.Join(parts, "\n\n"), !(wholeFile && len(parts) == 1)
 			cfg.Sections = loads
 		}
 	}
@@ -714,6 +730,12 @@ func (m multiSections) ForCall(id, tool string, input json.RawMessage) string {
 func (m multiSections) Masked(ids []string) {
 	for _, s := range m {
 		s.Masked(ids)
+	}
+}
+
+func (m multiSections) Drop(id string) {
+	for _, s := range m {
+		s.Drop(id)
 	}
 }
 

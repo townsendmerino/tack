@@ -135,3 +135,23 @@ func TestKnowledgeIndexStaysUnderItsCap(t *testing.T) {
 		t.Fatalf("index of %d tokens against a cap of %d:\n%s", SectionTokens(idx), 16384*IndexShare/100, idx)
 	}
 }
+
+// TestKnowledgeReusedIDs: a compaction of a reused id frees the pages of its oldest call, and Drop those of its newest.
+func TestKnowledgeReusedIDs(t *testing.T) {
+	root := knowledgeRepo(t)
+	pages, _ := LoadPages(root)
+	k := NewKnowledge(root, pages, 16384, NewBudget(16384))
+	k.ForCall("c", "read", editOf("internal/loop/loop.go"))
+	k.ForCall("c", "read", editOf("other.go"))
+	k.Masked([]string{"c"})
+	if s := k.ForCall("d", "read", editOf("other.go")); s != "" {
+		t.Errorf("the newer c's page was freed by a compaction of the older: %q", s)
+	}
+	if s := k.ForCall("e", "read", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn") {
+		t.Errorf("the older c's page should be free:\n%s", s)
+	}
+	k.Drop("e")
+	if s := k.ForCall("f", "read", editOf("internal/loop/loop.go")); !strings.Contains(s, "Run ends a turn") {
+		t.Errorf("Drop of e should free its page:\n%s", s)
+	}
+}

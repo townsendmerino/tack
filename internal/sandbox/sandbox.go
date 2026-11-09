@@ -12,6 +12,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -49,7 +50,7 @@ const (
 	SecLaunch  = "launch"  // open, launchctl, osascript and LaunchServices: a program they start runs outside
 	SecMount   = "mount"   // mounting volumes: a mounted volume is another way out
 	SecNetwork = "network" // all network access
-	SecTack    = "tack"    // tack's own files: a command must not approve its own request or read transcripts
+	SecTack    = "tack"    // tack's own files and the daemon's socket: a command must not approve its own request or read transcripts
 	SecLater   = "later"   // workspace files that would run later, outside the sandbox: git hooks and config, agent config
 	SecSecrets = "secrets" // the secrets deny-list, enforced by the kernel
 	SecMark    = "mark"    // the names that let halt and cancel find every process inside, detached or not
@@ -70,11 +71,60 @@ var Secrets = []string{
 	"Library/Application Support/Google/Chrome", "Library/Application Support/Firefox",
 }
 
+// real is p as the kernel will resolve it, as Seatbelt matches paths: walked from / one name at a time, each
+// symlink followed where it is met (one whose target does not exist yet too), and each ".." the parent of what the
+// path so far resolves to, never cleaned away first. Past a name that does not exist nothing can be a link, so the
+// rest is kept, with a ".." cancelling the missing name before it; a rule for the path still matches once it is made.
 func real(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
+	sep := string(filepath.Separator)
+	if !filepath.IsAbs(p) {
+		if wd, err := os.Getwd(); err == nil {
+			p = wd + sep + p
+		}
 	}
-	return filepath.Clean(p)
+	names := func(s string) []string {
+		var out []string
+		for _, c := range strings.Split(s, sep) {
+			if c != "" && c != "." {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	cur, rest, missing, links := sep, names(p), []string(nil), 0
+	for len(rest) > 0 {
+		name := rest[0]
+		rest = rest[1:]
+		switch {
+		case name == ".." && len(missing) > 0:
+			missing = missing[:len(missing)-1]
+			continue
+		case name == "..":
+			cur = filepath.Dir(cur)
+			continue
+		case len(missing) > 0:
+			missing = append(missing, name)
+			continue
+		}
+		next := filepath.Join(cur, name)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			missing = append(missing, name)
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 && links < 40 {
+			if target, err := os.Readlink(next); err == nil {
+				links++
+				if filepath.IsAbs(target) {
+					cur = sep
+				}
+				rest = append(names(target), rest...)
+				continue
+			}
+		}
+		cur = next
+	}
+	return filepath.Join(append([]string{cur}, missing...)...)
 }
 
 func q(p string) string { return fmt.Sprintf("%q", real(p)) }
@@ -142,11 +192,15 @@ func Profile(c Config) string {
 		sec(SecNetwork, "(deny network*)")
 	}
 	if len(c.Tack) > 0 {
-		var paths []string
+		var paths, socks []string
 		for _, p := range c.Tack {
 			paths = append(paths, fmt.Sprintf("(subpath %s)", q(p)))
+			socks = append(socks, fmt.Sprintf("(remote unix-socket (subpath %s))", q(p)))
 		}
-		sec(SecTack, fmt.Sprintf("(deny file-read* file-write* %s)", strings.Join(paths, " ")))
+		// Connecting to a Unix socket is a network operation, not a file one: the second rule keeps the daemon's socket
+		// out of reach even where section network allows more.
+		sec(SecTack, fmt.Sprintf("(deny file-read* file-write* %s)", strings.Join(paths, " ")),
+			fmt.Sprintf("(deny network-outbound %s)", strings.Join(socks, " ")))
 	}
 	ws := real(c.Workspace)
 	later := []string{

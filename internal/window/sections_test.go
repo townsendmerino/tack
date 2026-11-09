@@ -240,3 +240,94 @@ func TestKindMatchesCleansPaths(t *testing.T) {
 		t.Error("edit kinds are cleaned before matching")
 	}
 }
+
+// TestFirstSectionSkipsFrontmatterAndUnderlines: frontmatter, and a setext title's underline, are not the opening's
+// body; the opening runs on to the first section with text.
+func TestFirstSectionSkipsFrontmatterAndUnderlines(t *testing.T) {
+	front := "---\ntitle: x\n---\n# notes\n\nIntro here.\n\n## Alpha\n\na\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", front, NewBudget(4096)).Initial(); !strings.Contains(got, "Intro here.") || !strings.Contains(got, "Alpha (lines") {
+		t.Errorf("frontmatter taken for the opening:\n%s", got)
+	}
+	setext := "Title\n=====\n\n## Intro\n\nHello there.\n\n## Beta\n\nb\n\n" + filler
+	if got := NewInstructions("CLAUDE.md", setext, NewBudget(4096)).Initial(); !strings.Contains(got, "Hello there.") || !strings.Contains(got, "Beta (lines") {
+		t.Errorf("a setext underline taken for body:\n%s", got)
+	}
+}
+
+// TestForCallSkipsAMarkedSubsectionsSubtree: a subsection with its own marker is left out with everything under it.
+func TestForCallSkipsAMarkedSubsectionsSubtree(t *testing.T) {
+	src := "# notes\n\nIntro.\n\n## Testing\n\nRun go test.\n\n### Benchmarks\n<!-- tack:on bash:bench -->\nNight only.\n\n" +
+		"#### Profiling\n\nUse pprof.\n\n### Flakes\n\nRetry once.\n\n" + filler
+	in := NewInstructions("CLAUDE.md", src, NewBudget(4096))
+	in.Initial()
+	got := in.ForCall("c1", "bash", bash("go test ./..."))
+	if !strings.Contains(got, "Run go test.") || !strings.Contains(got, "Retry once.") || strings.Contains(got, "Use pprof.") {
+		t.Errorf("the marked subsection's own subsection came along:\n%s", got)
+	}
+}
+
+// TestInitialTrimsTheOutlineFromTheEnd: when the outline must shrink after always sections gave way, entries go from
+// the end in file order, a given-way always entry among them.
+func TestInitialTrimsTheOutlineFromTheEnd(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("# notes\n\n" + strings.Repeat("intro words. ", 40) + "\n\n")
+	for i := range 40 {
+		fmt.Fprintf(&b, "## Section number %02d with a long heading\n\nx\n\n", i)
+	}
+	b.WriteString("## Zed always\n<!-- tack:always -->\n" + strings.Repeat("always text. ", 200) + "\n")
+	got := NewInstructions("CLAUDE.md", b.String(), NewBudget(4096)).Initial()
+	if !strings.Contains(got, "more headings]") || strings.Contains(got, "Zed always (lines") || !strings.Contains(got, "Section number 00") {
+		t.Errorf("the outline was trimmed out of file order:\n%s", got)
+	}
+}
+
+// TestNotesWithEmptyOrReusedIDs: an empty id never touches the first message's sections, and a reused id frees its
+// oldest note on a compaction and its newest on Drop.
+func TestNotesWithEmptyOrReusedIDs(t *testing.T) {
+	in := NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
+	initial := SectionTokens(in.Initial())
+	if in.ForCall("", "bash", bash("git status")) == "" {
+		t.Fatal("git brings staging in")
+	}
+	in.Masked([]string{""})
+	if in.Used() != initial {
+		t.Errorf("after the empty-id note is stubbed: used %d, want %d", in.Used(), initial)
+	}
+	if s := in.ForCall("x", "bash", bash("git status")); !strings.Contains(s, "Never git add -A.") || strings.Contains(s, "Tag from main.") {
+		t.Errorf("the first message's sections left with the empty id:\n%s", s)
+	}
+	in = NewInstructions("CLAUDE.md", bigFile(), NewBudget(4096))
+	in.Initial()
+	in.ForCall("c", "bash", bash("git status"))
+	in.ForCall("c", "bash", bash("go test ./..."))
+	in.Masked([]string{"c"})
+	if s := in.ForCall("d", "bash", bash("go test ./...")); s != "" {
+		t.Errorf("a compaction of the older c freed the newer c's testing section: %q", s)
+	}
+	if s := in.ForCall("e", "bash", bash("git diff")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("a compaction of the older c should free staging:\n%s", s)
+	}
+	in.Drop("e")
+	if s := in.ForCall("f", "bash", bash("git diff")); !strings.Contains(s, "Never git add -A.") {
+		t.Errorf("Drop of e should free staging again:\n%s", s)
+	}
+}
+
+// TestMarkersInMultiBacktickSpans: a marker quoted in a double-backtick span sets nothing.
+func TestMarkersInMultiBacktickSpans(t *testing.T) {
+	got := ParseSections("# A\n\nWrite `` `<!-- tack:always -->` `` to mark one.\n")
+	if got[0].Always {
+		t.Error("a marker in a double-backtick span was read")
+	}
+	if !ParseSections("# A\n\n<!-- tack:always --> and `code`\n")[0].Always {
+		t.Error("a marker in prose beside a code span is read")
+	}
+}
+
+// TestWholeFileChargesItsFraming: a whole file's charge is the text it gives, framing included.
+func TestWholeFileChargesItsFraming(t *testing.T) {
+	in := NewInstructions("CLAUDE.md", "# notes\n\n## Testing\n\nRun go test.\n", NewBudget(16384))
+	if got := in.Initial(); in.Used() != SectionTokens(got) || !in.Whole() {
+		t.Errorf("used %d, the text's %d, whole %v", in.Used(), SectionTokens(got), in.Whole())
+	}
+}

@@ -144,13 +144,16 @@ type Knowledge struct {
 	b      *Budget
 	in     []bool
 	cost   []int
-	by     []string
+	by     []string // the id of the call whose result carries each page in
+	call   []int    // which ForCall brought each page in, counted from 1, so ids a model reuses stay apart
+	calls  int
 }
 
 // NewKnowledge is root's pages for a window of window tokens, drawing on b.
 func NewKnowledge(root string, pages []Page, window int, b *Budget) *Knowledge {
 	n := len(pages)
-	return &Knowledge{root: root, pages: pages, window: window, b: b, in: make([]bool, n), cost: make([]int, n), by: make([]string, n)}
+	return &Knowledge{root: root, pages: pages, window: window, b: b, in: make([]bool, n), cost: make([]int, n), by: make([]string, n),
+		call: make([]int, n)}
 }
 
 // fresh says whether every pin of the page matches its file now.
@@ -208,6 +211,7 @@ func (k *Knowledge) Index() string {
 // or edits that is not in already. A fresh page is loaded whole while the budget lasts; a page whose pins no longer
 // match is named as possibly out of date and not loaded. A compaction that stubs id's result must call Masked.
 func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
+	k.calls++
 	files := map[string]bool{}
 	for _, kind := range callKinds(tool, input) {
 		for _, p := range []string{"read:", "edit:"} {
@@ -237,7 +241,7 @@ func (k *Knowledge) ForCall(id, tool string, input json.RawMessage) string {
 		}
 		cost := SectionTokens(text)
 		k.b.Used += cost
-		k.in[i], k.cost[i], k.by[i] = true, cost, id
+		k.in[i], k.cost[i], k.by[i], k.call[i] = true, cost, id, k.calls
 		out.WriteString(text)
 	}
 	return out.String()
@@ -252,17 +256,29 @@ func pinnedTo(pg Page, files map[string]bool) bool {
 	return false
 }
 
-// Masked tells the pages a compaction stubbed the results of these tool calls: the pages those results carried are out
-// again, and their cost goes back to the budget.
+// Masked tells the pages a compaction stubbed the results of these tool calls: for each id, the pages its oldest call
+// still in the window brought in are out again, and their cost goes back to the budget.
 func (k *Knowledge) Masked(ids []string) {
-	gone := map[string]bool{}
 	for _, id := range ids {
-		gone[id] = true
+		k.free(id, false)
+	}
+}
+
+// Drop takes back the pages the newest call with id brought in: the loop calls it when they did not fit the room left
+// with the call's result.
+func (k *Knowledge) Drop(id string) { k.free(id, true) }
+
+func (k *Knowledge) free(id string, newest bool) {
+	pick := 0
+	for i := range k.pages {
+		if k.in[i] && k.by[i] == id && (pick == 0 || newest && k.call[i] > pick || !newest && k.call[i] < pick) {
+			pick = k.call[i]
+		}
 	}
 	for i := range k.pages {
-		if k.in[i] && gone[k.by[i]] {
+		if k.in[i] && k.by[i] == id && k.call[i] == pick {
 			k.b.Used -= k.cost[i]
-			k.in[i], k.cost[i], k.by[i] = false, 0, ""
+			k.in[i], k.cost[i], k.by[i], k.call[i] = false, 0, "", 0
 		}
 	}
 }
