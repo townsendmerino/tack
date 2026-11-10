@@ -22,7 +22,7 @@ var usageNow = time.Now
 
 // usageCmd is `tack usage` (DESIGN §10, §7.7): the usage table over every session in the state directory, by day and
 // model server. A running daemon answers it (usage/summary); with none, or one from before that method, it reads the
-// logs itself. It only reads, and starts no daemon. A config that is there but wrong fails loudly; with none, the default state directory
+// table itself (localUsage). It changes nothing but the derived index.db, and starts no daemon. A config that is there but wrong fails loudly; with none, the default state directory
 // is read.
 func usageCmd(args []string, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("usage", flag.ContinueOnError)
@@ -49,10 +49,7 @@ func usageCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	rows, err := daemonUsage(dir, since, *utc)
 	if errors.Is(err, errNoUsageDaemon) {
-		var st *store.Store
-		if st, err = store.Open(dir); err == nil {
-			rows, err = usagetable.FromStore(st, since, loc)
-		}
+		rows, err = localUsage(dir, since, loc)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "tack usage:", err)
@@ -140,4 +137,22 @@ func usageStateDir(cfgPath string) (string, error) {
 		return cfg.StateDir, nil
 	}
 	return config.StateDir()
+}
+
+// localUsage is the table read in this process: from index.db, caught up from the logs (usage.Cache), or from the
+// logs alone when index.db cannot be opened or cannot give the table. Deleting index.db loses nothing; the next read rebuilds it.
+func localUsage(dir string, since time.Time, loc *time.Location) ([]usagetable.Row, error) {
+	st, err := store.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	c, err := usagetable.OpenCache(dir, st)
+	if err != nil {
+		return usagetable.FromStore(st, since, loc)
+	}
+	defer c.Close()
+	if rows, err := c.Table(since, loc); err == nil {
+		return rows, nil
+	}
+	return usagetable.FromStore(st, since, loc) // the index failed (a lock held past its timeout, say); the logs are the truth
 }

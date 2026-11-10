@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
+	usagetable "github.com/townsendmerino/tack/internal/usage"
 )
 
 // TestUsageCommand: tack usage reads every session in the config's state directory and prints the day's row; a bad
@@ -234,5 +236,38 @@ func TestUsageFallsBackToTheLogs(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := dispatch([]string{"usage", "-config", cfg, "-since", "all"}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "from-the-logs") {
 		t.Fatalf("with an older daemon: exit %d:\n%s%s", code, out.String(), errb.String())
+	}
+}
+
+// TestUsageReadsTheLogsWhenTheIndexFails: an index.db that opens but cannot give the table (here, tables of another
+// shape under the current version; in life, a lock held past the busy timeout) leaves tack usage to read the logs.
+func TestUsageReadsTheLogsWhenTheIndexFails(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "s")
+	cfg := filepath.Join(dir, "config.toml")
+	os.WriteFile(cfg, []byte("state_dir = \""+state+"\"\n[servers.local]\nkind = \"goinfer-remote\"\nurl = \"http://127.0.0.1:1\"\n"), 0o600)
+	st, err := store.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Create("s_local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(proto.EvUsage, 0, proto.Usage{Request: 1, Server: "from-the-logs", Prompt: 5, Output: 1}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	db, err := sql.Open("sqlite", filepath.Join(state, usagetable.IndexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE usage_read (session TEXT); CREATE TABLE usage_events (session TEXT); PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	var out, errb bytes.Buffer
+	if code := dispatch([]string{"usage", "-config", cfg, "-since", "all"}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "from-the-logs") {
+		t.Fatalf("with an index.db that fails: exit %d:\n%s%s", code, out.String(), errb.String())
 	}
 }

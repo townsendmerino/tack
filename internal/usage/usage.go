@@ -1,7 +1,7 @@
 // Package usage is the usage table (DESIGN §7.7, §10's `tack usage`): what each day's requests cost, by model server,
-// summed from the usage events in the session logs. It reads the logs each time; nothing is cached, so nothing is
-// lost if the state directory's derived files go (DESIGN §6.2, "Derived state"). The daemon answers usage/summary
-// with it, and tack usage reads it when no daemon runs.
+// summed from the usage events in the session logs. FromStore reads the logs each time; Cache keeps the usage events
+// in index.db and reads each log line once. index.db is derived, so deleting it loses nothing (DESIGN §6.2, "Derived
+// state"). The daemon answers usage/summary with it, and tack usage reads it when no daemon runs.
 package usage
 
 import (
@@ -71,8 +71,13 @@ func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 	if err != nil {
 		return fmt.Errorf("usage: session %s seq %d: %w", id, ev.Seq, err)
 	}
-	u := v.(proto.Usage)
-	k := key{ev.Time.In(a.loc).Format(time.DateOnly), u.Server}
+	a.add(id, ev.Time, v.(proto.Usage))
+	return nil
+}
+
+// add counts u, a usage event of session id at at, in range.
+func (a *Acc) add(id proto.SessionID, at time.Time, u proto.Usage) {
+	k := key{at.In(a.loc).Format(time.DateOnly), u.Server}
 	r := a.rows[k]
 	if r == nil {
 		r = &Row{Day: k.day, Server: k.server}
@@ -102,7 +107,6 @@ func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 		r.PrefillKnown++
 		r.PrefillMS += *u.PrefillMS
 	}
-	return nil
 }
 
 // Rows is the table so far, sorted by day then server.
@@ -184,3 +188,7 @@ func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, err
 	}
 	return acc.Rows(), nil
 }
+
+// markChild says session id is a subagent (its session.created has a Parent). It must precede id's usage events, as
+// session.created does in a log.
+func (a *Acc) markChild(id proto.SessionID) { a.child[id] = true }
