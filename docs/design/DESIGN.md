@@ -1,6 +1,8 @@
 # tack — design
 
-> **Status: DRAFT 2026-10-16, for the owner's review. Nothing is built.** Scope: a Go daemon with a CLI and TUI, then a
+> **Status, 2026-11-09: P0 is built and P1 is in progress; §16.1 says what is built, what is behind a setting and what
+> is planned.** First drafted 2026-10-16 for the owner's review, before anything was built; sections without an "as
+> built" note still describe the plan. Scope: a Go daemon with a CLI and TUI, then a
 > native macOS app. A Qt Linux app follows later and is designed for here, not built. One consolidated doc by request:
 > it covers the new repo and the changes the design needs in ken, goinfer and aikit.
 >
@@ -1845,6 +1847,33 @@ run faster; the app's review loop is the part more agent throughput does not com
 Through P5 that is roughly 23–32 weeks. **Worktree-parallel sessions** — each session in its own `git worktree`, merged
 back through the Changes tab, as the Codex app does — sit in P5 but can move earlier if one writing session per workspace
 chafes. On one local model, parallel sessions share one decoder, so worktrees buy isolation more than speed.
+
+### 16.1 Where the build stands (2026-11-09)
+
+Read from the tree at main after PR #138. "Behind a setting" means built, off by default in `config.toml`'s `[run]`,
+and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` has each step's detail.
+
+| area | built | behind a setting | not built |
+|---|---|---|---|
+| protocol, store (§6.2, §9) | event log, blobs, JSON-RPC types, Swift generator, fixtures; `session/new`, `session/subscribe`, `session/prompt`, `daemon/status`, `daemon/shutdown`, `usage/summary` | — | the rest of §9.2's methods; the TUI's are accepted in `proposal-tui-protocol.md` and land next; `session/fork` |
+| daemon (§6.1) | lock, socket, peer check, client token, auto-spawn, crash recovery, drain | — | LaunchAgent install; `tack doctor` |
+| model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
+| loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
+| tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
+| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape | — | one-spawn grants and the network proxy (P5); the short environment for commands; the prompt-text scan; repo trust |
+| checkpoints (§6.8) | shadow-repository snapshots before `bash`, `tack rewind` for files | `snapshots` (on by default) | edit pre-images; rewind as a conversation fork |
+| instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
+| context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
+| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI's screen model (`internal/tui`) | — | the TUI's terminal layer (P1 step 8b); `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
+| clients (§9.4, §11) | generated Swift protocol types | — | `internal/render`, `internal/acp`, the macOS app |
+| evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the full E1 run and the P1 rule |
+
+**What the measurements have changed since the draft** (the records are in `docs/measurements/`; §0, §2.3 and §8.4 are
+not yet rewritten for them, and `proposal-design-review-2026-11-09.md` proposes how):
+- Qwen2.5-7B, the draft's one working configuration, passed 0 of 20 pilot runs (R13).
+- Qwen3-8B at 16k passes 9 of 168 calibration runs without the bundle and 26 of 168 with it.
+- Qwen3.6-35B-A3B at 16k on nobara passes 12 of 36 with the bundle, and 13 of 36 at 32k. It is the model the C8 to C12
+  screens run on.
 
 ---
 
