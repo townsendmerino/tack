@@ -58,6 +58,12 @@ doc comments say what each will hold.
   clearly a known flake, one with an open issue whose text matches, gets one rerun
   (`gh run rerun <id> --failed`). A second failure, or any failure that is not a known flake, is read and explained
   before anything merges; a new flake gets an issue with what was seen.
+- **No self-hosted runner is ever attached to this repository while it is public** (owner, 2026-11-10). A pull request
+  from anyone runs the repository's workflows, so a self-hosted runner would run a stranger's code on the owner's
+  machine. Every job runs on GitHub's hosted runners.
+- **Signing secrets are used only by a workflow that runs on tags, never on `pull_request` or `pull_request_target`**
+  (owner, 2026-11-10). A workflow those events trigger names no signing secret, and no workflow uses
+  `pull_request_target`.
 - Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
   request.
 - **ken changes** go to ken's own Claude Code as a brief: ken's `CLAUDE.md` makes it ken's sole editor. Each lands as a
