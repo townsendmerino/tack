@@ -238,7 +238,7 @@ func TestDaemonSettings(t *testing.T) {
 // default, and checks goinfer's timing lock at ~/.goinfer-timing.lock unless told otherwise.
 func TestServeSettings(t *testing.T) {
 	const child = "[servers.local]\nkind = \"goinfer-child\"\nbinary = \"/b\"\nmodel_path = \"/m.gguf\"\nctx = 16384\n"
-	c, err := load(t, child+"[serve]\nserver = \"local\"\nkey_file = \"~/k\"\nlisten = \"100.125.33.107:8091\"\n")
+	c, err := load(t, child+"[serve]\nserver = \"local\"\nkey_file = \"~/k\"\nlisten = \"100.64.0.1:8091\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}

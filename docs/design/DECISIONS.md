@@ -263,3 +263,28 @@ slice `mbp2-tack-p1s5` proposed.
     (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`);
   - a helper that writes a pin's hash. Until there is one, a pin's hash is `sha256sum`'s output, or a prefix of it.
 - **Code:** `internal/window/knowledge.go:Knowledge`, `internal/core/core.go:Options.Knowledge`.
+
+## ADR-008 — The repository is public from 2026-11-10, under MIT
+
+**Status:** decided 2026-11-10 (owner). Replaces DESIGN §1's D4 as decided on 2026-10-16: "private until P2's exit, then
+public, MIT".
+
+**Why now.** D4 held the repository private until the context bets had a measured answer. What forces the date is
+GitHub Actions: a private repository's minutes are limited, and that limit had already taken the macOS runner off every
+push and pull request (owner, 2026-10-19). A public repository does not pay for standard runners.
+
+**Decision.** tack is public under the MIT license (`LICENSE`), like ken, before P2's exit.
+
+**Alternatives.** Stay private and keep the reduced CI; or pay for minutes. Neither was taken.
+
+**Consequences.**
+- The repository opens before its claims are measured. The README carries a status section that says tack is
+  pre-release, and gives the calibration results as the records in `docs/measurements/` have them, including the screens
+  that showed nothing. It claims nothing the records do not.
+- `SECURITY.md` says how to report a vulnerability.
+- Nobara's tailnet address is replaced by a placeholder in the tree. History is not rewritten for it: the address is
+  reachable only inside the owner's tailnet.
+- The macOS runner can return to every push and pull request. That change to `ci.yml` is separate and the owner's.
+- A third-party notice file is not needed while tack ships source only (every dependency is MIT, BSD, Apache-2.0 or
+  dual BSD/MPL-2.0, and none is vendored). It becomes needed with the first binary release (P4), which redistributes
+  Apache-2.0 dependencies, goinfer's server and ken's embedding model.

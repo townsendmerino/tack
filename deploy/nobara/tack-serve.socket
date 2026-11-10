@@ -4,8 +4,9 @@
 Description=tack serve: the on-demand model server's socket
 
 [Socket]
-# nobara's tailnet address (nobara-pc) and tack's port; tailnet only. FreeBind lets it bind before tailscaled has the address.
-ListenStream=100.125.33.107:8091
+# The serving machine's tailnet address and tack's port; tailnet only. 100.64.0.1 is a placeholder: put your own
+# machine's address here (`tailscale ip -4`). FreeBind lets it bind before tailscaled has the address.
+ListenStream=100.64.0.1:8091
 FreeBind=true
 
 [Install]

@@ -86,7 +86,7 @@ and in how much memory, before the loop is built around them.
 | D1 | build tack, or extend an existing agent | build tack | §2.4 | **decided** 2026-10-16 |
 | D2 | repo layout | one new repo for the daemon, CLI and both apps | §4 | **decided** 2026-10-16 |
 | D3 | name | tack | — | **decided** 2026-10-16 |
-| D4 | visibility and license | private until P2's exit, then public, MIT | §4.4 | **decided** 2026-10-16 |
+| D4 | visibility and license | public, MIT, from 2026-11-10 (ADR-008, replacing "private until P2's exit, then public, MIT" of 2026-10-16) | §4.4 | **decided** 2026-11-10 |
 | D5 | minimum macOS | macOS 26 (Tahoe); Apple silicon only | §11.1 | **decided** 2026-10-16 |
 | D6 | how the daemon reaches ken | in-process, through a public ken engine package, from the start | §12 | **decided** 2026-10-16 |
 | D7 | how tack gets its model server | the app bundles `goinfer-serve` (Metal) and runs it as a supervised child: one install, nothing else to set up. A remote `goinfer-serve` (nobara) and other local servers are optional; the owner's own default is nobara until E0 finds a Mac setup that works | §8 | **decided** 2026-10-16 |
@@ -333,8 +333,8 @@ tack/
 - **ken changes (§12):** a brief handed to ken's Claude Code, its sole editor per ken's `CLAUDE.md`. Each lands as a
   tagged ken release that tack pins.
 - **goinfer changes (§13):** goinfer's usual process — task doc or brief, vscode-claude, goinfer's gates.
-- **Visibility and license (D4, decided):** private until P2's exit, when the context bets have a measured answer; then
-  public under MIT, like ken.
+- **Visibility and license (D4, decided 2026-11-10, ADR-008):** public under MIT, like ken. The repository opens before
+  P2's exit, so before the context bets have a measured answer; the README says so and makes no claim beyond the records.
 - **tack's `CLAUDE.md` starts with the owner's standing rules:** the day loop is seconds (a touched-files checker, in
   Go); long runs go on a night queue; stage files by explicit path; no Python, and as little shell as possible; code is
   cited by declaration, never by line; a skip is not a pass.
