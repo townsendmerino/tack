@@ -440,3 +440,20 @@ func TestMaskPinCarriesAlongSuperseders(t *testing.T) {
 		t.Fatalf("wide stubs %v, want a,b: the newest whole read c kept", got)
 	}
 }
+
+// TestReadOnlyToolsLeaveFileVersionsAlone: a call to a tool that only reads counts as changing nothing, so the
+// results masking relies on stay current; find_related and recently_changed read, as search and grep do.
+func TestReadOnlyToolsLeaveFileVersionsAlone(t *testing.T) {
+	for _, tool := range []string{"read", "glob", "grep", "search", "symbol", "find_related", "recently_changed"} {
+		var v fileVersions
+		v.touch(observation{tool: tool})
+		if v.all != 0 || len(v.path) != 0 {
+			t.Errorf("%s counted as a change: %+v", tool, v)
+		}
+	}
+	var v fileVersions
+	v.touch(observation{tool: "bash"})
+	if v.all != 1 {
+		t.Fatal("bash did not count as a possible change of every file; the check above would prove nothing")
+	}
+}

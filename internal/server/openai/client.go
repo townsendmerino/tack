@@ -118,7 +118,11 @@ func toWire(req server.Request) wireRequest {
 				args := string(b.Input)
 				calls = append(calls, wireCall{ID: b.ID, Type: "function", Function: wireFunction{Name: b.Name, Arguments: &args}})
 			case "tool_result":
-				w.Messages = append(w.Messages, wireMessage{Role: "tool", ToolCallID: b.ToolUseID, Content: text(b.Result)})
+				result := b.Result
+				if b.IsError && !strings.HasPrefix(result, "error") { // the API has no error flag on a tool message
+					result = "error: " + result
+				}
+				w.Messages = append(w.Messages, wireMessage{Role: "tool", ToolCallID: b.ToolUseID, Content: text(result)})
 			}
 		}
 		switch {
@@ -164,7 +168,7 @@ type chunk struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
 			ToolCalls        []struct {
-				Index    int    `json:"index"`
+				Index    *int   `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
 					Name      string `json:"name"`
@@ -181,32 +185,31 @@ type chunk struct {
 			CachedTokens *int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
+	Error *struct{ Type, Message string } `json:"error"` // an error mid-stream, in OpenAI's shape
 }
 
 // stopReasons maps a finish_reason to tack's stop reasons (Anthropic's names, as the loop reads them).
 var stopReasons = map[string]string{"stop": "end_turn", "tool_calls": "tool_use", "length": "max_tokens"}
 
-// parseStream reads an SSE stream of chat.completion.chunk objects into one response.
+// parseStream reads an SSE stream of chat.completion.chunk objects into one response. An event's data is its data:
+// lines joined by newlines, as the SSE spec has it, and an event ends at a blank line or at the end of the stream. A
+// data event that is an error object ({"error":{...}}) is the stream's error, a *server.Error. Text deltas carry the
+// index their block will have in the response: 1 after a thinking block, 0 without one.
 func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, error) {
 	var thinking, content strings.Builder
 	type call struct{ id, name, args string }
 	calls := map[int]*call{}
+	last := -1      // the tool call a chunk without an index continues
+	textIndex := -1 // the text block's index, fixed at its first delta
 	out := &server.Response{}
 	finished := false
-	sc := bufio.NewScanner(body)
-	sc.Buffer(make([]byte, 1<<20), 1<<26)
-	for sc.Scan() {
-		data, ok := strings.CutPrefix(sc.Text(), "data:")
-		if !ok {
-			continue
-		}
-		data = strings.TrimSpace(data)
-		if data == "[DONE]" {
-			break
-		}
+	handle := func(data string) error {
 		var ch chunk
 		if err := json.Unmarshal([]byte(data), &ch); err != nil {
-			return nil, fmt.Errorf("openai: a stream chunk is not JSON: %w", err)
+			return fmt.Errorf("openai: a stream chunk is not JSON: %w", err)
+		}
+		if e := ch.Error; e != nil {
+			return &server.Error{Status: http.StatusOK, Type: e.Type, Message: e.Message}
 		}
 		if u := ch.Usage; u != nil {
 			out.Usage.InputTokens, out.Usage.OutputTokens = u.PromptTokens, u.CompletionTokens
@@ -223,15 +226,31 @@ func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, 
 				onDelta(server.Delta{Index: 0, Kind: "thinking", Text: d.ReasoningContent})
 			}
 			if d.Content != "" {
+				if textIndex < 0 {
+					textIndex = 0
+					if thinking.Len() > 0 {
+						textIndex = 1
+					}
+				}
 				content.WriteString(d.Content)
-				onDelta(server.Delta{Index: 1, Kind: "text", Text: d.Content})
+				onDelta(server.Delta{Index: textIndex, Kind: "text", Text: d.Content})
 			}
 			for _, tc := range d.ToolCalls {
-				cl := calls[tc.Index]
+				i := last
+				switch {
+				case tc.Index != nil:
+					i = *tc.Index
+				case tc.ID != "" && (last < 0 || calls[last].id != tc.ID): // no index: a new id is a new call
+					i = len(calls)
+				case last < 0:
+					i = 0
+				}
+				cl := calls[i]
 				if cl == nil {
 					cl = &call{}
-					calls[tc.Index] = cl
+					calls[i] = cl
 				}
+				last = i
 				if tc.ID != "" {
 					cl.id = tc.ID
 				}
@@ -249,8 +268,41 @@ func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, 
 				}
 			}
 		}
+		return nil
+	}
+	var data []string // the event so far
+	done := false
+	dispatch := func() error {
+		if len(data) == 0 {
+			return nil
+		}
+		d := strings.Join(data, "\n")
+		data = nil
+		if strings.TrimSpace(d) == "[DONE]" {
+			done = true
+			return nil
+		}
+		return handle(d)
+	}
+	sc := bufio.NewScanner(body)
+	sc.Buffer(make([]byte, 1<<20), 1<<26)
+	for !done && sc.Scan() {
+		line := sc.Text() // ScanLines drops a CRLF's \r
+		switch {
+		case line == "":
+			if err := dispatch(); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(line, "data:"):
+			d := strings.TrimPrefix(line, "data:")
+			data = append(data, strings.TrimPrefix(d, " ")) // one leading space is the field's separator
+		}
+		// Comments (":") and other fields (event:, id:, retry:) carry nothing the response needs.
 	}
 	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if err := dispatch(); err != nil { // a last event with no blank line after it
 		return nil, err
 	}
 	if !finished {
@@ -267,13 +319,17 @@ func parseStream(body io.Reader, onDelta func(server.Delta)) (*server.Response, 
 		idx = append(idx, i)
 	}
 	sort.Ints(idx)
-	for _, i := range idx {
+	for n, i := range idx {
 		cl := calls[i]
 		in := json.RawMessage(cl.args)
 		if strings.TrimSpace(cl.args) == "" {
 			in = json.RawMessage("{}")
 		}
-		out.Content = append(out.Content, proto.ModelBlock{Type: "tool_use", ID: cl.id, Name: cl.name, Input: in})
+		id := cl.id
+		if id == "" {
+			id = fmt.Sprintf("call_%d", n) // a server that sent none: the loop needs an id to answer
+		}
+		out.Content = append(out.Content, proto.ModelBlock{Type: "tool_use", ID: id, Name: cl.name, Input: in})
 	}
 	return out, nil
 }

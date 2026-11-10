@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,10 @@ import (
 // calls count toward the parent's budgets (tools.SubagentAnswer). The child is not in the core's sessions, so no client
 // subscribes to it live and its log opens later like any other; its halt target is registered (open), as every
 // session's is.
+//
+// The child gets no workspace instructions (CLAUDE.md, sections, knowledge pages), by design: it is read-only and
+// answers one question, project rules are mostly about changing things, which it cannot, and its window is better
+// spent on the question. The task tool's description asks the parent to put what the helper needs in the prompt.
 func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.SessionCreated) tools.Subagent {
 	return func(ctx context.Context, prompt string) (tools.SubagentAnswer, error) {
 		// The child takes no more than the parent has left, tokens and tool calls both, so a task cannot carry the
@@ -32,6 +37,14 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 			if rem.Tokens <= 0 || rem.ToolCalls <= 0 {
 				return tools.SubagentAnswer{}, fmt.Errorf("the turn has no budget left for a helper (%d tokens, %d tool calls)", rem.Tokens, rem.ToolCalls)
 			}
+		}
+		// Refused before its log exists, so a drain leaves no empty child behind; the check under c.mu below catches a
+		// drain that begins while the child opens.
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if draining {
+			return tools.SubagentAnswer{}, errNoHelperWhileDraining
 		}
 		id := store.NewSessionID(time.Now())
 		log, hold, err := c.opt.Store.CreateHeld(id)
@@ -59,6 +72,20 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 			hold.Release()
 		}()
 		child.loop.Limit(b)
+		c.mu.Lock()
+		draining = c.draining
+		if !draining {
+			c.children[child.loop] = true // under c.mu, as Drain reads it: a Drain either sees it or came first
+		}
+		c.mu.Unlock()
+		if draining {
+			return tools.SubagentAnswer{}, errNoHelperWhileDraining
+		}
+		defer func() {
+			c.mu.Lock()
+			delete(c.children, child.loop)
+			c.mu.Unlock()
+		}()
 		reason, err := child.loop.Turn(ctx, prompt)
 		a := tools.SubagentAnswer{Text: lastAnswer(child), Tokens: child.loop.Tokens(), Calls: child.loop.ToolCalls(), Session: string(id)}
 		switch {
@@ -87,4 +114,39 @@ func lastAnswer(s *session) string {
 		return b.String()
 	}
 	return ""
+}
+
+var errNoHelperWhileDraining = errors.New("the daemon is shutting down: no helper starts now")
+
+// orphanCost is what the children of session parent made since a time spent. Given a cut-off task call's tool.started,
+// that is the call's own child: tool calls run one at a time, and a child has no task of its own. Crash recovery
+// charges the call with it (closeInterrupted), so the parent's budgets still count it on a resume. Children are found by
+// their SessionCreated.Parent and told apart by when their logs began, not by a name in a result: a task that failed,
+// was cancelled or was itself closed by recovery names no child, though its tool.finished carries the child's spend.
+// Their own logs are closed by the same recovery.
+func (c *Core) orphanCost(parent proto.SessionID) func(since time.Time) (int, int) {
+	return func(since time.Time) (int, int) {
+		ids, err := c.opt.Store.Sessions()
+		if err != nil {
+			return 0, 0
+		}
+		tokens, calls := 0, 0
+		for _, id := range ids {
+			if id == parent {
+				continue
+			}
+			cevs, err := c.opt.Store.Events(id, 0)
+			if err != nil || len(cevs) == 0 {
+				continue
+			}
+			if v, err := cevs[0].Decode(); err != nil {
+				continue
+			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent || cevs[0].Time.Before(since) {
+				continue
+			}
+			t, n := loop.Spent(cevs)
+			tokens, calls = tokens+t, calls+n
+		}
+		return tokens, calls
+	}
 }

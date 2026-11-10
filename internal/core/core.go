@@ -111,6 +111,8 @@ type Options struct {
 	LeanResults bool
 	// RecentlyChanged gives every session the recently_changed tool (tools.Options.RecentlyChanged).
 	RecentlyChanged bool
+	// FindRelated gives every session the find_related tool when its searcher can answer it (tools.Options.FindRelated).
+	FindRelated bool
 	// CompactAtCliff makes the loop react when stuck (loop.Config.CompactAtCliff; calibration §16.2).
 	CompactAtCliff bool
 	// WidenRepeats widens a repeated whole read or grep (loop.Config.WidenRepeats).
@@ -180,6 +182,7 @@ type Core struct {
 	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
 	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
 	draining  bool                      // Drain has begun: no new turns
+	children  map[*loop.Session]bool    // the subagents running now (Core.subagent): a Drain reaches them too
 	started   time.Time
 
 	shutdown sync.Once // Options.Shutdown is called once
@@ -232,7 +235,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
+		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, children: map[*loop.Session]bool{}, started: time.Now()}
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
@@ -794,7 +797,8 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		s.mapRoot = ws.Root()
 	}
 	symbols, _ := searcher.(tools.Symbols)
-	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged}
+	ro := tools.Options{Searcher: searcher, Symbols: symbols, LeanResults: c.opt.LeanResults, RecentlyChanged: c.opt.RecentlyChanged,
+		FindRelated: c.opt.FindRelated}
 	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: searcher, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
@@ -812,7 +816,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
-			RecentlyChanged: c.opt.RecentlyChanged}
+			RecentlyChanged: c.opt.RecentlyChanged, FindRelated: c.opt.FindRelated}
 		cfg.Tools = tools.New(to)
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
