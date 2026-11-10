@@ -135,11 +135,14 @@ type DaemonShutdownResult struct{}
 
 // UsageSummaryParams asks for the usage table (DESIGN §7.7, §9.2): what each day's requests cost, by model server,
 // summed from the usage events of every session in the daemon's state directory. Since is the first instant counted;
-// nil counts everything. Days are UTC days with UTC set, and the daemon's local days otherwise (it runs on the
-// client's machine, as the client's user). Rows are grouped by day and server, the only grouping so far.
+// nil counts everything. Days are UTC days with UTC set, the days of TZ when it names a zone, and the daemon's local
+// days otherwise. Rows are grouped by day and server, the only grouping so far.
 type UsageSummaryParams struct {
 	Since *time.Time `json:"since,omitempty"`
 	UTC   bool       `json:"utc,omitempty"`
+	// TZ is the client's time zone, an IANA name ("America/Los_Angeles"), whose days the rows count when UTC is not
+	// set; empty means the daemon's own. A name the daemon does not know is refused (invalid params).
+	TZ string `json:"tz,omitempty"`
 }
 
 // UsageRow is one day's requests to one server (internal/usage.Row). Reused and Prefilled sum only the Known requests,
