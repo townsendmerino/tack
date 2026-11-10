@@ -661,6 +661,25 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		return c.prompt(p)
+	case proto.MethodSessionCancel:
+		p, perr := params[proto.SessionCancelParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		s, perr := c.session(p.Session)
+		if perr != nil {
+			return nil, perr
+		}
+		s.mu.Lock()
+		cancel := s.cancel
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel(loop.ErrUserCancel)
+		}
+		return proto.SessionCancelResult{}, nil
 	case proto.MethodDaemonStatus:
 		if _, perr := params[proto.DaemonStatusParams](req); perr != nil {
 			return nil, perr

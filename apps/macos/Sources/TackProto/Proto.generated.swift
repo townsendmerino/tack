@@ -11,6 +11,7 @@ public enum Method {
     public static let daemonStatus = "daemon/status"
     public static let initialize = "initialize"
     public static let permissionRespond = "permission/respond"
+    public static let sessionCancel = "session/cancel"
     public static let sessionEvent = "session/event"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
@@ -400,6 +401,18 @@ public struct Rewind: Codable, Equatable, Sendable {
         case noUndo = "no_undo"
         case changed = "changed"
     }
+}
+
+public struct SessionCancelParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+    }
+}
+
+public struct SessionCancelResult: Codable, Equatable, Sendable {
+    public init() {}
 }
 
 public struct SessionCreated: Codable, Equatable, Sendable {

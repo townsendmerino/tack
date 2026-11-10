@@ -778,7 +778,9 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 	a, err := s.cfg.Approve.Approve(ctx, req)
 	if err != nil {
 		by, why := proto.DecidedByNoUser, "the question was not answered: "+err.Error()
-		if cause := context.Cause(ctx); errors.As(cause, new(*halt.Halted)) || errors.Is(cause, ErrShutdown) {
+		if cause := context.Cause(ctx); errors.Is(cause, ErrUserCancel) {
+			by, why = proto.DecidedByUser, "cancelled" // the user ended the turn with the question open
+		} else if errors.As(cause, new(*halt.Halted)) || errors.Is(cause, ErrShutdown) {
 			by, why = proto.DecidedByHalted, "the question ended unanswered: "+cause.Error() // not a user, nor the lack of one
 		}
 		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: by, Reasons: append(v.Reasons, why)})
@@ -893,6 +895,10 @@ func sleep(ctx context.Context, d time.Duration) error {
 // ErrShutdown is the cause a turn's context is cancelled with when the daemon shuts down before the turn drained
 // (core's Drain): its commands are killed, and the turn ends with stop reason shutdown.
 var ErrShutdown = errors.New("the daemon is shutting down")
+
+// ErrUserCancel is the cause a turn's context is cancelled with by session/cancel: the turn ends cancelled, and a waiting
+// permission question is denied by the user. It is not a halt.
+var ErrUserCancel = errors.New("the user cancelled the turn")
 
 // Drain asks the session's turn to stop between steps, for a shutdown (DESIGN §6.1): the tool call running finishes, no
 // other starts (each is answered not run), and the turn ends before its next request with stop reason shutdown. It

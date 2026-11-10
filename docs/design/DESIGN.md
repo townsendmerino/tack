@@ -1320,7 +1320,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
 - `workspace/open {root}`, `workspace/trust {root}`, `workspace/list`, `workspace/status` (index warming or ready, file
   count, ken generation); notification `workspace/indexing`.
 - `session/new {workspace, model, mode}`, `session/list`, `session/get`, `session/subscribe {session, from_seq}`,
-  `session/unsubscribe`, `session/prompt {session, content}`, `session/steer`, `session/cancel`,
+  `session/unsubscribe`, `session/prompt {session, content}`, `session/steer`, `session/cancel {session}` (built: ends the running turn, denies a pending question as the user "cancelled", turn.end cancelled; a no-op when idle; needs the client token),
   `session/fork {session, at_seq}`, `session/rewind {session, to_seq}`, `session/setMode`, `session/setModel`,
   `session/archive`.
 - `permission/respond {session, seq, id, decision, scope, note?}` — seq and id name the question (`permission.requested`); decision allow or
