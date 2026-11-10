@@ -720,6 +720,8 @@ type Approver interface {
 type Approval struct {
 	Allow   bool
 	Session bool
+	// Note is the user's words on a deny: they reach the model in the refused result, and PermissionResolved.Note.
+	Note string
 }
 
 // permit decides a call that changes something, records the decision, and returns the call's refused result when it
@@ -779,8 +781,12 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 			Reasons: append(v.Reasons, "the question was not answered: "+err.Error())})
 	}
 	if !a.Allow {
+		why := "the user declined"
+		if a.Note != "" {
+			why += ": " + a.Note
+		}
 		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByUser, Scope: "once",
-			Reasons: []string{"the user declined"}})
+			Reasons: []string{why}, Note: a.Note})
 	}
 	r := proto.PermissionResolved{Decision: proto.DecisionAllow, By: proto.DecidedByUser, Scope: "once"}
 	if a.Session {

@@ -10,6 +10,7 @@ public enum Method {
     public static let daemonShutdown = "daemon/shutdown"
     public static let daemonStatus = "daemon/status"
     public static let initialize = "initialize"
+    public static let permissionRespond = "permission/respond"
     public static let sessionEvent = "session/event"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
@@ -334,6 +335,7 @@ public struct PermissionResolved: Codable, Equatable, Sendable {
     public var scope: String?
     public var ruleAdded: String?
     public var reasons: [String]?
+    public var note: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -342,7 +344,30 @@ public struct PermissionResolved: Codable, Equatable, Sendable {
         case scope = "scope"
         case ruleAdded = "rule_added"
         case reasons = "reasons"
+        case note = "note"
     }
+}
+
+public struct PermissionRespondParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+    public var id: String
+    public var decision: String
+    public var scope: String?
+    public var note: String?
+    public var rule: String?
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+        case id = "id"
+        case decision = "decision"
+        case scope = "scope"
+        case note = "note"
+        case rule = "rule"
+    }
+}
+
+public struct PermissionRespondResult: Codable, Equatable, Sendable {
+    public init() {}
 }
 
 public struct RequestSent: Codable, Equatable, Sendable {

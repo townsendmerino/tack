@@ -1,0 +1,10 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-tui","version":"0.2.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/subscribe","params":{"session":"s_01JAFIXTURE0000000000000009","from_seq":0}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"head":5}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000009","event":{"seq":6,"time":"2026-11-09T12:00:02Z","type":"permission.requested","cause":5,"payload":{"id":"toolu_21","tool":"write","mode":"auto","reasons":["AGENTS.md is an instruction file, which could change a model's standing orders"]}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"permission/respond","params":{"session":"s_01JAFIXTURE0000000000000009","id":"toolu_21","decision":"deny","note":"put it in README instead"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000009","event":{"seq":7,"time":"2026-11-09T12:00:04Z","type":"permission.resolved","cause":5,"payload":{"id":"toolu_21","decision":"deny","by":"user","scope":"once","reasons":["the user declined: put it in README instead"],"note":"put it in README instead"}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":4,"method":"permission/respond","params":{"session":"s_01JAFIXTURE0000000000000009","id":"toolu_21","decision":"allow","scope":"session"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":4,"error":{"code":-32006,"message":"permission/respond: question toolu_21 is not waiting: it was answered, or never asked"}}}

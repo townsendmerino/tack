@@ -202,10 +202,12 @@ type session struct {
 	cancel  context.CancelCauseFunc // the running turn's
 	// turn counts the turns started. A turn's goroutine frees the session at its exit only while turn is still its own
 	// and the session still running: emitTurn frees it as turn.end goes out, and the next turn may start then.
-	turn   uint64
-	subs   map[*subscriber]bool
-	target sandbox.Target // what Halt sweeps for this session
-	kit    func() error   // the edit kit's Close, or nil
+	turn uint64
+	subs map[*subscriber]bool
+	// pending is the questions waiting for permission/respond, by the tool call's id (approver). Under mu.
+	pending map[string]chan answer
+	target  sandbox.Target // what Halt sweeps for this session
+	kit     func() error   // the edit kit's Close, or nil
 	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
 	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
 	// head, instructions.go; the sections); else it follows the prompt.
@@ -643,6 +645,12 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		return c.status(), nil
+	case proto.MethodPermissionRespond:
+		p, perr := params[proto.PermissionRespondParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		return c.respond(cn, p)
 	case proto.MethodDaemonShutdown:
 		if _, perr := params[proto.DaemonShutdownParams](req); perr != nil {
 			return nil, perr
@@ -803,6 +811,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: searcher, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
+	cfg.Approve = approver{s} // questions wait for permission/respond while a privileged client watches
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)
@@ -1054,6 +1063,7 @@ func (c *Core) unsubscribeAll(cn *conn) {
 				delete(s.subs, sub)
 			}
 		}
+		s.endUnwatched() // a question its last watcher left has no one to answer it
 		s.mu.Unlock()
 	}
 }

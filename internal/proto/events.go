@@ -176,7 +176,8 @@ const (
 
 // PermissionResolved records the decision on a tool call that changes something: every such call gets one, whether a
 // mode, a rule or the user decided (DESIGN §6.6, "Every permission decision is in the event log"). Scope is how far a
-// user's allow reaches: once, or the session, which adds RuleAdded for the rest of it. Reasons repeats why, for a deny.
+// user's allow reaches: once, or the session, which adds RuleAdded for the rest of it. Reasons repeats why, for a deny;
+// Note is the user's own words on a deny (permission/respond), which the refused result also carries to the model.
 type PermissionResolved struct {
 	ID        string   `json:"id"`
 	Decision  string   `json:"decision"`
@@ -184,6 +185,7 @@ type PermissionResolved struct {
 	Scope     string   `json:"scope,omitempty"`
 	RuleAdded string   `json:"rule_added,omitempty"`
 	Reasons   []string `json:"reasons,omitempty"`
+	Note      string   `json:"note,omitempty"`
 }
 
 // ToolStarted records that a tool call began executing. The store fsyncs after it, so a crash leaves a call either

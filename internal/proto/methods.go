@@ -7,14 +7,15 @@ import (
 
 // Method names (DESIGN §9.2). Only the methods P0 implements are declared; the rest arrive with their phase.
 const (
-	MethodInitialize       = "initialize"
-	MethodSessionNew       = "session/new"
-	MethodSessionSubscribe = "session/subscribe"
-	MethodSessionPrompt    = "session/prompt"
-	MethodSessionEvent     = "session/event" // notification, daemon to client
-	MethodDaemonStatus     = "daemon/status"
-	MethodDaemonShutdown   = "daemon/shutdown"
-	MethodUsageSummary     = "usage/summary"
+	MethodInitialize        = "initialize"
+	MethodSessionNew        = "session/new"
+	MethodSessionSubscribe  = "session/subscribe"
+	MethodSessionPrompt     = "session/prompt"
+	MethodSessionEvent      = "session/event" // notification, daemon to client
+	MethodDaemonStatus      = "daemon/status"
+	MethodDaemonShutdown    = "daemon/shutdown"
+	MethodUsageSummary      = "usage/summary"
+	MethodPermissionRespond = "permission/respond"
 )
 
 // SessionID names a session: "s_" and a ULID.
@@ -166,6 +167,23 @@ type UsageSummaryResult struct {
 	Rows []UsageRow `json:"rows"`
 }
 
+// PermissionRespondParams answers a permission.requested question (DESIGN §9.2; docs/design/proposal-tui-protocol.md).
+// ID is the question's (PermissionRequested.ID, the tool call's id). Decision is allow or deny; Scope is once (or
+// empty) or session, which extends an allow to the rest of the session as a rule. Note, on a deny, reaches the model
+// in the refused result; it is content and grants nothing. Rule is reserved for an edited rule and refused until it
+// is built. It needs a privileged connection; the first answer wins, and another gets CodeNotPending.
+type PermissionRespondParams struct {
+	Session  SessionID `json:"session"`
+	ID       string    `json:"id"`
+	Decision string    `json:"decision"`
+	Scope    string    `json:"scope,omitempty"`
+	Note     string    `json:"note,omitempty"`
+	Rule     string    `json:"rule,omitempty"`
+}
+
+// PermissionRespondResult acknowledges an answer; the permission.resolved event that follows is its record.
+type PermissionRespondResult struct{}
+
 // MethodSpec gives a method's params and result types; Result is nil for a notification.
 type MethodSpec struct {
 	Params, Result reflect.Type
@@ -174,14 +192,15 @@ type MethodSpec struct {
 // Methods is every method this build speaks, keyed by name. Dispatch, the fixtures' conformance test and the Swift
 // generator all read it, so a method missing here is missing everywhere.
 var Methods = map[string]MethodSpec{
-	MethodInitialize:       {reflect.TypeFor[InitializeParams](), reflect.TypeFor[InitializeResult]()},
-	MethodSessionNew:       {reflect.TypeFor[SessionNewParams](), reflect.TypeFor[SessionNewResult]()},
-	MethodSessionSubscribe: {reflect.TypeFor[SessionSubscribeParams](), reflect.TypeFor[SessionSubscribeResult]()},
-	MethodSessionPrompt:    {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
-	MethodSessionEvent:     {reflect.TypeFor[SessionEventParams](), nil},
-	MethodDaemonStatus:     {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
-	MethodDaemonShutdown:   {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
-	MethodUsageSummary:     {reflect.TypeFor[UsageSummaryParams](), reflect.TypeFor[UsageSummaryResult]()},
+	MethodInitialize:        {reflect.TypeFor[InitializeParams](), reflect.TypeFor[InitializeResult]()},
+	MethodSessionNew:        {reflect.TypeFor[SessionNewParams](), reflect.TypeFor[SessionNewResult]()},
+	MethodSessionSubscribe:  {reflect.TypeFor[SessionSubscribeParams](), reflect.TypeFor[SessionSubscribeResult]()},
+	MethodSessionPrompt:     {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
+	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
+	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
+	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
+	MethodUsageSummary:      {reflect.TypeFor[UsageSummaryParams](), reflect.TypeFor[UsageSummaryResult]()},
+	MethodPermissionRespond: {reflect.TypeFor[PermissionRespondParams](), reflect.TypeFor[PermissionRespondResult]()},
 }
 
 // ReuseShare is the share of the known requests' prompt tokens served from the cached prefix, and false when no
