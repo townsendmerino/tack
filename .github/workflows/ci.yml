@@ -2,9 +2,11 @@ name: ci
 
 # Every pull request, every push to main and every release tag runs the Linux and the macOS job (darwin-only code: the
 # sandbox, its escape tests, the Swift fixture check); the repository is public (ADR-008), so standard runners are not
-# metered. A branch runs through its pull request, not on its own pushes, so it runs once. Commits that touch
-# only docs, statements or eval record files do not run CI; the eval files the tests read (eval/e0/*.toml,
-# eval/e1/pilot.jsonl) still do.
+# metered. A branch runs through its pull request, not on its own pushes, so it runs once.
+#
+# Every pull request runs, docs-only ones included: main requires both jobs' checks, and a required check that never
+# runs would block the merge. A push to main that touches only docs, statements or eval record files does not run; the
+# eval files the tests read (eval/e0/*.toml, eval/e1/pilot.jsonl) still do.
 on:
   push:
     branches: ["main"]
@@ -15,11 +17,6 @@ on:
       - "eval/e1/calibration*.jsonl"
       - "eval/e1/e1-order*.jsonl"
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "eval/**/*.md"
-      - "eval/e1/calibration*.jsonl"
-      - "eval/e1/e1-order*.jsonl"
   workflow_dispatch:
 
 permissions:
