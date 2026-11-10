@@ -2,11 +2,14 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
@@ -65,30 +68,44 @@ func openThreads(body string, a Anchors) []string {
 // "" when nothing is found or fits.
 //
 // The section is the code as it is now: an index that can refresh files (tools.Symbols' Sync, as ken's engine and its
-// bm25 index both can) has each query's hit files synced, and is searched again when one changed, so a file the model
-// edited since the index opened comes back edited. A span the edit moved out of every hit is not found again: the
-// files synced are the hits', not every file the session touched.
-func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, budget int) string {
+// bm25 index both can) first syncs changed, the files the session wrote or edited (so a file it created, or one whose
+// edit brought in the queried terms, is searchable), then has each query's hit files synced and is searched again if
+// one changed. Sync and each search have their own timeout; a query whose second search fails is skipped, since its
+// first hits were stale.
+func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, budget int, changed []string) string {
 	syncer, _ := s.(interface {
 		Sync(ctx context.Context, paths []string) (bool, error)
 	})
+	sync := func(files []string) bool {
+		if syncer == nil || len(files) == 0 {
+			return false
+		}
+		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
+		defer cancel()
+		moved, err := syncer.Sync(sctx, files)
+		return err == nil && moved
+	}
+	search := func(q string) ([]tools.Hit, error) {
+		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
+		defer cancel()
+		return s.Search(sctx, q, retrieveHits)
+	}
+	sync(changed)
 	var b strings.Builder
 	seen := map[string]bool{}
 	for _, q := range queries {
-		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
-		hits, err := s.Search(sctx, q, retrieveHits)
-		if err == nil && syncer != nil && len(hits) > 0 {
+		hits, err := search(q)
+		if err == nil && len(hits) > 0 {
 			var files []string
 			for _, h := range hits {
 				if !slices.Contains(files, h.File) {
 					files = append(files, h.File)
 				}
 			}
-			if changed, serr := syncer.Sync(sctx, files); serr == nil && changed {
-				hits, err = s.Search(sctx, q, retrieveHits)
+			if sync(files) {
+				hits, err = search(q)
 			}
 		}
-		cancel()
 		if err != nil {
 			continue
 		}
@@ -106,6 +123,46 @@ func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, bu
 		}
 	}
 	return section(b.String())
+}
+
+// changedFiles are the files evs' successful write and edit calls changed, as paths relative to root, once each in
+// order: what the index must refresh before it is searched, whether or not any of them is a hit.
+func changedFiles(evs []proto.Event, root string) []string {
+	calls := map[string]string{} // call id to the path it changed, until it finishes
+	var out []string
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		switch e := v.(type) {
+		case proto.ToolCall:
+			if e.Name != "write" && e.Name != "edit" {
+				continue
+			}
+			var in struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(e.Input, &in) == nil && in.Path != "" {
+				calls[e.ID] = in.Path
+			}
+		case proto.ToolFinished:
+			p, ok := calls[e.ID]
+			delete(calls, e.ID)
+			if !ok || e.Outcome != proto.OutcomeOK {
+				continue
+			}
+			if filepath.IsAbs(p) {
+				if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
+					p = rel
+				}
+			}
+			if p = filepath.ToSlash(filepath.Clean(p)); !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 func section(entries string) string {
