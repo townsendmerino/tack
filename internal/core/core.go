@@ -182,6 +182,7 @@ type Core struct {
 	spans     map[string]*lazySpans     // by workspace root (Options.OpenSpans)
 	halted    *proto.DaemonHalted       // non-nil while tack is halted: no new turns
 	draining  bool                      // Drain has begun: no new turns
+	children  map[*loop.Session]bool    // the subagents running now (Core.subagent): a Drain reaches them too
 	started   time.Time
 
 	shutdown sync.Once // Options.Shutdown is called once
@@ -234,7 +235,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, started: time.Now()}
+		searchers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, children: map[*loop.Session]bool{}, started: time.Now()}
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
