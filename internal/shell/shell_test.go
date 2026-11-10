@@ -347,7 +347,7 @@ func TestApprovalDoesNotCoverWhatNothingAskedAbout(t *testing.T) {
 // A reason saying something can't be seen covers that thing when it shows: a redirection's target, a variable's value.
 func TestApprovalCoversWhatItSaidItCouldNotSee(t *testing.T) {
 	for _, cmd := range []string{`f=CLAUDE.md; echo new > $f`, `x=0; HUSKY=$x git status`, `x=0; HUSKY=$x env git status`,
-		`how=--soft; env git reset $how`, `d=sub; env rm -rf $d`, `t=5; timeout $t git status`, `how=--hard; command git reset $how`, `d=sub; for x in a; do rm -rf $d; done`,
+		`how=--soft; env git reset $how`, `d=sub; env rm -rf $d`, `n=5; nice -n $n git status`, `how=--hard; command git reset $how`, `d=sub; for x in a; do rm -rf $d; done`,
 		`d=sub; cd $d; echo y > y.txt`} {
 		s := session(t, true)
 		destroyRepo(t, s)
