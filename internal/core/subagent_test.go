@@ -525,3 +525,68 @@ func TestRecoveryDoesNotChargeAReusedCallIDTwice(t *testing.T) {
 		t.Errorf("finished %+v; want the second t1 unknown and charged nothing (the first's 1,050 are already counted)", fins)
 	}
 }
+
+// TestRecoveryMatchesAChildByItsCallSeq: a task call is charged the child that names its tool.call's seq, whatever the
+// model's tool_use id (here the same id twice, in one response) and whatever the clock said (the cut-off call's child
+// began before the call started). The first call's child carries the same id and is not charged again.
+func TestRecoveryMatchesAChildByItsCallSeq(t *testing.T) {
+	f := newFixture(t)
+	st := f.core.opt.Store
+	parent := proto.SessionID("s_01JAPARENT0000000000000027")
+	first, second := proto.SessionID("s_01JACHILD00000000000000028"), proto.SessionID("s_01JACHILD00000000000000029")
+	logs := map[proto.SessionID]*store.Log{}
+	for _, id := range []proto.SessionID{parent, first, second} {
+		l, err := st.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs[id] = l
+	}
+	var cause int64
+	app := func(id proto.SessionID, typ proto.EventType, p any) {
+		time.Sleep(time.Millisecond)
+		ev, err := logs[id].Append(typ, cause, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == proto.EvToolCall {
+			cause = ev.Seq
+		}
+	}
+	child := func(id proto.SessionID, seq int64, prompt int) {
+		app(id, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan, Parent: parent, ParentCall: "dup", ParentCallSeq: seq})
+		app(id, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("look")}})
+		app(id, proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"})
+		app(id, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: prompt, Output: 50})
+	}
+	task := []byte(`{"prompt":"look"}`)
+	use := proto.ModelBlock{Type: "tool_use", ID: "dup", Name: "task", Input: task}
+	app(parent, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan})
+	app(parent, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}})
+	app(parent, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{use, use}})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "dup", Name: "task", Input: task})
+	firstSeq := cause
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "dup"})
+	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "dup", Outcome: proto.OutcomeOK, Result: "found", Tokens: 1050})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "dup", Name: "task", Input: task})
+	secondSeq := cause
+	child(second, secondSeq, 2000) // begun "before" its call started, as after a clock step
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "dup"})
+	child(first, firstSeq, 1000) // begun "after" the second call started
+	for _, l := range logs {
+		l.Close()
+	}
+	if _, err := f.core.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pevs, _ := st.Events(parent, 0)
+	var fins []proto.ToolFinished
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+			fins = append(fins, v.(proto.ToolFinished))
+		}
+	}
+	if len(fins) != 2 || fins[1].Outcome != proto.OutcomeUnknown || fins[1].Tokens != 2050 {
+		t.Errorf("finished %+v; want the second call unknown and charged its own child's 2,050 tokens", fins)
+	}
+}

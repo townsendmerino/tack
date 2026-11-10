@@ -29,6 +29,14 @@ func RemainingFrom(ctx context.Context) (Remaining, bool) {
 }
 
 type callIDKey struct{}
+type callSeqKey struct{}
+
+// CallSeqFrom is the seq of the tool.call event of the call whose tool is running, if the loop said: a task's child
+// records it as proto.SessionCreated.ParentCallSeq.
+func CallSeqFrom(ctx context.Context) int64 {
+	seq, _ := ctx.Value(callSeqKey{}).(int64)
+	return seq
+}
 
 // CallFrom is the tool_use id of the call whose tool is running, if the loop said: a task's child records it as
 // proto.SessionCreated.ParentCall.

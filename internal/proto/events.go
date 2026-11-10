@@ -105,6 +105,9 @@ type SessionCreated struct {
 	// ParentCall is the tool_use id of the parent's task call that made this session, so crash recovery charges a cut-off
 	// call with its own child (core's orphanCost); absent for a session the user made, and in a child logged before it.
 	ParentCall string `json:"parent_call,omitempty"`
+	// ParentCallSeq is the seq of that call's tool.call event in the parent's log, which a model cannot repeat or a clock
+	// step reorder; orphanCost matches by it when set. Absent for a session the user made, and in a child logged before it.
+	ParentCallSeq int64 `json:"parent_call_seq,omitempty"`
 }
 
 // UserMessage is the user's message that starts a turn.
