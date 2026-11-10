@@ -1,0 +1,12 @@
+! server error: models: memory pressure
+is critical on this machine, so the turn
+moved to nobara: nobara is busy: busy: a
+timed run holds goinfer's timing lock
+(the timing lock is held by pid 4242 on
+nobara since 2026-11-08T23:00:00
+(night.py)); this machine's model is
+configured as server "mac": tack run
+--server mac
+· the turn ended: error
+────────────────────────────────────────
+@ nobara · memory pressure is critical…
