@@ -21,6 +21,11 @@ func (anySearch) Search(context.Context, string, int) ([]Hit, error) { return ni
 
 func (f *fakeRelater) Relates() bool { return f.relates }
 
+func (f *fakeRelater) Sync(_ context.Context, paths []string) (bool, error) {
+	f.asked = append(f.asked, "sync "+strings.Join(paths, ","))
+	return true, nil
+}
+
 func (f *fakeRelater) Related(_ context.Context, path string, line, k int) ([]Hit, error) {
 	f.asked = append(f.asked, path+":"+strings.Repeat("|", 0)+itoa(line)+" k="+itoa(k))
 	if k < len(f.hits) {
@@ -49,8 +54,9 @@ func TestFindRelatedPrintsTheNearestCode(t *testing.T) {
 	if r.IsError || !strings.Contains(r.Text, "b/other.go:3-5\nfunc other() {}") {
 		t.Fatalf("result %+v", r)
 	}
-	if len(f.asked) != 1 || f.asked[0] != "long.txt:12 k=5" {
-		t.Fatalf("asked %q; want long.txt:12 with the default k of 5", f.asked)
+	// The path is synced first: after an edit with no watcher (tack run), ken still holds the old chunks.
+	if len(f.asked) != 2 || f.asked[0] != "sync long.txt" || f.asked[1] != "long.txt:12 k=5" {
+		t.Fatalf("asked %q; want long.txt synced, then long.txt:12 with the default k of 5", f.asked)
 	}
 }
 
@@ -71,7 +77,7 @@ func TestFindRelatedChecksItsInput(t *testing.T) {
 			t.Errorf("%s: %q; want it to mention %q", c.in, r.Text, c.want)
 		}
 	}
-	if len(f.asked) != 1 || f.asked[0] != "long.txt:3 k=10" {
+	if len(f.asked) != 2 || f.asked[1] != "long.txt:3 k=10" {
 		t.Fatalf("asked %q; want only the in-workspace call, with k held to 10", f.asked)
 	}
 }
