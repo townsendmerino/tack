@@ -83,8 +83,8 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
     deny-list (`internal/tools.Workspace.Resolve`). The walk skips what glob's walk skips: `skipDir`'s
     version-control and dependency trees, secrets and symlinks. A path a read would refuse is never listed.
   - `.gitignore` is new here. No read tool applies it today; `recently_changed` reads it through go-git's matcher,
-    which this would reuse. Proposed: ignored paths are left out of completion, since a user typing `@` wants
-    sources, not build output.
+    which this reuses. Decided (the owner, 2026-11-09): ignored paths are left out of completion, since a user
+    typing `@` wants sources, not build output.
   - The read tools are unchanged, and still reach ignored files when asked by name.
 - **Speed:** under 20 ms per keystroke on a 10,000-file tree.
   - That means an in-memory path list per workspace: ken's file list where ken runs, else a walk cached and
