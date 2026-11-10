@@ -56,7 +56,7 @@ func TestATaskRunsAChildSession(t *testing.T) {
 		t.Fatalf("the child's log: %v", err)
 	}
 	v, _ := evs[0].Decode()
-	if c, ok := v.(proto.SessionCreated); !ok || c.Parent != parent || c.Mode != proto.ModePlan {
+	if c, ok := v.(proto.SessionCreated); !ok || c.Parent != parent || c.ParentCall != "t1" || c.Mode != proto.ModePlan {
 		t.Errorf("the child's first event %+v", v)
 	}
 	if len(sc.Requests) < 3 || !strings.Contains(string(sc.Requests[0]), `"name":"task"`) ||
@@ -400,5 +400,71 @@ func TestADrainingCoreMakesNoChildLog(t *testing.T) {
 	after, _ := f.core.opt.Store.Sessions()
 	if err == nil || len(after) != len(before) {
 		t.Errorf("while draining: err %v, %d sessions then %d; want refused with no new log", err, len(before), len(after))
+	}
+}
+
+// TestRecoveryMatchesAChildByItsCallID: a child that names its task call (SessionCreated.ParentCall) is charged to that
+// call whatever the clock said. Here the logs' times point the wrong way, as after a clock step: the cut-off call's
+// own child began before the call started, and an earlier call's child after it. Matching by time would charge the
+// wrong child; matching by id charges the cut-off call its own child's 1,050 tokens.
+func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
+	f := newFixture(t)
+	st := f.core.opt.Store
+	parent := proto.SessionID("s_01JAPARENT0000000000000007")
+	earlier, own := proto.SessionID("s_01JACHILD00000000000000008"), proto.SessionID("s_01JACHILD00000000000000009")
+	logs := map[proto.SessionID]*store.Log{}
+	for _, id := range []proto.SessionID{parent, earlier, own} {
+		l, err := st.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs[id] = l
+	}
+	var cause int64
+	app := func(id proto.SessionID, typ proto.EventType, p any) {
+		time.Sleep(time.Millisecond) // a tick apart, so the times order the appends as written
+		ev, err := logs[id].Append(typ, cause, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == proto.EvToolCall {
+			cause = ev.Seq
+		}
+	}
+	child := func(id proto.SessionID, call string, prompt int) {
+		app(id, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan, Parent: parent, ParentCall: call})
+		app(id, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("look")}})
+		app(id, proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"})
+		app(id, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: prompt, Output: 50})
+	}
+	use := func(id string) proto.ModelBlock {
+		return proto.ModelBlock{Type: "tool_use", ID: id, Name: "task", Input: []byte(`{"prompt":"look"}`)}
+	}
+	app(parent, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan})
+	app(parent, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}})
+	app(parent, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{use("t1"), use("t2")}})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)})
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
+	child(own, "t2", 1000) // t2's child, its log begun "before" t2 started
+	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeError, Result: "error: its turn ended with budget", Tokens: 2050})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t2", Name: "task", Input: []byte(`{"prompt":"look"}`)})
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t2"})
+	child(earlier, "t1", 2000) // t1's child, begun "after" t2 started
+	app(earlier, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopBudget})
+	for _, l := range logs {
+		l.Close()
+	}
+	if _, err := f.core.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pevs, _ := st.Events(parent, 0)
+	var fin proto.ToolFinished
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+			fin = v.(proto.ToolFinished)
+		}
+	}
+	if fin.ID != "t2" || fin.Outcome != proto.OutcomeUnknown || fin.Tokens != 1050 {
+		t.Errorf("the cut-off task finished %+v; want t2 unknown, charged its own child's 1,050 tokens by id", fin)
 	}
 }

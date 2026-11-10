@@ -102,6 +102,9 @@ type SessionCreated struct {
 	// Parent is the session whose task call made this one, a subagent (DESIGN §6.2, §6.3); absent for a session the user
 	// made.
 	Parent SessionID `json:"parent,omitempty"`
+	// ParentCall is the tool_use id of the parent's task call that made this session, so crash recovery charges a cut-off
+	// call with its own child (core's orphanCost); absent for a session the user made, and in a child logged before it.
+	ParentCall string `json:"parent_call,omitempty"`
 }
 
 // UserMessage is the user's message that starts a turn.

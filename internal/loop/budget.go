@@ -27,3 +27,12 @@ func RemainingFrom(ctx context.Context) (Remaining, bool) {
 	r, ok := ctx.Value(remainingKey{}).(Remaining)
 	return r, ok
 }
+
+type callIDKey struct{}
+
+// CallFrom is the tool_use id of the call whose tool is running, if the loop said: a task's child records it as
+// proto.SessionCreated.ParentCall.
+func CallFrom(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(callIDKey{}).(string)
+	return id, ok
+}

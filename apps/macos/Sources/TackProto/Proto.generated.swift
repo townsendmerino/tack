@@ -380,12 +380,14 @@ public struct SessionCreated: Codable, Equatable, Sendable {
     public var model: String
     public var mode: Mode
     public var parent: SessionID?
+    public var parentCall: String?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
         case model = "model"
         case mode = "mode"
         case parent = "parent"
+        case parentCall = "parent_call"
     }
 }
 
