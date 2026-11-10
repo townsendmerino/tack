@@ -14,6 +14,9 @@ connects.
 
 ## config.toml on nobara
 
+`100.64.0.1` here and in `tack-serve.socket` is a placeholder, not a real machine. Substitute the serving machine's own
+tailnet address (`tailscale ip -4` on it) in both places before installing.
+
 ```toml
 [servers.local]
 kind = "goinfer-child"
@@ -26,7 +29,7 @@ args = ["-backend", "cuda"]
 
 [serve]
 server = "local"
-listen = "100.125.33.107:8091"            # used only without socket activation (tack serve -detach)
+listen = "100.64.0.1:8091"            # used only without socket activation (tack serve -detach)
 key_file = "~/.config/tack/serve-api-key"
 # idle_unload = "15m"
 # timing_lock = "~/.goinfer-timing.lock"
