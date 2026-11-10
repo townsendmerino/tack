@@ -811,7 +811,7 @@ func (s *Session) runTool(ctx context.Context, b proto.ModelBlock, callSeq int64
 	if _, err := s.record(proto.EvToolStarted, callSeq, proto.ToolStarted{ID: b.ID}); err != nil {
 		return proto.ToolFinished{}, nil, tools.Result{}, err
 	}
-	r, rerr := t.Run(context.WithValue(ctx, callIDKey{}, b.ID), s.cfg.WS, b.Input)
+	r, rerr := t.Run(context.WithValue(context.WithValue(ctx, callIDKey{}, b.ID), callSeqKey{}, callSeq), s.cfg.WS, b.Input)
 	if rerr != nil {
 		r = tools.Result{Text: "error: " + rerr.Error(), IsError: true, Tokens: r.Tokens, Calls: r.Calls} // a cancelled task still spent them
 	}

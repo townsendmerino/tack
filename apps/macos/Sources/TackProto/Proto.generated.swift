@@ -408,6 +408,7 @@ public struct SessionCreated: Codable, Equatable, Sendable {
     public var mode: Mode
     public var parent: SessionID?
     public var parentCall: String?
+    public var parentCallSeq: Int64?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
@@ -415,6 +416,7 @@ public struct SessionCreated: Codable, Equatable, Sendable {
         case mode = "mode"
         case parent = "parent"
         case parentCall = "parent_call"
+        case parentCallSeq = "parent_call_seq"
     }
 }
 
