@@ -18,6 +18,9 @@ func main() {
 
 func dispatch(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
+		if interactive() {
+			return tuiCmd(stdout, stderr)
+		}
 		usage(stderr)
 		return 2
 	}
