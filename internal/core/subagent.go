@@ -144,8 +144,8 @@ func (c *Core) orphanCost(parent proto.SessionID) func(call string, since time.T
 				continue
 			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent {
 				continue
-			} else if cr.ParentCall != "" && cr.ParentCall != call || cr.ParentCall == "" && cevs[0].Time.Before(since) {
-				continue // another call's child, by its id, or for a child that names none, by when its log began
+			} else if cr.ParentCall != "" && cr.ParentCall != call || cevs[0].Time.Before(since) {
+				continue // another call's child, by its id, or one begun before this call started (an earlier call that used the same id)
 			}
 			t, n := loop.Spent(cevs)
 			tokens, calls = tokens+t, calls+n

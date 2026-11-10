@@ -404,9 +404,8 @@ func TestADrainingCoreMakesNoChildLog(t *testing.T) {
 }
 
 // TestRecoveryMatchesAChildByItsCallID: a child that names its task call (SessionCreated.ParentCall) is charged to that
-// call whatever the clock said. Here the logs' times point the wrong way, as after a clock step: the cut-off call's
-// own child began before the call started, and an earlier call's child after it. Matching by time would charge the
-// wrong child; matching by id charges the cut-off call its own child's 1,050 tokens.
+// call, and by that call alone: an earlier call's child began after the cut-off call started here, so matching by time
+// alone would charge it; matching by id charges the cut-off call its own child's 1,050 tokens.
 func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
 	f := newFixture(t)
 	st := f.core.opt.Store
@@ -445,11 +444,11 @@ func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
 	app(parent, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{use("t1"), use("t2")}})
 	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)})
 	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
-	child(own, "t2", 1000) // t2's child, its log begun "before" t2 started
 	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeError, Result: "error: its turn ended with budget", Tokens: 2050})
 	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t2", Name: "task", Input: []byte(`{"prompt":"look"}`)})
 	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t2"})
-	child(earlier, "t1", 2000) // t1's child, begun "after" t2 started
+	child(own, "t2", 1000)
+	child(earlier, "t1", 2000) // t1's child, begun after t2 started: another call's, by its id
 	app(earlier, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopBudget})
 	for _, l := range logs {
 		l.Close()
@@ -466,5 +465,62 @@ func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
 	}
 	if fin.ID != "t2" || fin.Outcome != proto.OutcomeUnknown || fin.Tokens != 1050 {
 		t.Errorf("the cut-off task finished %+v; want t2 unknown, charged its own child's 1,050 tokens by id", fin)
+	}
+}
+
+// TestRecoveryDoesNotChargeAReusedCallIDTwice: a local model reuses a call id (t1 here twice). The first call finished
+// and was charged its child; the second was cut off before its child's log exists. Matching the id alone would charge
+// the second call the first's child again; the second child began after the second call, so it charges nothing.
+func TestRecoveryDoesNotChargeAReusedCallIDTwice(t *testing.T) {
+	f := newFixture(t)
+	st := f.core.opt.Store
+	parent, first := proto.SessionID("s_01JAPARENT0000000000000017"), proto.SessionID("s_01JACHILD00000000000000018")
+	logs := map[proto.SessionID]*store.Log{}
+	for _, id := range []proto.SessionID{parent, first} {
+		l, err := st.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logs[id] = l
+	}
+	var cause int64
+	app := func(id proto.SessionID, typ proto.EventType, p any) {
+		time.Sleep(time.Millisecond)
+		ev, err := logs[id].Append(typ, cause, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ == proto.EvToolCall {
+			cause = ev.Seq
+		}
+	}
+	task := []byte(`{"prompt":"look"}`)
+	app(parent, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan})
+	app(parent, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: task})
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
+	app(first, proto.EvSessionCreated, proto.SessionCreated{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan, Parent: parent, ParentCall: "t1"})
+	app(first, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("look")}})
+	app(first, proto.EvRequestSent, proto.RequestSent{Request: 1, Server: "goinfer@local", Model: "m"})
+	app(first, proto.EvUsage, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: 1000, Output: 50})
+	app(first, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn})
+	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeOK, Result: "found", Tokens: 1050})
+	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: task}) // the same id again
+	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})                      // cut off here: no second child
+	for _, l := range logs {
+		l.Close()
+	}
+	if _, err := f.core.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	pevs, _ := st.Events(parent, 0)
+	var fins []proto.ToolFinished
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolFinished {
+			fins = append(fins, v.(proto.ToolFinished))
+		}
+	}
+	if len(fins) != 2 || fins[1].Outcome != proto.OutcomeUnknown || fins[1].Tokens != 0 {
+		t.Errorf("finished %+v; want the second t1 unknown and charged nothing (the first's 1,050 are already counted)", fins)
 	}
 }
