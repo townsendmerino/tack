@@ -404,8 +404,9 @@ func TestADrainingCoreMakesNoChildLog(t *testing.T) {
 }
 
 // TestRecoveryMatchesAChildByItsCallID: a child that names its task call (SessionCreated.ParentCall) is charged to that
-// call, and by that call alone: an earlier call's child began after the cut-off call started here, so matching by time
-// alone would charge it; matching by id charges the cut-off call its own child's 1,050 tokens.
+// call whatever the clock said, while the id is unique in the parent's log. Here the logs' times point the wrong way, as
+// after a clock step: the cut-off call's own child began before the call started, and an earlier call's child after it.
+// Matching by time would charge the wrong child; matching by id charges the cut-off call its own child's 1,050 tokens.
 func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
 	f := newFixture(t)
 	st := f.core.opt.Store
@@ -444,11 +445,11 @@ func TestRecoveryMatchesAChildByItsCallID(t *testing.T) {
 	app(parent, proto.EvAssistantMessage, proto.AssistantMessage{Request: 1, Content: []proto.ModelBlock{use("t1"), use("t2")}})
 	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t1", Name: "task", Input: []byte(`{"prompt":"look"}`)})
 	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t1"})
+	child(own, "t2", 1000) // t2's child, its log begun "before" t2 started
 	app(parent, proto.EvToolFinished, proto.ToolFinished{ID: "t1", Outcome: proto.OutcomeError, Result: "error: its turn ended with budget", Tokens: 2050})
 	app(parent, proto.EvToolCall, proto.ToolCall{ID: "t2", Name: "task", Input: []byte(`{"prompt":"look"}`)})
 	app(parent, proto.EvToolStarted, proto.ToolStarted{ID: "t2"})
-	child(own, "t2", 1000)
-	child(earlier, "t1", 2000) // t1's child, begun after t2 started: another call's, by its id
+	child(earlier, "t1", 2000) // t1's child, begun "after" t2 started
 	app(earlier, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopBudget})
 	for _, l := range logs {
 		l.Close()
