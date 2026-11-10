@@ -7,6 +7,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -15,8 +17,7 @@ import (
 // renders the same frame every time (the golden frames in testdata). The key hints on an open question are what the
 // terminal layer binds; the view takes no input.
 //
-// Widths are counted in runes, one cell each: a wide or combining rune is miscounted until the terminal layer supplies
-// cell widths.
+// Widths are counted in terminal cells (go-runewidth).
 type View struct {
 	Status Status
 	// Scroll is how many lines the frame sits above the transcript's bottom; Render clamps it at the top.
@@ -310,42 +311,58 @@ func (v *View) Render(width, height int) string {
 	return strings.Join(frame, "\n")
 }
 
-// wrap breaks one paragraph into lines of at most width runes at spaces, breaking a longer word where it must. Every
-// line carries indent plus the paragraph's own leading space, kept so code stays indented; none ends in a space. An
-// indent that leaves no room is dropped.
+// cells is s's width in terminal cells: a wide rune counts two and a combining mark none.
+func cells(s string) int { return runewidth.StringWidth(s) }
+
+// wrap breaks one paragraph into lines of at most width cells at spaces, breaking a longer word where it must, never
+// inside a rune. Every line carries indent plus the paragraph's own leading space, kept so code stays indented; none ends
+// in a space. An indent that leaves no room is dropped.
 func wrap(s, indent string, width int) []string {
 	s = visible(strings.ReplaceAll(s, "\t", "    "))
 	body := strings.TrimLeftFunc(s, unicode.IsSpace)
 	indent += s[:len(s)-len(body)]
-	if utf8.RuneCountInString(indent) >= width {
+	if cells(indent) >= width {
 		indent = ""
 	}
-	avail := width - utf8.RuneCountInString(indent)
+	avail := width - cells(indent)
 	words := strings.Fields(body)
 	if len(words) == 0 {
 		return []string{""}
 	}
 	var out []string
 	var line []rune
+	lw := 0 // the cells of line
 	flush := func() {
 		out = append(out, strings.TrimRight(indent+string(line), " "))
-		line = line[:0]
+		line, lw = line[:0], 0
 	}
 	for _, w := range words {
 		r := []rune(w)
-		if len(line) > 0 && len(line)+1+len(r) > avail {
+		if lw > 0 && lw+1+cells(w) > avail {
 			flush()
 		}
-		if len(line) > 0 {
+		if lw > 0 {
 			line = append(line, ' ')
+			lw++
 		}
-		for len(line)+len(r) > avail {
-			n := avail - len(line)
+		for lw+cells(string(r)) > avail {
+			n := 0 // the runes of r that fit in the room left, at least one on an empty line so the loop ends
+			for n < len(r) && lw+cells(string(r[:n+1])) <= avail {
+				n++
+			}
+			if n == 0 && lw > 0 {
+				flush()
+				continue
+			}
+			if n == 0 {
+				n = 1 // a rune wider than the line: it overflows rather than loops
+			}
 			line = append(line, r[:n]...)
 			r = r[n:]
 			flush()
 		}
 		line = append(line, r...)
+		lw += cells(string(r))
 	}
 	if len(line) > 0 {
 		flush()
@@ -353,17 +370,16 @@ func wrap(s, indent string, width int) []string {
 	return out
 }
 
-// fit cuts s to width runes, marking a cut with an ellipsis, with no trailing space; controls are made visible first.
+// fit cuts s to width cells, marking a cut with an ellipsis, with no trailing space; controls are made visible first.
 func fit(s string, width int) string {
 	s = strings.TrimRight(visible(strings.ReplaceAll(s, "\t", " ")), " ")
-	r := []rune(s)
-	if len(r) <= width {
+	if cells(s) <= width {
 		return s
 	}
 	if width <= 1 {
-		return string(r[:width])
+		return runewidth.Truncate(s, width, "")
 	}
-	return strings.TrimRight(string(r[:width-1]), " ") + "…"
+	return strings.TrimRight(runewidth.Truncate(s, width-1, ""), " ") + "…"
 }
 
 // visible makes every control character in s a visible one, one cell each, so text from the model, a tool or a file
@@ -374,7 +390,7 @@ func fit(s string, width int) string {
 func visible(s string) string {
 	clean := true
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == utf8.RuneError {
+		if r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == utf8.RuneError || hiddenRune(r) {
 			clean = false
 			break
 		}
@@ -389,11 +405,17 @@ func visible(s string) string {
 			b.WriteRune(0x2400 + r)
 		case r == 0x7f:
 			b.WriteRune('␡')
-		case r >= 0x80 && r <= 0x9f:
+		case r >= 0x80 && r <= 0x9f, hiddenRune(r):
 			b.WriteRune(utf8.RuneError)
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// hiddenRune reports whether r is a bidi override or isolate (U+202A–202E, U+2066–2069) or a zero-width rune
+// (U+200B–200F, U+FEFF): each can reorder or hide text on screen, so visible draws it as U+FFFD.
+func hiddenRune(r rune) bool {
+	return r >= 0x202A && r <= 0x202E || r >= 0x2066 && r <= 0x2069 || r >= 0x200B && r <= 0x200F || r == 0xFEFF
 }

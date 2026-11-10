@@ -7,6 +7,7 @@ require (
 	github.com/ebitengine/purego v0.10.1
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
+	github.com/mattn/go-runewidth v0.0.16
 	github.com/townsendmerino/aikit v1.76.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
 	github.com/townsendmerino/ken v1.13.0
@@ -34,6 +35,7 @@ require (
 	github.com/odvcencio/gotreesitter v0.56.0 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
