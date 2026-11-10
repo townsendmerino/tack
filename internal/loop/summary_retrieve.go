@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,12 +63,31 @@ func openThreads(body string, a Anchors) []string {
 // retrieveSection is the summary's re-retrieval section for queries, within budget bytes: each query's hits in order,
 // each span once, stopping at the first hit that would pass the budget, so the section is the same for the same index.
 // "" when nothing is found or fits.
+//
+// The section is the code as it is now: an index that can refresh files (tools.Symbols' Sync, as ken's engine and its
+// bm25 index both can) has each query's hit files synced, and is searched again when one changed, so a file the model
+// edited since the index opened comes back edited. A span the edit moved out of every hit is not found again: the
+// files synced are the hits', not every file the session touched.
 func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, budget int) string {
+	syncer, _ := s.(interface {
+		Sync(ctx context.Context, paths []string) (bool, error)
+	})
 	var b strings.Builder
 	seen := map[string]bool{}
 	for _, q := range queries {
 		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
 		hits, err := s.Search(sctx, q, retrieveHits)
+		if err == nil && syncer != nil && len(hits) > 0 {
+			var files []string
+			for _, h := range hits {
+				if !slices.Contains(files, h.File) {
+					files = append(files, h.File)
+				}
+			}
+			if changed, serr := syncer.Sync(sctx, files); serr == nil && changed {
+				hits, err = s.Search(sctx, q, retrieveHits)
+			}
+		}
 		cancel()
 		if err != nil {
 			continue

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -466,5 +467,63 @@ func TestRunSummaryRetrieveNeedsNoKen(t *testing.T) {
 		if b := string(body); strings.Contains(b, `"name":"search"`) || strings.Contains(b, `"name":"symbol"`) {
 			t.Fatalf("summary_retrieve's index gave the model a ken tool:\n%.400s", body)
 		}
+	}
+}
+
+// TestRunSummaryRetrieveReadsTheCurrentCode: a file changed after summary_retrieve's index opened (here between two
+// requests, as the model's edit or bash would change it) comes back in the summary's section as it is now, not as it
+// was at Open: the section is "current code", and arm C (calibration §18) re-retrieves what the model just edited.
+func TestRunSummaryRetrieveReadsTheCurrentCode(t *testing.T) {
+	ws := t.TempDir()
+	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module m\n"), 0o644)
+	os.MkdirAll(filepath.Join(ws, "mcp"), 0o755)
+	src := filepath.Join(ws, "mcp", "token_budget.go")
+	os.WriteFile(src, []byte("package mcp\n\n// applyTokenBudget trims hits to the budget.\nfunc applyTokenBudget() {}\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "big.txt"), []byte(strings.Repeat("filler line of the big file\n", 300)), 0o644)
+	read := json.RawMessage(`{"path":"big.txt","offset":1,"limit":300}`)
+	grows := func(id string) goinfertest.Reply {
+		return goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", 7000, 0, 20, proto.ModelBlock{Type: "tool_use", ID: id, Name: "read", Input: read})}
+	}
+	var sum strings.Builder
+	for _, h := range loop.SummaryHeadings {
+		sum.WriteString("## " + h + "\n\n")
+		if h == "Next steps" {
+			sum.WriteString("find applyTokenBudget\n\n")
+		} else {
+			sum.WriteString("(none)\n\n")
+		}
+	}
+	script := goinfertest.NewScripted("m", 8000, grows("t1"), grows("t2"), grows("t3"), grows("t4"),
+		goinfertest.Says(strings.TrimSpace(sum.String())), grows("t5"), goinfertest.Says("done"))
+	n := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/messages" {
+			if n++; n == 2 { // after the index opened, before the summary: the model's edit, made on disk
+				os.WriteFile(src, []byte("package mcp\n\n// applyTokenBudget trims hits to the budget.\nfunc applyTokenBudget() int { return 7 }\n"), 0o644)
+			}
+		}
+		script.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+	cfg := writeConfig(t, ts.URL)
+	f, _ := os.OpenFile(cfg, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprint(f, "[run]\nsummarize = true\nsummary_retrieve = true\n")
+	f.Close()
+	var stdout, stderr bytes.Buffer
+	if code := dispatch([]string{"run", "--json", "--config", cfg, "--workspace", ws, "read big.txt"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var summary string
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		var ev struct {
+			Type    proto.EventType  `json:"type"`
+			Payload proto.Compaction `json:"payload"`
+		}
+		if json.Unmarshal([]byte(line), &ev) == nil && ev.Type == proto.EvCompaction && ev.Payload.Summary != "" {
+			summary = ev.Payload.Summary
+		}
+	}
+	if !strings.Contains(summary, "func applyTokenBudget() int { return 7 }") || strings.Contains(summary, "func applyTokenBudget() {}") {
+		t.Fatalf("the section is not the current code:\n%s", summary)
 	}
 }
