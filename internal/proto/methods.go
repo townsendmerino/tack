@@ -11,6 +11,7 @@ const (
 	MethodSessionNew        = "session/new"
 	MethodSessionSubscribe  = "session/subscribe"
 	MethodSessionPrompt     = "session/prompt"
+	MethodSessionCancel     = "session/cancel"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -98,6 +99,16 @@ type SessionPromptParams struct {
 	Session SessionID      `json:"session"`
 	Content []ContentBlock `json:"content"`
 }
+
+// SessionCancelParams ends the session's running turn (docs/design/proposal-tui-protocol.md §2). It needs the client
+// token. A command the turn is running is killed, a pending permission question is denied by the user with the reason
+// "cancelled", and the turn ends with turn.end cancelled. With no turn running it does nothing and still succeeds.
+type SessionCancelParams struct {
+	Session SessionID `json:"session"`
+}
+
+// SessionCancelResult acknowledges a cancel; the events it causes are its record.
+type SessionCancelResult struct{}
 
 // SessionPromptResult acknowledges the prompt with the seq of its user.message event; the turn's progress arrives
 // as events.
@@ -201,6 +212,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionNew:        {reflect.TypeFor[SessionNewParams](), reflect.TypeFor[SessionNewResult]()},
 	MethodSessionSubscribe:  {reflect.TypeFor[SessionSubscribeParams](), reflect.TypeFor[SessionSubscribeResult]()},
 	MethodSessionPrompt:     {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
+	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
