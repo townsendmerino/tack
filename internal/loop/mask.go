@@ -108,7 +108,7 @@ func (v *fileVersions) of(p string) int { return v.all + v.path[p] }
 
 // readOnly are the tools that change no file.
 var readOnly = map[string]bool{"read": true, "glob": true, "grep": true, "search": true, "symbol": true,
-	"read_output": true, "todo": true, "ask_user": true, "done": true}
+	"find_related": true, "recently_changed": true, "read_output": true, "todo": true, "ask_user": true, "done": true}
 
 // touch counts the call o, failed or not.
 func (v *fileVersions) touch(o observation) {
