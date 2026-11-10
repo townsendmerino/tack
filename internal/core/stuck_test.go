@@ -82,6 +82,7 @@ func TestAStuckSubscriberStallsNothing(t *testing.T) {
 	f := newFixture(t, goinfertest.Says("one"))
 	id := f.session(t)
 	stuckSubscriber(t, f, id)
+	waitSubscribers(t, f, id, 1) // registered before the turn, or fan-out meets none and the test passes vacuously
 	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
 		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
 	}
@@ -202,6 +203,7 @@ func TestStuckSubscribersCostTheSessionLittle(t *testing.T) {
 	id := f.session(t)
 	stuckSubscriber(t, f, id)
 	stuckSubscriber(t, f, id)
+	waitSubscribers(t, f, id, 2)
 	f.core.opt.Sweep = func(sandbox.Target, bool) (sandbox.Report, error) {
 		return sandbox.Report{Refused: "1 process(es) carry mark …"}, nil
 	}
@@ -709,10 +711,15 @@ func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 	if len(waits) == 0 {
 		t.Fatal("the live event never waited: the queue had room, and the test checks nothing")
 	}
+	var total time.Duration
 	for i, d := range waits {
 		if d > sendTimeout {
 			t.Errorf("wait %d was %v; catching up had at most %v left", i, d, sendTimeout)
 		}
+		total += d
+	}
+	if total > sendTimeout+fanOutWait { // fresh waits granted on each progress tick would add up past this
+		t.Errorf("the waits total %v over %d offers; at most %v of catching up and one fanOutWait (%v)", total, len(waits), sendTimeout, fanOutWait)
 	}
 }
 
