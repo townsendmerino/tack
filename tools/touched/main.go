@@ -1,5 +1,6 @@
 // Command touched is the day-loop checker: gofmt, build and vet (GOOS darwin and linux, cgo off) of what the diff
-// touches, and the tests of the touched packages. It ends with one VERDICT line and exits 0 (PASS), 1 (FAIL) or
+// touches, the tests of the touched packages, and, when any package is touched, the whole module's import graph
+// against its table and rules (imports.go). It ends with one VERDICT line and exits 0 (PASS), 1 (FAIL) or
 // 2 (INCONCLUSIVE).
 //
 //	go run ./tools/touched              # changes since the merge base with origin/main (or main), plus the worktree

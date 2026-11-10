@@ -21,23 +21,27 @@ var goosTargets = []string{"darwin", "linux"}
 
 // Options selects what the checker looks at.
 type Options struct {
-	Root    string // repository root, which is also the module root
-	Base    string // git ref the diff is taken against (through its merge base); empty means origin/main, else main
-	All     bool   // check every package and Go file, as CI does
-	Timeout string // go test -timeout
+	Root    string       // repository root, which is also the module root
+	Base    string       // git ref the diff is taken against (through its merge base); empty means origin/main, else main
+	All     bool         // check every package and Go file, as CI does
+	Timeout string       // go test -timeout
+	Rules   *importRules // the import table and rules; nil means tack's (tackRules)
 	Log     io.Writer
 }
 
 // pkg is the slice of `go list -json` the checker uses.
 type pkg struct {
-	ImportPath   string
-	Dir          string
-	GoFiles      []string
-	TestGoFiles  []string
-	XTestGoFiles []string
-	Imports      []string
-	TestImports  []string
-	XTestImports []string
+	ImportPath     string
+	Dir            string
+	GoFiles        []string
+	CgoFiles       []string
+	TestGoFiles    []string
+	XTestGoFiles   []string
+	IgnoredGoFiles []string // files this configuration's build constraints leave out, test files included
+	Imports        []string
+	TestImports    []string
+	XTestImports   []string
+	Error          *struct{ Err string }
 }
 
 // plan is what a run checks: the Go files to gofmt, the packages to build and vet, and the packages to test.
@@ -81,6 +85,11 @@ func Run(o Options) ([]gate.Cell, plan, error) {
 	var cells []gate.Cell
 	cells = append(cells, checkGofmt(o.Root, pl.GoFiles))
 	cells = append(cells, checkModules(o.Root, len(pl.Build) > 0)...)
+	rules := o.Rules
+	if rules == nil {
+		rules = &tackRules
+	}
+	cells = append(cells, checkImports(o.Root, rules, len(pl.Build) > 0)...)
 	for _, goos := range goosTargets {
 		cells = append(cells, checkGo(o.Root, goos, "build", pl.Build)...)
 		cells = append(cells, checkGo(o.Root, goos, "vet", pl.Build)...)
@@ -399,7 +408,12 @@ func listPackages(root, goos string) ([]pkg, error) {
 	if goos != "" {
 		env = append(env, "GOOS="+goos)
 	}
-	cmd := exec.Command("go", "list", "-e", "-json", "./...")
+	return goList(root, env, "list", "-e", "-json", "./...")
+}
+
+// goList runs go with args (a `go list -json` command) in root with extra environment and decodes its packages.
+func goList(root string, env []string, args ...string) ([]pkg, error) {
+	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), env...)
 	var stderr bytes.Buffer

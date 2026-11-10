@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/townsendmerino/tack/tools/gate"
@@ -50,7 +51,8 @@ func nilIfEmpty(s []string) []string {
 
 // TestRunCatchesEachDefect breaks a scratch module in one way per package and checks the checker reports each one
 // in the right cell: unformatted code, a vet finding, a darwin-only compile error (so linux passes and darwin fails),
-// a failing test, an all-skipped package, and a change whose importer must be built and tested.
+// a failing test, an all-skipped package, a change whose importer must be built and tested, and an import the
+// module's table does not allow.
 func TestRunCatchesEachDefect(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -93,14 +95,22 @@ func TestRunCatchesEachDefect(t *testing.T) {
 	write("darwinbad/d_darwin.go", "package darwinbad\n\nvar x int = \"not an int\"\n")
 	write("skipall/s.go", "package skipall\n")
 	write("skipall/s_test.go", "package skipall\n\nimport \"testing\"\n\nfunc TestS(t *testing.T) { t.Skip(\"no\") }\n")
+	write("layerbad/l.go", "package layerbad\n\nimport \"m/good\"\n\nvar X = good.V()\n")
 
-	cells, pl, err := Run(Options{Root: dir, Timeout: "1m", Log: io.Discard})
+	rules := &importRules{Module: "m", Layers: map[string]allow{
+		"good": {}, "dep": {Imports: []string{"good"}}, "untouched": {}, "fmtbad": {}, "vetbad": {}, "darwinbad": {},
+		"skipall": {}, "layerbad": {},
+	}}
+	cells, pl, err := Run(Options{Root: dir, Timeout: "1m", Rules: rules, Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]gate.Outcome{}
 	for _, c := range cells {
 		got[c.Name] = c.Outcome
+		if c.Name == "imports/linux" && !strings.Contains(c.Detail, "layerbad imports good, which its row does not allow") {
+			t.Errorf("imports/linux does not name the edge:\n%s", c.Detail)
+		}
 	}
 	want := map[string]gate.Outcome{
 		"gofmt":          gate.Fail,
@@ -110,6 +120,11 @@ func TestRunCatchesEachDefect(t *testing.T) {
 		"vet/darwin":     gate.Fail,
 		"test m/dep":     gate.Fail, // only reached because good is touched and dep imports it
 		"test m/skipall": gate.Inconclusive,
+		// One edge the table does not allow, on every target; the table itself matches the graph.
+		"imports/darwin":             gate.Fail,
+		"imports/linux":              gate.Fail,
+		"imports/darwin+sandboxtest": gate.Fail,
+		"imports/table":              gate.OK,
 	}
 	for name, w := range want {
 		if got[name] != w {

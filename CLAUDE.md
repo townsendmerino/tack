@@ -33,7 +33,9 @@ doc comments say what each will hold.
 - **The log is the truth.** Every state change a client can make is an event; replaying a session's log rebuilds it.
 - **Protocol types in `internal/proto` are the source of truth.** Regenerate the Swift types in the same commit as any
   protocol change; the fixtures in `proto/fixtures/` must pass on both sides.
-- **No cgo.** The daemon is one static Go binary. macOS frameworks (Keychain) are reached through purego, as aikit
+- **No cgo.** The daemon is one Go binary built with cgo off: static on Linux; on darwin, which has no static binaries,
+  it loads only the system libraries Go itself uses. `go run ./tools/relbuild` is the one pinned build and the gate
+  that reads the built binaries; run it before a tag. macOS frameworks (Keychain) are reached through purego, as aikit
   reaches Metal. goinfer runs as its own process, never linked in.
 - **Settings are config, not environment.** A new setting is a field in `config.toml`, validated at startup, failing
   loudly on a typo. Do not add environment-variable reads.
@@ -43,8 +45,11 @@ doc comments say what each will hold.
 
 - **Every change lands through a pull request; nobody pushes to `main`** (owner, 2026-10-30, replacing the 2026-10-17
   push-to-main rule). Work on a branch, run the gates below, open the PR, and merge it with
-  `gh pr merge <n> --merge --delete-branch` once they pass. tack has no GitHub CI and auto-merge is off for this repo,
-  so the local gates are the check.
+  `gh pr merge <n> --merge --delete-branch` once they pass. GitHub CI (`.github/workflows/ci.yml`) runs
+  `touched -all` and `lint` on Linux for every push and pull request that touches more than docs and eval records; its
+  macOS job runs only on a manual dispatch and on release tags. Nothing makes a merge wait for CI: auto-merge is off and
+  `main` has no required checks. So the local gates are the check before a merge, and on a Mac they are the only check
+  of darwin-only code; CI is read afterwards (below).
 - **Product code waits for the owner's yes before it merges.** Docs and measurement records go with the task that
   produced them.
 - Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
@@ -87,10 +92,13 @@ doc comments say what each will hold.
 ## Day loop: seconds, not minutes
 
 - Check a change with `go run ./tools/touched`: gofmt, build and vet (darwin and linux, cgo off) of what the diff
-  touches and everything importing it, and the tests of the touched packages and their direct importers. `-base <ref>`
-  changes what the diff is taken against; `-all` checks everything, as CI does. `go run ./tools/lint` is staticcheck
-  behind its canary (below). Locally a `go.work` containing `use .` keeps a parent directory's workspace out.
-- Do not run whole-module test suites by day; CI runs them on every push.
+  touches and everything importing it, and the tests of the touched packages and their direct importers. When any Go
+  file or `go.mod` is touched it also checks the whole module's import graph against the table in
+  `tools/touched/imports.go:tackLayers`, and against the rules in `tackRules`, which the table cannot waive; a new edge
+  between tack packages is a row edit there. `-base <ref>` changes what the diff is taken against; `-all` checks
+  everything, as CI does. `go run ./tools/lint` is staticcheck behind its canary (below). Locally a `go.work`
+  containing `use .` keeps a parent directory's workspace out.
+- Do not run whole-module test suites by day; CI runs them, on Linux, on every push that touches code.
 - A red CI run is fixed by running the one failing test by name, not by re-running everything.
 - **A change that forces a long run on the day loop is a modularity bug.** Say so in the report, name the edge that
   caused it, and fix the edge when it is cheap.
