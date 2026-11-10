@@ -19,6 +19,10 @@ import (
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
+// setupCeiling bounds a test's wait for its own setup (the writer taking a large message). It is a hang detector, not a
+// bar: setup finishes in milliseconds, but a loaded box can stall a goroutine for seconds.
+const setupCeiling = 30 * time.Second
+
 // stuckSubscriber connects to f's core, subscribes to id, reads up to the subscribe's answer and then never reads
 // again: its socket stops draining. It returns the client end.
 func stuckSubscriber(t *testing.T, f *fixture, id proto.SessionID) net.Conn {
@@ -624,7 +628,7 @@ func TestALargeMessageIsProgress(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 1<<20)) // the writer takes it, and the queue is empty
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
@@ -692,7 +696,7 @@ func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 4<<20))
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
@@ -731,7 +735,7 @@ func TestAReaderPastItsCatchUpTimeFallsBack(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 512<<10))
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
