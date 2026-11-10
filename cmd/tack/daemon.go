@@ -18,6 +18,7 @@ import (
 	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
+	usagetable "github.com/townsendmerino/tack/internal/usage"
 )
 
 // Exit codes for tack daemon status: 0 a daemon answered; 3 none is running; 4 one holds the lock but does not serve,
@@ -141,6 +142,13 @@ func daemonRun(cfg *config.Config, cfgPath, stateDir string, stderr io.Writer) i
 			opts := coreOptions(cfg, cfg.Main, stateDir, st, nil, stderr)
 			opts.ClientToken, opts.Shutdown = token, shutdown
 			opts.Edit = editKit(stateDir, filepath.Dir(cfgPath), cfg.Sandbox.Read)
+			// The usage table from index.db; without it (a file it cannot open), usage/summary reads the logs.
+			if uc, err := usagetable.OpenCache(stateDir, st); err == nil {
+				opts.Usage = uc
+				go func() { <-coreCtx.Done(); uc.Close() }()
+			} else {
+				fmt.Fprintln(stderr, "tack daemon: the usage index:", err, "(usage/summary reads the logs)")
+			}
 			return core.New(coreCtx, opts), nil
 		},
 		Watch: func(coreCtx context.Context, c *core.Core) {

@@ -64,8 +64,14 @@ The order the owner approved, each step with its exit check:
    - **The usage table over the daemon (2026-11-09):** the daemon answers `usage/summary {since, utc}` with the same
      table (`internal/usage.FromStore`), and `tack usage` asks a running daemon, without starting one. It reads the logs
      itself when none runs, or when the daemon predates the method (method not found); there is no protocol version
-     bump. Caching the day totals in `index.db` waits for the owner's decision on `modernc.org/sqlite` (a new
-     dependency).
+     bump.
+   - **The usage index (2026-11-09):** `index.db` (SQLite through `modernc.org/sqlite` v1.61.1, the version ken v1.13.0
+     already brings into tack's module graph; the owner approved the dependency) keeps one row per usage event and how
+     far each log was read (`internal/usage.Cache`). A table catches each log up from there (`store.ScanFrom`), so a
+     line is read once, whichever process wrote it. Days are counted at query time, in any zone. A log that no longer
+     matches what was read is read again; a deleted session leaves the table; deleting `index.db` loses nothing. The
+     daemon answers `usage/summary` from it, and so does `tack usage` with no daemon running. `tack reindex` (DESIGN
+     §6.2) is not built: deleting the file does the same.
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
    - **The adapter built (2026-11-09)** as `kind = "openai-remote"` (`internal/server/openai`), tested against

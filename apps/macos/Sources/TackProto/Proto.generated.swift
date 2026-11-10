@@ -566,10 +566,12 @@ public struct UsageRow: Codable, Equatable, Sendable {
 public struct UsageSummaryParams: Codable, Equatable, Sendable {
     public var since: String?
     public var utc: Bool?
+    public var tz: String?
 
     enum CodingKeys: String, CodingKey {
         case since = "since"
         case utc = "utc"
+        case tz = "tz"
     }
 }
 
