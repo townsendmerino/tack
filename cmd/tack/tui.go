@@ -65,7 +65,13 @@ func tuiCmd(stdout, stderr io.Writer) int {
 	}
 	var lost atomic.Bool
 	go func() { <-c.Done(); lost.Store(true); p.Quit() }()
-	if err := <-ran; err != nil {
+	return tuiExit(<-ran, &lost, stderr)
+}
+
+// tuiExit is tack's exit code once the screen has ended with err: an error from the program, or a lost daemon
+// connection (which makes Run return nil), is an error and says why; a quit by the user is exitOK.
+func tuiExit(err error, lost *atomic.Bool, stderr io.Writer) int {
+	if err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}

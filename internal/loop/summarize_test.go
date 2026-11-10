@@ -154,3 +154,25 @@ func TestEveryChunkRestatesTheHeadingsLast(t *testing.T) {
 		}
 	}
 }
+
+// TestSummarizeRestatesTheHeadingsOnEveryChunk: Summarize over a stretch of three chunks, each reply updating the body
+// the next request carries, sends every request ending with the required headings, after the previous body and the
+// chunk, as the headings check needs for chunk 3 and later.
+func TestSummarizeRestatesTheHeadingsOnEveryChunk(t *testing.T) {
+	var pairs []any
+	for range 9 {
+		pairs = append(pairs, proto.EvToolFinished, finished("c", proto.OutcomeOK, strings.Repeat("output line\n", summaryItemBytes/12)))
+	}
+	srv := &fakeSummarizer{replies: []string{body("one"), body("two"), body("three"), body("four"), body("five")}}
+	s := Summarize(context.Background(), StreamTo(srv), "m-fast", nil, summaryLog(t, pairs...), "")
+	if len(srv.sent) < 3 || s.FellBack {
+		t.Fatalf("%d calls, summary %+v", len(srv.sent), s)
+	}
+	want := strings.Join(SummaryHeadings, ", ")
+	for i, r := range srv.sent {
+		msg := r.Messages[0].Content[0].Text
+		if at := strings.LastIndex(msg, want); at < strings.LastIndex(msg, "Next turns:") || len(msg)-at > len(want)+200 {
+			t.Errorf("chunk %d: the headings do not close the request:\n%s", i+1, msg[max(0, len(msg)-300):])
+		}
+	}
+}

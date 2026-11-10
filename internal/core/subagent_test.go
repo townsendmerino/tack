@@ -59,6 +59,20 @@ func TestATaskRunsAChildSession(t *testing.T) {
 	if c, ok := v.(proto.SessionCreated); !ok || c.Parent != parent || c.ParentCall != "t1" || c.Mode != proto.ModePlan {
 		t.Errorf("the child's first event %+v", v)
 	}
+	// The producer side: the child names its call by the seq of the parent's tool.call, which recovery matches on.
+	pevs, err := f.core.opt.Store.Events(parent, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callSeq int64
+	for _, ev := range pevs {
+		if v, _ := ev.Decode(); ev.Type == proto.EvToolCall && v.(proto.ToolCall).ID == "t1" {
+			callSeq = ev.Seq
+		}
+	}
+	if c, _ := v.(proto.SessionCreated); callSeq == 0 || c.ParentCallSeq != callSeq {
+		t.Errorf("the child's ParentCallSeq is %d; the parent's tool.call is seq %d", c.ParentCallSeq, callSeq)
+	}
 	if len(sc.Requests) < 3 || !strings.Contains(string(sc.Requests[0]), `"name":"task"`) ||
 		strings.Contains(string(sc.Requests[1]), `"name":"task"`) || strings.Contains(string(sc.Requests[1]), `"name":"edit"`) {
 		t.Errorf("the parent's tools should have task, and the child's neither task nor edit")
