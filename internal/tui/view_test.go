@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/mattn/go-runewidth"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -136,7 +137,7 @@ func TestAFrameFillsItsSize(t *testing.T) {
 					t.Fatalf("%s seq %d at %dx%d: %d lines", s.name, ev.Seq, sz[0], sz[1], len(lines))
 				}
 				for i, l := range lines {
-					if n := utf8.RuneCountInString(l); n > sz[0] || strings.TrimRight(l, " ") != l {
+					if n := runewidth.StringWidth(l); n > sz[0] || strings.TrimRight(l, " ") != l {
 						t.Fatalf("%s seq %d at %dx%d: line %d is %d cells or ends in a space: %q", s.name, ev.Seq, sz[0], sz[1], i, n, l)
 					}
 				}
@@ -231,7 +232,7 @@ func TestControlCharactersNeverReachTheFrame(t *testing.T) {
 			}
 		}
 		for i, l := range strings.Split(f, "\n") {
-			if n := utf8.RuneCountInString(l); n > sz[0] {
+			if n := runewidth.StringWidth(l); n > sz[0] {
 				t.Fatalf("%dx%d: line %d is %d cells: %q", sz[0], sz[1], i, n, l)
 			}
 		}
@@ -251,5 +252,39 @@ func TestAnUnreadableEventIsNotedOncePerType(t *testing.T) {
 	v.Apply(proto.Event{Seq: 6, Type: proto.EvTurnEnd, Payload: json.RawMessage(`{"stop_reason":"error","extra":1}`)})
 	if f := v.Render(80, 24); strings.Count(f, "unreadable event future.kind") != 1 || strings.Count(f, "unreadable event turn.end") != 1 {
 		t.Errorf("want one note for future.kind and one for turn.end:\n%s", f)
+	}
+}
+
+// TestBidiAndZeroWidthRunesAreMadeVisible: a bidi override or isolate and a zero-width rune can reorder or hide text on
+// screen, so each is drawn as a visible U+FFFD, one cell, and none reaches the frame.
+func TestBidiAndZeroWidthRunesAreMadeVisible(t *testing.T) {
+	hidden := []rune{0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0xFEFF}
+	for _, r := range hidden {
+		in := "a" + string(r) + "b"
+		if got := visible(in); got != "a�b" {
+			t.Errorf("visible(%U) = %q, want a\\uFFFDb", r, got)
+		}
+		var v View
+		v.Apply(ev(t, 1, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(in)}}))
+		if f := v.Render(20, 4); strings.ContainsRune(f, r) {
+			t.Errorf("%U reached the frame:\n%q", r, f)
+		}
+	}
+}
+
+// TestWideRunesAreCountedInCells: a frame's lines are at most width terminal cells, counting a CJK rune as two and a
+// combining mark as none, and a wrap never splits a wide rune.
+func TestWideRunesAreCountedInCells(t *testing.T) {
+	var v View
+	v.Apply(ev(t, 1, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text(strings.Repeat("日本語のテキスト", 6) + " éé " + strings.Repeat("é", 30))}}))
+	for _, sz := range [][2]int{{40, 12}, {21, 8}, {10, 5}} {
+		for i, l := range strings.Split(v.Render(sz[0], sz[1]), "\n") {
+			if n := runewidth.StringWidth(l); n > sz[0] {
+				t.Errorf("%dx%d: line %d is %d cells: %q", sz[0], sz[1], i, n, l)
+			}
+		}
+	}
+	if got := fit("日本語日本語", 7); runewidth.StringWidth(got) > 7 || !strings.HasSuffix(got, "…") {
+		t.Errorf("fit cut to %q", got)
 	}
 }
