@@ -1,7 +1,8 @@
 # Proposal: the protocol methods the TUI needs (P1 step 8)
 
-Status: **proposal**, 2026-11-09, for the owner. It was drafted by mbp2-tack-p1s4, and the TUI's needs come from
-mbp2-tack-p1s5, who builds it. Nothing here is built.
+Status: **accepted** by the owner, 2026-11-09, with all four design calls as proposed (their answers are below). It
+was drafted by mbp2-tack-p1s4, and the TUI's needs come from mbp2-tack-p1s5, who builds it. Nothing is built yet:
+the methods land in the order at the end, each in its own PR.
 
 The TUI (DESIGN §10) needs three methods that do not exist yet:
 - a permission answer, for inline approvals;
@@ -108,15 +109,13 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
     judged by two modes.
 - **Re-attach:** `session/subscribe {session, from_seq}` exists, and replays from `from_seq`. Nothing is needed.
 
-## Design calls for the owner
+## Design calls: the owner's answers (2026-11-09)
 
-1. Whether `session/cancel`, `workspace/complete` and `session/list` need the client token. Proposed: yes, all three.
-   DESIGN names the token only for methods that change permissions, mode, trust or halt state.
-2. Whether `permission/respond` waits indefinitely while a privileged client is attached, as proposed, or has a
-   timeout after which it becomes `no_user`. A timeout would make an unattended TUI deny, rather than hold the turn.
-3. Whether `session/setMode` applies from the next turn, as proposed, or at once.
-4. Whether `@`-completion leaves out `.gitignore`d paths, as proposed. Nothing else in tack applies `.gitignore` to
-   what the user or the model may name.
+1. `session/cancel`, `workspace/complete` and `session/list` need the client token, all three.
+2. `permission/respond` waits indefinitely while a privileged client is attached. There is no timeout.
+3. `session/setMode` applies from the next turn.
+4. `@`-completion leaves out `.gitignore`d paths. This is for completion only: it is not access control, and the read
+   tools still reach an ignored file asked for by name.
 
 ## Order
 
