@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/tools"
 )
 
 // maskHarness is newHarness with big.txt (about 14 KB) in the workspace, MaskObservations as given and the served
@@ -151,7 +153,7 @@ func TestMaskReadSuperseding(t *testing.T) {
 		"a range past line 200, then a whole read":  {read("a", `{"path":"f.go","offset":300,"limit":20}`, true), read("b", `{"path":"f.go"}`, true), false},
 		"an offset with no limit is never compared": {read("a", `{"path":"f.go","offset":5}`, true), read("b", `{"path":"f.go","offset":1,"limit":500}`, true), false},
 	} {
-		s := &Session{}
+		s := &Session{cfg: Config{Tools: tools.NewSet(nil)}}
 		s.track(c.earlier, false, 0)
 		s.track(c.later, false, 0)
 		got := s.maskStubs(2, false)
@@ -181,7 +183,7 @@ func TestMaskReadSupersedingVersions(t *testing.T) {
 		"an edit of another file":   {[]observation{call("e", "edit", `{"path":"g.go"}`)}, false, true},
 		"a grep and a failed write": {[]observation{call("g", "grep", `{"pattern":"x"}`), observe("w", "write", []byte(`{"path":"g.go"}`), 1, "denied", false)}, false, true},
 	} {
-		s := &Session{}
+		s := &Session{cfg: Config{Tools: tools.NewSet(nil)}}
 		s.track(call("a", "read", `{"path":"f.go"}`), false, 0)
 		for _, o := range c.between {
 			s.track(o, false, 0)
@@ -262,7 +264,7 @@ func TestMaskReadSupersedingLean(t *testing.T) {
 		`{"path":"f.go","offset":10,"limit":20}`:  true,
 		`{"path":"f.go","offset":100,"limit":20}`: false,
 	} {
-		s := &Session{cfg: Config{ReadLines: 80}}
+		s := &Session{cfg: Config{ReadLines: 80, Tools: tools.NewSet(nil)}}
 		s.track(read("a", earlier), false, 0)
 		s.track(read("b", `{"path":"f.go"}`), false, 0)
 		if got := s.maskStubs(2, false); (len(got) == 1) != masked {
@@ -277,7 +279,7 @@ func TestMaskWholeReadThenARange(t *testing.T) {
 	long := strings.Repeat("x", 400)
 	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
 	for readLines, masked := range map[int]bool{80: true, 0: false} {
-		s := &Session{cfg: Config{ReadLines: readLines}}
+		s := &Session{cfg: Config{ReadLines: readLines, Tools: tools.NewSet(nil)}}
 		s.track(read("a", `{"path":"f.go"}`), false, 0)
 		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false, 0)
 		if got := s.maskStubs(2, false); (len(got) == 1 && got[0].ID == "a") != masked {
@@ -323,7 +325,7 @@ func TestMaskWidenedReadCoverage(t *testing.T) {
 	long := strings.Repeat("x", 400)
 	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
 	for level, masked := range map[int]bool{0: true, 1: false, 2: false} {
-		s := &Session{cfg: Config{ReadLines: 80}}
+		s := &Session{cfg: Config{ReadLines: 80, Tools: tools.NewSet(nil)}}
 		s.track(read("a", `{"path":"f.go"}`), false, level)
 		s.track(read("b", `{"path":"f.go","offset":1,"limit":100}`), false, 0)
 		if got := s.maskStubs(2, false); (len(got) == 1) != masked {
@@ -386,7 +388,7 @@ func TestMaskWidenedReadSupersedes(t *testing.T) {
 	long := strings.Repeat("x", 400)
 	read := func(id, input string) observation { return observe(id, "read", []byte(input), 1, long, true) }
 	for level, masked := range map[int]bool{0: false, 1: true, 2: true} {
-		s := &Session{cfg: Config{ReadLines: 80}}
+		s := &Session{cfg: Config{ReadLines: 80, Tools: tools.NewSet(nil)}}
 		s.track(read("a", `{"path":"f.go","offset":1,"limit":200}`), false, 0)
 		s.track(read("b", `{"path":"f.go"}`), false, level)
 		if got := s.maskStubs(2, false); (len(got) == 1 && got[0].ID == "a") != masked {
@@ -399,7 +401,7 @@ func TestMaskWidenedReadSupersedes(t *testing.T) {
 // is stubbed, and the whole read, though old enough for the cliff's scope, is kept.
 func TestMaskKeepsTheSuperseder(t *testing.T) {
 	long := strings.Repeat("x", 400)
-	s := &Session{}
+	s := &Session{cfg: Config{Tools: tools.NewSet(nil)}}
 	s.track(observe("a", "read", []byte(`{"path":"f.go","offset":10,"limit":20}`), 1, long, true), false, 0)
 	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
 	got := s.maskStubs(9, true)
@@ -415,7 +417,7 @@ func TestMaskKeepsTheSuperseder(t *testing.T) {
 // and one wide compaction stubs both.
 func TestMaskWholeReadStaysStubbable(t *testing.T) {
 	long := strings.Repeat("x", 400)
-	s := &Session{}
+	s := &Session{cfg: Config{Tools: tools.NewSet(nil)}}
 	s.track(observe("a", "read", []byte(`{"path":"f.go"}`), 1, long, true), false, 0)
 	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
 	if got := s.maskStubs(9, true); len(got) != 2 {
@@ -428,7 +430,7 @@ func TestMaskWholeReadStaysStubbable(t *testing.T) {
 // in the request once.
 func TestMaskPinCarriesAlongSuperseders(t *testing.T) {
 	long := strings.Repeat("x", 400)
-	s := &Session{}
+	s := &Session{cfg: Config{Tools: tools.NewSet(nil)}}
 	s.track(observe("a", "read", []byte(`{"path":"f.go","offset":10,"limit":20}`), 1, long, true), false, 0)
 	s.track(observe("b", "read", []byte(`{"path":"f.go"}`), 2, long, true), false, 0)
 	s.track(observe("c", "read", []byte(`{"path":"f.go"}`), 3, long, true), false, 0)
@@ -438,5 +440,90 @@ func TestMaskPinCarriesAlongSuperseders(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "a,b" {
 		t.Fatalf("wide stubs %v, want a,b: the newest whole read c kept", got)
+	}
+}
+
+// TestReadOnlyToolsLeaveFileVersionsAlone: a call to a tool that reports ReadOnly counts as changing nothing, so the
+// results masking relies on stay current. Over the largest tool set: search, symbol, find_related, recently_changed and
+// task read, as read, glob and grep do; bash, edit and write may change files; a name the session has no tool for may
+// too.
+func TestReadOnlyToolsLeaveFileVersionsAlone(t *testing.T) {
+	set := tools.New(tools.Options{Searcher: anySearcher{}, Symbols: budgetSymbols{}, Write: true, Shell: anyShell{},
+		Blobs: anyBlobs{}, Plan: true, Done: true, RecentlyChanged: true, FindRelated: true,
+		Subagent: func(context.Context, string) (tools.SubagentAnswer, error) { return tools.SubagentAnswer{}, nil }})
+	s := New(Config{Tools: set})
+	for _, tool := range []string{"read", "glob", "grep", "search", "symbol", "find_related", "recently_changed", "task"} {
+		if _, ok := set.Get(tool); !ok {
+			t.Fatalf("%s is not in the set; the check would prove nothing", tool)
+		}
+		var v fileVersions
+		v.touch(observation{tool: tool}, s.readOnly)
+		if v.all != 0 || len(v.path) != 0 {
+			t.Errorf("%s counted as a change: %+v", tool, v)
+		}
+	}
+	for _, tool := range []string{"bash", "edit", "write", "not_a_tool"} {
+		var v fileVersions
+		v.touch(observation{tool: tool}, s.readOnly)
+		if v.all != 1 {
+			t.Errorf("%s did not count as a possible change of every file: %+v", tool, v)
+		}
+	}
+}
+
+// taskSet is the read-only tools with task, whose helper answers at once: a tool that reports ReadOnly and that no
+// name list in the loop knows.
+func taskSet() *tools.Set {
+	return tools.New(tools.Options{Subagent: func(context.Context, string) (tools.SubagentAnswer, error) {
+		return tools.SubagentAnswer{Text: "the helper's answer"}, nil
+	}})
+}
+
+// TestATaskBetweenTwoReadsDoesNotKeepTheFirst: what changes no file is what the session's own tools say (ReadOnly),
+// so a task call between two reads of big.txt leaves the first covered, and it is masked as a superseded read is.
+func TestATaskBetweenTwoReadsDoesNotKeepTheFirst(t *testing.T) {
+	h := maskHarness(t, true, 120,
+		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "task", `{"prompt":"what is in big.txt?"}`),
+		goinfertest.Calls("", "t3", "read", bigRead), goinfertest.Says("ok"))
+	h.sess.cfg.Tools = taskSet()
+	if _, err := h.sess.Turn(context.Background(), "read, ask, read"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.script.Requests); n != 4 {
+		t.Fatalf("%d requests, want 4", n)
+	}
+	if last := string(h.script.Requests[3]); !strings.Contains(last, "this read of big.txt from line 1, 300 lines (request 1") {
+		t.Fatalf("request 4 should carry the first read as a stub, the task between the reads changing nothing:\n%.600s", last)
+	}
+	h.checkRebuild(t)
+}
+
+// TestAResumedSessionMasksWhatTheLiveOneDid: masking is recorded (compaction), and a rebuild replays the record, not
+// the rule. So a session resumed under another tool set (here, one without task, as an older binary or other options
+// would give it) carries the same messages as the live one, its first read still a stub.
+func TestAResumedSessionMasksWhatTheLiveOneDid(t *testing.T) {
+	h := maskHarness(t, true, 120,
+		goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Calls("", "t2", "task", `{"prompt":"what is in big.txt?"}`),
+		goinfertest.Calls("", "t3", "read", bigRead), goinfertest.Says("ok"))
+	h.sess.cfg.Tools = taskSet()
+	if _, err := h.sess.Turn(context.Background(), "read, ask, read"); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := h.st.Events("s_test", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := h.sess.cfg
+	cfg.Tools = tools.NewSet(nil) // no task
+	resumed, err := Resume(cfg, evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, re := h.sess.Conversation().Request().Messages, resumed.Conversation().Request().Messages
+	if !reflect.DeepEqual(re, live) {
+		t.Fatalf("resumed under another tool set, the messages differ:\nlive:    %+v\nresumed: %+v", live, re)
+	}
+	if !strings.Contains(fmt.Sprint(re), "this read of big.txt from line 1, 300 lines (request 1") {
+		t.Fatal("the live session masked nothing; the check above would prove nothing")
 	}
 }

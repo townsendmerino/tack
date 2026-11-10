@@ -16,6 +16,9 @@ type Relater interface {
 	Searcher
 	Related(ctx context.Context, path string, line, k int) ([]Hit, error)
 	Relates() bool
+	// Sync brings the index up to date for paths (Symbols.Sync): without a watcher (tack run), an edit is not in it
+	// until synced, and path:line would name the chunk the file had before.
+	Sync(ctx context.Context, paths []string) (bool, error)
 }
 
 // relatedDefaultK and relatedMaxK bound find_related's k: few hits by default, as each is a chunk of code.
@@ -34,8 +37,8 @@ func (relatedTool) Spec() server.Tool {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"k":{"type":"integer"}},"required":["path","line"]}`)}
 }
 
-// Run resolves path inside the workspace, as read does, and asks for the chunks nearest the one holding line, the
-// source chunk left out, printed as search prints its hits.
+// Run resolves path inside the workspace, as read does, syncs it into the index, and asks for the chunks nearest the
+// one holding line, the source chunk left out, printed as search prints its hits.
 func (t relatedTool) Run(ctx context.Context, ws *Workspace, input json.RawMessage) (Result, error) {
 	var in struct {
 		Path string `json:"path"`
@@ -56,7 +59,11 @@ func (t relatedTool) Run(ctx context.Context, ws *Workspace, input json.RawMessa
 		in.K = relatedDefaultK
 	}
 	in.K = min(in.K, relatedMaxK)
-	hits, err := t.r.Related(ctx, ws.Rel(abs), in.Line, in.K)
+	rel := ws.Rel(abs)
+	if _, err := t.r.Sync(ctx, []string{rel}); err != nil {
+		return errorf("find_related: bringing ken's index up to date for %s: %v", in.Path, err), nil
+	}
+	hits, err := t.r.Related(ctx, rel, in.Line, in.K)
 	if err != nil {
 		return errorf("find_related: %v", err), nil
 	}

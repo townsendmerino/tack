@@ -29,6 +29,8 @@ func (anySearcher) Search(context.Context, string, int) ([]tools.Hit, error) { r
 // anySearcher relates too, so find_related's schema is counted.
 func (anySearcher) Relates() bool { return true }
 
+func (anySearcher) Sync(context.Context, []string) (bool, error) { return false, nil }
+
 func (anySearcher) Related(context.Context, string, int, int) ([]tools.Hit, error) { return nil, nil }
 
 type anyBlobs struct{}

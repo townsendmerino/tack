@@ -1,0 +1,12 @@
+● glob **/*.go
+  ⎿ unknown: outcome unknown: tack
+  stopped while this call was running;
+  it was not re-run
+● glob *.go
+  ⎿ cancelled: not run: tack stopped
+  before it ran
+· the turn ended: interrupted
+
+> What happened?
+────────────────────────────────────────
+qwen @ goinfer@nobara · plan

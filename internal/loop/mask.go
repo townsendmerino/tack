@@ -106,14 +106,11 @@ type fileVersions struct {
 
 func (v *fileVersions) of(p string) int { return v.all + v.path[p] }
 
-// readOnly are the tools that change no file.
-var readOnly = map[string]bool{"read": true, "glob": true, "grep": true, "search": true, "symbol": true,
-	"read_output": true, "todo": true, "ask_user": true, "done": true}
-
-// touch counts the call o, failed or not.
-func (v *fileVersions) touch(o observation) {
+// touch counts the call o, failed or not. readOnly says whether a tool changes no file: the session's own tools say so
+// (Session.readOnly), so the count follows what each tool is, with no list here to fall behind.
+func (v *fileVersions) touch(o observation, readOnly func(string) bool) {
 	switch {
-	case readOnly[o.tool]:
+	case readOnly(o.tool):
 	case (o.tool == "edit" || o.tool == "write") && o.path != "":
 		if v.path == nil {
 			v.path = map[string]int{}
@@ -137,7 +134,7 @@ func (s *Session) track(o observation, truncated bool, level int) {
 	case level >= 2:
 		o.whole = 1 << 30 // every line
 	}
-	s.vers.touch(o)
+	s.vers.touch(o, s.readOnly)
 	s.obs = append(s.obs, o)
 }
 
@@ -364,4 +361,15 @@ func wholeOf(o observation) int {
 		return o.whole
 	}
 	return wholeReadLines
+}
+
+// readOnly says whether the session's tool named name changes no file (tools.Tool.ReadOnly). A name the session has no
+// tool for (the model called one it was not offered) is not known to only read, so it counts as a possible change.
+// Only the live session asks: what masking decided is recorded (compaction), and a rebuild replays the record.
+func (s *Session) readOnly(name string) bool {
+	if s.cfg.Tools == nil { // no tools to ask: nothing is known to only read
+		return false
+	}
+	t, ok := s.cfg.Tools.Get(name)
+	return ok && t.ReadOnly()
 }

@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+> Make applyTokenBudget return a count, then run the tests.
+● edit mcp/token_budget.go
+  ? allow edit in ask mode
+    - file changes ask in ask mode
+  [a]llow once [s] for the session [d]eny
+────────────────────────────────────────────────────────────────────────────────
+qwen2.5-7b-instruct-q4_k_m @ goinfer@local · 1.2k

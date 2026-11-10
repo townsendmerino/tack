@@ -1,12 +1,14 @@
 // Package usage is the usage table (DESIGN §7.7, §10's `tack usage`): what each day's requests cost, by model server,
-// summed from the usage events in the session logs. It reads the logs each time; nothing is cached, so nothing is
-// lost if the state directory's derived files go (DESIGN §6.2, "Derived state"). The daemon answers usage/summary
-// with it, and tack usage reads it when no daemon runs.
+// summed from the usage events in the session logs. FromStore reads the logs each time; Cache keeps the usage events
+// in index.db and reads each log line once. index.db is derived, so deleting it loses nothing (DESIGN §6.2, "Derived
+// state"). The daemon answers usage/summary with it, and tack usage reads it when no daemon runs.
 package usage
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -44,15 +46,26 @@ type Acc struct {
 	loc   *time.Location
 	rows  map[key]*Row
 	seen  map[key]map[proto.SessionID]bool
+	// child is the sessions a task call made (SessionCreated.Parent): their usage counts, but they are not sessions the
+	// user had, so Sessions leaves them out.
+	child map[proto.SessionID]bool
 }
 
 // NewAcc is an empty table counting usage events at or after since, by day in loc.
 func NewAcc(since time.Time, loc *time.Location) *Acc {
-	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}}
+	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}, child: map[proto.SessionID]bool{}}
 }
 
-// Add counts ev, an event of session id, if it is a usage event in range; it ignores every other event.
+// Add counts ev, an event of session id, if it is a usage event in range; it ignores every other event but a
+// session.created, which says whether id is a subagent's (counted, but not as a session). A session's events come in
+// log order, so its session.created comes first.
 func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
+	if ev.Type == proto.EvSessionCreated {
+		if v, err := ev.Decode(); err == nil && v.(proto.SessionCreated).Parent != "" {
+			a.child[id] = true
+		}
+		return nil
+	}
 	if ev.Type != proto.EvUsage || ev.Time.Before(a.since) {
 		return nil
 	}
@@ -60,8 +73,13 @@ func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 	if err != nil {
 		return fmt.Errorf("usage: session %s seq %d: %w", id, ev.Seq, err)
 	}
-	u := v.(proto.Usage)
-	k := key{ev.Time.In(a.loc).Format(time.DateOnly), u.Server}
+	a.add(id, ev.Time, v.(proto.Usage))
+	return nil
+}
+
+// add counts u, a usage event of session id at at, in range.
+func (a *Acc) add(id proto.SessionID, at time.Time, u proto.Usage) {
+	k := key{at.In(a.loc).Format(time.DateOnly), u.Server}
 	r := a.rows[k]
 	if r == nil {
 		r = &Row{Day: k.day, Server: k.server}
@@ -69,7 +87,9 @@ func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 	}
 	if !a.seen[k][id] {
 		a.seen[k][id] = true
-		r.Sessions++
+		if !a.child[id] {
+			r.Sessions++
+		}
 	}
 	r.Requests++
 	r.Prompt += u.Prompt
@@ -89,7 +109,6 @@ func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 		r.PrefillKnown++
 		r.PrefillMS += *u.PrefillMS
 	}
-	return nil
 }
 
 // Rows is the table so far, sorted by day then server.
@@ -156,6 +175,9 @@ func Print(w io.Writer, rows []Row) {
 	line(Total(rows))
 }
 
+// listed, when set (tests), runs in FromStore between listing the sessions and reading them.
+var listed func()
+
 // FromStore is the table over every session in st: each log streams through it one event at a time (store.Scan), so
 // only the table is held, never a log. Both tack usage, when no daemon runs, and the daemon's usage/summary read it.
 func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, error) {
@@ -163,11 +185,22 @@ func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, err
 	if err != nil {
 		return nil, err
 	}
+	if listed != nil {
+		listed()
+	}
 	acc := NewAcc(since, loc)
 	for _, id := range ids {
-		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
+		err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) })
+		if errors.Is(err, fs.ErrNotExist) { // deleted since it was listed: not in the table, as if deleted before
+			continue
+		}
+		if err != nil {
 			return nil, fmt.Errorf("usage: session %s: %w", id, err)
 		}
 	}
 	return acc.Rows(), nil
 }
+
+// markChild says session id is a subagent (its session.created has a Parent). It must precede id's usage events, as
+// session.created does in a log.
+func (a *Acc) markChild(id proto.SessionID) { a.child[id] = true }
