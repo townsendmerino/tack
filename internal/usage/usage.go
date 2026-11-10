@@ -5,8 +5,10 @@
 package usage
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
@@ -173,6 +175,9 @@ func Print(w io.Writer, rows []Row) {
 	line(Total(rows))
 }
 
+// listed, when set (tests), runs in FromStore between listing the sessions and reading them.
+var listed func()
+
 // FromStore is the table over every session in st: each log streams through it one event at a time (store.Scan), so
 // only the table is held, never a log. Both tack usage, when no daemon runs, and the daemon's usage/summary read it.
 func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, error) {
@@ -180,9 +185,16 @@ func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, err
 	if err != nil {
 		return nil, err
 	}
+	if listed != nil {
+		listed()
+	}
 	acc := NewAcc(since, loc)
 	for _, id := range ids {
-		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
+		err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) })
+		if errors.Is(err, fs.ErrNotExist) { // deleted since it was listed: not in the table, as if deleted before
+			continue
+		}
+		if err != nil {
 			return nil, fmt.Errorf("usage: session %s: %w", id, err)
 		}
 	}

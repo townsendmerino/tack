@@ -99,3 +99,38 @@ func TestUsageSummaryReadsTheLogsWhenTheIndexFails(t *testing.T) {
 		t.Fatalf("usage/summary with a failing index: %+v, %v; want the logs' row", got.Rows, err)
 	}
 }
+
+// TestUsageSummaryCountsTheClientsDays: a client names its time zone, and the daemon counts days in it, not in its
+// own; zones 25 hours apart put the same request on different dates.
+func TestUsageSummaryCountsTheClientsDays(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Create("s_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, _ := l.Append(proto.EvUsage, 0, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: 5})
+	l.Close()
+	ts := httptest.NewServer(stuckModel())
+	t.Cleanup(ts.Close)
+	_, cl, _ := daemonOn(t, st, ts.URL)
+	for _, zone := range []string{"Pacific/Kiritimati", "Pacific/Pago_Pago"} {
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Skip("no zone database here:", err)
+		}
+		var got proto.UsageSummaryResult
+		if err := cl.Call(proto.MethodUsageSummary, proto.UsageSummaryParams{TZ: zone}, &got); err != nil {
+			t.Fatal(err)
+		}
+		if want := ev.Time.In(loc).Format(time.DateOnly); len(got.Rows) != 1 || got.Rows[0].Day != want {
+			t.Fatalf("in %s: %+v; want the request on %s", zone, got.Rows, want)
+		}
+	}
+	var got proto.UsageSummaryResult
+	if err := cl.Call(proto.MethodUsageSummary, proto.UsageSummaryParams{TZ: "Not/AZone"}, &got); err == nil {
+		t.Fatalf("an unknown zone: %+v; want refused, so the client counts itself", got.Rows)
+	}
+}

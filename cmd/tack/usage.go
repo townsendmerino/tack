@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -59,32 +60,28 @@ func usageCmd(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// errNoUsageDaemon is daemonUsage finding no daemon that answers usage/summary: none runs, or one from before the method.
+// errNoUsageDaemon is daemonUsage getting no table from a daemon: none runs, one from before the method, or one that
+// failed to answer. The caller then reads the table itself; the logs are the truth either way.
 var errNoUsageDaemon = errors.New("no daemon answers usage/summary")
 
 // daemonUsage asks the daemon in stateDir for the table (usage/summary), without starting one: a running daemon answers
-// from its own reading of the logs. It is errNoUsageDaemon when none runs or the one running predates the method; then
-// the caller reads the logs itself.
+// from its own reading of the logs, counting this client's days (localZoneName). Any failure is errNoUsageDaemon.
 func daemonUsage(stateDir string, since time.Time, utc bool) ([]usagetable.Row, error) {
 	c, err := daemon.Dial(stateDir, cliClient, nil, 0)
-	if errors.Is(err, daemon.ErrNotRunning) {
-		return nil, errNoUsageDaemon
-	}
 	if err != nil {
-		return nil, err
+		return nil, errNoUsageDaemon
 	}
 	defer c.Close()
 	p := proto.UsageSummaryParams{UTC: utc}
+	if !utc {
+		p.TZ = localZoneName() // the daemon counts this client's days, not its own
+	}
 	if !since.IsZero() {
 		p.Since = &since
 	}
 	var res proto.UsageSummaryResult
-	err = c.Call(proto.MethodUsageSummary, p, &res)
-	if pe, ok := errors.AsType[*proto.Error](err); ok && pe.Code == proto.CodeMethodNotFound {
-		return nil, errNoUsageDaemon
-	}
-	if err != nil {
-		return nil, fmt.Errorf("asking the daemon: %w", err)
+	if err := c.Call(proto.MethodUsageSummary, p, &res); err != nil {
+		return nil, errNoUsageDaemon // an older daemon (method not found), an unknown zone, or anything else
 	}
 	return res.Rows, nil
 }
@@ -155,4 +152,27 @@ func localUsage(dir string, since time.Time, loc *time.Location) ([]usagetable.R
 		return rows, nil
 	}
 	return usagetable.FromStore(st, since, loc) // the index failed (a lock held past its timeout, say); the logs are the truth
+}
+
+// localZoneName is the IANA name of this process's time zone, which time.Local is but does not say: TZ when it is set
+// (the OS's variable, which time.Local itself reads; empty means UTC), else what /etc/localtime links to under
+// zoneinfo/. It is "" when neither names one; the daemon then counts its own days, which on this machine are the same.
+func localZoneName() string {
+	// TZ is the OS's own variable, read only to name the zone time.Local already uses; it is not a tack setting.
+	if tz, ok := os.LookupEnv("TZ"); ok {
+		if tz = strings.TrimPrefix(tz, ":"); tz == "" {
+			return "UTC"
+		} else if !strings.HasPrefix(tz, "/") {
+			return tz
+		}
+		return ""
+	}
+	target, err := os.Readlink("/etc/localtime")
+	if err != nil {
+		return ""
+	}
+	if _, name, ok := strings.Cut(target, "zoneinfo/"); ok {
+		return name
+	}
+	return ""
 }
