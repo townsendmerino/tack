@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -250,5 +251,86 @@ func TestANewIndexOpenedAtOnce(t *testing.T) {
 				t.Fatalf("round %d: a handle opening a new index.db with %d others: %v", round, n-1, err)
 			}
 		}
+	}
+}
+
+// parentAndChild is a store with s_parent, which used the model, and s_child, a session its task call made
+// (session.created's Parent) that used it too, both on one day and server.
+func parentAndChild(t *testing.T) (string, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []struct {
+		id     proto.SessionID
+		parent proto.SessionID
+	}{{"s_parent", ""}, {"s_child", "s_parent"}} {
+		l, err := st.Create(s.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: "/w", Model: "m", Mode: proto.ModePlan, Parent: s.parent}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l.Append(proto.EvUsage, 0, proto.Usage{Request: 1, Server: "goinfer@local", Prompt: 100, Output: 10}); err != nil {
+			t.Fatal(err)
+		}
+		l.Close()
+	}
+	return dir, st
+}
+
+// TestASubagentIsNotASessionOfItsOwn: a session a task call made is part of its parent's work. Its requests and tokens
+// count, but it is not counted as a session, in the logs' table and the index's alike, before and after the index is
+// reopened.
+func TestASubagentIsNotASessionOfItsOwn(t *testing.T) {
+	dir, st := parentAndChild(t)
+	want, err := FromStore(st, time.Time{}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want) != 1 || want[0].Sessions != 1 || want[0].Requests != 2 || want[0].Prompt != 200 {
+		t.Fatalf("the logs' table: %+v; want one session, with both sessions' 2 requests", want)
+	}
+	for _, step := range []string{"first read", "reopened"} {
+		c, err := OpenCache(dir, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.Table(time.Time{}, time.UTC)
+		c.Close()
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: the index's table %+v (%v); want the logs' %+v", step, got, err, want)
+		}
+	}
+}
+
+// TestAnIndexFromBeforeTheParentRuleIsRebuilt: an index.db at schema 1 holds no child flag, so a subagent in it would
+// count as a session. It is rebuilt on open, and its table is the logs' again.
+func TestAnIndexFromBeforeTheParentRuleIsRebuilt(t *testing.T) {
+	dir, st := parentAndChild(t)
+	db, err := sql.Open("sqlite", filepath.Join(dir, IndexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE usage_read (session TEXT PRIMARY KEY, offset INTEGER NOT NULL, next_seq INTEGER NOT NULL);
+		CREATE TABLE usage_events (session TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, server TEXT NOT NULL,
+			prompt INTEGER NOT NULL, output INTEGER NOT NULL, reused INTEGER, prefilled INTEGER, prefill_ms INTEGER,
+			wall_ms INTEGER NOT NULL, PRIMARY KEY (session, seq));
+		PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	c, err := OpenCache(dir, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.Table(time.Time{}, time.UTC)
+	want, _ := FromStore(st, time.Time{}, time.UTC)
+	if err != nil || !reflect.DeepEqual(got, want) || got[0].Sessions != 1 {
+		t.Fatalf("after a schema-1 index.db: %+v (%v); want the logs' %+v", got, err, want)
 	}
 }

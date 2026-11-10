@@ -97,7 +97,7 @@ func rebuild(evs []proto.Event, workspaceRoot string, base server.Conversation) 
 					return nil, st, fmt.Errorf("rebuild: seq %d: %w", ev.Seq, err)
 				}
 				cuts.summarized(keep)
-				st.to, st.body = slices.Max(p.Summarized), bodyOf(p.Summary)
+				st.to, st.body = slices.Max(p.Summarized), p.Body // recorded, not parsed: the user's text comes first in Summary
 			}
 		case proto.ErrorEvent:
 			if p.Class == NoToolCallClass {
@@ -161,12 +161,30 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 			if p.Request != 0 { // 0: the summarizer's, outside the conversation's numbering
 				s.requests++
 			}
-		case proto.Usage:
-			s.tokens += computedTokens(p) // the summarizer's too, as the live loop counts them
 		}
 	}
-	s.calls = callsRan(history)
+	s.tokens, s.calls = Spent(history)
 	return s, nil
+}
+
+// Spent is what a session's log says it has spent, as its budgets count it: the tokens its server computed (the
+// summarizer's requests too) and its tool calls (callsRan), each with what its task calls' children spent on top
+// (ToolFinished.Tokens and Calls). Resume counts a reopened session with it, and crash recovery charges a cut-off task
+// call with its child's (core's recovery).
+func Spent(history []proto.Event) (tokens, calls int) {
+	for _, ev := range history {
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		switch p := v.(type) {
+		case proto.Usage:
+			tokens += computedTokens(p)
+		case proto.ToolFinished:
+			tokens, calls = tokens+p.Tokens, calls+p.Calls
+		}
+	}
+	return tokens, calls + callsRan(history)
 }
 
 // callsRan counts the tool calls the live loop counted toward the session's budget: every call that reached a

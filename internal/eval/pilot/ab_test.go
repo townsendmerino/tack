@@ -110,3 +110,18 @@ func TestSummarizeIsNotAnArmSetting(t *testing.T) {
 		t.Fatal("summarize is an arm setting")
 	}
 }
+
+// TestSummaryRetrieveIsNotAnArmSetting: no E1 arm re-retrieves after a summary until a screen registers it.
+func TestSummaryRetrieveIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["summary_retrieve"] {
+		t.Fatal("summary_retrieve is an arm setting")
+	}
+}
+
+// TestSubagentsIsNotAnArmSetting: no E1 arm gets the task tool until a screen registers it; an arm's tool set, and so
+// its fixed prompt, stays as calibrated.
+func TestSubagentsIsNotAnArmSetting(t *testing.T) {
+	if RunSettings["subagents"] {
+		t.Fatal("subagents is an arm setting")
+	}
+}

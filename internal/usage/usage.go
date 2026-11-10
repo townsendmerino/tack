@@ -46,15 +46,26 @@ type Acc struct {
 	loc   *time.Location
 	rows  map[key]*Row
 	seen  map[key]map[proto.SessionID]bool
+	// child is the sessions a task call made (SessionCreated.Parent): their usage counts, but they are not sessions the
+	// user had, so Sessions leaves them out.
+	child map[proto.SessionID]bool
 }
 
 // NewAcc is an empty table counting usage events at or after since, by day in loc.
 func NewAcc(since time.Time, loc *time.Location) *Acc {
-	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}}
+	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}, child: map[proto.SessionID]bool{}}
 }
 
-// Add counts ev, an event of session id, if it is a usage event in range; it ignores every other event.
+// Add counts ev, an event of session id, if it is a usage event in range; it ignores every other event but a
+// session.created, which says whether id is a subagent's (counted, but not as a session). A session's events come in
+// log order, so its session.created comes first.
 func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
+	if ev.Type == proto.EvSessionCreated {
+		if v, err := ev.Decode(); err == nil && v.(proto.SessionCreated).Parent != "" {
+			a.child[id] = true
+		}
+		return nil
+	}
 	if ev.Type != proto.EvUsage || ev.Time.Before(a.since) {
 		return nil
 	}
@@ -76,7 +87,9 @@ func (a *Acc) add(id proto.SessionID, at time.Time, u proto.Usage) {
 	}
 	if !a.seen[k][id] {
 		a.seen[k][id] = true
-		r.Sessions++
+		if !a.child[id] {
+			r.Sessions++
+		}
 	}
 	r.Requests++
 	r.Prompt += u.Prompt
@@ -187,3 +200,7 @@ func FromStore(st *store.Store, since time.Time, loc *time.Location) ([]Row, err
 	}
 	return acc.Rows(), nil
 }
+
+// markChild says session id is a subagent (its session.created has a Parent). It must precede id's usage events, as
+// session.created does in a log.
+func (a *Acc) markChild(id proto.SessionID) { a.child[id] = true }

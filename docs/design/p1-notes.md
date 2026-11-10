@@ -50,8 +50,14 @@ The order the owner approved, each step with its exit check:
        updating the last body, any failure keeping the previous body; the record and its replay
        (`proto.Compaction`'s `Summary` and `Summarized`, `server.Conversation.Summarize`, `loop.Rebuild`); and the live
        step behind `[run] summarize` (`loop.Session.summarize`). The summarizer's requests are logged as request 0
-       (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval (S4) is
-       not built.
+       (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval behind
+       `[run] summary_retrieve` (share `summary_retrieve_share`, default 10% of the window; coordinator, 2026-11-09,
+       logged for the owner): the summary's open threads are searched through ken and the hits end the summary message.
+       The E1 screen of summarize and re-retrieval is not registered yet.
+   - **Subagents (2026-11-09):** the `task` tool behind `[run] subagents`, off by default (coordinator's decisions,
+     logged for the owner): the child is its own stored session with `SessionCreated.Parent`, in plan mode, read-only,
+     depth 1, under `[run] subagent_*` (half the per-turn budget); its tokens count toward the parent's budgets through
+     `ToolFinished.Tokens`; a halt of the parent cancels it.
    - **The usage table, CLI form (2026-11-08):** `tack usage [-since 7d|DATE|all] [-utc]` sums the logs' `usage` events
      by day and model server (`internal/usage`). Reuse and prefill time are summed only over requests whose server reported
      them, and shown as "—" when none did. It reads the logs each time.
@@ -68,12 +74,19 @@ The order the owner approved, each step with its exit check:
      §6.2) is not built: deleting the file does the same.
 7. **The OpenAI-compatible adapter**, with cassettes against goinfer's `/v1/chat/completions`; then `find_related` and
    `recently_changed`.
+   - **The adapter built (2026-11-09)** as `kind = "openai-remote"` (`internal/server/openai`), tested against
+     hand-written wire fixtures; the cassettes recorded against goinfer's endpoint are a recipe to the coordinator.
    - **`recently_changed` built (2026-11-08)**, opt-in with `[run] recently_changed` and not an E1 arm setting. It reads
      the repository with go-git (a P1 dependency, pure Go), in tack's own process, and runs no git program: a repository's
      config names programs the git binary would run (filters, fsmonitor, textconv, gpg, remote helpers for a lazy fetch,
      submodules' own), and denying them by name kept missing ways in (`internal/tools/recent.go`). Costs: a file under a
      filter can show as modified, a rename shows as a delete and an add, and a partial clone's missing object is an
      error, not a fetch.
+   - **`find_related` built (2026-11-09)**, opt-in with `[run] find_related` and not an E1 arm setting: the k chunks (5 by
+     default, at most 10) nearest in meaning to the chunk at path:line, that chunk left out, from ken's in-process
+     `Workspace.FindRelated`. It is listed only when ken runs in semantic or hybrid mode, since a bm25 index has no
+     vectors (`internal/tools/related.go`, `kensearch.Searcher.Relates`). It adds 62 tokens to the largest fixed
+     prompt: 1,316 of 3,276.
 8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
 
 **Decisions:**

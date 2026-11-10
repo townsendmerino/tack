@@ -17,9 +17,11 @@ connects.
 ```toml
 [servers.local]
 kind = "goinfer-child"
-binary = "~/tack-runs/bin/goinfer-serve-tack"
+binary = "~/tack-runs/bin/goinfer-serve-v0.24.1"   # the release asset tack pins (models.GoinferVersion)
 model_path = "~/models/qwen2.5-7b-instruct-q4_k_m.gguf"
 ctx = 16384
+# v0.24.1 also serves the model as "<model>-fast" (thinking off), which compaction's summarizer asks for; it is on by
+# default, and "-fast-alias=false" here turns it off. A goinfer-serve older than v0.24.0 has no alias.
 args = ["-backend", "cuda"]
 
 [serve]

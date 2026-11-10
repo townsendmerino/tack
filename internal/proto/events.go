@@ -99,6 +99,9 @@ type SessionCreated struct {
 	Workspace string `json:"workspace"`
 	Model     string `json:"model"`
 	Mode      Mode   `json:"mode"`
+	// Parent is the session whose task call made this one, a subagent (DESIGN §6.2, §6.3); absent for a session the user
+	// made.
+	Parent SessionID `json:"parent,omitempty"`
 }
 
 // UserMessage is the user's message that starts a turn.
@@ -210,6 +213,13 @@ type ToolFinished struct {
 	// Redacted names the kinds of credential the redaction pass replaced in the output before anyone saw it
 	// (perms.Redact): the log of it firing.
 	Redacted []string `json:"redacted,omitempty"`
+	// Tokens is what the server computed for requests made on the call's behalf, outside this session's own requests: a
+	// task's child session (DESIGN §6.3). It counts toward this session's budgets, here and on a resume; the child's own
+	// usage events are in its log, so the usage table counts it once.
+	Tokens int `json:"tokens,omitempty"`
+	// Calls is the tool calls run on the call's behalf (a task's child), counted toward this session's tool-call budgets
+	// as Tokens is toward its token budgets.
+	Calls int `json:"calls,omitempty"`
 }
 
 // Usage is a request's measured cost. A nil field is one the server did not report; it is never shown as zero
@@ -370,6 +380,9 @@ type Compaction struct {
 	After      int            `json:"after"`
 	Summary    string         `json:"summary,omitempty"`
 	Summarized []int64        `json:"summarized,omitempty"`
+	// Body is the summary's body (the summarizer's text under its fixed headings, "" for a fallback with none): the next
+	// summary's previous body, recorded rather than parsed back out of Summary, which holds the user's own text first.
+	Body string `json:"body,omitempty"`
 }
 
 // MaskedResult is one tool result a compaction replaced: the call's ID and the stub sent in its place.

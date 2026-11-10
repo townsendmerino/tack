@@ -37,6 +37,9 @@ func (c *Core) Drain(grace time.Duration) []proto.SessionID {
 	for _, s := range c.sessions {
 		ss = append(ss, s)
 	}
+	for child := range c.children { // a subagent ends before its next request too; one not started yet is refused
+		child.Drain()
+	}
 	c.mu.Unlock()
 	for _, s := range ss {
 		s.loop.Drain()

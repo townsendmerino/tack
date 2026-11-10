@@ -477,7 +477,14 @@ Around the turn:
   decodes one request at a time per model (its work-queue design keeps one worker per model,
   `docs/tasks/task-work-queue-2026-09.md`). They buy a clean context, not speed. *Hypothesis for E1:* ken removes most
   reasons to spawn an exploration subagent; E1 counts subagents per task, per arm.
-- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
+  - **Built** behind `[run] subagents`, off by default and not an E1 arm setting (P1 step 6; `internal/tools/task.go`,
+    `internal/core/subagent.go`). The child is its own stored session (`SessionCreated.Parent`) in plan mode, with the
+    read-only tools and no `task` of its own. Its budget is `[run] subagent_*`, half the per-turn defaults. It runs on
+    the parent turn's context, so a halt reaches it. Its tokens count toward the parent's budgets
+    (`ToolFinished.Tokens`), and the usage table counts them once, from the child's own log. The child gets no workspace
+    instructions, by design: it is read-only and answers one question; the parent puts what it needs in the prompt. A
+    drain reaches a running child, and crash recovery charges a cut-off task with its child's spend. A child is not
+    counted as a session in the usage table, and a session list (none yet) must leave children out too.- **Compaction** (§7.6) — the planned place history is rewritten. "Evict now" (§7.2) is the only other, and it shows its
   cost and asks first.
 - **Plan mode.** Mutating tools are refused when they run (the tool list itself never changes, §7.2); the model proposes
   a plan; the user approves and the mode changes.
@@ -558,7 +565,11 @@ the OpenAI-compatible adapter — each with a cassette test:
   adapter. tack loses some things there: tool calls are only as reliable as that server's parsing; token counts are
   estimates calibrated against the server's reported prompt tokens; prefix reuse is as good as the server's own (E0
   measures it); and tack does not manage the server's lifecycle or memory.
-- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
+  - **Built** (P1 step 7; `internal/server/openai`) as `kind = "openai-remote"` in `[servers]`: url, token_file
+    and model, nothing on demand. It streams `/v1/chat/completions` with `include_usage` (`cached_tokens` as reuse), and
+    maps tool calls both ways. Thinking is not sent back, since the API has no field for it, and `reasoning_content` is
+    kept as thinking. CountTokens has no endpoint here, so the ledger estimates. Tested against hand-written wire
+    fixtures; recorded cassettes against goinfer's endpoint are a run still to come.- **Internal model.** Server-neutral blocks: text, thinking, tool call, tool result, image. Each adapter maps both ways
   and keeps server-specific fields opaque.
 - **Model registry.** Per model and machine: the served window, max output, thinking support, tool-call reliability
   (from `serve check` and E0), speed (prefill tokens per second at 4k, 8k and 16k prompts; decode tokens per second),
@@ -1138,8 +1149,11 @@ the history reaches 70% of its budget, whichever comes first; the oldest half is
 - **The summarizing step is built** behind `[run] summarize`, off by default and not an E1 arm setting (P1 step 6;
   `internal/loop/summarize.go`, `summarize_live.go`). It runs when masking cannot bring a prompt past 75% of the window
   back under it, and summarizes the oldest half of the turns before the last 3 requests. The `compaction` event logs
-  the summary word for word, so `loop.Rebuild` replays it. **Not yet built:** re-retrieval (step 3), and the dead-weight
-  trigger, which waits for P2's ledger.
+  the summary word for word, so `loop.Rebuild` replays it. **Re-retrieval (step 3) is built** behind
+  `[run] summary_retrieve`, off by default (`internal/loop/summary_retrieve.go`). The summary's open threads (its
+  "In progress" and "Next steps" lines, then its anchor symbols) are searched through ken, and the hits, within
+  `summary_retrieve_share` percent of the window (default 10), end the summary message, so they come out of what the
+  summary frees. **Not yet built:** the dead-weight trigger, which waits for P2's ledger.
 - **How the summary is written, when the summarizing step is built** (from Hermes Agent's compaction, 2026-11-08):
   - **Fixed headings:** goal, constraints, done, in progress, decisions, files, next steps.
   - **An anchor list taken mechanically, with no model call:** paths, symbols, commit hashes and error strings,

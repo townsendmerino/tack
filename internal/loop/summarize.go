@@ -223,17 +223,3 @@ const summaryFrame = "[Summary of the session so far: what the earlier turns ask
 // message carried (UserText), the frame, then the summary's text. The summary keeps every user message word for word,
 // so the first message's instruction notes stay with it.
 func summaryMessage(root string, s Summary) string { return UserText(true, root, summaryFrame+s.Text) }
-
-// bodyOf is the body of a summary message: from the first of SummaryHeadings to the anchor list; "" when the summary
-// had none (a fallback with no previous body).
-func bodyOf(msg string) string {
-	start := strings.Index(msg, "\n## "+SummaryHeadings[0]+"\n")
-	if start < 0 {
-		return ""
-	}
-	body := msg[start+1:]
-	if end := strings.Index(body, "\n\n## Anchors (exact)\n"); end >= 0 {
-		body = body[:end]
-	}
-	return strings.TrimSpace(body)
-}

@@ -1,0 +1,5 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"workspace":"/w","model":"main","mode":"plan"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"session":"s_01JAFIXTURE0000000000000011"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000011","event":{"seq":4,"time":"2026-11-09T12:00:00Z","type":"tool.call","cause":3,"payload":{"id":"toolu_01","name":"task","input":{"prompt":"where is applyTokenBudget defined?"}}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000012","event":{"seq":1,"time":"2026-11-09T12:00:01Z","type":"session.created","payload":{"workspace":"/w","model":"main","mode":"plan","parent":"s_01JAFIXTURE0000000000000011"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000011","event":{"seq":5,"time":"2026-11-09T12:00:09Z","type":"tool.finished","cause":4,"payload":{"id":"toolu_01","outcome":"ok","result":"mcp/token_budget.go:3\n\n[subagent session s_01JAFIXTURE0000000000000012]","truncated":false,"tokens":4180,"calls":2}}}}}
