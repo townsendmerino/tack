@@ -320,7 +320,7 @@ func TestA1CompareInterleavesAndChecksCells(t *testing.T) {
 }
 
 // TestA1CompareRepsRunsEachArmNTimes: two arms with A1Reps run each task that many times per arm, in A B B A order
-// repeated, through RunPilot, each run after its own cell check. abOrder's own test covers longer orders.
+// repeated, through RunPilot, each run after its own cell check. interleave's own test covers longer orders.
 func TestA1CompareRepsRunsEachArmNTimes(t *testing.T) {
 	task, mirrors := a1Task(t, false)
 	var replies []goinfertest.Reply

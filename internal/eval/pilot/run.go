@@ -67,21 +67,21 @@ func ArmOrder(n int, a0, a0k Arm) []Arm {
 	return []Arm{a0k, a0}
 }
 
-// abOrder is the order of a task's runs when two A1 arms are compared, n per arm (3 for n of 0): A B B A repeated,
-// cut at 2n runs, so 3 per arm is A B B A A B and 7 is A B B A A B B A A B B A A B (owner, 2026-10-19: comparisons are
-// interleaved; e1-calibration-preregistration-2026-10-18.md §12.2). rep numbers each arm's runs from 1.
-func abOrder(a, b Arm, n int) (arms []Arm, reps []int) {
+// interleave is the order of a task's runs when two or three A1 arms are compared, n per arm (3 for n of 0): the arms
+// in order, then reversed, and so on, so two arms at 3 per arm run A B B A A B, 7 per arm A B B A A B B A A B B A A B,
+// and three arms at 3 per arm A B C C B A A B C (owner, 2026-10-19: comparisons are interleaved;
+// e1-calibration-preregistration-2026-10-18.md §12.2, §18.2). rep numbers each arm's runs from 1.
+func interleave(in []Arm, n int) (arms []Arm, reps []int) {
 	if n <= 0 {
 		n = 3
 	}
-	na, nb := 0, 0
-	for i := 0; i < 2*n; i++ {
-		if i%4 == 0 || i%4 == 3 {
-			na++
-			arms, reps = append(arms, a), append(reps, na)
-		} else {
-			nb++
-			arms, reps = append(arms, b), append(reps, nb)
+	for r := 1; r <= n; r++ {
+		for i := range in {
+			j := i
+			if r%2 == 0 {
+				j = len(in) - 1 - i
+			}
+			arms, reps = append(arms, in[j]), append(reps, r)
 		}
 	}
 	return arms, reps
@@ -388,8 +388,8 @@ type Options struct {
 	// A1, when set, is tack's binary: the job runs tack's arm alone, `tack run --edit` (amendment 9), instead of A0
 	// and A0k.
 	A1 string
-	// A1Arms, with A1, are two arms of tack to compare, each with its own settings, run A1Reps times each per task in
-	// A B B A order (abOrder), or one arm with its settings, run A1Reps times per task (a mechanism check, calibration
+	// A1Arms, with A1, are two or three arms of tack to compare, each with its own settings, run A1Reps times each per
+	// task in interleaved order (interleave), or one arm with its settings, run A1Reps times per task (a mechanism check, calibration
 	// §12.9). Empty means one arm, A1 with no settings, once per task.
 	A1Arms []Arm
 	// A1Reps is how many times each arm of A1Arms runs on each task, its runs named <arm>-1, <arm>-2 …; 0 means once
@@ -476,8 +476,8 @@ func RunPilot(ctx context.Context, o Options) error {
 	if o.ForcedCallMode == "" && o.Server.Direct != "" {
 		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
 	}
-	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) > 2) {
-		return errors.New("pilot: A1Arms is one arm of A1, or two to compare")
+	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) > 3) {
+		return errors.New("pilot: A1Arms is one arm of A1, or two or three to compare")
 	}
 	if o.A1Reps < 0 || o.A1Reps != 0 && len(o.A1Arms) == 0 {
 		return errors.New("pilot: A1Reps is runs per arm of A1Arms, 0 or more")
@@ -498,8 +498,8 @@ func RunPilot(ctx context.Context, o Options) error {
 	}
 	armsPerTask := 2
 	switch {
-	case len(o.A1Arms) == 2:
-		ab, _ := abOrder(o.A1Arms[0], o.A1Arms[1], o.A1Reps)
+	case len(o.A1Arms) >= 2:
+		ab, _ := interleave(o.A1Arms, o.A1Reps)
 		armsPerTask = len(ab)
 	case len(o.A1Arms) == 1:
 		armsPerTask = max(1, o.A1Reps)
@@ -515,8 +515,8 @@ func RunPilot(ctx context.Context, o Options) error {
 	for _, t := range o.Tasks {
 		arms, reps := ArmOrder(t.N, o.A0, o.A0k), []int{0, 0}
 		switch {
-		case len(o.A1Arms) == 2:
-			arms, reps = abOrder(o.A1Arms[0], o.A1Arms[1], o.A1Reps)
+		case len(o.A1Arms) >= 2:
+			arms, reps = interleave(o.A1Arms, o.A1Reps)
 		case len(o.A1Arms) == 1:
 			arms, reps = loneOrder(o.A1Arms[0], o.A1Reps)
 		case o.A1 != "":

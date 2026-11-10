@@ -129,7 +129,8 @@ type remote struct {
 	ctxN                                   int
 	options                                serveOptionList // goinfer-serve options, passed to pilot-serve
 	settings                               settingList     // [run] settings on in every arm
-	compare                                settingList     // [run] settings on in arm B only; none runs one arm
+	compare                                settingList     // [run] settings on in arm B (and C); none runs one arm
+	then                                   settingList     // [run] settings on in a third arm C only, B's plus these
 	reps                                   int             // runs per arm per task; 0 means once for one arm, 3 for two
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 	allowBattery                           bool            // the owner's override: a cell that starts on battery is not void (cellVoid)
@@ -296,7 +297,8 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 }
 
 // arms is the job r asks for: with -compare-setting, arms A and B, B with those settings added to A's, reps each per task
-// in A B B A order (3 for 0: A B B A A B); else, with -setting or -reps, one arm A1 with the settings, reps times per
+// in A B B A order (3 for 0: A B B A A B), and with -then-setting a third arm C, B's settings plus those, in
+// A B C C B A order (calibration §18); else, with -setting or -reps, one arm A1 with the settings, reps times per
 // task (a mechanism check, calibration §12.9); else nil, A1 as registered, once per task. cells reports whether each run
 // waits for a clean cell check, as every C6 run does.
 func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
@@ -312,8 +314,25 @@ func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 				return nil, 0, false, fmt.Errorf("%q is both a -setting and a -compare-setting: the arms would not differ by it", c)
 			}
 		}
+		for i, c := range r.then {
+			switch {
+			case slices.Contains(r.then[:i], c):
+				return nil, 0, false, fmt.Errorf("-then-setting %q is given twice", c)
+			case !pilot.RunSettings[c]:
+				return nil, 0, false, fmt.Errorf("-then-setting %q is not one an arm may switch on; allowed: %s", c, settingNames())
+			case slices.Contains(r.settings, c) || slices.Contains(r.compare, c):
+				return nil, 0, false, fmt.Errorf("%q is a -then-setting and already on in arm B: C would not differ from B by it", c)
+			}
+		}
 		base := []string(r.settings)
-		return []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: append(slices.Clone(base), r.compare...)}}, r.reps, true, nil
+		b := append(slices.Clone(base), r.compare...)
+		arms := []pilot.Arm{{Name: "A", Settings: base}, {Name: "B", Settings: b}}
+		if len(r.then) > 0 {
+			arms = append(arms, pilot.Arm{Name: "C", Settings: append(slices.Clone(b), r.then...)})
+		}
+		return arms, r.reps, true, nil
+	case len(r.then) > 0:
+		return nil, 0, false, errors.New("-then-setting makes a third arm, and needs -compare-setting for the second")
 	case len(r.settings) > 0 || r.reps > 0:
 		return []pilot.Arm{{Name: "A1", Settings: []string(r.settings)}}, r.reps, true, nil
 	}

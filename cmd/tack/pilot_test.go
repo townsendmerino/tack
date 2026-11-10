@@ -169,8 +169,19 @@ func TestA1Arms(t *testing.T) {
 	if arms, reps, cells, err = (remote{}).arms(); err != nil || arms != nil || reps != 0 || cells {
 		t.Errorf("as registered: %+v %d %v %v", arms, reps, cells, err)
 	}
+	// C12's three arms: C is B with the -then-setting list added (calibration §18).
+	arms, _, cells, err = remote{settings: adopted, compare: settingList{"summarize"}, then: settingList{"summary_retrieve"}}.arms()
+	if err != nil || len(arms) != 3 || !cells || arms[2].Name != "C" || fmt.Sprint(arms[1].Settings) != "[fit_window stop_repeats summarize]" ||
+		fmt.Sprint(arms[2].Settings) != "[fit_window stop_repeats summarize summary_retrieve]" {
+		t.Errorf("three arms: %+v %v %v", arms, cells, err)
+	}
 	for name, r := range map[string]remote{
 		"negative reps":              {reps: -1},
+		"then, no compare":           {then: settingList{"summarize"}},
+		"unknown then":               {compare: settingList{"summarize"}, then: settingList{"summary_retrive"}},
+		"then in B too":              {compare: settingList{"summarize"}, then: settingList{"summarize"}},
+		"then in every arm":          {settings: adopted, compare: settingList{"summarize"}, then: settingList{"stop_repeats"}},
+		"then twice":                 {compare: settingList{"summarize"}, then: settingList{"summary_retrieve", "summary_retrieve"}},
 		"negative reps with compare": {compare: settingList{"verify_done"}, reps: -1},
 		"unknown compare":            {compare: settingList{"verify_dne"}},
 		"in both arms":               {settings: adopted, compare: settingList{"verify_done", "stop_repeats"}},

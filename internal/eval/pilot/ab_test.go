@@ -17,7 +17,7 @@ func TestABOrderInterleaves(t *testing.T) {
 		4: "A1 B1 B2 A2 A3 B3 B4 A4",
 		7: "A1 B1 B2 A2 A3 B3 B4 A4 A5 B5 B6 A6 A7 B7",
 	} {
-		arms, reps := abOrder(Arm{Name: "A"}, Arm{Name: "B"}, n)
+		arms, reps := interleave([]Arm{{Name: "A"}, {Name: "B"}}, n)
 		var got []string
 		for i, a := range arms {
 			got = append(got, fmt.Sprintf("%s%d", a.Name, reps[i]))
@@ -43,7 +43,7 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tack refuses an arm's settings %v: %v", all, err)
 	}
-	if r := c.Run; !r.FitWindow || !r.StopRepeats || !r.ResultNotes || !r.EditMessages || !r.NoInstructions || !r.InstructionsHead || !r.RefuseDuplicateEdits || !r.VerifyDone || !r.InjectContext || !r.RepoMap || !r.MaskObservations || r.BestOf != 3 || !r.LeanResults || !r.CompactAtCliff || !r.WidenRepeats {
+	if r := c.Run; !r.FitWindow || !r.StopRepeats || !r.ResultNotes || !r.EditMessages || !r.NoInstructions || !r.InstructionsHead || !r.RefuseDuplicateEdits || !r.VerifyDone || !r.InjectContext || !r.RepoMap || !r.MaskObservations || r.BestOf != 3 || !r.LeanResults || !r.CompactAtCliff || !r.WidenRepeats || !r.Summarize || !r.SummaryRetrieve {
 		t.Fatalf("an arm's settings are not all on in its config: %+v", r)
 	}
 	os.WriteFile(p, []byte(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, out)), 0o600)
@@ -58,7 +58,7 @@ func TestTackConfigSwitchesSettingsOn(t *testing.T) {
 
 func TestRunPilotRefusesABadComparison(t *testing.T) {
 	for name, o := range map[string]Options{
-		"three arms":      {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}, {Name: "C"}}, Out: t.TempDir()},
+		"four arms":       {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B"}, {Name: "C"}, {Name: "D"}}, Out: t.TempDir()},
 		"reps, no arm":    {A1: "tack", A1Reps: 2, Out: t.TempDir()},
 		"unknown setting": {A1: "tack", A1Arms: []Arm{{Name: "A"}, {Name: "B", Settings: []string{"fit_windw"}}}, Out: t.TempDir()},
 	} {
@@ -103,18 +103,31 @@ func TestRecentlyChangedIsNotAnArmSetting(t *testing.T) {
 	}
 }
 
-// TestSummarizeIsNotAnArmSetting: no E1 arm summarizes until a screen registers it; an arm's compaction stays as
-// calibrated.
-func TestSummarizeIsNotAnArmSetting(t *testing.T) {
-	if RunSettings["summarize"] {
-		t.Fatal("summarize is an arm setting")
+// TestThreeArmsInterleave: C12's three arms run A B C C B A A B C per task (calibration §18.2), each arm's runs
+// numbered from 1.
+func TestThreeArmsInterleave(t *testing.T) {
+	arms, reps := interleave([]Arm{{Name: "A"}, {Name: "B"}, {Name: "C"}}, 3)
+	var got []string
+	for i, a := range arms {
+		got = append(got, fmt.Sprintf("%s%d", a.Name, reps[i]))
+	}
+	if s := strings.Join(got, " "); s != "A1 B1 C1 C2 B2 A2 A3 B3 C3" {
+		t.Errorf("three arms: %s", s)
 	}
 }
 
-// TestSummaryRetrieveIsNotAnArmSetting: no E1 arm re-retrieves after a summary until a screen registers it.
-func TestSummaryRetrieveIsNotAnArmSetting(t *testing.T) {
-	if RunSettings["summary_retrieve"] {
-		t.Fatal("summary_retrieve is an arm setting")
+// TestC12SettingsAreArmSettings: summarize and summary_retrieve are arm settings, registered by C12 (calibration §18),
+// and an arm with both gets both in its config.
+func TestC12SettingsAreArmSettings(t *testing.T) {
+	if !RunSettings["summarize"] || !RunSettings["summary_retrieve"] {
+		t.Fatal("C12's settings are not arm settings")
+	}
+	out := t.TempDir()
+	os.WriteFile(filepath.Join(out, "token"), []byte("k\n"), 0o600)
+	p := filepath.Join(out, "config.toml")
+	os.WriteFile(p, []byte(tackConfig(Server{BaseURL: "http://127.0.0.1:1", Model: "qwen"}, out, "summarize", "summary_retrieve")), 0o600)
+	if c, err := config.Load(p); err != nil || !c.Run.Summarize || !c.Run.SummaryRetrieve {
+		t.Fatalf("arm C's config: %v", err)
 	}
 }
 

@@ -2,10 +2,15 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/fs"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/tools"
 )
 
@@ -62,13 +67,46 @@ func openThreads(body string, a Anchors) []string {
 // retrieveSection is the summary's re-retrieval section for queries, within budget bytes: each query's hits in order,
 // each span once, stopping at the first hit that would pass the budget, so the section is the same for the same index.
 // "" when nothing is found or fits.
-func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, budget int) string {
+//
+// The section is the code as it is now: an index that can refresh files (tools.Symbols' Sync, as ken's engine and its
+// bm25 index both can) first syncs changed, the files the session wrote or edited (so a file it created, or one whose
+// edit brought in the queried terms, is searchable), then has each query's hit files synced and is searched again if
+// one changed. Sync and each search have their own timeout; a query whose second search fails is skipped, since its
+// first hits were stale.
+func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, budget int, changed []string) string {
+	syncer, _ := s.(interface {
+		Sync(ctx context.Context, paths []string) (bool, error)
+	})
+	sync := func(files []string) bool {
+		if syncer == nil || len(files) == 0 {
+			return false
+		}
+		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
+		defer cancel()
+		moved, err := syncer.Sync(sctx, files)
+		return err == nil && moved
+	}
+	search := func(q string) ([]tools.Hit, error) {
+		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
+		defer cancel()
+		return s.Search(sctx, q, retrieveHits)
+	}
+	sync(changed)
 	var b strings.Builder
 	seen := map[string]bool{}
 	for _, q := range queries {
-		sctx, cancel := context.WithTimeout(ctx, retrieveSearchTimeout)
-		hits, err := s.Search(sctx, q, retrieveHits)
-		cancel()
+		hits, err := search(q)
+		if err == nil && len(hits) > 0 {
+			var files []string
+			for _, h := range hits {
+				if !slices.Contains(files, h.File) {
+					files = append(files, h.File)
+				}
+			}
+			if sync(files) {
+				hits, err = search(q)
+			}
+		}
 		if err != nil {
 			continue
 		}
@@ -86,6 +124,89 @@ func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, bu
 		}
 	}
 	return section(b.String())
+}
+
+// retrieveWalkCap bounds the files a bash call's possible changes add to the sync.
+const retrieveWalkCap = 500
+
+// changedFiles are the files the session changed, as paths relative to root, once each in order: what the index must
+// refresh before it is searched, whether or not any of them is a hit. They are the files of evs' successful write and
+// edit calls that lie inside root, and, when a bash call succeeded (it may have changed any file: sed -i, a formatter, a
+// generator), the workspace files modified since the first event, up to retrieveWalkCap, skipping dot directories.
+func changedFiles(evs []proto.Event, root string) []string {
+	calls := map[string]string{} // call id to the path it changed, until it finishes
+	var out []string
+	add := func(p string) {
+		if p = filepath.ToSlash(filepath.Clean(p)); filepath.IsLocal(p) && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	bash := false
+	for _, ev := range evs {
+		v, err := ev.Decode()
+		if err != nil {
+			continue
+		}
+		switch e := v.(type) {
+		case proto.ToolCall:
+			if e.Name == "bash" {
+				calls[e.ID] = ""
+				continue
+			}
+			if e.Name != "write" && e.Name != "edit" {
+				continue
+			}
+			var in struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(e.Input, &in) == nil && in.Path != "" {
+				calls[e.ID] = in.Path
+			}
+		case proto.ToolFinished:
+			p, ok := calls[e.ID]
+			delete(calls, e.ID)
+			if !ok || e.Outcome != proto.OutcomeOK {
+				continue
+			}
+			if p == "" {
+				bash = true
+				continue
+			}
+			if filepath.IsAbs(p) {
+				rel, err := filepath.Rel(root, p)
+				if err != nil {
+					continue
+				}
+				p = rel
+			}
+			add(p)
+		}
+	}
+	if bash && len(evs) > 0 {
+		since := evs[0].Time
+		n := 0
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			switch {
+			case err != nil:
+				return nil
+			case d.IsDir():
+				if path != root && strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+			case n >= retrieveWalkCap:
+				return filepath.SkipAll
+			default:
+				if info, err := d.Info(); err == nil && info.Mode().IsRegular() && info.ModTime().After(since) {
+					if rel, err := filepath.Rel(root, path); err == nil {
+						add(rel)
+						n++
+					}
+				}
+			}
+			return nil
+		})
+	}
+	return out
 }
 
 func section(entries string) string {

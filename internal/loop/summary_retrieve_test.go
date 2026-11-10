@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -58,17 +59,17 @@ func TestTheRetrieveSectionIsDedupedAndBudgeted(t *testing.T) {
 		"a": {hit("x.go", 1, 3, "func A() {}"), hit("y.go", 5, 9, "func B() {}")},
 		"b": {hit("x.go", 1, 3, "func A() {}"), hit("z.go", 2, 4, strings.Repeat("z", 400))},
 	}}
-	sec := retrieveSection(context.Background(), s, []string{"a", "b"}, 4096)
+	sec := retrieveSection(context.Background(), s, []string{"a", "b"}, 4096, nil)
 	if !strings.HasPrefix(sec, retrieveHeading+"\n\nx.go:1-3\n```\nfunc A() {}\n```\n\ny.go:5-9") || strings.Count(sec, "x.go:1-3") != 1 ||
 		!strings.Contains(sec, "z.go:2-4") {
 		t.Errorf("section:\n%s", sec)
 	}
-	small := retrieveSection(context.Background(), s, []string{"a", "b"}, 160)
+	small := retrieveSection(context.Background(), s, []string{"a", "b"}, 160, nil)
 	if strings.Contains(small, "z.go") || !strings.Contains(small, "x.go:1-3") || len(small) > 160 {
 		t.Errorf("a 160-byte budget gave %d bytes:\n%s", len(small), small)
 	}
-	if retrieveSection(context.Background(), s, []string{"nothing"}, 4096) != "" ||
-		retrieveSection(context.Background(), &fakeSearcher{err: errors.New("down")}, []string{"a"}, 4096) != "" {
+	if retrieveSection(context.Background(), s, []string{"nothing"}, 4096, nil) != "" ||
+		retrieveSection(context.Background(), &fakeSearcher{err: errors.New("down")}, []string{"a"}, 4096, nil) != "" {
 		t.Error("no hits, or a failed search, should give no section")
 	}
 }
@@ -321,4 +322,155 @@ func TestASummaryWithNoAnchorsRebuilds(t *testing.T) {
 		t.Error("the section reached the body")
 	}
 	h.checkRebuild(t)
+}
+
+// indexSearcher is an index that goes stale: indexed is what it holds, disk what the files are now, and Sync(paths)
+// reloads those paths. Search returns the files whose indexed text contains the query, in name order, and sleeps
+// delay (cut short by its context) so a timeout can be shared or not.
+type indexSearcher struct {
+	indexed, disk map[string]string
+	delay         time.Duration
+	synced        [][]string
+}
+
+func (x *indexSearcher) wait(ctx context.Context) error {
+	select {
+	case <-time.After(x.delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (x *indexSearcher) Search(ctx context.Context, q string, k int) ([]tools.Hit, error) {
+	if err := x.wait(ctx); err != nil {
+		return nil, err
+	}
+	var hits []tools.Hit
+	for _, f := range slices.Sorted(maps.Keys(x.indexed)) {
+		if strings.Contains(x.indexed[f], q) {
+			hits = append(hits, hit(f, 1, 1, x.indexed[f]))
+		}
+	}
+	return hits[:min(k, len(hits))], nil
+}
+
+func (x *indexSearcher) Sync(ctx context.Context, paths []string) (bool, error) {
+	if err := x.wait(ctx); err != nil {
+		return false, err
+	}
+	x.synced = append(x.synced, paths)
+	moved := false
+	for _, p := range paths {
+		if d, ok := x.disk[p]; ok && x.indexed[p] != d {
+			x.indexed[p], moved = d, true
+		}
+	}
+	return moved, nil
+}
+
+// TestRetrieveSyncsTheFilesTheSessionChanged: a file the session created, and one whose edit brought in the queried
+// text, are found though neither was a hit before the sync; without the changed list they are not.
+func TestRetrieveSyncsTheFilesTheSessionChanged(t *testing.T) {
+	mk := func() *indexSearcher {
+		return &indexSearcher{
+			indexed: map[string]string{"old.go": "func Old() {} // needle", "edited.go": "func Edited() {}"},
+			disk:    map[string]string{"old.go": "func Old() {} // needle", "edited.go": "func Edited() {} // needle", "new.go": "func New() {} // needle"},
+		}
+	}
+	got := retrieveSection(context.Background(), mk(), []string{"needle"}, 4096, []string{"new.go", "edited.go"})
+	for _, f := range []string{"old.go", "edited.go", "new.go"} {
+		if !strings.Contains(got, f+":1-1") {
+			t.Errorf("with the changed files, %s is missing:\n%s", f, got)
+		}
+	}
+	got = retrieveSection(context.Background(), mk(), []string{"needle"}, 4096, nil)
+	if strings.Contains(got, "new.go") || strings.Contains(got, "edited.go") {
+		t.Errorf("without them the unsynced files appeared:\n%s", got)
+	}
+}
+
+// TestRetrieveGivesSyncAndEachSearchItsOwnTimeout: three steps of 30 ms each fit separate 50 ms timeouts but not one
+// shared one, and the section still has the synced file's hit.
+func TestRetrieveGivesSyncAndEachSearchItsOwnTimeout(t *testing.T) {
+	to := retrieveSearchTimeout
+	retrieveSearchTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { retrieveSearchTimeout = to })
+	x := &indexSearcher{delay: 30 * time.Millisecond,
+		indexed: map[string]string{"a.go": "x // needle"}, disk: map[string]string{"a.go": "y // needle"}}
+	if got := retrieveSection(context.Background(), x, []string{"needle"}, 4096, nil); !strings.Contains(got, "y // needle") {
+		t.Errorf("the second search was lost to a shared timeout:\n%s", got)
+	}
+}
+
+// TestChangedFilesAreTheSuccessfulWritesAndEdits: a failed call, a read, and a path outside the root are left out;
+// an absolute path inside the root is made relative; a name that merely starts with ".." is inside; each file once.
+func TestChangedFilesAreTheSuccessfulWritesAndEdits(t *testing.T) {
+	call := func(id, name, path string) []any {
+		return []any{proto.EvToolCall, proto.ToolCall{ID: id, Name: name, Input: json.RawMessage(`{"path":"` + path + `"}`)}}
+	}
+	done := func(id, outcome string) []any {
+		return []any{proto.EvToolFinished, proto.ToolFinished{ID: id, Outcome: outcome}}
+	}
+	var pairs []any
+	for _, p := range [][]any{
+		call("1", "write", "./a/new.go"), done("1", proto.OutcomeOK),
+		call("2", "edit", "/repo/b.go"), done("2", proto.OutcomeOK),
+		call("3", "edit", "c.go"), done("3", proto.OutcomeError),
+		call("4", "read", "d.go"), done("4", proto.OutcomeOK),
+		call("5", "edit", "a/new.go"), done("5", proto.OutcomeOK),
+		call("6", "write", "/elsewhere/e.go"), done("6", proto.OutcomeOK),
+		call("7", "edit", "../f.go"), done("7", proto.OutcomeOK),
+		call("8", "write", "..g/h.go"), done("8", proto.OutcomeOK),
+	} {
+		pairs = append(pairs, p...)
+	}
+	evs := summaryLog(t, pairs...)
+	got := changedFiles(evs, "/repo")
+	if want := []string{"a/new.go", "b.go", "..g/h.go"}; !slices.Equal(got, want) {
+		t.Errorf("changed %q, want %q", got, want)
+	}
+}
+
+// TestABashCallMayHaveChangedAnyFile: after a successful bash call (sed -i, a formatter, a generator) the files
+// modified since the session began are changed files, dot directories and files older than the session are not, and
+// without a successful bash call the walk does not happen.
+func TestABashCallMayHaveChangedAnyFile(t *testing.T) {
+	root := t.TempDir()
+	start := time.Now().Add(-time.Hour)
+	put := func(rel string, mod time.Time) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("x"), 0o644)
+		os.Chtimes(p, mod, mod)
+	}
+	put("old.go", start.Add(-time.Hour))
+	put("gen/new.go", start.Add(time.Minute))
+	put(".git/hook", start.Add(time.Minute))
+	log := func(name, outcome string) []proto.Event {
+		var evs []proto.Event
+		for i, p := range []struct {
+			typ proto.EventType
+			v   any
+		}{
+			{proto.EvToolCall, proto.ToolCall{ID: "b", Name: name, Input: json.RawMessage(`{"command":"gofmt -w ."}`)}},
+			{proto.EvToolFinished, proto.ToolFinished{ID: "b", Outcome: outcome}},
+		} {
+			e, err := proto.NewEvent(int64(i+1), start, p.typ, 0, p.v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evs = append(evs, e)
+		}
+		return evs
+	}
+	if got := changedFiles(log("bash", proto.OutcomeOK), root); !slices.Equal(got, []string{"gen/new.go"}) {
+		t.Errorf("after bash: %q, want [gen/new.go]", got)
+	}
+	if got := changedFiles(log("bash", proto.OutcomeError), root); len(got) != 0 {
+		t.Errorf("after a failed bash: %q", got)
+	}
+	if got := changedFiles(log("read", proto.OutcomeOK), root); len(got) != 0 {
+		t.Errorf("after a read: %q", got)
+	}
 }
