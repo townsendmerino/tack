@@ -1,0 +1,6 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-tui","version":"0.2.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"workspace/complete","params":{"session":"s_01JAFIXTURE0000000000000014","query":"edit","limit":2}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"items":[{"path":"docs/edit","kind":"dir"},{"path":"internal/tools/edit.go","kind":"file"}]}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"workspace/complete","params":{"session":"s_01JAFIXTURE0000000000000014","query":"zzz"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"items":[]}}}

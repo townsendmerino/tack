@@ -17,6 +17,7 @@ public enum Method {
     public static let sessionPrompt = "session/prompt"
     public static let sessionSubscribe = "session/subscribe"
     public static let usageSummary = "usage/summary"
+    public static let workspaceComplete = "workspace/complete"
 }
 
 public typealias EventType = String
@@ -116,6 +117,16 @@ public struct Compaction: Codable, Equatable, Sendable {
         case summary = "summary"
         case summarized = "summarized"
         case body = "body"
+    }
+}
+
+public struct CompletionItem: Codable, Equatable, Sendable {
+    public var path: String
+    public var kind: String
+
+    enum CodingKeys: String, CodingKey {
+        case path = "path"
+        case kind = "kind"
     }
 }
 
@@ -630,6 +641,26 @@ public struct UserMessage: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case content = "content"
+    }
+}
+
+public struct WorkspaceCompleteParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+    public var query: String
+    public var limit: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+        case query = "query"
+        case limit = "limit"
+    }
+}
+
+public struct WorkspaceCompleteResult: Codable, Equatable, Sendable {
+    public var items: [CompletionItem]
+
+    enum CodingKeys: String, CodingKey {
+        case items = "items"
     }
 }
 

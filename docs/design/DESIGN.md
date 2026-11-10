@@ -1327,6 +1327,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
   deny; scope once or session; a deny's note reaches the model (docs/design/proposal-tui-protocol.md). This and
   every other method that changes permissions, mode, trust or halt state is refused on a connection that did not
   present the client token at `initialize` (§6.6).
+- `workspace/complete {session, query, limit?}` (built: `@` path completion, a subsequence match ranked base name first then shorter; leaves out .gitignore'd paths, secrets, vcs and dependency trees and symlinks, for completion only; needs the client token; docs/design/proposal-tui-protocol.md §3).
 - `context/get {session}`, `context/pin`, `context/exclude`, `context/evict`, `context/suggestions`.
 - `files/read {workspace, path, lines}` for previews (clients never read the filesystem), `files/diff {session, from, to}`.
 - `usage/summary {since, utc}`: the usage table by day and model server (§7.7); a later grouping adds a `group_by`.

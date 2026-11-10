@@ -185,12 +185,13 @@ type Core struct {
 	mu         sync.Mutex
 	sessions   map[proto.SessionID]*session
 	sources    map[string]models.Source
-	searchers  map[string]tools.Searcher // by workspace root
-	retrievers map[string]tools.Searcher // by workspace root (Options.OpenRetrieve)
-	spans      map[string]*lazySpans     // by workspace root (Options.OpenSpans)
-	halted     *proto.DaemonHalted       // non-nil while tack is halted: no new turns
-	draining   bool                      // Drain has begun: no new turns
-	children   map[*loop.Session]bool    // the subagents running now (Core.subagent): a Drain reaches them too
+	searchers  map[string]tools.Searcher   // by workspace root
+	retrievers map[string]tools.Searcher   // by workspace root (Options.OpenRetrieve)
+	spans      map[string]*lazySpans       // by workspace root (Options.OpenSpans)
+	completers map[string]*tools.Completer // by workspace root (workspace/complete)
+	halted     *proto.DaemonHalted         // non-nil while tack is halted: no new turns
+	draining   bool                        // Drain has begun: no new turns
+	children   map[*loop.Session]bool      // the subagents running now (Core.subagent): a Drain reaches them too
 	started    time.Time
 
 	shutdown sync.Once // Options.Shutdown is called once
@@ -203,6 +204,7 @@ type session struct {
 	wmu     sync.Mutex
 	mu      sync.Mutex
 	id      proto.SessionID
+	root    string // the workspace root (workspace/complete)
 	log     *store.Log
 	hold    *store.Hold // this Core's claim on the session while it has it in memory; released by Close
 	loop    *loop.Session
@@ -246,7 +248,7 @@ type subscriber struct {
 // New returns a Core whose turns run under ctx.
 func New(ctx context.Context, opt Options) *Core {
 	return &Core{opt: opt, ctx: ctx, sessions: map[proto.SessionID]*session{}, sources: map[string]models.Source{},
-		searchers: map[string]tools.Searcher{}, retrievers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, children: map[*loop.Session]bool{}, started: time.Now()}
+		searchers: map[string]tools.Searcher{}, retrievers: map[string]tools.Searcher{}, spans: map[string]*lazySpans{}, completers: map[string]*tools.Completer{}, children: map[*loop.Session]bool{}, started: time.Now()}
 }
 
 // Close releases the model sources (a supervised child is stopped), each session's edit kit, and each session's log, so
@@ -680,6 +682,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			cancel(loop.ErrUserCancel)
 		}
 		return proto.SessionCancelResult{}, nil
+	case proto.MethodWorkspaceComplete:
+		p, perr := params[proto.WorkspaceCompleteParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		return c.complete(p)
 	case proto.MethodDaemonStatus:
 		if _, perr := params[proto.DaemonStatusParams](req); perr != nil {
 			return nil, perr
@@ -837,7 +848,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 	}
 	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
-	s := &session{id: id, log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
+	s := &session{id: id, root: ws.Root(), log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
 		prompted: prompted}
 	if c.opt.HaltDir != "" {
 		if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {

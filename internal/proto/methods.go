@@ -17,6 +17,7 @@ const (
 	MethodDaemonShutdown    = "daemon/shutdown"
 	MethodUsageSummary      = "usage/summary"
 	MethodPermissionRespond = "permission/respond"
+	MethodWorkspaceComplete = "workspace/complete"
 )
 
 // SessionID names a session: "s_" and a ULID.
@@ -200,6 +201,27 @@ type PermissionRespondParams struct {
 // PermissionRespondResult acknowledges an answer; the permission.resolved event that follows is its record.
 type PermissionRespondResult struct{}
 
+// WorkspaceCompleteParams asks for the paths of the session's workspace that Query matches, for `@` completion
+// (docs/design/proposal-tui-protocol.md §3). Query is what follows the @, as typed. Limit defaults to 20 and is at most
+// 50. It needs the client token.
+type WorkspaceCompleteParams struct {
+	Session SessionID `json:"session"`
+	Query   string    `json:"query"`
+	Limit   int       `json:"limit,omitempty"`
+}
+
+// CompletionItem is one path offered: workspace-relative with forward slashes; Kind is "file" or "dir".
+type CompletionItem struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+}
+
+// WorkspaceCompleteResult lists the matches, best first. Paths the workspace's .gitignore leaves out are not offered; a
+// read still reaches them by name.
+type WorkspaceCompleteResult struct {
+	Items []CompletionItem `json:"items"`
+}
+
 // MethodSpec gives a method's params and result types; Result is nil for a notification.
 type MethodSpec struct {
 	Params, Result reflect.Type
@@ -218,6 +240,7 @@ var Methods = map[string]MethodSpec{
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
 	MethodUsageSummary:      {reflect.TypeFor[UsageSummaryParams](), reflect.TypeFor[UsageSummaryResult]()},
 	MethodPermissionRespond: {reflect.TypeFor[PermissionRespondParams](), reflect.TypeFor[PermissionRespondResult]()},
+	MethodWorkspaceComplete: {reflect.TypeFor[WorkspaceCompleteParams](), reflect.TypeFor[WorkspaceCompleteResult]()},
 }
 
 // ReuseShare is the share of the known requests' prompt tokens served from the cached prefix, and false when no
