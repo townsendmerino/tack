@@ -304,16 +304,16 @@ tack/
 ### 4.2 Why one repo for the daemon and both apps
 
 - The protocol is the contract every client depends on. With the clients beside the daemon, a protocol change and its
-  fix in each client land in one commit, and every client runs the same fixtures in CI (the Swift side in the macOS job,
-  on a dispatch or a release tag). Generated Swift (and
+  fix in each client land in one commit, and every client runs the same fixtures in the same CI run. Generated Swift (and
   later C++) types regenerate in that commit; CI fails if they are stale.
 - A separate app repo would make every protocol change a coordinated release across repos, and C++ cannot consume a Go
   module, so the Qt side would end up with copied generated headers.
 - Per-directory `CLAUDE.md` files carry each toolchain's rules. Per-component tags (`v0.x` for the Go module,
   `apps/macos/v0.y` for the app) give each its own cadence, as goinfer already tags `demo/agent/`.
-- CI (`.github/workflows/ci.yml`): the Go job runs on a Linux runner for every push and pull request that touches more
-  than docs and eval records. The macOS runner (the sandbox, launchd and Keychain code is darwin-only; the Swift fixture
-  check) runs only on a manual dispatch and on release tags (owner, 2026-10-19: the free plan's minutes). An app job,
+- CI (`.github/workflows/ci.yml`): the Go job runs on Linux and macOS runners (the sandbox, launchd and Keychain code is
+  darwin-only; the Swift fixture check) for every pull request and every push to `main` that touches more than docs and
+  eval records.
+  From 2026-10-19 until the repository went public (ADR-008) the macOS runner ran only on a dispatch or a tag. An app job,
   only when `apps/macos/` or `internal/proto/` change, comes with the app (P4).
 - Split later only for a separate team, or if Qt licensing or CI cost starts slowing the Go side.
 
@@ -1342,8 +1342,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
   intermediate form can take a Swift emitter is a P0 question, and if not, the generator is small.
 - **Fixtures.** `proto/fixtures/` holds golden transcripts: requests, responses and events. Go tests replay them against
   the daemon; Swift tests decode, re-encode and compare after normalization. A change that breaks a fixture fails both
-  sides in the same CI run where the macOS job runs (a manual dispatch or a release tag, §4.2); a push runs the Go side
-  alone.
+  sides in the same CI run.
 - **Tool output is text, never terminal control** (from the same library's safety-bypass group, 2026-11-02).
   - The daemon replaces control characters in tool output, except newline and tab, with a visible escape before any
     client or the model sees it.
@@ -1891,7 +1890,7 @@ not yet rewritten for them, and `proposal-design-review-2026-11-09.md` proposes 
 | R3 | other agents ship the same features first (worktrees and review exist in Codex's app; Augment sells context) | high | medium | compete on local, open, inspectable, measured and small-window; do not race on breadth |
 | R4 | prefill on the Mac (goinfer's Metal prefill gap) makes turns slow | high | medium | prefix reuse; the model on nobara; goinfer's Metal prefill work |
 | R5 | memory on a 16 GB Mac: Xcode, a browser, tack, ken indexes and a model | high | medium | the model on nobara by default; admission by goinfer's own plan; unload on idle; the memory-pressure guard |
-| R6 | `sandbox-exec` breaks or disappears in a macOS update, or the profile has a hole | low–medium | high | a deny-by-default profile; escape tests from the day-loop checker on a Mac and on macOS CI runners, which run on a dispatch or a release tag (launching through `open` and `launchctl`, mounting, reaching tack's socket, writing hooks and caches); a fallback where every shell command asks |
+| R6 | `sandbox-exec` breaks or disappears in a macOS update, or the profile has a hole | low–medium | high | a deny-by-default profile; escape tests from the day-loop checker on a Mac and on macOS CI runners (launching through `open` and `launchctl`, mounting, reaching tack's socket, writing hooks and caches); a fallback where every shell command asks |
 | R7 | Swift and UI review load on a backend owner | medium | medium | thin clients; a fake daemon and previews; screenshot review through computer use |
 | R8 | scope creep: TUI, app, Qt, ACP, research | high | medium | phase gates; droppable phases; no Qt before P5 |
 | R9 | prompt injection through retrieved content leads to a harmful command | medium | high | content never changes permissions; tack's controls and the config paths that run later are out of the sandbox's reach; network off by default; a repo's own config needs the owner's trust; halt |

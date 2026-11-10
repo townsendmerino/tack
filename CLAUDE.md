@@ -46,10 +46,10 @@ doc comments say what each will hold.
 - **Every change lands through a pull request; nobody pushes to `main`** (owner, 2026-10-30, replacing the 2026-10-17
   push-to-main rule). Work on a branch, run the gates below, open the PR, and merge it with
   `gh pr merge <n> --merge --delete-branch` once they pass. GitHub CI (`.github/workflows/ci.yml`) runs
-  `touched -all` and `lint` on Linux for every push and pull request that touches more than docs and eval records; its
-  macOS job runs only on a manual dispatch and on release tags. Nothing makes a merge wait for CI: auto-merge is off and
-  `main` has no required checks. So the local gates are the check before a merge, and on a Mac they are the only check
-  of darwin-only code; CI is read afterwards (below).
+  `touched -all` and `lint` on Linux and macOS for every pull request and every push to `main` that touches more than
+  docs and eval records; a branch with no pull request gets no run, and a run on `main` is never cancelled. Nothing
+  makes a merge wait for CI: auto-merge is off and `main` has no required checks. So the local gates are the check
+  before a merge; CI is read afterwards (below).
 - **Product code waits for the owner's yes before it merges.** Docs and measurement records go with the task that
   produced them.
 - Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
@@ -98,7 +98,7 @@ doc comments say what each will hold.
   between tack packages is a row edit there. `-base <ref>` changes what the diff is taken against; `-all` checks
   everything, as CI does. `go run ./tools/lint` is staticcheck behind its canary (below). Locally a `go.work`
   containing `use .` keeps a parent directory's workspace out.
-- Do not run whole-module test suites by day; CI runs them, on Linux, on every push that touches code.
+- Do not run whole-module test suites by day; CI runs them, on Linux and macOS, on every pull request and every push to `main` that touches code.
 - A red CI run is fixed by running the one failing test by name, not by re-running everything.
 - **A change that forces a long run on the day loop is a modularity bug.** Say so in the report, name the edge that
   caused it, and fix the edge when it is cheap.
