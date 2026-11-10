@@ -52,12 +52,18 @@ func tuiCmd(stdout, stderr io.Writer) int {
 		return exitError
 	}
 	app.Backend = tuiBackend{c: c, sess: sess.Session}
+	// The program runs before the subscribe: p.Send blocks until its loop receives, and the replay arrives on the
+	// connection's reader goroutine, which must also deliver the subscribe's answer.
+	ran := make(chan error, 1)
+	go func() { _, err := p.Run(); ran <- err }()
 	if err := c.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil); err != nil {
+		p.Quit()
+		<-ran
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}
 	go func() { <-c.Done(); p.Quit() }()
-	if _, err := p.Run(); err != nil {
+	if err := <-ran; err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}
