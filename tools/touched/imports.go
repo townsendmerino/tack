@@ -177,6 +177,9 @@ var tackLayers = map[string]allow{
 	"tools/recordrun": {
 		Imports: []string{"internal/kenrun", "internal/models"},
 	},
+	"tools/relbuild": {
+		Imports: []string{"tools/gate"},
+	},
 	"tools/replaycontext": {
 		Imports: []string{"internal/eval/mine", "internal/eval/pilot", "tools/gate"},
 		Tests:   []string{"internal/proto"},

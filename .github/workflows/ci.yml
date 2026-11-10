@@ -50,6 +50,10 @@ jobs:
         run: go run ./tools/touched -all
       - name: lint
         run: go run ./tools/lint
+      # The pinned release build for darwin/arm64 and linux/amd64 (cgo off), and a read of each binary: its recorded
+      # build settings, and what it asks the loader for (CLAUDE.md: no cgo).
+      - name: release build
+        run: go run ./tools/relbuild
       # The sandbox escape tests (DESIGN §6.6): each escape gets out with no sandbox, is stopped by the profile, and gets
       # out again with only its own section removed. They start sandbox-exec, so they carry a build tag and run here and
       # from the day-loop checker, never inside tack's own sandbox. touched -all above also runs them on macOS.
