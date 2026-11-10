@@ -92,12 +92,15 @@ func Summarize(ctx context.Context, send SummarySend, model string, prior, stret
 	return Summary{Text: summaryText(all, body), Body: body}
 }
 
-// summaryRequest asks model to update body with chunk.
+// summaryRequest asks model to update body with chunk. The required headings close the message as well as the system
+// prompt: after a long previous body and chunk the system prompt is far away, and a later chunk's reply can lose them.
 func summaryRequest(model, body, chunk string) server.Request {
 	if body == "" {
 		body = "(none yet)"
 	}
-	msg := "Previous summary:\n\n" + body + "\n\nNext turns:\n\n" + chunk + "\n\nWrite the updated summary."
+	msg := "Previous summary:\n\n" + body + "\n\nNext turns:\n\n" + chunk +
+		"\n\nWrite the updated summary now: only the summary, as markdown, with exactly these headings in this order, each on its " +
+		"own line starting with \"## \": " + strings.Join(SummaryHeadings, ", ") + ". Write \"(none)\" under a heading with nothing to say."
 	return server.Request{Model: model, System: summarySystem, MaxTokens: summaryMaxTokens,
 		Messages: []server.Message{{Role: server.User, Content: []server.Block{server.TextBlock(msg)}}}}
 }

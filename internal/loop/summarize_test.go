@@ -138,3 +138,19 @@ func TestTheSummarizerPromptIsStable(t *testing.T) {
 		t.Error("the system prompt changes between calls")
 	}
 }
+
+// TestEveryChunkRestatesTheHeadingsLast: the summarizer's request for any chunk, however long the previous body and the
+// chunk, ends with the required headings in order, so the instruction is the last thing the model reads (the headings
+// check found later chunks dropping them when they were stated only in the system prompt).
+func TestEveryChunkRestatesTheHeadingsLast(t *testing.T) {
+	long := strings.Repeat("- a long earlier decision about edit.go\n", 200)
+	for _, body := range []string{"", long} {
+		req := summaryRequest("m", body, strings.Repeat("Tool result (ok): output\n\n", 300))
+		msg := req.Messages[0].Content[0].Text
+		tail := msg[max(0, len(msg)-400):]
+		want := strings.Join(SummaryHeadings, ", ")
+		if !strings.Contains(tail, want) || strings.LastIndex(msg, want) < strings.LastIndex(msg, "Next turns:") {
+			t.Errorf("body of %d bytes: the headings are not restated at the end:\n%s", len(body), tail)
+		}
+	}
+}
