@@ -15,8 +15,8 @@ type Status struct {
 	Server string
 	Load   string // a load in progress or a move, as model.status says it; "" once ready, or once a request goes out
 	Mode   proto.Mode
-	Prompt int // the last request's prompt tokens
-	Reused int // of them, the ones the server reused from its cache
+	Prompt int  // the last request's prompt tokens
+	Reused *int // of them, the ones the server reused from its cache; nil when it did not say
 	Window int
 }
 
@@ -43,10 +43,7 @@ func (s *Status) Apply(ev proto.Event) {
 		if e.Request == 0 {
 			break
 		}
-		s.Server, s.Prompt, s.Reused = e.Server, e.Prompt, 0
-		if e.Reused != nil {
-			s.Reused = *e.Reused
-		}
+		s.Server, s.Prompt, s.Reused = e.Server, e.Prompt, e.Reused
 	}
 }
 
@@ -69,7 +66,10 @@ func (s Status) Line() string {
 		if s.Window > 0 {
 			fill += "/" + kilo(s.Window)
 		}
-		parts = append(parts, fmt.Sprintf("%s (%.0f%% reused)", fill, 100*float64(s.Reused)/float64(s.Prompt)))
+		if s.Reused != nil {
+			fill += fmt.Sprintf(" (%.0f%% reused)", 100*float64(*s.Reused)/float64(s.Prompt))
+		}
+		parts = append(parts, fill)
 	}
 	return strings.Join(parts, " · ")
 }
