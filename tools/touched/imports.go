@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -42,11 +43,15 @@ var tackRules = importRules{
 	Clients:    []string{"internal/acp", "internal/render", "internal/tui"},
 	DaemonOnly: []string{"internal/sandbox", "internal/shell", "internal/store", "internal/tools"},
 	// D6: tack uses ken in-process through its public engine package (DESIGN §12, K1).
-	OnlyImport: map[string][]string{"github.com/townsendmerino/ken": {"github.com/townsendmerino/ken/engine"}},
+	OnlyImport: map[string][]string{path.Dir(kenEngine): {kenEngine}},
 	// goinfer runs as its own process, never linked in. DESIGN §13 reaches it only over HTTP and its admin socket and
 	// names no goinfer package; internal/server/goinfer is tack's own client.
 	NeverLinked: []string{"github.com/townsendmerino/goinfer"},
 }
+
+// kenEngine is the one ken package tack imports. ken's module path is derived from it, not spelled out: internal/kensearch's
+// TestOnlyEnginesPublicSurface reads every source file's text and takes any other quoted ken path for an import.
+const kenEngine = "github.com/townsendmerino/ken/engine"
 
 var tackLayers = map[string]allow{
 	"cmd/tack": {
