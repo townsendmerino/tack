@@ -52,6 +52,7 @@ func (c *Core) subagent(parent proto.SessionID, ws *tools.Workspace, pc proto.Se
 			return tools.SubagentAnswer{}, err
 		}
 		created := proto.SessionCreated{Workspace: ws.Root(), Model: pc.Model, Mode: proto.ModePlan, Parent: parent}
+		created.ParentCall, _ = loop.CallFrom(ctx)
 		if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
 			c.opt.Store.Discard(log)
 			hold.Release()
@@ -118,18 +119,21 @@ func lastAnswer(s *session) string {
 
 var errNoHelperWhileDraining = errors.New("the daemon is shutting down: no helper starts now")
 
-// orphanCost is what the children of session parent made since a time spent. Given a cut-off task call's tool.started,
-// that is the call's own child: tool calls run one at a time, and a child has no task of its own. Crash recovery
-// charges the call with it (closeInterrupted), so the parent's budgets still count it on a resume. Children are found by
-// their SessionCreated.Parent and told apart by when their logs began, not by a name in a result: a task that failed,
-// was cancelled or was itself closed by recovery names no child, though its tool.finished carries the child's spend.
-// Their own logs are closed by the same recovery.
-func (c *Core) orphanCost(parent proto.SessionID) func(since time.Time) (int, int) {
-	return func(since time.Time) (int, int) {
+// orphanCost is what a cut-off task call's child spent, for crash recovery to charge the call with (closeInterrupted),
+// so the parent's budgets still count it on a resume. Children are found by their SessionCreated.Parent, and the call's
+// own by its ParentCall, the call's tool_use id, which alone decides while the id is unique in the parent's log (a
+// clock step cannot hide the child). A local model can reuse an id (call_0, t1): then the earlier call's child, already
+// charged to it, carries the same one, so the child must also have begun at or after the call's tool.started. A child
+// that names no call (logged before ParentCall) is matched by that start time alone, since tool calls run one at a time
+// and a child has no task of its own. A name in a result does not work: a task that failed, was cancelled or was closed by recovery names no child,
+// though its tool.finished carries the child's spend. Their own logs are closed by the same recovery.
+func (c *Core) orphanCost(parent proto.SessionID) func(call string, since time.Time) (int, int) {
+	return func(call string, since time.Time) (int, int) {
 		ids, err := c.opt.Store.Sessions()
 		if err != nil {
 			return 0, 0
 		}
+		reused := c.callIDReused(parent, call)
 		tokens, calls := 0, 0
 		for _, id := range ids {
 			if id == parent {
@@ -141,12 +145,34 @@ func (c *Core) orphanCost(parent proto.SessionID) func(since time.Time) (int, in
 			}
 			if v, err := cevs[0].Decode(); err != nil {
 				continue
-			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent || cevs[0].Time.Before(since) {
+			} else if cr, ok := v.(proto.SessionCreated); !ok || cr.Parent != parent {
 				continue
+			} else if cr.ParentCall != "" && cr.ParentCall != call {
+				continue // another call's child, by its id
+			} else if (cr.ParentCall == "" || reused) && cevs[0].Time.Before(since) {
+				continue // a child that names no call, or one of an earlier call that used the same id: begun before this call started
 			}
 			t, n := loop.Spent(cevs)
 			tokens, calls = tokens+t, calls+n
 		}
 		return tokens, calls
 	}
+}
+
+// callIDReused reports whether the parent's log holds more than one tool call with this id.
+func (c *Core) callIDReused(parent proto.SessionID, call string) bool {
+	evs, err := c.opt.Store.Events(parent, 0)
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, ev := range evs {
+		if ev.Type != proto.EvToolCall {
+			continue
+		}
+		if v, err := ev.Decode(); err == nil && v.(proto.ToolCall).ID == call {
+			n++
+		}
+	}
+	return n > 1
 }

@@ -100,10 +100,10 @@ func sessionCreated(evs []proto.Event) (proto.SessionCreated, bool) {
 // matched to the latest open call with its id. A tool_use of the turn's last response with no tool.call (the crash
 // came between the two appends) gets its tool.call recorded first, from the block, and is answered not run.
 //
-// childCost, when set, is what the children made since a time spent: for a started task call the crash cut off, the
-// children made since its tool.started, whose tokens and tool calls go on the call's tool.finished, so the parent's
-// budgets count them on a resume (Core.orphanCost).
-func closeInterrupted(log *store.Log, evs []proto.Event, childCost func(since time.Time) (tokens, calls int)) ([]proto.Event, error) {
+// childCost, when set, is what a started task call the crash cut off spent through its child, given the call's id and
+// its tool.started's time: its tokens and tool calls go on the call's tool.finished, so the parent's budgets count them
+// on a resume (Core.orphanCost).
+func closeInterrupted(log *store.Log, evs []proto.Event, childCost func(call string, since time.Time) (tokens, calls int)) ([]proto.Event, error) {
 	if !store.Inspect(evs).InTurn {
 		return nil, nil
 	}
@@ -188,7 +188,7 @@ func closeInterrupted(log *store.Log, evs []proto.Event, childCost func(since ti
 		if cl.started {
 			fin = proto.ToolFinished{ID: cl.id, Outcome: proto.OutcomeUnknown, Result: unknownResult}
 			if cl.name == "task" && childCost != nil {
-				fin.Tokens, fin.Calls = childCost(cl.startedAt)
+				fin.Tokens, fin.Calls = childCost(cl.id, cl.startedAt)
 			}
 		}
 		ev, err := log.Append(proto.EvToolFinished, cl.seq, fin)
