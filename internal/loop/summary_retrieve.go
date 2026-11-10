@@ -126,13 +126,21 @@ func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, bu
 	return section(b.String())
 }
 
-// retrieveWalkCap bounds the files a bash call's possible changes add to the sync.
-const retrieveWalkCap = 500
+// retrieveWalkCap bounds the files a bash call's possible changes add to the sync; past it the newest are kept.
+var retrieveWalkCap = 500
+
+// retrieveMtimeSlack is how far before the session's first event a file's modification time may fall and still count as
+// changed: file systems stamp coarsely, so a same-tick edit can read as older.
+const retrieveMtimeSlack = 2 * time.Second
+
+// retrieveSkipDirs are directories of dependencies and build output a bash call's walk does not enter, besides dot dirs.
+var retrieveSkipDirs = map[string]bool{"vendor": true, "node_modules": true, "build": true, "dist": true, "target": true, "out": true, "__pycache__": true}
 
 // changedFiles are the files the session changed, as paths relative to root, once each in order: what the index must
 // refresh before it is searched, whether or not any of them is a hit. They are the files of evs' successful write and
 // edit calls that lie inside root, and, when a bash call succeeded (it may have changed any file: sed -i, a formatter, a
-// generator), the workspace files modified since the first event, up to retrieveWalkCap, skipping dot directories.
+// generator), the workspace files modified since the first event (within retrieveMtimeSlack), the newest
+// retrieveWalkCap of them, skipping dot directories and retrieveSkipDirs.
 func changedFiles(evs []proto.Event, root string) []string {
 	calls := map[string]string{} // call id to the path it changed, until it finishes
 	var out []string
@@ -183,28 +191,33 @@ func changedFiles(evs []proto.Event, root string) []string {
 		}
 	}
 	if bash && len(evs) > 0 {
-		since := evs[0].Time
-		n := 0
+		since := evs[0].Time.Add(-retrieveMtimeSlack)
+		type file struct {
+			rel string
+			mod time.Time
+		}
+		var found []file
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			switch {
 			case err != nil:
 				return nil
 			case d.IsDir():
-				if path != root && strings.HasPrefix(d.Name(), ".") {
+				if path != root && (strings.HasPrefix(d.Name(), ".") || retrieveSkipDirs[d.Name()]) {
 					return filepath.SkipDir
 				}
-			case n >= retrieveWalkCap:
-				return filepath.SkipAll
 			default:
 				if info, err := d.Info(); err == nil && info.Mode().IsRegular() && info.ModTime().After(since) {
 					if rel, err := filepath.Rel(root, path); err == nil {
-						add(rel)
-						n++
+						found = append(found, file{rel, info.ModTime()})
 					}
 				}
 			}
 			return nil
 		})
+		slices.SortStableFunc(found, func(a, b file) int { return b.mod.Compare(a.mod) }) // newest first
+		for _, f := range found[:min(len(found), retrieveWalkCap)] {
+			add(f.rel)
+		}
 	}
 	return out
 }

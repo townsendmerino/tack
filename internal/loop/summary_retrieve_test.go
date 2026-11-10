@@ -474,3 +474,50 @@ func TestABashCallMayHaveChangedAnyFile(t *testing.T) {
 		t.Errorf("after a read: %q", got)
 	}
 }
+
+// TestTheBashWalkSkipsDependencyDirsKeepsTheNewestAndAllowsSlack: vendor/ and node_modules/ are not entered; past the cap
+// the newest files by modification time are kept, not the lexically first; a file stamped a second before the session
+// began (a same-tick edit) still counts, one a minute before does not.
+func TestTheBashWalkSkipsDependencyDirsKeepsTheNewestAndAllowsSlack(t *testing.T) {
+	cap0 := retrieveWalkCap
+	retrieveWalkCap = 2
+	t.Cleanup(func() { retrieveWalkCap = cap0 })
+	root := t.TempDir()
+	start := time.Now().Add(-time.Hour)
+	put := func(rel string, mod time.Time) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("x"), 0o644)
+		os.Chtimes(p, mod, mod)
+	}
+	put("a.go", start.Add(time.Minute))
+	put("b.go", start.Add(2*time.Minute))
+	put("z_newest.go", start.Add(10*time.Minute))
+	put("y_newer.go", start.Add(5*time.Minute))
+	put("vendor/dep.go", start.Add(20*time.Minute))
+	put("node_modules/m/i.js", start.Add(20*time.Minute))
+	var evs []proto.Event
+	for i, p := range []struct {
+		typ proto.EventType
+		v   any
+	}{
+		{proto.EvToolCall, proto.ToolCall{ID: "b", Name: "bash", Input: json.RawMessage(`{"command":"make gen"}`)}},
+		{proto.EvToolFinished, proto.ToolFinished{ID: "b", Outcome: proto.OutcomeOK}},
+	} {
+		e, err := proto.NewEvent(int64(i+1), start, p.typ, 0, p.v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e)
+	}
+	if got := changedFiles(evs, root); !slices.Equal(got, []string{"z_newest.go", "y_newer.go"}) {
+		t.Errorf("past the cap, kept %q; want the two newest, neither dependency dir", got)
+	}
+	retrieveWalkCap = 10
+	put("tick.go", start.Add(-time.Second))
+	put("stale.go", start.Add(-time.Minute))
+	got := changedFiles(evs, root)
+	if !slices.Contains(got, "tick.go") || slices.Contains(got, "stale.go") || slices.ContainsFunc(got, func(p string) bool { return strings.HasPrefix(p, "vendor") || strings.HasPrefix(p, "node_modules") }) {
+		t.Errorf("changed %q: want tick.go (within the slack), not stale.go, nothing under vendor or node_modules", got)
+	}
+}
