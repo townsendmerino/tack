@@ -22,7 +22,7 @@ import (
 const IndexName = "index.db"
 
 // cacheSchema is the version of the usage tables; a database at another version has them dropped and rebuilt.
-const cacheSchema = 1
+const cacheSchema = 2 // 2: usage_read.child
 
 // Cache is the usage table kept in index.db: one row per usage event, and how far each session's log has been read.
 // A Table catches each log up from where it was last read (store.ScanFrom), so a log line is read once, whoever wrote
@@ -100,7 +100,8 @@ func (c *Cache) migrate() error {
 		if _, err := conn.ExecContext(ctx, `
 DROP TABLE IF EXISTS usage_read;
 DROP TABLE IF EXISTS usage_events;
-CREATE TABLE usage_read (session TEXT PRIMARY KEY, offset INTEGER NOT NULL, next_seq INTEGER NOT NULL);
+CREATE TABLE usage_read (session TEXT PRIMARY KEY, offset INTEGER NOT NULL, next_seq INTEGER NOT NULL,
+	child INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE usage_events (
 	session TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, server TEXT NOT NULL,
 	prompt INTEGER NOT NULL, output INTEGER NOT NULL, reused INTEGER, prefilled INTEGER, prefill_ms INTEGER,
@@ -126,6 +127,10 @@ func (c *Cache) Table(since time.Time, loc *time.Location) ([]Row, error) {
 	if err := c.catchUp(); err != nil {
 		return nil, err
 	}
+	acc := NewAcc(since, loc)
+	if err := c.markChildren(acc); err != nil {
+		return nil, err
+	}
 	from := int64(math.MinInt64) // since's zero is before every event; its UnixNano is not
 	if !since.IsZero() {
 		from = since.UnixNano()
@@ -136,7 +141,6 @@ func (c *Cache) Table(since time.Time, loc *time.Location) ([]Row, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	acc := NewAcc(since, loc)
 	for rows.Next() {
 		var id string
 		var at int64
@@ -221,7 +225,8 @@ func (c *Cache) forgetExcept(live map[string]bool) error {
 
 func (c *Cache) catchUpSession(id proto.SessionID) error {
 	var off, next int64 = 0, 1
-	err := c.db.QueryRow(`SELECT offset, next_seq FROM usage_read WHERE session = ?`, string(id)).Scan(&off, &next)
+	child := false // a subagent, by its session.created (Acc.markChild); read once, and kept across catch-ups
+	err := c.db.QueryRow(`SELECT offset, next_seq, child FROM usage_read WHERE session = ?`, string(id)).Scan(&off, &next, &child)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -233,6 +238,12 @@ func (c *Cache) catchUpSession(id proto.SessionID) error {
 	n := 0
 	read := func(ev proto.Event) error {
 		n++
+		if ev.Type == proto.EvSessionCreated {
+			if v, err := ev.Decode(); err == nil && v.(proto.SessionCreated).Parent != "" {
+				child = true
+			}
+			return nil
+		}
 		if ev.Type != proto.EvUsage {
 			return nil
 		}
@@ -252,7 +263,7 @@ func (c *Cache) catchUpSession(id proto.SessionID) error {
 		if _, derr := tx.Exec(`DELETE FROM usage_events WHERE session = ?`, string(id)); derr != nil {
 			return derr
 		}
-		n = 0
+		n, child = 0, false
 		end, nextSeq, err = c.st.ScanFrom(id, 0, 1, read)
 	}
 	if err != nil {
@@ -264,8 +275,26 @@ func (c *Cache) catchUpSession(id proto.SessionID) error {
 	if end == off && !reread { // nothing new; a re-read commits even when it ends where the last read did
 		return nil
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO usage_read VALUES (?, ?, ?)`, string(id), end, nextSeq); err != nil {
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO usage_read VALUES (?, ?, ?, ?)`, string(id), end, nextSeq, child); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// markChildren tells acc which sessions are subagents, as the logs' session.created say (catchUpSession records it),
+// before any of their usage is added, so the index counts sessions as FromStore does.
+func (c *Cache) markChildren(acc *Acc) error {
+	rows, err := c.db.Query(`SELECT session FROM usage_read WHERE child != 0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		acc.markChild(proto.SessionID(id))
+	}
+	return rows.Err()
 }
