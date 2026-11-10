@@ -24,9 +24,11 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
 
 ## 1. `permission/respond`: an inline approval
 
-- **Request:** `{session, id, decision, scope, note?, rule?}`.
-  - `id` is `permission.requested`'s `id`: the tool call's id, unique within a session, which a re-attached client
-    has without knowing seqs.
+- **Request:** `{session, seq, id, decision, scope, note?, rule?}`.
+  - `seq` is the `permission.requested` event's seq, and `id` its `id` (the tool call's). The seq names the question:
+    the loop asks again under the same id when a call's reasons change after a yes, and model-chosen ids repeat
+    across turns, so an answer must say which question it answers (the security read of #141). A re-attached client
+    has the seq from the replayed event.
   - `decision` is `allow` or `deny`.
   - `scope` is `once` or `session`. `session` is today's `loop.Approval.Session`: a rule over each simple command's
     program and first argument (`perms.Engine.AllowForSession`), or over the tool itself for a tool other than bash.
@@ -46,6 +48,10 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
 - **In the daemon:** the core gives the loop an `Approver` (`internal/loop.Approver`).
   - While a privileged client is subscribed to the session, `Approve` waits for `permission/respond`, for
     `session/cancel`, or for the last such client to leave. Each of the last two ends it as a deny.
+  - A halt or a shutdown while it waits ends it as a deny `by: halted`, not `no_user`: the user was there, and the
+    question ended for another reason.
+  - The question is registered as its `permission.requested` is emitted, before any client can see it, so no
+    answer can arrive for a question not yet registered.
   - With no privileged subscriber when the question is asked, it is today's immediate `no_user` deny, so a turn
     never waits on nobody.
   - The question is the `permission.requested` event the subscribers already receive, and it stays the question's
