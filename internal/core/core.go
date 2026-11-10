@@ -345,15 +345,18 @@ func (cn *conn) write(enc *json.Encoder) {
 	for {
 		select {
 		case v := <-cn.out:
-			if m, ok := v.(flushMark); ok {
-				close(m)
-			} else if enc.Encode(v) != nil {
+			m, mark := v.(flushMark)
+			if !mark && enc.Encode(v) != nil {
 				cn.drop()
 				return
 			}
-			// A flush mark counts as written too: catchUp's target counts everything queued.
+			// A flush mark counts as written too: catchUp's target counts everything queued. It is counted before it is
+			// closed, so a flush that returns sees its own mark in writes.
 			if n := cn.writes.Add(1); cn.catchingUp.Load() && n >= cn.catchTarget.Load() {
 				cn.catchingUp.Store(false) // the replay is written: live events wait fanOutWait again
+			}
+			if mark {
+				close(m)
 			}
 		case <-cn.closing:
 			for {

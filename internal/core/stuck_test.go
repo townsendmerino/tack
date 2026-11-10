@@ -19,6 +19,10 @@ import (
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 )
 
+// setupCeiling bounds a test's wait for its own setup (the writer taking a large message). It is a hang detector, not a
+// bar: setup finishes in milliseconds, but a loaded box can stall a goroutine for seconds.
+const setupCeiling = 30 * time.Second
+
 // stuckSubscriber connects to f's core, subscribes to id, reads up to the subscribe's answer and then never reads
 // again: its socket stops draining. It returns the client end.
 func stuckSubscriber(t *testing.T, f *fixture, id proto.SessionID) net.Conn {
@@ -48,6 +52,28 @@ func stuckSubscriber(t *testing.T, f *fixture, id proto.SessionID) net.Conn {
 	call(1, proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stuck", Version: "0"}, Protocol: proto.Version})
 	call(2, proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id})
 	return a
+}
+
+// waitSubscribers waits until session id has n subscribers. A subscribe's answer can come before its replay registers
+// the subscriber; until then a turn's events reach it only through the replay's second phase, which a later read by
+// the test would drain, so a test that needs a subscriber stuck while a turn runs waits for it first.
+func waitSubscribers(t *testing.T, f *fixture, id proto.SessionID, n int) {
+	t.Helper()
+	s, perr := f.core.session(id)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
+		s.mu.Lock()
+		got := len(s.subs)
+		s.mu.Unlock()
+		if got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %s has %d subscribers, want %d", id, got, n)
+		}
+	}
 }
 
 // TestAStuckSubscriberStallsNothing: a subscriber whose socket stops draining holds up neither another client's turn
@@ -90,12 +116,15 @@ func TestAStuckSubscriberStallsNothing(t *testing.T) {
 // TestAStuckSubscriberIsDropped: a subscriber that leaves no room for sendTimeout is cut off: its connection is closed
 // and its subscription gone, and the session goes on for everyone else.
 func TestAStuckSubscriberIsDropped(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, to := sendQueue, sendTimeout
 	sendQueue, sendTimeout = 1, 100*time.Millisecond
 	t.Cleanup(func() { sendQueue, sendTimeout = q, to })
-	f := newFixture(t, goinfertest.Says("one"))
 	id := f.session(t)
 	stuck := stuckSubscriber(t, f, id)
+	waitSubscribers(t, f, id, 1) // registered before the turn, so it is stuck while the turn runs
 	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +160,12 @@ func TestAStuckSubscriberIsDropped(t *testing.T) {
 // TestAReplayLongerThanTheQueueArrives: a subscribe replays a log longer than sendQueue to a client that reads, and the
 // client hears all of it: a send waits for room rather than dropping a client that is reading.
 func TestAReplayLongerThanTheQueueArrives(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q := sendQueue
 	sendQueue = 1
 	t.Cleanup(func() { sendQueue = q })
-	f := newFixture(t, goinfertest.Says("one"))
 	id := f.session(t)
 	f.prompt(t, id, "hello") // no subscription yet: the turn's events reach the client only by replay
 	st := f.core.opt.Store
@@ -162,10 +193,12 @@ func TestAReplayLongerThanTheQueueArrives(t *testing.T) {
 // TestStuckSubscribersCostTheSessionLittle: a session's fan-out waits on a full queue only fanOutWait, so two stuck
 // subscribers cost a turn and a Halt nothing like the send timeout each.
 func TestStuckSubscribersCostTheSessionLittle(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, to := sendQueue, sendTimeout
 	sendQueue, sendTimeout = 1, 10*time.Second
 	t.Cleanup(func() { sendQueue, sendTimeout = q, to })
-	f := newFixture(t, goinfertest.Says("one"))
 	id := f.session(t)
 	stuckSubscriber(t, f, id)
 	stuckSubscriber(t, f, id)
@@ -210,10 +243,12 @@ func (u unclosable) Write(p []byte) (int, error) { return u.Conn.Write(p) }
 // TestADroppedSubscriberLeavesOnATransportThatCannotClose: dropping a connection unsubscribes it even when core cannot
 // close its transport, so a stuck subscriber does not stay until its Serve ends.
 func TestADroppedSubscriberLeavesOnATransportThatCannotClose(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q := sendQueue
 	sendQueue = 1
 	t.Cleanup(func() { sendQueue = q })
-	f := newFixture(t, goinfertest.Says("one"))
 	id := f.session(t)
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close(); b.Close() })
@@ -319,10 +354,12 @@ func TestADroppedConnectionIsNotSubscribed(t *testing.T) {
 // TestALongReplayHoldsUpNoTurn: a client that stops reading during its replay of a long log holds up no other client's
 // turn: the replay goes out without the session's lock.
 func TestALongReplayHoldsUpNoTurn(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, to := sendQueue, sendTimeout
 	sendQueue, sendTimeout = 1, 3*time.Second
 	t.Cleanup(func() { sendQueue, sendTimeout = q, to })
-	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
 	id := f.session(t)
 	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
 		t.Fatal(err)
@@ -350,10 +387,12 @@ func TestALongReplayHoldsUpNoTurn(t *testing.T) {
 // its 1 ms fanOutWait; catching up's own limits, catchUpWait and sendTimeout, are set far past anything a loaded
 // machine adds to the slow reader's pace, so the test reads which wait applies, not how long the machine took.
 func TestAClientCatchingUpIsNotDropped(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
 	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, time.Minute, time.Minute
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
-	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
 	id := f.session(t)
 	f.prompt(t, id, "first") // unsubscribed: the turn's events reach the slow client only by replay
 	st := f.core.opt.Store
@@ -407,10 +446,12 @@ func TestAClientCatchingUpIsNotDropped(t *testing.T) {
 // TestAClientThatStopsWhileCatchingUpCostsOneWait: a client that stops reading partway through its replay holds a live
 // turn up for one catchUpWait, not the send timeout.
 func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
 	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, 100*time.Millisecond, 10*time.Second
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
-	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
 	id := f.session(t)
 	f.prompt(t, id, "first")
 	st := f.core.opt.Store
@@ -470,10 +511,12 @@ func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
 // TestASlowReaderCannotPaceTheSession: a client that keeps reading, slowly, while live events keep coming, stops
 // catching up once its replay is written, so the turn falls back to fanOutWait for it rather than its pace.
 func TestASlowReaderCannotPaceTheSession(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	// Set after the fixture, so its client, which watches the session, keeps the defaults: only the connections the
+	// test makes next get these (a conn takes them when it is made).
 	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
 	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, 400*time.Millisecond, 600*time.Millisecond
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
-	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
 	id := f.session(t)
 	f.prompt(t, id, "first")
 	st := f.core.opt.Store
@@ -585,7 +628,7 @@ func TestALargeMessageIsProgress(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 1<<20)) // the writer takes it, and the queue is empty
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
@@ -653,7 +696,7 @@ func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 4<<20))
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
@@ -692,7 +735,7 @@ func TestAReaderPastItsCatchUpTimeFallsBack(t *testing.T) {
 	}()
 	cn := newConn(b, nil)
 	cn.send(strings.Repeat("x", 512<<10))
-	for deadline := time.Now().Add(2 * time.Second); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(setupCeiling); cn.progress.Load() == 0; time.Sleep(time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the large message never started")
 		}
