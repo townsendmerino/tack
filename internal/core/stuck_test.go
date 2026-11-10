@@ -346,11 +346,13 @@ func TestALongReplayHoldsUpNoTurn(t *testing.T) {
 }
 
 // TestAClientCatchingUpIsNotDropped: a client still reading a long replay, slowly, is not dropped by the first live
-// events for the queue the replay filled, and hears the next turn.
+// events for the queue the replay filled, and hears the next turn. A connection not catching up would be dropped by
+// its 1 ms fanOutWait; catching up's own limits, catchUpWait and sendTimeout, are set far past anything a loaded
+// machine adds to the slow reader's pace, so the test reads which wait applies, not how long the machine took.
 func TestAClientCatchingUpIsNotDropped(t *testing.T) {
-	q, w := sendQueue, fanOutWait
-	sendQueue, fanOutWait = 2, time.Millisecond
-	t.Cleanup(func() { sendQueue, fanOutWait = q, w })
+	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
+	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, time.Minute, time.Minute
+	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
 	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
 	id := f.session(t)
 	f.prompt(t, id, "first") // unsubscribed: the turn's events reach the slow client only by replay
@@ -632,7 +634,8 @@ func TestAFlushMarkCountsAsWritten(t *testing.T) {
 }
 
 // TestACatchUpWaitEndsAtTheDeadline: a live event to a client that is reading, slowly, a large message waits no longer
-// than catching up has left, though catchUpWait is longer.
+// than catching up has left, though catchUpWait is longer. It reads each wait the event is offered (conn.onWait), not
+// the wall time the send took, so a loaded machine cannot fail it.
 func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 	q, c, to := sendQueue, catchUpWait, sendTimeout
 	sendQueue, catchUpWait, sendTimeout = 1, 3*time.Second, 300*time.Millisecond
@@ -656,11 +659,17 @@ func TestACatchUpWaitEndsAtTheDeadline(t *testing.T) {
 		}
 	}
 	cn.send("filler")
+	var waits []time.Duration
+	cn.onWait = func(d time.Duration) { waits = append(waits, d) }
 	cn.catchUp(0)
-	start := time.Now()
 	cn.fanOut("live")
-	if took := time.Since(start); took > time.Second {
-		t.Errorf("a live event waited %v; catching up had 300 ms left", took)
+	if len(waits) == 0 {
+		t.Fatal("the live event never waited: the queue had room, and the test checks nothing")
+	}
+	for i, d := range waits {
+		if d > sendTimeout {
+			t.Errorf("wait %d was %v; catching up had at most %v left", i, d, sendTimeout)
+		}
 	}
 }
 
