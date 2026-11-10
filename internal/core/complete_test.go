@@ -4,7 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"testing"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -18,8 +18,8 @@ func TestCompleteThroughTheCore(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, ".gitignore"), []byte("build/\n"), 0o644)
 	os.MkdirAll(filepath.Join(ws, "build"), 0o755)
 	os.WriteFile(filepath.Join(ws, "build", "out.go"), nil, 0o644)
-	for i := range 60 {
-		os.WriteFile(filepath.Join(ws, "src_"+string(rune('a'+i%26))+string(rune('a'+i/26))+".go"), nil, 0o644)
+	for i := range 60 { // strictly longer names, so the order is shortest first
+		os.WriteFile(filepath.Join(ws, "src_"+strings.Repeat("a", i+1)+".go"), nil, 0o644)
 	}
 	var res proto.WorkspaceCompleteResult
 	if err := tui.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: sid, Query: "out"}, &res); err != nil {
@@ -38,8 +38,10 @@ func TestCompleteThroughTheCore(t *testing.T) {
 	if err := tui.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: sid, Query: "src_", Limit: 500}, &res); err != nil || len(res.Items) != 50 {
 		t.Errorf("a limit of 500: %d items, %v; want 50", len(res.Items), err)
 	}
-	if !slices.IsSortedFunc(res.Items, func(a, b proto.CompletionItem) int { return len(a.Path) - len(b.Path) }) {
-		t.Errorf("equal-quality paths are not shortest first: %+v", res.Items[:3])
+	for i, it := range res.Items {
+		if want := "src_" + strings.Repeat("a", i+1) + ".go"; it.Path != want {
+			t.Fatalf("item %d is %q; want %q (shortest first)", i, it.Path, want)
+		}
 	}
 	var pe *proto.Error
 	if err := f.client.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: sid, Query: "x"}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
