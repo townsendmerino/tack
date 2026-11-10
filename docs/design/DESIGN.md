@@ -311,7 +311,8 @@ tack/
 - Per-directory `CLAUDE.md` files carry each toolchain's rules. Per-component tags (`v0.x` for the Go module,
   `apps/macos/v0.y` for the app) give each its own cadence, as goinfer already tags `demo/agent/`.
 - CI (`.github/workflows/ci.yml`): the Go job runs on Linux and macOS runners (the sandbox, launchd and Keychain code is
-  darwin-only; the Swift fixture check) for every push and pull request that touches more than docs and eval records.
+  darwin-only; the Swift fixture check) for every pull request and every push to `main` that touches more than docs and
+  eval records.
   From 2026-10-19 until the repository went public (ADR-008) the macOS runner ran only on a dispatch or a tag. An app job,
   only when `apps/macos/` or `internal/proto/` change, comes with the app (P4).
 - Split later only for a separate team, or if Qt licensing or CI cost starts slowing the Go side.
