@@ -403,8 +403,8 @@ func TestRetrieveGivesSyncAndEachSearchItsOwnTimeout(t *testing.T) {
 	}
 }
 
-// TestChangedFilesAreTheSuccessfulWritesAndEdits: a failed call, a read, and a path outside the root change nothing;
-// an absolute path inside the root is made relative; each file once.
+// TestChangedFilesAreTheSuccessfulWritesAndEdits: a failed call, a read, and a path outside the root are left out;
+// an absolute path inside the root is made relative; a name that merely starts with ".." is inside; each file once.
 func TestChangedFilesAreTheSuccessfulWritesAndEdits(t *testing.T) {
 	call := func(id, name, path string) []any {
 		return []any{proto.EvToolCall, proto.ToolCall{ID: id, Name: name, Input: json.RawMessage(`{"path":"` + path + `"}`)}}
@@ -420,12 +420,57 @@ func TestChangedFilesAreTheSuccessfulWritesAndEdits(t *testing.T) {
 		call("4", "read", "d.go"), done("4", proto.OutcomeOK),
 		call("5", "edit", "a/new.go"), done("5", proto.OutcomeOK),
 		call("6", "write", "/elsewhere/e.go"), done("6", proto.OutcomeOK),
+		call("7", "edit", "../f.go"), done("7", proto.OutcomeOK),
+		call("8", "write", "..g/h.go"), done("8", proto.OutcomeOK),
 	} {
 		pairs = append(pairs, p...)
 	}
 	evs := summaryLog(t, pairs...)
 	got := changedFiles(evs, "/repo")
-	if want := []string{"a/new.go", "b.go", "/elsewhere/e.go"}; !slices.Equal(got, want) {
+	if want := []string{"a/new.go", "b.go", "..g/h.go"}; !slices.Equal(got, want) {
 		t.Errorf("changed %q, want %q", got, want)
+	}
+}
+
+// TestABashCallMayHaveChangedAnyFile: after a successful bash call (sed -i, a formatter, a generator) the files
+// modified since the session began are changed files, dot directories and files older than the session are not, and
+// without a successful bash call the walk does not happen.
+func TestABashCallMayHaveChangedAnyFile(t *testing.T) {
+	root := t.TempDir()
+	start := time.Now().Add(-time.Hour)
+	put := func(rel string, mod time.Time) {
+		p := filepath.Join(root, rel)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte("x"), 0o644)
+		os.Chtimes(p, mod, mod)
+	}
+	put("old.go", start.Add(-time.Hour))
+	put("gen/new.go", start.Add(time.Minute))
+	put(".git/hook", start.Add(time.Minute))
+	log := func(name, outcome string) []proto.Event {
+		var evs []proto.Event
+		for i, p := range []struct {
+			typ proto.EventType
+			v   any
+		}{
+			{proto.EvToolCall, proto.ToolCall{ID: "b", Name: name, Input: json.RawMessage(`{"command":"gofmt -w ."}`)}},
+			{proto.EvToolFinished, proto.ToolFinished{ID: "b", Outcome: outcome}},
+		} {
+			e, err := proto.NewEvent(int64(i+1), start, p.typ, 0, p.v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			evs = append(evs, e)
+		}
+		return evs
+	}
+	if got := changedFiles(log("bash", proto.OutcomeOK), root); !slices.Equal(got, []string{"gen/new.go"}) {
+		t.Errorf("after bash: %q, want [gen/new.go]", got)
+	}
+	if got := changedFiles(log("bash", proto.OutcomeError), root); len(got) != 0 {
+		t.Errorf("after a failed bash: %q", got)
+	}
+	if got := changedFiles(log("read", proto.OutcomeOK), root); len(got) != 0 {
+		t.Errorf("after a read: %q", got)
 	}
 }

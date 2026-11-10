@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -125,11 +126,22 @@ func retrieveSection(ctx context.Context, s tools.Searcher, queries []string, bu
 	return section(b.String())
 }
 
-// changedFiles are the files evs' successful write and edit calls changed, as paths relative to root, once each in
-// order: what the index must refresh before it is searched, whether or not any of them is a hit.
+// retrieveWalkCap bounds the files a bash call's possible changes add to the sync.
+const retrieveWalkCap = 500
+
+// changedFiles are the files the session changed, as paths relative to root, once each in order: what the index must
+// refresh before it is searched, whether or not any of them is a hit. They are the files of evs' successful write and
+// edit calls that lie inside root, and, when a bash call succeeded (it may have changed any file: sed -i, a formatter, a
+// generator), the workspace files modified since the first event, up to retrieveWalkCap, skipping dot directories.
 func changedFiles(evs []proto.Event, root string) []string {
 	calls := map[string]string{} // call id to the path it changed, until it finishes
 	var out []string
+	add := func(p string) {
+		if p = filepath.ToSlash(filepath.Clean(p)); filepath.IsLocal(p) && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	bash := false
 	for _, ev := range evs {
 		v, err := ev.Decode()
 		if err != nil {
@@ -137,6 +149,10 @@ func changedFiles(evs []proto.Event, root string) []string {
 		}
 		switch e := v.(type) {
 		case proto.ToolCall:
+			if e.Name == "bash" {
+				calls[e.ID] = ""
+				continue
+			}
 			if e.Name != "write" && e.Name != "edit" {
 				continue
 			}
@@ -152,15 +168,43 @@ func changedFiles(evs []proto.Event, root string) []string {
 			if !ok || e.Outcome != proto.OutcomeOK {
 				continue
 			}
+			if p == "" {
+				bash = true
+				continue
+			}
 			if filepath.IsAbs(p) {
-				if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
-					p = rel
+				rel, err := filepath.Rel(root, p)
+				if err != nil {
+					continue
+				}
+				p = rel
+			}
+			add(p)
+		}
+	}
+	if bash && len(evs) > 0 {
+		since := evs[0].Time
+		n := 0
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			switch {
+			case err != nil:
+				return nil
+			case d.IsDir():
+				if path != root && strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+			case n >= retrieveWalkCap:
+				return filepath.SkipAll
+			default:
+				if info, err := d.Info(); err == nil && info.Mode().IsRegular() && info.ModTime().After(since) {
+					if rel, err := filepath.Rel(root, path); err == nil {
+						add(rel)
+						n++
+					}
 				}
 			}
-			if p = filepath.ToSlash(filepath.Clean(p)); !slices.Contains(out, p) {
-				out = append(out, p)
-			}
-		}
+			return nil
+		})
 	}
 	return out
 }

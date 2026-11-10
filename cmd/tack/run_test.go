@@ -470,9 +470,11 @@ func TestRunSummaryRetrieveNeedsNoKen(t *testing.T) {
 	}
 }
 
-// TestRunSummaryRetrieveReadsTheCurrentCode: a file changed after summary_retrieve's index opened (here between two
-// requests, as the model's edit or bash would change it) comes back in the summary's section as it is now, not as it
-// was at Open: the section is "current code", and arm C (calibration §18) re-retrieves what the model just edited.
+// TestRunSummaryRetrieveReadsTheCurrentCode: a file that matched when summary_retrieve's index opened and was changed
+// on disk after (here between two requests) comes back in the summary's section as it is now, not as it was at Open: the
+// section is "current code". This run is read-only, so it covers the hit-file sync only; a file the session wrote,
+// edited or changed by bash is covered in internal/loop (TestRetrieveSyncsTheFilesTheSessionChanged,
+// TestABashCallMayHaveChangedAnyFile).
 func TestRunSummaryRetrieveReadsTheCurrentCode(t *testing.T) {
 	ws := t.TempDir()
 	os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module m\n"), 0o644)
