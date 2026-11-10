@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
@@ -62,9 +63,14 @@ func tuiCmd(stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}
-	go func() { <-c.Done(); p.Quit() }()
+	var lost atomic.Bool
+	go func() { <-c.Done(); lost.Store(true); p.Quit() }()
 	if err := <-ran; err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
+		return exitError
+	}
+	if lost.Load() {
+		fmt.Fprintln(stderr, "tack: the connection to the daemon was lost; run tack again to reconnect")
 		return exitError
 	}
 	return exitOK
