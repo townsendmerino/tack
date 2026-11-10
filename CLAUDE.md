@@ -87,9 +87,12 @@ doc comments say what each will hold.
 ## Day loop: seconds, not minutes
 
 - Check a change with `go run ./tools/touched`: gofmt, build and vet (darwin and linux, cgo off) of what the diff
-  touches and everything importing it, and the tests of the touched packages and their direct importers. `-base <ref>`
-  changes what the diff is taken against; `-all` checks everything, as CI does. `go run ./tools/lint` is staticcheck
-  behind its canary (below). Locally a `go.work` containing `use .` keeps a parent directory's workspace out.
+  touches and everything importing it, and the tests of the touched packages and their direct importers. When any Go
+  file or `go.mod` is touched it also checks the whole module's import graph against the table in
+  `tools/touched/imports.go:tackLayers`, and against the rules in `tackRules`, which the table cannot waive; a new edge
+  between tack packages is a row edit there. `-base <ref>` changes what the diff is taken against; `-all` checks
+  everything, as CI does. `go run ./tools/lint` is staticcheck behind its canary (below). Locally a `go.work`
+  containing `use .` keeps a parent directory's workspace out.
 - Do not run whole-module test suites by day; CI runs them on every push.
 - A red CI run is fixed by running the one failing test by name, not by re-running everything.
 - **A change that forces a long run on the day loop is a modularity bug.** Say so in the report, name the edge that
