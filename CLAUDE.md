@@ -33,7 +33,9 @@ doc comments say what each will hold.
 - **The log is the truth.** Every state change a client can make is an event; replaying a session's log rebuilds it.
 - **Protocol types in `internal/proto` are the source of truth.** Regenerate the Swift types in the same commit as any
   protocol change; the fixtures in `proto/fixtures/` must pass on both sides.
-- **No cgo.** The daemon is one static Go binary. macOS frameworks (Keychain) are reached through purego, as aikit
+- **No cgo.** The daemon is one Go binary built with cgo off: static on Linux; on darwin, which has no static binaries,
+  it loads only the system libraries Go itself uses. `go run ./tools/relbuild` is the one pinned build and the gate
+  that reads the built binaries; run it before a tag. macOS frameworks (Keychain) are reached through purego, as aikit
   reaches Metal. goinfer runs as its own process, never linked in.
 - **Settings are config, not environment.** A new setting is a field in `config.toml`, validated at startup, failing
   loudly on a typo. Do not add environment-variable reads.
