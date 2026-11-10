@@ -44,14 +44,20 @@ doc comments say what each will hold.
 ## Who edits what
 
 - **Every change lands through a pull request; nobody pushes to `main`** (owner, 2026-10-30, replacing the 2026-10-17
-  push-to-main rule). Work on a branch, run the gates below, open the PR, and merge it with
-  `gh pr merge <n> --merge --delete-branch` once they pass. GitHub CI (`.github/workflows/ci.yml`) runs
-  `touched -all` and `lint` on Linux and macOS for every pull request and every push to `main` that touches more than
-  docs and eval records; a branch with no pull request gets no run, and a run on `main` is never cancelled. Nothing
-  makes a merge wait for CI: auto-merge is off and `main` has no required checks. So the local gates are the check
-  before a merge; CI is read afterwards (below).
-- **Product code waits for the owner's yes before it merges.** Docs and measurement records go with the task that
-  produced them.
+  push-to-main rule). `main` is protected, for admins too: a merge needs CI's two checks, `go (ubuntu-24.04)` and
+  `go (macos-latest)`, green on the pull request.
+- **To merge:** work on a branch, run the gates below as the fast check before pushing, open the PR, and set
+  `gh pr merge <n> --auto --merge --delete-branch`. GitHub merges it when both checks pass; nobody watches (owner,
+  2026-11-10, replacing "merge once the local gates pass").
+- **Product code: auto-merge is not set until the owner has said yes.** Docs and measurement records go with the task
+  that produced them.
+- **CI** (`.github/workflows/ci.yml`) runs `touched -all`, `lint` and the release build on Linux and macOS for every
+  pull request, docs-only ones included, and for every push to `main` that touches more than docs and eval records. A
+  branch with no pull request gets no run, and a run on `main` is never cancelled.
+- **A flake gets one rerun; nothing merges past a red that is not understood** (owner, 2026-11-10). A failure that is
+  clearly a known flake, one with an open issue whose text matches, gets one rerun
+  (`gh run rerun <id> --failed`). A second failure, or any failure that is not a known flake, is read and explained
+  before anything merges; a new flake gets an issue with what was seen.
 - Work moves between Cowork and vscode-claude through a gitignored `HANDOFF.md` at the repo root, written only on
   request.
 - **ken changes** go to ken's own Claude Code as a brief: ken's `CLAUDE.md` makes it ken's sole editor. Each lands as a
