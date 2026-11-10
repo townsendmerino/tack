@@ -68,7 +68,7 @@ func TestEnterSendsTheComposerThroughTheBackend(t *testing.T) {
 // rune, and ctrl-c quits.
 func TestKeysCannotTypeAControl(t *testing.T) {
 	a := &App{Backend: &fakeBackend{}}
-	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\x1b[2J‮b​c\x9b")})
+	a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a\x1b[2J\u202eb\u200bc\x9b")})
 	if got := string(a.input); got != "a[2Jbc" {
 		t.Fatalf("composer %q", got)
 	}

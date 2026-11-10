@@ -59,6 +59,7 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
+  tack                            the terminal screen, over the daemon (a terminal only; plan mode)
   tack run [flags] "<question>"   answer a question about a repository (read-only tools)
   tack eval models -manifest FILE -out DIR [-arm NAME] [-fit-only]
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
