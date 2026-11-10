@@ -210,10 +210,13 @@ type session struct {
 	cancel  context.CancelCauseFunc // the running turn's
 	// turn counts the turns started. A turn's goroutine frees the session at its exit only while turn is still its own
 	// and the session still running: emitTurn frees it as turn.end goes out, and the next turn may start then.
-	turn   uint64
-	subs   map[*subscriber]bool
-	target sandbox.Target // what Halt sweeps for this session
-	kit    func() error   // the edit kit's Close, or nil
+	turn uint64
+	subs map[*subscriber]bool
+	// question is the one question the running turn waits on for permission/respond (approver), registered as its
+	// permission.requested is emitted (ask). Under mu.
+	question *question
+	target   sandbox.Target // what Halt sweeps for this session
+	kit      func() error   // the edit kit's Close, or nil
 	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
 	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
 	// head, instructions.go; the sections); else it follows the prompt.
@@ -328,9 +331,10 @@ type conn struct {
 	// progress is the bytes written, counted as each chunk of a message goes out (progressWriter): a wait tells a client
 	// that reads, even one slow to take a large message, from one that does not.
 	progress    atomic.Int64
-	timeout     time.Duration // sendTimeout when the connection was made
-	fanOutWait  time.Duration // fanOutWait when the connection was made
-	catchUpWait time.Duration // catchUpWait when the connection was made
+	timeout     time.Duration       // sendTimeout when the connection was made
+	fanOutWait  time.Duration       // fanOutWait when the connection was made
+	catchUpWait time.Duration       // catchUpWait when the connection was made
+	onWait      func(time.Duration) // when set, told each wait offer is about to make: a test reads the wait, not a clock
 }
 
 // newConn is a connection writing to w, closed through w when a stuck client is dropped; onDrop, when not nil, runs then.
@@ -471,6 +475,9 @@ func (cn *conn) offer(v any, wait time.Duration) (bool, error) {
 	case cn.out <- v:
 		return true, nil
 	default:
+	}
+	if cn.onWait != nil {
+		cn.onWait(wait)
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
@@ -656,6 +663,12 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, perr
 		}
 		return c.status(), nil
+	case proto.MethodPermissionRespond:
+		p, perr := params[proto.PermissionRespondParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		return c.respond(cn, p)
 	case proto.MethodDaemonShutdown:
 		if _, perr := params[proto.DaemonShutdownParams](req); perr != nil {
 			return nil, perr
@@ -822,6 +835,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
+	cfg.Approve = approver{s} // questions wait for permission/respond while a privileged client watches
 	if created.Mode == proto.ModeAuto {
 		if c.opt.Edit == nil {
 			c.unregister(id)
@@ -999,6 +1013,9 @@ func (s *session) emitTurn(ev proto.Event) {
 func (s *session) emit(ev proto.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ev.Type == proto.EvPermissionRequested {
+		s.ask(ev) // before any subscriber sees it, so no answer can come first
+	}
 	s.fanOut(ev)
 }
 
@@ -1073,6 +1090,7 @@ func (c *Core) unsubscribeAll(cn *conn) {
 				delete(s.subs, sub)
 			}
 		}
+		s.endUnwatched() // a question its last watcher left has no one to answer it
 		s.mu.Unlock()
 	}
 }
