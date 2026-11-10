@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
@@ -74,9 +76,10 @@ func TestAWatchingClientApproves(t *testing.T) {
 	if err := tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("add notes")}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := await(t, events, proto.EvPermissionRequested).Decode()
+	qev := await(t, events, proto.EvPermissionRequested)
+	v, _ := qev.Decode()
 	q := v.(proto.PermissionRequested)
-	if err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, ID: q.ID, Decision: proto.DecisionAllow, Scope: "once"}, nil); err != nil {
+	if err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: qev.Seq, ID: q.ID, Decision: proto.DecisionAllow, Scope: "once"}, nil); err != nil {
 		t.Fatalf("permission/respond: %v", err)
 	}
 	v, _ = await(t, events, proto.EvPermissionResolved).Decode()
@@ -87,7 +90,7 @@ func TestAWatchingClientApproves(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(ws, "AGENTS.md")); string(b) != "Be brief.\n" {
 		t.Fatalf("AGENTS.md is %q; want the approved write", b)
 	}
-	err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, ID: q.ID, Decision: proto.DecisionAllow}, nil)
+	err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: qev.Seq, ID: q.ID, Decision: proto.DecisionAllow}, nil)
 	var pe *proto.Error
 	if !errors.As(err, &pe) || pe.Code != proto.CodeNotPending {
 		t.Fatalf("a second answer: %v; want not_pending", err)
@@ -98,9 +101,10 @@ func TestAWatchingClientApproves(t *testing.T) {
 func TestADenyWithANoteReachesTheModel(t *testing.T) {
 	f, tui, events, sid, ws, _ := askingSession(t)
 	tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("add notes")}}, nil)
-	v, _ := await(t, events, proto.EvPermissionRequested).Decode()
+	qev := await(t, events, proto.EvPermissionRequested)
+	v, _ := qev.Decode()
 	q := v.(proto.PermissionRequested)
-	if err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, ID: q.ID, Decision: proto.DecisionDeny,
+	if err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: qev.Seq, ID: q.ID, Decision: proto.DecisionDeny,
 		Note: "put it in README instead"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +132,7 @@ func TestRespondChecksWhatItIsGiven(t *testing.T) {
 		}
 		return 0
 	}
-	if c := code(f.client, proto.PermissionRespondParams{Session: sid, ID: "w1", Decision: proto.DecisionAllow}); c != proto.CodeUnauthorized {
+	if c := code(f.client, proto.PermissionRespondParams{Session: sid, Seq: 6, ID: "w1", Decision: proto.DecisionAllow}); c != proto.CodeUnauthorized {
 		t.Errorf("without the token: code %d; want unauthorized", c)
 	}
 	for name, p := range map[string]proto.PermissionRespondParams{
@@ -140,7 +144,7 @@ func TestRespondChecksWhatItIsGiven(t *testing.T) {
 			t.Errorf("%s: code %d; want invalid params", name, c)
 		}
 	}
-	if c := code(tui, proto.PermissionRespondParams{Session: sid, ID: "nothing-asked", Decision: proto.DecisionAllow}); c != proto.CodeNotPending {
+	if c := code(tui, proto.PermissionRespondParams{Session: sid, Seq: 6, ID: "nothing-asked", Decision: proto.DecisionAllow}); c != proto.CodeNotPending {
 		t.Errorf("an answer to no question: code %d; want not_pending", c)
 	}
 }
@@ -182,5 +186,131 @@ func TestTheLastWatcherLeavingEndsTheQuestion(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the question did not end as no_user when its last watcher left")
+	}
+}
+
+// TestAnAnswerSettlesOnlyItsOwnQuestion: the loop asks again under the same tool call id when the reasons change after
+// a yes (permit's snapshot re-ask), so a question is named by its permission.requested seq. A second client's late
+// allow, meant for the first question, must not settle the re-ask, whose reasons nobody who answered has seen.
+func TestAnAnswerSettlesOnlyItsOwnQuestion(t *testing.T) {
+	f, _, _, sid, _, _ := askingSession(t)
+	other, _, _ := f.privileged(t) // a second TUI, a step behind
+	s, perr := f.core.session(sid)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	ask := func(seq int64, reasons ...string) (proto.PermissionRequested, chan loop.Approval) {
+		req := proto.PermissionRequested{ID: "b1", Tool: "bash", Mode: proto.ModeAuto, Command: "make", Reasons: reasons}
+		ev, err := proto.NewEvent(seq, time.Now(), proto.EvPermissionRequested, 5, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.emit(ev)
+		got := make(chan loop.Approval, 1)
+		go func() { a, _ := (approver{s}).Approve(context.Background(), req); got <- a }()
+		return req, got
+	}
+	respond := func(cl *Client, seq int64, decision string) error {
+		return cl.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: seq, ID: "b1", Decision: decision}, nil)
+	}
+	_, first := ask(6, "reason A")
+	tui, _, _ := f.privileged(t)
+	if err := respond(tui, 6, proto.DecisionAllow); err != nil {
+		t.Fatal(err)
+	}
+	if a := <-first; !a.Allow {
+		t.Fatal("the first question was not allowed")
+	}
+	_, second := ask(9, "reason A", "reason B") // the re-ask, under the same id
+	var pe *proto.Error
+	if err := respond(other, 6, proto.DecisionAllow); !errors.As(err, &pe) || pe.Code != proto.CodeNotPending {
+		t.Fatalf("a late allow for the first question, given to the re-ask: %v; want not_pending", err)
+	}
+	if err := respond(tui, 9, proto.DecisionDeny); err != nil {
+		t.Fatal(err)
+	}
+	if a := <-second; a.Allow {
+		t.Fatal("the re-ask was allowed; it was denied")
+	}
+}
+
+// TestAnIdReusedInALaterTurnIsAnotherQuestion: model-chosen ids repeat across turns ("w1" again), and an answer naming
+// the first turn's question by its seq does not settle the second's.
+func TestAnIdReusedInALaterTurnIsAnotherQuestion(t *testing.T) {
+	f := newFixture(t,
+		goinfertest.Calls("", "w1", "write", `{"path":"AGENTS.md","content":"one\n"}`), goinfertest.Says("first"),
+		goinfertest.Calls("", "w1", "write", `{"path":"AGENTS.md","content":"two\n"}`), goinfertest.Says("second"))
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	ws := gitWorkspace(t, "")
+	sid, err := f.sessionIn(t, ws, proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tui, events, _ := f.privileged(t)
+	tui.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	prompt := func(text string) proto.Event {
+		tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text(text)}}, nil)
+		return await(t, events, proto.EvPermissionRequested)
+	}
+	q1 := prompt("one")
+	tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: q1.Seq, ID: "w1", Decision: proto.DecisionDeny}, nil)
+	await(t, events, proto.EvTurnEnd)
+	q2 := prompt("two")
+	var pe *proto.Error
+	err = tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: q1.Seq, ID: "w1", Decision: proto.DecisionAllow}, nil)
+	if !errors.As(err, &pe) || pe.Code != proto.CodeNotPending {
+		t.Fatalf("an allow naming the first turn's question, in the second: %v; want not_pending", err)
+	}
+	if err := tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: q2.Seq, ID: "w1", Decision: proto.DecisionDeny}, nil); err != nil {
+		t.Fatal(err)
+	}
+	await(t, events, proto.EvTurnEnd)
+	if _, err := os.Stat(filepath.Join(ws, "AGENTS.md")); err == nil {
+		t.Fatal("a write no one allowed ran")
+	}
+}
+
+// TestTwoAnswersAtOnceOneWins: two clients answering one question at the same moment: one answer settles it, and the
+// other is not_pending.
+func TestTwoAnswersAtOnceOneWins(t *testing.T) {
+	f, tui, events, sid, _, _ := askingSession(t)
+	other, _, _ := f.privileged(t)
+	tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("add notes")}}, nil)
+	qev := await(t, events, proto.EvPermissionRequested)
+	errs := make(chan error, 2)
+	for _, cl := range []*Client{tui, other} {
+		go func() {
+			errs <- cl.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: qev.Seq, ID: "w1", Decision: proto.DecisionDeny}, nil)
+		}()
+	}
+	ok, notPending := 0, 0
+	for range 2 {
+		var pe *proto.Error
+		switch err := <-errs; {
+		case err == nil:
+			ok++
+		case errors.As(err, &pe) && pe.Code == proto.CodeNotPending:
+			notPending++
+		default:
+			t.Fatal(err)
+		}
+	}
+	if ok != 1 || notPending != 1 {
+		t.Fatalf("%d answers settled it and %d were not_pending; want 1 and 1", ok, notPending)
+	}
+}
+
+// TestAHaltEndsAWaitingQuestionAsHalted: a halt while a question waits ends it, and the log says a halt ended it, not
+// that no one was there to answer.
+func TestAHaltEndsAWaitingQuestionAsHalted(t *testing.T) {
+	f, tui, events, sid, _, _ := askingSession(t)
+	tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("add notes")}}, nil)
+	await(t, events, proto.EvPermissionRequested)
+	f.core.Halt(proto.DaemonHalted{Trigger: proto.HaltByCommand, By: "test"})
+	v, _ := await(t, events, proto.EvPermissionResolved).Decode()
+	if r := v.(proto.PermissionResolved); r.By != proto.DecidedByHalted || r.Decision != proto.DecisionDeny {
+		t.Fatalf("resolved %+v; want denied, by a halt", r)
 	}
 }

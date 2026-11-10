@@ -777,8 +777,11 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 	}
 	a, err := s.cfg.Approve.Approve(ctx, req)
 	if err != nil {
-		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByNoUser,
-			Reasons: append(v.Reasons, "the question was not answered: "+err.Error())})
+		by, why := proto.DecidedByNoUser, "the question was not answered: "+err.Error()
+		if cause := context.Cause(ctx); errors.As(cause, new(*halt.Halted)) || errors.Is(cause, ErrShutdown) {
+			by, why = proto.DecidedByHalted, "the question ended unanswered: "+cause.Error() // not a user, nor the lack of one
+		}
+		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: by, Reasons: append(v.Reasons, why)})
 	}
 	if !a.Allow {
 		why := "the user declined"

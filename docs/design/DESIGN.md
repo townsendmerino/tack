@@ -1318,7 +1318,7 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
   `session/unsubscribe`, `session/prompt {session, content}`, `session/steer`, `session/cancel`,
   `session/fork {session, at_seq}`, `session/rewind {session, to_seq}`, `session/setMode`, `session/setModel`,
   `session/archive`.
-- `permission/respond {session, id, decision, scope, note?}` — id is the question's (`permission.requested`); decision allow or
+- `permission/respond {session, seq, id, decision, scope, note?}` — seq and id name the question (`permission.requested`); decision allow or
   deny; scope once or session; a deny's note reaches the model (docs/design/proposal-tui-protocol.md). This and
   every other method that changes permissions, mode, trust or halt state is refused on a connection that did not
   present the client token at `initialize` (§6.6).

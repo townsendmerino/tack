@@ -171,13 +171,15 @@ type UsageSummaryResult struct {
 }
 
 // PermissionRespondParams answers a permission.requested question (DESIGN §9.2; docs/design/proposal-tui-protocol.md).
-// ID is the question's (PermissionRequested.ID, the tool call's id). Decision is allow or deny; Scope is once (or
+// Seq is the question's permission.requested event's seq and ID its PermissionRequested.ID (the tool call's id): the
+// seq names the question, since a call can be asked again under the same id. Decision is allow or deny; Scope is once (or
 // empty) or session, which extends an allow to the rest of the session as a rule. Note, on a deny, reaches the model
 // in the refused result; it is content and grants nothing. Rule is reserved for an edited rule and refused until it
 // is built. It needs a privileged connection; the first answer wins, and another gets CodeNotPending.
 type PermissionRespondParams struct {
 	Session  SessionID `json:"session"`
 	ID       string    `json:"id"`
+	Seq      int64     `json:"seq"`
 	Decision string    `json:"decision"`
 	Scope    string    `json:"scope,omitempty"`
 	Note     string    `json:"note,omitempty"`

@@ -172,6 +172,7 @@ const (
 	DecidedByRule   = "rule"    // an allow rule covered every command
 	DecidedByUser   = "user"    // the user answered
 	DecidedByNoUser = "no_user" // it needed the user, and no one was attached
+	DecidedByHalted = "halted"  // a halt or a shutdown ended the question before it was answered
 )
 
 // PermissionResolved records the decision on a tool call that changes something: every such call gets one, whether a

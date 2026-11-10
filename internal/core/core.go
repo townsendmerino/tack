@@ -207,10 +207,11 @@ type session struct {
 	// and the session still running: emitTurn frees it as turn.end goes out, and the next turn may start then.
 	turn uint64
 	subs map[*subscriber]bool
-	// pending is the questions waiting for permission/respond, by the tool call's id (approver). Under mu.
-	pending map[string]chan answer
-	target  sandbox.Target // what Halt sweeps for this session
-	kit     func() error   // the edit kit's Close, or nil
+	// question is the one question the running turn waits on for permission/respond (approver), registered as its
+	// permission.requested is emitted (ask). Under mu.
+	question *question
+	target   sandbox.Target // what Halt sweeps for this session
+	kit      func() error   // the edit kit's Close, or nil
 	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
 	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
 	// head, instructions.go; the sections); else it follows the prompt.
@@ -992,6 +993,9 @@ func (s *session) emitTurn(ev proto.Event) {
 func (s *session) emit(ev proto.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ev.Type == proto.EvPermissionRequested {
+		s.ask(ev) // before any subscriber sees it, so no answer can come first
+	}
 	s.fanOut(ev)
 }
 

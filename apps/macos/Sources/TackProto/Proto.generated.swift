@@ -351,6 +351,7 @@ public struct PermissionResolved: Codable, Equatable, Sendable {
 public struct PermissionRespondParams: Codable, Equatable, Sendable {
     public var session: SessionID
     public var id: String
+    public var seq: Int64
     public var decision: String
     public var scope: String?
     public var note: String?
@@ -359,6 +360,7 @@ public struct PermissionRespondParams: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case session = "session"
         case id = "id"
+        case seq = "seq"
         case decision = "decision"
         case scope = "scope"
         case note = "note"
