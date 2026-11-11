@@ -1,5 +1,9 @@
 # Brief for ken: aikit bump, index memory composition, recompute in the watched index, and the ContextBench harness (tack's K16–K18)
 
+> Corrected 2026-11-10: this page named the dense store as `KEN_ANN=flat-i8`. `KEN_ANN` is read by ken's own binaries.
+> `engine.Open`, tack's path, never read it: the store is chosen by `engine.Options.DenseRetriever` (`"flat-i8"`,
+> `"flat-binary-i8"`). The figures are unchanged.
+
 <!-- citations-at: ken 5ab3888 (v1.11.0), aikit edd9c5b (v1.74.0), tack f75780d, LEANN c443fc4, ContextBench cd5f62e -->
 
 **From:** tack (`docs/design/DESIGN.md` §12, asks K16–K18; `docs/research/contextbench-leann-2026-10-28.md` §4–§6, §8–§9). Marked approved in commit `57c9548` on 2026-10-28 (Francis's approval of §9 decisions 1–9 is not recorded in a separate commit or note in the repository).
@@ -17,7 +21,7 @@ Two questions from `docs/research/contextbench-leann-2026-10-28.md` meet in ken:
 
 1. **What ken's index is made of (K16), and dropping the watched index's duplicate `f32` vectors (K17).**
    - Today only two memory records exist: a whole-process peak at Linux-kernel scale (`7.00 GB` hybrid against `6.14 GB` BM25 in `docs/PERF-expectations.md`) and an analytic table in goinfer's memory campaign for a 768-d model ken does not use. tack's ask K8 ("latency and memory records for the in-process engine at the owner's repo sizes", DESIGN §12) has its structural half from v1.11.0's note, while its search/memory composition half is still open.
-   - `WatchedIndex` (`internal/search/watch.go:WatchedIndex`) retains `vecs [][]float32` (1,024 bytes per 256-d chunk) so that it can append and compact. Because of that, enabling `KEN_ANN=flat-i8` on the watched path — the path both `ken-mcp` and `engine.Open` (tack) use — *adds* ~260–290 bytes per vector on top of the 1,024 instead of replacing them (ADR-043's guardrail).
+   - `WatchedIndex` (`internal/search/watch.go:WatchedIndex`) retains `vecs [][]float32` (1,024 bytes per 256-d chunk) so that it can append and compact. Because of that, enabling `DenseRetriever: "flat-i8"` on the watched path — the path both `ken-mcp` and `engine.Open` (tack) use — *adds* ~260–290 bytes per vector on top of the 1,024 instead of replacing them (ADR-043's guardrail).
    - With Model2Vec's deterministic embedding (`docs/DESIGN.md` §4: `f64` accumulation), re-embedding a chunk from `Chunk.Text` reproduces its index-time `f32` vector byte for byte. So `WatchedIndex` never needs to hold `vecs [][]float32` beside the dense retriever's own store.
 
 2. **An outside instrument for retrieval on human-annotated gold (K18, CB1).**
@@ -76,7 +80,7 @@ Plus the whole-process footprint (macOS `footprint` / `/usr/bin/time -l`, Linux 
 
 **Today.**
 - `WatchedIndex` (`internal/search/watch.go:WatchedIndex`) stores `vecs [][]float32` for every live chunk so that incremental flushes (`ReconcileFiles` / watcher batches) and compactions can rebuild or append to the dense retriever without re-embedding unchanged chunks.
-- When `KEN_ANN=flat-i8` or `flat-binary-i8`, the quantized store sits *beside* `vecs [][]float32`, increasing memory by ~260–290 B/chunk instead of shrinking the 1,024 B/chunk `f32` store.
+- When `DenseRetriever: "flat-i8"` or `flat-binary-i8`, the quantized store sits *beside* `vecs [][]float32`, increasing memory by ~260–290 B/chunk instead of shrinking the 1,024 B/chunk `f32` store.
 
 **The ask.**
 - Drop `vecs [][]float32` from `WatchedIndex`. Keep only the active dense retriever's own store (`Flat`, `FlatI8`, or `FlatBinaryI8`).
@@ -88,7 +92,7 @@ Plus the whole-process footprint (macOS `footprint` / `/usr/bin/time -l`, Linux 
 1. **Recompute bit-identity (Tier 0):** over ken's golden test corpus and one owner repository, every chunk's recomputed `f32` vector equals its index-time vector byte for byte (`math.Float32bits`). Perturb one weight or token row first to prove the test fails.
 2. **Pipeline recall (Tier 1):** `recall@10` and `NDCG@10` on semble's 1,251-query benchmark under `Flat` and `FlatI8` match pre-K17 to three decimal places (ADR-043's gate).
 3. **Watcher republish latency (Tier 1):** single-file edit republish stays at ~2 s (debounce included) on the medium corpus.
-4. **Memory (Tier 1, via K16's harness):** with `KEN_ANN=flat-i8` on `WatchedIndex`, dense-side resident bytes per chunk are at or under `FlatI8`'s ~260 B plus a stated small slack (down from ~1,284 B/chunk today).
+4. **Memory (Tier 1, via K16's harness):** with `DenseRetriever: "flat-i8"` on `WatchedIndex`, dense-side resident bytes per chunk are at or under `FlatI8`'s ~260 B plus a stated small slack (down from ~1,284 B/chunk today).
 
 **What K17 does not decide:** whether `FlatI8` becomes ken's default (ADR-043 kept `Flat` as default; flipping it is ken's own ADR if wanted).
 

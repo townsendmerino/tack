@@ -1607,7 +1607,7 @@ serving every other agent.
   differ from the exact ranking. At k=5, `SearchFiles` returned 87 of 117 exact hits in the root `CLAUDE.md`, and
   2 of 9 and 2 of 11 in the two nested ones (`docs/measurements/searchfiles-exactness-goinfer-2026-11-08.md`). ken's
   route to sections waits for a ken change that makes `SearchFiles` exact at any size.
-- **ken v1.13.0 (2026-11-09): exact at any size.** tack pins it. The same check gives 94 of 94 answers exact, and
+- **ken v1.13.0 (2026-11-09): exact at any size.** tack pinned it then; the pin is v1.14.0 from 2026-11-10 (the engine reads no environment variable, ADR-053; search results unchanged). The same check gives 94 of 94 answers exact, and
   ken's route is wired: a user message's best hits in the instruction file bring their sections into that message,
   before the task (`window.Instructions.ForHits`). It is behind `[run] section_search`, default off, until the night
   latency run reads against its registered rule.
@@ -1633,8 +1633,9 @@ would have saved.
 - **K15:** `Workspace.TestsFor(ctx, symbol, maxDepth)` (Go and Python; `TestSite.Dir` is where to run each test) and
   `Workspace.Callees(ctx, symbol)`.
 - **Also in it:**
-  - The structural index has its own file-size cap, 1 MiB by default (`Options.StructuralMaxFileBytes`, or the
-    environment variable `KEN_STRUCTURAL_MAX_FILE_BYTES`).
+  - The structural index has its own file-size cap, `engine.Options.StructuralMaxFileBytes`; 0 means 1 MiB. From ken
+    v1.14.0 the engine reads no environment variable (ken ADR-053): `KEN_STRUCTURAL_MAX_FILE_BYTES` is read only by
+    ken's own binaries, and tack sets the field or leaves the default.
   - Before, it shared enrichment's 64 KiB cap, which left out 24 of goinfer's files at its head. At the task bases that
     hid `decoder.Options` and `decoder.Model.ResidentDecline`.
   - ken-mcp's structural tools now follow edits and show the lines.
@@ -1648,8 +1649,11 @@ would have saved.
   - `Close` the workspace at the end of a run: with `Snapshot` on, `Refresh` defers the snapshot write to `Close`, or
     to the next watcher flush;
   - when `TestsFor` comes back empty, run the edited file's package;
-  - `engine.Open` sets no parse budget unless `KEN_ENRICH_FILE_BUDGET_MS` is set, so set one if a pathological file
-    turns up.
+  - `engine.Open` sets no parse budget. One is set only by calling `engine.SetEnrichFileBudget`, once, before the first
+    `Open`; `KEN_ENRICH_FILE_BUDGET_MS` is read by ken's own binaries, not the engine (ken v1.14.0, ADR-053).
+  - **A parse budget is wall-clock, so it makes an index depend on machine load** (ken's `docs/BENCH.md`,
+    "Repeatability"): a file whose parse takes about as long as the budget is indexed with or without its structural
+    label by how busy the machine is. `engine.Open` sets none, tack sets none, and a measured run must not set one.
 - **What tack does with it** (`internal/kensearch`, `internal/tools/symbol.go`):
   - K10 needs nothing of tack: `search` prints `Hit.Text`, which is now the file's own lines.
   - The `symbol` tool (§6.5, §7.3) shows a definition by name (K11, K14), with its callers, callees or tests on
@@ -1677,7 +1681,7 @@ measurement record is `docs/measurements/ken-k16-k18-and-cb1-pilot5-2026-10-28.m
   heap copies of `model.safetensors` under `MmapModel: true`, vs 15.57 MB under `MmapModel: false`).
 - **K17 (ADR-049):** `WatchedIndex` replaces retained `[][]float32` vectors with `denseStore` (`flatStore`,
   `flatI8Store`, `flatBinaryI8Store`) and deterministic on-demand recompute from `Chunk.Text` (bit-identical to index
-  time; single-file watch republish 50.3 ms; dense resident memory under `KEN_ANN=flat-i8` drops from 1,308 B/chunk to
+  time; single-file watch republish 50.3 ms; dense resident memory with `engine.Options.DenseRetriever` set to `"flat-i8"` drops from 1,308 B/chunk to
   260 B/chunk, saving 207.4 MB on `goinfer`).
 - **K18 (`bench/contextbench`) & CB1 `S53` (`53` tasks):** At the primary 8,192-token budget across all 53 tasks, ken
   hybrid (`K`) reaches `0.1686` line coverage, `0.2124` symbol coverage, and `0.5209` file coverage (`960.8` tokens to

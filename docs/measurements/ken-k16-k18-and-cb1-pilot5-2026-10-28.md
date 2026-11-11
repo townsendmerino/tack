@@ -1,5 +1,9 @@
 # ken v1.12.0 (K16–K18) Delivery & CB1 S53 Retrieval Record (2026-10-28)
 
+> Corrected 2026-11-10: this page named the dense store as `KEN_ANN=flat-i8`. `KEN_ANN` is read by ken's own binaries.
+> `engine.Open`, tack's path, never read it: the store is chosen by `engine.Options.DenseRetriever` (`"flat-i8"`,
+> `"flat-binary-i8"`). The figures are unchanged.
+
 **Status:** Complete (`VERDICT: PASS`)
 **Source notes:** `~/tack-runs/NOTE-from-ken-2026-10-28-k16-k18.md` and `~/tack-runs/NOTE-from-ken-2026-10-28-cb1-s53.md` (`ken` `v1.12.0` tagged at `574b7d9`, `CB1 S53` recorded at `4deeb42`, ADR-049)
 **Parent brief & research:** [`docs/briefs/ken-k16-k18-contextbench-memory.md`](../briefs/ken-k16-k18-contextbench-memory.md), [`docs/research/contextbench-leann-2026-10-28.md`](../research/contextbench-leann-2026-10-28.md) (§4–§6, §8)
@@ -63,15 +67,15 @@
 | **Gate 1: Recompute Bit-Identity** | Recomputed vector from `Chunk.Text` matches index-time vector bit-for-bit (`math.Float32bits`) | Bit-identical across all 256 dims on 100 synthetic + 4,276 real `ken` chunks | **PASS** |
 | **Gate 2: Pipeline Ranking Parity** | Recall@10 and NDCG@10 on gold queries identical to 3 decimal places | Identical to 3 decimal places under `Flat` and `FlatI8` | **PASS** |
 | **Gate 3: Watcher Republish Latency** | Single-file incremental edit republish `< 2,000 ms` | **`50.3 ms`** | **PASS** |
-| **Gate 4: Dense Bytes/Chunk (`flat-i8`)** | Dense resident bytes/chunk $\le 300\text{ B}$ under `KEN_ANN=flat-i8` | **`260.01 B/chunk`** (down from `1,308.01 B/chunk`) | **PASS** |
+| **Gate 4: Dense Bytes/Chunk (`flat-i8`)** | Dense resident bytes/chunk $\le 300\text{ B}$ under `DenseRetriever: "flat-i8"` | **`260.01 B/chunk`** (down from `1,308.01 B/chunk`) | **PASS** |
 
 ### 3.2 Dense-Side Memory per Chunk (Pre-K17 vs Post-K17)
 
 | Config | Dense Representation | Pre-K17 Bytes/Chunk | Post-K17 Bytes/Chunk | Delta | `goinfer` Savings (`198k` chunks) |
 |---|---|---:|---:|---:|---:|
 | Default (`Flat`) | `ann.Flat` (`float32`) | `1,048 B` | `1,024 B` | `-24 B` (`-2.3%`) | `-4.7 MB` |
-| `KEN_ANN=flat-i8` | `ann.FlatI8` (`int8` + scales) | `1,308 B` | **`260 B`** | **`-1,048 B` (`-80.1%`)** | **`-207.4 MB`** |
-| `KEN_ANN=flat-binary-i8` | `ann.FlatBinaryI8` (`1-bit` + `int8`) | `1,340 B` | **`292 B`** | **`-1,048 B` (`-78.2%`)** | **`-207.4 MB`** |
+| `DenseRetriever: "flat-i8"` | `ann.FlatI8` (`int8` + scales) | `1,308 B` | **`260 B`** | **`-1,048 B` (`-80.1%`)** | **`-207.4 MB`** |
+| `DenseRetriever: "flat-binary-i8"` | `ann.FlatBinaryI8` (`1-bit` + `int8`) | `1,340 B` | **`292 B`** | **`-1,048 B` (`-78.2%`)** | **`-207.4 MB`** |
 
 ---
 

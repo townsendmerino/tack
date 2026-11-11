@@ -12,7 +12,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/townsendmerino/aikit v1.76.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.13.0
+	github.com/townsendmerino/ken v1.14.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.1
 	mvdan.cc/sh/v3 v3.14.1

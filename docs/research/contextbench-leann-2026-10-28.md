@@ -1,5 +1,9 @@
 # LEANN and ContextBench: what they mean for tack, ken and aikit (2026-10-28)
 
+> Corrected 2026-11-10: this page named the dense store as `KEN_ANN=flat-i8`. `KEN_ANN` is read by ken's own binaries.
+> `engine.Open`, tack's path, never read it: the store is chosen by `engine.Options.DenseRetriever` (`"flat-i8"`,
+> `"flat-binary-i8"`). The figures are unchanged.
+
 <!-- citations-at: tack ccd130f, ken 5ab3888 (v1.11.0), aikit edd9c5b (v1.74.0), goinfer 093db74b, LEANN c443fc4, ContextBench cd5f62e -->
 
 **Status: approved 2026-10-28 (decisions 1–9 as recommended, §9).** Written in the Claude app on Francis's word ("yes to the
@@ -298,7 +302,7 @@ settles most of the question without any agent.
   it, not an agent's trajectory (`docs/BENCH.md`, "Caveats": the agent-loop measurement "is a separate tier-2
   follow-up").
 - **The dense arm is flat.** `aikit/ann.Flat`, exhaustive f32 cosine, O(N). ADR-043 (2026-09-06) added opt-in `FlatI8`
-  and `FlatBinaryI8` (`KEN_ANN`) and **declined HNSW**: its build took 271.8 s at 200k vectors, incompatible with the
+  and `FlatBinaryI8` (`engine.Options.DenseRetriever`) and **declined HNSW**: its build took 271.8 s at 200k vectors, incompatible with the
   watcher's 2-second republish, and it holds the f32 vectors plus a graph, so it costs more memory than `Flat`. At real
   kernel scale (584,019 chunks) `FlatI8` agreed with exact `Flat` at 1.00 on agree@10, `FlatBinaryI8` at 0.96
   (`docs/internal/dense-retriever-adoption-2026-09.md`).
@@ -694,7 +698,7 @@ are far smaller; K16 says how small.
 ### 6.2 K17: recompute replaces the retained f32 vectors
 
 **Problem** (ADR-043's guardrail). `WatchedIndex` keeps every chunk's f32 vector so it can append new chunks and compact
-deleted ones. With `KEN_ANN=flat-i8` the int8 store is added on top, so the opt-in costs memory on the one path tack
+deleted ones. With `DenseRetriever: "flat-i8"` the int8 store is added on top, so the opt-in costs memory on the one path tack
 uses.
 
 **Change.** The watched index keeps only the dense retriever's own codes. Appending embeds the new chunks (as today) and
