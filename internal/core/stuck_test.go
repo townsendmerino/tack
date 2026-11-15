@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -167,18 +168,11 @@ func TestAReplayLongerThanTheQueueArrives(t *testing.T) {
 	q := sendQueue
 	sendQueue = 1
 	t.Cleanup(func() { sendQueue = q })
+	holdTheFree(t, 100*time.Millisecond)
 	id := f.session(t)
 	f.prompt(t, id, "hello") // no subscription yet: the turn's events reach the client only by replay
+	f.waitTurnFreed(t, id)
 	st := f.core.opt.Store
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		evs, _ := st.Events(id, 0)
-		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the turn never ended")
-		}
-	}
 	evs, _ := st.Events(id, 0)
 	if len(evs) < 4 {
 		t.Fatalf("the log has %d events, too few to pass a queue of 1", len(evs))
@@ -362,6 +356,7 @@ func TestALongReplayHoldsUpNoTurn(t *testing.T) {
 	q, to := sendQueue, sendTimeout
 	sendQueue, sendTimeout = 1, 3*time.Second
 	t.Cleanup(func() { sendQueue, sendTimeout = q, to })
+	holdTheFree(t, 100*time.Millisecond)
 	id := f.session(t)
 	if err := f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}, nil); err != nil {
 		t.Fatal(err)
@@ -395,18 +390,10 @@ func TestAClientCatchingUpIsNotDropped(t *testing.T) {
 	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
 	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, time.Minute, time.Minute
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	holdTheFree(t, 100*time.Millisecond)
 	id := f.session(t)
 	f.prompt(t, id, "first") // unsubscribed: the turn's events reach the slow client only by replay
-	st := f.core.opt.Store
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		evs, _ := st.Events(id, 0)
-		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first turn never ended")
-		}
-	}
+	f.waitTurnFreed(t, id)
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -454,23 +441,16 @@ func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
 	q, w, c, to := sendQueue, fanOutWait, catchUpWait, sendTimeout
 	sendQueue, fanOutWait, catchUpWait, sendTimeout = 2, time.Millisecond, 100*time.Millisecond, 10*time.Second
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
+	holdTheFree(t, 100*time.Millisecond)
 	id := f.session(t)
 	f.prompt(t, id, "first")
-	st := f.core.opt.Store
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		evs, _ := st.Events(id, 0)
-		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first turn never ended")
-		}
-	}
+	f.waitTurnFreed(t, id)
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go f.core.Serve(ctx, b)
+	st := f.core.opt.Store
 	logged, _ := st.Events(id, 0)
 	read := len(logged) // its two answers and all but the last two replayed events, which stay queued
 	if read < 4 {
@@ -521,16 +501,7 @@ func TestASlowReaderCannotPaceTheSession(t *testing.T) {
 	t.Cleanup(func() { sendQueue, fanOutWait, catchUpWait, sendTimeout = q, w, c, to })
 	id := f.session(t)
 	f.prompt(t, id, "first")
-	st := f.core.opt.Store
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		evs, _ := st.Events(id, 0)
-		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first turn never ended")
-		}
-	}
+	f.waitTurnFreed(t, id)
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -752,4 +723,70 @@ func TestAReaderPastItsCatchUpTimeFallsBack(t *testing.T) {
 	if err := cn.fanOut("live"); err != nil {
 		t.Errorf("a client still reading when catching up ran out was dropped: %v", err)
 	}
+}
+
+// TestAPromptAfterTheLogShowsTurnEndMayBeBusy pins the contract the four catching-up tests' wait must respect: turn.end
+// in the log is not the signal that a turn is over. The append comes first and emitTurn frees the session after it, so a
+// prompt sent on the log alone can meet "a turn is already running". The live turn.end, which comes after the free, is
+// the signal (session.emitTurn), and waitTurnFreed waits on it for a client with no subscription.
+func TestAPromptAfterTheLogShowsTurnEndMayBeBusy(t *testing.T) {
+	f := newFixture(t, goinfertest.Says("one"), goinfertest.Says("two"))
+	id := f.session(t)
+	release := make(chan struct{})
+	logged := make(chan struct{})
+	var once sync.Once
+	hold := func(ev proto.Event) {
+		if ev.Type == proto.EvTurnEnd {
+			once.Do(func() { close(logged) })
+			<-release // appended, not yet freed: the window
+		}
+	}
+	emitHook.Store(&hold)
+	t.Cleanup(func() { emitHook.Store(nil) })
+	f.prompt(t, id, "first")
+	<-logged
+	var pe *proto.Error
+	err := f.client.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: id, Content: []proto.ContentBlock{proto.Text("early")}}, nil)
+	if !errors.As(err, &pe) || pe.Code != proto.CodeBusy {
+		t.Fatalf("a prompt between turn.end's append and its free: %v, want code %d", err, proto.CodeBusy)
+	}
+	close(release)
+	f.waitTurnFreed(t, id)
+	f.prompt(t, id, "second") // the freed session takes it
+}
+
+// waitTurnFreed waits until the session's turn is over for a client with no subscription: turn.end is in the log and
+// the session has been freed, so a prompt is not refused as busy.
+func (f *fixture) waitTurnFreed(t *testing.T, id proto.SessionID) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		evs, _ := f.core.opt.Store.Events(id, 0)
+		if len(evs) > 0 && evs[len(evs)-1].Type == proto.EvTurnEnd {
+			f.core.mu.Lock()
+			s := f.core.sessions[id]
+			f.core.mu.Unlock()
+			s.mu.Lock()
+			running := s.running
+			s.mu.Unlock()
+			if !running {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never ended")
+		}
+	}
+}
+
+// holdTheFree makes every turn.end's free of its session late by d, so a test that prompts on anything but the free
+// meets the window at once instead of once in a few thousand loaded runs.
+func holdTheFree(t *testing.T, d time.Duration) {
+	t.Helper()
+	h := func(ev proto.Event) {
+		if ev.Type == proto.EvTurnEnd {
+			time.Sleep(d)
+		}
+	}
+	emitHook.Store(&h)
+	t.Cleanup(func() { emitHook.Store(nil) })
 }
