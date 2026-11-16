@@ -1,6 +1,6 @@
 module github.com/townsendmerino/tack
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -12,9 +12,9 @@ require (
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/townsendmerino/aikit v1.76.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.14.0
+	github.com/townsendmerino/ken v1.19.1
 	golang.org/x/sys v0.49.0
-	modernc.org/sqlite v1.61.1
+	modernc.org/sqlite v1.62.0
 	mvdan.cc/sh/v3 v3.14.1
 )
 
@@ -45,7 +45,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/odvcencio/gotreesitter v0.56.0 // indirect
+	github.com/odvcencio/gotreesitter v0.57.0 // indirect
 	github.com/pjbgf/sha1cd v0.7.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
@@ -58,7 +58,7 @@ require (
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
