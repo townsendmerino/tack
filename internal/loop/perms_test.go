@@ -98,9 +98,9 @@ func TestUserApproves(t *testing.T) {
 	if f := h.finished("e1"); f.Outcome != proto.OutcomeOK || !strings.Contains(h.file(t), "return 0") {
 		t.Fatalf("approved edit %+v; file %q", f, h.file(t))
 	}
-	// The decision is recorded before the tool starts.
+	// The decision is recorded before the tool starts, and the edit's pre-image checkpoint between them.
 	got := strings.Join(h.types(), " ")
-	if !strings.Contains(got, "permission.requested permission.resolved tool.started") {
+	if !strings.Contains(got, "permission.requested permission.resolved checkpoint tool.started") {
 		t.Fatalf("events in order: %s", got)
 	}
 }

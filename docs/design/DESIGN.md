@@ -896,8 +896,10 @@ tool-use smoke set compares this merged set against the split one before it is f
 - Rewinding to seq *N* restores files (pre-images in reverse order, or the snapshot) and forks the conversation at *N*. If
   a file changed outside tack since the checkpoint, rewind asks about that file.
 
-**Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** Edit pre-images and the conversation fork wait for
-`session/fork`; this is the snapshot and a rewind of the files.
+**Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** The conversation fork waits for
+`session/fork`; this is the snapshot and a rewind of the files. Edit pre-images are recorded: before `edit` or `write` runs, the
+file's content goes to the blob store and a `checkpoint` event carries `files` (path, blob, or `absent` for a new file).
+Restoring from them is the next change.
 
 - **What a snapshot is.** `internal/snapshot` keeps one shadow repository per workspace in tack's state directory, which
   the sandbox denies to commands. The daemon runs `git` on it, outside the sandbox, with `GIT_DIR` and its own index
@@ -1870,7 +1872,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
 | tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
 | permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape | — | one-spawn grants and the network proxy (P5); the short environment for commands; the prompt-text scan; repo trust |
-| checkpoints (§6.8) | shadow-repository snapshots before `bash`, `tack rewind` for files | `snapshots` (on by default) | edit pre-images; rewind as a conversation fork |
+| checkpoints (§6.8) | shadow-repository snapshots before `bash`, `tack rewind` for files | `snapshots` (on by default) | restoring from edit pre-images (recorded in the log); rewind as a conversation fork |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
 | CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI's screen model (`internal/tui`) | — | the TUI's terminal layer (P1 step 8b); `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |

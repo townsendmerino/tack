@@ -348,13 +348,24 @@ type HaltProcess struct {
 	Start time.Time `json:"start"`
 }
 
-// Checkpoint records the snapshot of the working tree taken before a bash call (DESIGN §6.8), or why there is none, in which
-// case a client says the command can't be rewound.
+// Checkpoint records what a rewind restores a call's changes from (DESIGN §6.8): the snapshot of the working tree taken before
+// a bash call, or why there is none, in which case a client says the command can't be rewound; or, for an edit or write, the
+// pre-image of the file it changes.
 type Checkpoint struct {
 	ID          string `json:"id"`        // the tool call
 	Workspace   string `json:"workspace"` // the tree it holds
 	Snapshot    string `json:"snapshot,omitempty"`
 	Unavailable string `json:"unavailable,omitempty"`
+	// Files is the pre-image of each file an edit or write call is about to change (DESIGN §6.8), in place of a snapshot.
+	Files []FileImage `json:"files,omitempty"`
+}
+
+// FileImage is one file as it was before an edit or write: Path from the workspace root, and Blob the handle of its content, or
+// Absent when no file was there, so a rewind deletes it.
+type FileImage struct {
+	Path   string `json:"path"`
+	Blob   string `json:"blob,omitempty"`
+	Absent bool   `json:"absent,omitempty"`
 }
 
 // Rewind records files restored from a checkpoint: To is that checkpoint's seq, Snapshot its id, and Undo the snapshot of
