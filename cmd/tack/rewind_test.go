@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/halt"
 	"github.com/townsendmerino/tack/internal/proto"
@@ -45,6 +47,7 @@ func rewindSession(t *testing.T) (cfg, ws string, seq int64) {
 		t.Fatal(err)
 	}
 	defer log.Close()
+	log.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws})
 	input, _ := json.Marshal(map[string]string{"command": "rm keep.txt"})
 	log.Append(proto.EvToolCall, 0, proto.ToolCall{ID: "b1", Name: "bash", Input: input})
 	ev, err := log.Append(proto.EvCheckpoint, 0, proto.Checkpoint{ID: "b1", Workspace: ws, Snapshot: id})
@@ -329,6 +332,7 @@ func imageSession(t *testing.T) (cfg, ws string, first, write int64) {
 		t.Fatal(err)
 	}
 	defer log.Close()
+	log.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws})
 	call := func(id, name string) {
 		in, _ := json.Marshal(map[string]string{"path": "x"})
 		log.Append(proto.EvToolCall, 0, proto.ToolCall{ID: id, Name: name, Input: in})
@@ -414,15 +418,181 @@ func TestRestoreImagesRefusesPathsOutsideTheWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	h, _ := st.Blobs.Put([]byte("planted\n"))
+	tree := newTree(t, root, "")
 	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"../escape.txt", "/etc/escape.txt", "link/escape.txt"} {
-		if _, err := restoreImages(root, []proto.FileImage{{Path: p, Blob: h}}, st.Blobs); err == nil {
+		if _, err := tree.restore([]proto.FileImage{{Path: p, Blob: h}}, st.Blobs); err == nil {
 			t.Errorf("%q: no error", p)
 		}
 	}
-	if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+	// The file itself became a symlink to a file outside, as a sandboxed command could have made it: neither the plan nor the
+	// restore follows it, and the file it points at is untouched.
+	target := filepath.Join(outside, "target.txt")
+	if err := os.WriteFile(target, []byte("theirs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, img := range []proto.FileImage{{Path: "a.txt", Blob: h}, {Path: "a.txt", Absent: true}} {
+		if _, err := tree.plan([]proto.FileImage{img}, st.Blobs); err == nil {
+			t.Errorf("plan of a symlink leaf %+v: no error", img)
+		}
+		if _, err := tree.restore([]proto.FileImage{img}, st.Blobs); err == nil {
+			t.Errorf("restore of a symlink leaf %+v: no error", img)
+		}
+	}
+	if b, _ := os.ReadFile(target); string(b) != "theirs\n" {
+		t.Errorf("the file outside the workspace now holds %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "a.txt")); err != nil {
+		t.Errorf("the link was removed: %v", err)
+	}
+	if ents, _ := os.ReadDir(outside); len(ents) != 1 {
 		t.Errorf("wrote outside the workspace: %v", ents)
+	}
+}
+
+// newTree opens root as an imageTree, closed when the test ends.
+func newTree(t *testing.T, root, state string) *imageTree {
+	t.Helper()
+	tree, err := openImageTree(root, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tree.close)
+	return tree
+}
+
+func testBlobs(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// The preview never opens a FIFO, which would hang it, and never reads a file over the cap.
+func TestPlanImagesDoesNotOpenWhatIsNotARegularFile(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	st := testBlobs(t)
+	h, _ := st.Blobs.Put([]byte("x\n"))
+	if err := syscall.Mkfifo(filepath.Join(root, "pipe"), 0o644); err != nil {
+		t.Skip("no mkfifo:", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := newTree(t, root, "").plan([]proto.FileImage{{Path: "pipe", Blob: h}}, st.Blobs)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a FIFO was planned over")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plan hung on a FIFO")
+	}
+	big := filepath.Join(root, "big")
+	f, _ := os.Create(big)
+	f.Truncate(maxImageBytes + 1)
+	f.Close()
+	ch, err := newTree(t, root, "").plan([]proto.FileImage{{Path: "big", Blob: h}}, st.Blobs)
+	if err != nil || len(ch) != 1 {
+		t.Errorf("a file over the cap: %v, %v", ch, err)
+	}
+}
+
+// A path inside tack's state directory, even one under the workspace, is refused, and so is a path not already clean.
+func TestRestoreImagesRefusesStateAndUncleanPaths(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	state := filepath.Join(root, ".tackstate")
+	os.MkdirAll(state, 0o755)
+	st := testBlobs(t)
+	h, _ := st.Blobs.Put([]byte("planted\n"))
+	tree := newTree(t, root, state)
+	for _, p := range []string{".tackstate/token", ".tackstate/sessions/x/events.jsonl", "a/../b.txt", "./b.txt", "a//b.txt", "a/"} {
+		if _, err := tree.restore([]proto.FileImage{{Path: p, Blob: h}}, st.Blobs); err == nil {
+			t.Errorf("%q: no error", p)
+		}
+	}
+	if ents, _ := os.ReadDir(state); len(ents) != 0 {
+		t.Errorf("wrote into the state directory: %v", ents)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b.txt")); err == nil {
+		t.Error("an unclean path was written")
+	}
+}
+
+// A hard link to a file elsewhere is replaced by the restore, not written through.
+func TestRestoreImagesDoesNotWriteThroughAHardLink(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	outside, _ := filepath.EvalSymlinks(t.TempDir())
+	target := filepath.Join(outside, "t.txt")
+	os.WriteFile(target, []byte("theirs\n"), 0o600)
+	if err := os.Link(target, filepath.Join(root, "a.txt")); err != nil {
+		t.Skip("no hard links:", err)
+	}
+	st := testBlobs(t)
+	h, _ := st.Blobs.Put([]byte("v0\n"))
+	n, err := newTree(t, root, "").restore([]proto.FileImage{{Path: "a.txt", Blob: h}}, st.Blobs)
+	if err != nil || n != 1 {
+		t.Fatalf("restore: %d, %v", n, err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "theirs\n" {
+		t.Errorf("wrote through the link: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "a.txt")); string(b) != "v0\n" {
+		t.Errorf("a.txt: %q", b)
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "a.txt")); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, want the file's own 0600", fi.Mode().Perm())
+	}
+}
+
+// A checkpoint whose workspace is not the one the session started in is listed as unrewindable and never restored, and a later
+// checkpoint of another workspace adds nothing to an earlier point's pre-images.
+func TestRewindTrustsTheSessionsWorkspace(t *testing.T) {
+	cfg := writeConfig(t, "http://cassette.invalid")
+	state := filepath.Join(filepath.Dir(cfg), "state")
+	ws, _ := filepath.EvalSymlinks(t.TempDir())
+	other, _ := filepath.EvalSymlinks(t.TempDir())
+	os.WriteFile(filepath.Join(other, "victim.txt"), []byte("mine\n"), 0o644)
+	st, _ := store.Open(state)
+	h, _ := st.Blobs.Put([]byte("planted\n"))
+	log, _ := st.Create("s_ws")
+	defer log.Close()
+	log.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: ws})
+	in, _ := json.Marshal(map[string]string{"path": "a.txt"})
+	log.Append(proto.EvToolCall, 0, proto.ToolCall{ID: "e1", Name: "edit", Input: in})
+	ev1, _ := log.Append(proto.EvCheckpoint, 0, proto.Checkpoint{ID: "e1", Workspace: ws, Files: []proto.FileImage{{Path: "a.txt", Blob: h}}})
+	log.Append(proto.EvToolCall, 0, proto.ToolCall{ID: "e2", Name: "edit", Input: in})
+	ev2, _ := log.Append(proto.EvCheckpoint, 0, proto.Checkpoint{ID: "e2", Workspace: other, Files: []proto.FileImage{{Path: "victim.txt", Blob: h}}})
+	evs, _ := st.Events("s_ws", 0)
+	for _, p := range rewindPoints(evs) {
+		if p.seq == ev1.Seq && (len(p.images) != 1 || p.images[0].Path != "a.txt") {
+			t.Errorf("the session's own point took in another workspace's image: %+v", p.images)
+		}
+		if p.seq == ev2.Seq && (len(p.images) != 0 || p.why == "") {
+			t.Errorf("the foreign checkpoint is rewindable: %+v", p)
+		}
+	}
+	code, _, errs := rewind(t, "-config", cfg, "-yes", "-no-undo", "s_ws", strconv.FormatInt(ev2.Seq, 10))
+	if code == exitOK || !strings.Contains(errs, "workspace") {
+		t.Errorf("rewind to the foreign checkpoint: %d %q", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(other, "victim.txt")); string(b) != "mine\n" {
+		t.Errorf("victim.txt: %q", b)
+	}
+	// A log with no start event has no workspace to trust.
+	log2, _ := st.Create("s_nostart")
+	defer log2.Close()
+	log2.Append(proto.EvCheckpoint, 0, proto.Checkpoint{ID: "e1", Workspace: ws, Files: []proto.FileImage{{Path: "a.txt", Blob: h}}})
+	evs, _ = st.Events("s_nostart", 0)
+	if p := rewindPoints(evs); len(p) != 1 || len(p[0].images) != 0 {
+		t.Errorf("a log with no start event: %+v", p)
 	}
 }

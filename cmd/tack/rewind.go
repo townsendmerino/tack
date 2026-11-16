@@ -169,6 +169,17 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 	commands := map[string]string{}
 	tools := map[string]string{}
 	var points []rewindPoint
+	// The session's workspace is the one its start event names. A checkpoint of any other is a log claiming a tree the session
+	// never had, and no rewind touches it.
+	ws := ""
+	for _, ev := range events {
+		if v, err := ev.Decode(); err == nil {
+			if c, ok := v.(proto.SessionCreated); ok {
+				ws = c.Workspace
+				break
+			}
+		}
+	}
 	for _, ev := range events {
 		v, err := ev.Decode()
 		if err != nil {
@@ -184,6 +195,11 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 				commands[e.ID] = in.Command
 			}
 		case proto.Checkpoint:
+			if ws == "" || e.Workspace != ws {
+				points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, why: "its workspace is not the session's",
+					what: fmt.Sprintf("before %q", commands[e.ID])})
+				continue
+			}
 			if len(e.Files) > 0 {
 				points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, files: e.Files,
 					what: fmt.Sprintf("before %s of %q", tools[e.ID], e.Files[0].Path)})
@@ -192,6 +208,11 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Snapshot, why: e.Unavailable,
 				what: fmt.Sprintf("before %q", commands[e.ID])})
 		case proto.Rewind:
+			if ws == "" || e.Workspace != ws {
+				points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, why: "its workspace is not the session's",
+					what: fmt.Sprintf("before the rewind to seq %d", e.To)})
+				continue
+			}
 			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Undo, why: e.NoUndo,
 				what: fmt.Sprintf("before the rewind to seq %d", e.To)})
 		}
@@ -206,7 +227,12 @@ func rewindImages(stateDir string, st *store.Store, session proto.SessionID, poi
 		fmt.Fprintln(stderr, "tack rewind:", err)
 		return exitError
 	}
-	changes, err := planImages(point.workspace, point.images, st.Blobs)
+	tree, err := openImageTree(point.workspace, stateDir)
+	if err != nil {
+		return fail(err)
+	}
+	defer tree.close()
+	changes, err := tree.plan(point.images, st.Blobs)
 	if err != nil {
 		return fail(err)
 	}
@@ -240,7 +266,7 @@ func rewindImages(stateDir string, st *store.Store, session proto.SessionID, poi
 	} else if h != nil {
 		return fail(fmt.Sprintf("tack is halted (%s); run tack resume", halt.Path(stateDir)))
 	}
-	n, restoreErr := restoreImages(point.workspace, point.images, st.Blobs)
+	n, restoreErr := tree.restore(point.images, st.Blobs)
 	log, err := st.OpenLog(session)
 	if err != nil {
 		return fail(err)
