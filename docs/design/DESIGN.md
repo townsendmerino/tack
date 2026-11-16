@@ -451,6 +451,13 @@ macOS paths; Linux uses the XDG equivalents.
   session: start it in the app, check it from the CLI.
 - **Fork and rewind.** `session/fork {session, at_seq}` makes a child that shares the parent's prefix by reference.
   Rewind is a fork plus restoring files from checkpoints (§6.8).
+  - **As built:** the child's log holds the parent's first `at_seq` events **copied, byte for byte, with the same seqs and
+    times**, not shared by reference (blobs are shared by hash). Only its `session.created` differs: it also carries `fork_of`
+    and `fork_at`, which the usage table reads to leave the copied events out, so each request is counted once. A fork is not
+    a subagent (`parent` stays empty). The cut must leave the history whole: a seq the log has, not inside a turn (after a
+    `turn.end`, or `1` for the bare start). The parent's log is only read, so a running parent is untouched. The method needs
+    the client token. By reference would save disk, nothing else, and every reader of a log would have to follow the chain;
+    say so if the owner wants it. Appendix B's `session.forked` is not written: a fork changes nothing in the parent.
 - **Export.** `tack sessions export <id> --md` renders a transcript. The exported transcripts form a ken corpus (§7.6).
 
 ### 6.3 The agent loop
@@ -1881,7 +1888,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 
 | area | built | behind a setting | not built |
 |---|---|---|---|
-| protocol, store (§6.2, §9) | event log, blobs, JSON-RPC types, Swift generator, fixtures; `session/new`, `session/subscribe`, `session/prompt`, `daemon/status`, `daemon/shutdown`, `usage/summary` | — | the rest of §9.2's methods; the TUI's are accepted in `proposal-tui-protocol.md` and land next; `session/fork` |
+| protocol, store (§6.2, §9) | event log, blobs, JSON-RPC types, Swift generator, fixtures; `session/new`, `session/subscribe`, `session/prompt`, `daemon/status`, `daemon/shutdown`, `usage/summary` | — | the rest of §9.2's methods; the TUI's are accepted in `proposal-tui-protocol.md` and land next |
 | daemon (§6.1) | lock, socket, peer check, client token, auto-spawn, crash recovery, drain | — | LaunchAgent install; `tack doctor` |
 | model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |

@@ -13,6 +13,7 @@ public enum Method {
     public static let permissionRespond = "permission/respond"
     public static let sessionCancel = "session/cancel"
     public static let sessionEvent = "session/event"
+    public static let sessionFork = "session/fork"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
     public static let sessionSubscribe = "session/subscribe"
@@ -447,6 +448,8 @@ public struct SessionCreated: Codable, Equatable, Sendable {
     public var parent: SessionID?
     public var parentCall: String?
     public var parentCallSeq: Int64?
+    public var forkOf: SessionID?
+    public var forkAt: Int64?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
@@ -455,6 +458,8 @@ public struct SessionCreated: Codable, Equatable, Sendable {
         case parent = "parent"
         case parentCall = "parent_call"
         case parentCallSeq = "parent_call_seq"
+        case forkOf = "fork_of"
+        case forkAt = "fork_at"
     }
 }
 
@@ -465,6 +470,24 @@ public struct SessionEventParams: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case session = "session"
         case event = "event"
+    }
+}
+
+public struct SessionForkParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+    public var atSeq: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+        case atSeq = "at_seq"
+    }
+}
+
+public struct SessionForkResult: Codable, Equatable, Sendable {
+    public var session: SessionID
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
     }
 }
 

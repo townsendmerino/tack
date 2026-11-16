@@ -682,6 +682,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			cancel(loop.ErrUserCancel)
 		}
 		return proto.SessionCancelResult{}, nil
+	case proto.MethodSessionFork:
+		p, perr := params[proto.SessionForkParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		return c.fork(p)
 	case proto.MethodWorkspaceComplete:
 		p, perr := params[proto.WorkspaceCompleteParams](req)
 		if perr != nil {

@@ -49,11 +49,15 @@ type Acc struct {
 	// child is the sessions a task call made (SessionCreated.Parent): their usage counts, but they are not sessions the
 	// user had, so Sessions leaves them out.
 	child map[proto.SessionID]bool
+	// forked is, for a session made by session/fork, how many of its first events are its parent's (SessionCreated.ForkAt):
+	// the parent's log counts them, so this one does not.
+	forked map[proto.SessionID]int64
 }
 
 // NewAcc is an empty table counting usage events at or after since, by day in loc.
 func NewAcc(since time.Time, loc *time.Location) *Acc {
-	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}, child: map[proto.SessionID]bool{}}
+	return &Acc{since: since, loc: loc, rows: map[key]*Row{}, seen: map[key]map[proto.SessionID]bool{}, child: map[proto.SessionID]bool{},
+		forked: map[proto.SessionID]int64{}}
 }
 
 // Add counts ev, an event of session id, if it is a usage event in range; it ignores every other event but a
@@ -61,12 +65,16 @@ func NewAcc(since time.Time, loc *time.Location) *Acc {
 // log order, so its session.created comes first.
 func (a *Acc) Add(id proto.SessionID, ev proto.Event) error {
 	if ev.Type == proto.EvSessionCreated {
-		if v, err := ev.Decode(); err == nil && v.(proto.SessionCreated).Parent != "" {
-			a.child[id] = true
+		if v, err := ev.Decode(); err == nil {
+			c := v.(proto.SessionCreated)
+			if c.Parent != "" {
+				a.child[id] = true
+			}
+			a.forked[id] = c.ForkAt
 		}
 		return nil
 	}
-	if ev.Type != proto.EvUsage || ev.Time.Before(a.since) {
+	if ev.Type != proto.EvUsage || ev.Time.Before(a.since) || ev.Seq <= a.forked[id] {
 		return nil
 	}
 	v, err := ev.Decode()

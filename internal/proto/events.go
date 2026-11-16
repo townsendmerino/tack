@@ -108,6 +108,11 @@ type SessionCreated struct {
 	// ParentCallSeq is the seq of that call's tool.call event in the parent's log, which a model cannot repeat or a clock
 	// step reorder; orphanCost matches by it when set. Absent for a session the user made, and in a child logged before it.
 	ParentCallSeq int64 `json:"parent_call_seq,omitempty"`
+	// ForkOf and ForkAt say this session is a fork (session/fork, DESIGN §6.2): its first ForkAt events are the session ForkOf's,
+	// copied, and are not this session's own work, so the usage table does not count them again. Absent in any other session.
+	// A fork is not a subagent: Parent stays empty.
+	ForkOf SessionID `json:"fork_of,omitempty"`
+	ForkAt int64     `json:"fork_at,omitempty"`
 }
 
 // UserMessage is the user's message that starts a turn.
