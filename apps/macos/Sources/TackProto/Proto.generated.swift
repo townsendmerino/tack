@@ -545,6 +545,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
     public var redacted: [String]?
     public var tokens: Int?
     public var calls: Int?
+    public var after: String?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -555,6 +556,7 @@ public struct ToolFinished: Codable, Equatable, Sendable {
         case redacted = "redacted"
         case tokens = "tokens"
         case calls = "calls"
+        case after = "after"
     }
 }
 

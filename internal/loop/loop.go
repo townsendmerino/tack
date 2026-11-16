@@ -545,10 +545,12 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 						return proto.StopError, err
 					}
 				}
-				if cp, err := s.preImage(b); err != nil {
+				imaged, err := s.preImage(b)
+				if err != nil {
 					return proto.StopError, err
-				} else if cp != nil {
-					if _, err := s.record(proto.EvCheckpoint, callEv.Seq, *cp); err != nil {
+				}
+				if imaged != nil {
+					if _, err := s.record(proto.EvCheckpoint, callEv.Seq, *imaged); err != nil {
 						return proto.StopError, err
 					}
 				}
@@ -579,6 +581,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					ToolCalls: min(bud.MaxToolCalls-calls, bud.SessionToolCalls-s.calls)} // after this call: what a task's child may take
 				if fin, full, ran, err = s.runTool(withRemaining(tools.WithWiden(shell.WithApproval(ctx, by), level), rem), b, callEv.Seq, room, pick); err != nil {
 					return proto.StopError, err
+				}
+				if imaged != nil {
+					fin.After = s.afterImage(b)
 				}
 				tokens += fin.Tokens // a task's child: it counts toward this turn's and this session's budgets
 				s.tokens += fin.Tokens
@@ -956,6 +961,22 @@ func (s *Session) preImage(b proto.ModelBlock) (*proto.Checkpoint, error) {
 		img.Blob = h
 	}
 	return &proto.Checkpoint{ID: b.ID, Workspace: s.cfg.WS.Root(), Files: []proto.FileImage{img}}, nil
+}
+
+// afterImage is the handle of the file an edit or write call named, as it is now, or proto.FileAbsent when no file is there;
+// "" when it can't be read. A rewind compares it with the file to tell a change made outside tack.
+func (s *Session) afterImage(b proto.ModelBlock) string {
+	if s.cfg.WS == nil {
+		return ""
+	}
+	_, data, absent, ok := s.cfg.WS.PreImage(b.Name, b.Input)
+	switch {
+	case !ok:
+		return ""
+	case absent:
+		return proto.FileAbsent
+	}
+	return store.HandleOf(data)
 }
 
 // takeSnapshot takes the snapshot a bash call's permission decision reads, and returns what its checkpoint event would say:

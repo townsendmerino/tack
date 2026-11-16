@@ -229,7 +229,14 @@ type ToolFinished struct {
 	// Calls is the tool calls run on the call's behalf (a task's child), counted toward this session's tool-call budgets
 	// as Tokens is toward its token budgets.
 	Calls int `json:"calls,omitempty"`
+	// After is, for an edit or write, the blob handle of the file's content after the call, or FileAbsent when no file is
+	// there (DESIGN §6.8). A rewind warns about a file whose content no longer matches it. Absent for any other call, and in a
+	// log written before it was recorded.
+	After string `json:"after,omitempty"`
 }
+
+// FileAbsent is ToolFinished.After for a file that does not exist.
+const FileAbsent = "absent"
 
 // Usage is a request's measured cost. A nil field is one the server did not report; it is never shown as zero
 // (DESIGN principle 6, "measured or labelled"). Request is its request.sent's, 0 for the summarizer's.
