@@ -255,7 +255,7 @@ func TestErrors(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Code != proto.CodeUnknownSession {
 		t.Fatalf("unknown session: %v", err)
 	}
-	err = f.client.Call("session/fork", map[string]any{}, nil)
+	err = f.client.Call("session/rewind", map[string]any{}, nil)
 	if !errors.As(err, &pe) || pe.Code != proto.CodeMethodNotFound {
 		t.Fatalf("unknown method: %v", err)
 	}

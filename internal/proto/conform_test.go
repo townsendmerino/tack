@@ -62,7 +62,7 @@ func TestCheckTranscriptCatches(t *testing.T) {
 		"seq gap": {ev(1, "turn.end", `{"stop_reason":"end_turn"}`),
 			ev(3, "turn.end", `{"stop_reason":"end_turn"}`)},
 		"unregistered method answered with a result": {
-			`{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/fork","params":{}}}`,
+			`{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/rewind","params":{}}}`,
 			`{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{}}}`},
 		"request sent d2c": {strings.Replace(req, `"dir":"c2d"`, `"dir":"d2c"`, 1), resp},
 	}

@@ -334,3 +334,62 @@ func TestAnIndexFromBeforeTheParentRuleIsRebuilt(t *testing.T) {
 		t.Fatalf("after a schema-1 index.db: %+v (%v); want the logs' %+v", got, err, want)
 	}
 }
+
+// forkedPair is a session with one finished turn that made two requests, and a fork of it that made one more of its own.
+func forkedPair(t *testing.T, dir string) *store.Store {
+	t.Helper()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Create("s_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: "/w", Model: "m", Mode: proto.ModeAsk})
+	l.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("go")}})
+	for i := 1; i <= 2; i++ {
+		l.Append(proto.EvUsage, 0, proto.Usage{Request: i, Server: "goinfer@local", Prompt: 1000, Output: 10, WallMS: 500})
+	}
+	end, _ := l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: "end_turn"})
+	l.Close()
+	if err := st.Fork("s_parent", "s_fork", end.Seq); err != nil {
+		t.Fatal(err)
+	}
+	appendUsage(t, st, "s_fork", 1, "goinfer@local")
+	return st
+}
+
+// A fork's copied events are not its own usage: the table counts each request once, the fork as a session of its own, and the
+// cache agrees with the streaming table, including after it reads the fork again from where it stopped.
+func TestAForksCopiedUsageIsNotCountedAgain(t *testing.T) {
+	dir := t.TempDir()
+	st := forkedPair(t, dir)
+	acc := NewAcc(time.Time{}, time.UTC)
+	for _, id := range []proto.SessionID{"s_parent", "s_fork"} {
+		if err := st.Scan(id, func(ev proto.Event) error { return acc.Add(id, ev) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := acc.Rows()
+	if len(rows) != 1 || rows[0].Requests != 3 || rows[0].Sessions != 2 {
+		t.Errorf("table %+v, want 3 requests over 2 sessions", rows)
+	}
+	for step := 0; step < 2; step++ { // the second open reads from the saved position
+		c, err := OpenCache(dir, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.Table(time.Time{}, time.UTC)
+		c.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Requests != 3 || got[0].Sessions != 2 {
+			t.Errorf("cache step %d: %+v", step, got)
+		}
+		if step == 0 {
+			appendUsage(t, st, "s_fork", 0, "goinfer@local") // touch nothing: the next open catches up with no new events
+		}
+	}
+}

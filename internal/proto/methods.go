@@ -12,6 +12,7 @@ const (
 	MethodSessionSubscribe  = "session/subscribe"
 	MethodSessionPrompt     = "session/prompt"
 	MethodSessionCancel     = "session/cancel"
+	MethodSessionFork       = "session/fork"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -110,6 +111,20 @@ type SessionCancelParams struct {
 
 // SessionCancelResult acknowledges a cancel; the events it causes are its record.
 type SessionCancelResult struct{}
+
+// SessionForkParams makes a new session from the first AtSeq events of Session (DESIGN §6.2). It needs the client token. AtSeq
+// must leave the history whole: a seq the log has, and not inside a turn (after a turn.end, or at 1 for the start). The parent
+// is unchanged and may be running.
+type SessionForkParams struct {
+	Session SessionID `json:"session"`
+	AtSeq   int64     `json:"at_seq"`
+}
+
+// SessionForkResult names the new session. It has the parent's workspace, model and mode and no events of its own yet; a client
+// subscribes to it and prompts it like any session.
+type SessionForkResult struct {
+	Session SessionID `json:"session"`
+}
 
 // SessionPromptResult acknowledges the prompt with the seq of its user.message event; the turn's progress arrives
 // as events.
@@ -235,6 +250,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionSubscribe:  {reflect.TypeFor[SessionSubscribeParams](), reflect.TypeFor[SessionSubscribeResult]()},
 	MethodSessionPrompt:     {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
 	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
+	MethodSessionFork:       {reflect.TypeFor[SessionForkParams](), reflect.TypeFor[SessionForkResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},
