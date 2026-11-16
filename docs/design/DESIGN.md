@@ -899,7 +899,16 @@ tool-use smoke set compares this merged set against the split one before it is f
 **Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** The conversation fork waits for
 `session/fork`; this is the snapshot and a rewind of the files. Edit pre-images are recorded: before `edit` or `write` runs, the
 file's content goes to the blob store and a `checkpoint` event carries `files` (path, blob, or `absent` for a new file).
-Restoring from them is the next change.
+`tack rewind <session> <seq>` restores them: the oldest pre-image of each path from that call on, with no undo (so it takes `-no-undo`); commands after it are not undone. It does not yet ask about files changed outside tack.
+  - **The workspace is the session's.** It is the one the session's start event names; a checkpoint of any other workspace is
+    listed as unrewindable and never restored, and a log with no start event has none to trust.
+  - **Every file operation goes through an `os.Root` on the workspace**, so a symlink in a directory of the path or at the
+    file itself cannot carry a read or write out, and a swap between check and write cannot either. A file is written to a
+    temporary name beside it and renamed over it, so a hard link to a file elsewhere is replaced, never written through. A
+    recreated file gets mode 0644; a file that is there keeps its mode.
+  - **A log path is data.** It must already be in clean form (no `..`, `.`, doubled or trailing slash), and a path inside
+    tack's state directory is refused even when that lies under the workspace. The preview opens only regular files, and a
+    file over 32 MiB is reported as changed without being read.
 
 - **What a snapshot is.** `internal/snapshot` keeps one shadow repository per workspace in tack's state directory, which
   the sandbox denies to commands. The daemon runs `git` on it, outside the sandbox, with `GIT_DIR` and its own index
@@ -1872,7 +1881,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
 | tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
 | permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape | — | one-spawn grants and the network proxy (P5); the short environment for commands; the prompt-text scan; repo trust |
-| checkpoints (§6.8) | shadow-repository snapshots before `bash`, `tack rewind` for files | `snapshots` (on by default) | restoring from edit pre-images (recorded in the log); rewind as a conversation fork |
+| checkpoints (§6.8) | shadow-repository snapshots before `bash`, `tack rewind` for files | `snapshots` (on by default) | rewind as a conversation fork |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
 | CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI's screen model (`internal/tui`) | — | the TUI's terminal layer (P1 step 8b); `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
