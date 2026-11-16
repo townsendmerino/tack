@@ -75,12 +75,14 @@ public struct Checkpoint: Codable, Equatable, Sendable {
     public var workspace: String
     public var snapshot: String?
     public var unavailable: String?
+    public var files: [FileImage]?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
         case workspace = "workspace"
         case snapshot = "snapshot"
         case unavailable = "unavailable"
+        case files = "files"
     }
 }
 
@@ -237,6 +239,18 @@ public struct ErrorEvent: Codable, Equatable, Sendable {
         case `class` = "class"
         case message = "message"
         case retrying = "retrying"
+    }
+}
+
+public struct FileImage: Codable, Equatable, Sendable {
+    public var path: String
+    public var blob: String?
+    public var absent: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case path = "path"
+        case blob = "blob"
+        case absent = "absent"
     }
 }
 

@@ -427,3 +427,47 @@ func Widenable(name string, input []byte) bool {
 	}
 	return false
 }
+
+// PreImage reads the file an edit or write call names, as it is before the call runs, for DESIGN §6.8's pre-image. rel is its
+// path from the root, which is what a rewind restores to; absent means the path is inside the workspace and no file is
+// there yet. ok is false for any other call, and for a path the call itself will refuse (outside the workspace, a secret, not a
+// regular file), so a refused call leaves nothing to rewind.
+func (w *Workspace) PreImage(name string, input json.RawMessage) (rel string, data []byte, absent, ok bool) {
+	if name != "edit" && name != "write" {
+		return "", nil, false, false
+	}
+	var in struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal(input, &in) != nil || in.Path == "" {
+		return "", nil, false, false
+	}
+	p := in.Path
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(w.root, p)
+	}
+	p = filepath.Clean(p)
+	if !within(w.root, p) || p == w.root || isSecret(p) {
+		return "", nil, false, false
+	}
+	rel, err := filepath.Rel(w.root, p)
+	if err != nil {
+		return "", nil, false, false
+	}
+	if _, err := os.Lstat(p); os.IsNotExist(err) {
+		return filepath.ToSlash(rel), nil, true, true
+	}
+	real, err := w.Resolve(p)
+	if err != nil {
+		return "", nil, false, false
+	}
+	fi, err := os.Stat(real)
+	if err != nil || !fi.Mode().IsRegular() {
+		return "", nil, false, false
+	}
+	data, err = os.ReadFile(real)
+	if err != nil {
+		return "", nil, false, false
+	}
+	return filepath.ToSlash(rel), data, false, true
+}

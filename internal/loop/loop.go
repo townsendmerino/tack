@@ -545,6 +545,13 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 						return proto.StopError, err
 					}
 				}
+				if cp, err := s.preImage(b); err != nil {
+					return proto.StopError, err
+				} else if cp != nil {
+					if _, err := s.record(proto.EvCheckpoint, callEv.Seq, *cp); err != nil {
+						return proto.StopError, err
+					}
+				}
 				var full []byte
 				// Progressive widening (Config.WidenRepeats; mask.go, shownChain): a whole read or a grep whose result
 				// at the base cap was shown, and is asked for again, runs once at a wider cap; the tool also returns its
@@ -927,6 +934,28 @@ type Snapshotter interface {
 	Prune(ctx context.Context) error
 	// Staged reports whether a command that overwrites the index would lose content a snapshot doesn't hold.
 	Staged(ctx context.Context) bool
+}
+
+// preImage stores the file an edit or write call is about to change in the blob store and returns the checkpoint that names
+// it, nil for any other call or a path the call will refuse. The blob is durable before the caller records the event
+// (ADR-004's ordering rule).
+func (s *Session) preImage(b proto.ModelBlock) (*proto.Checkpoint, error) {
+	if s.cfg.WS == nil || s.cfg.Blobs == nil {
+		return nil, nil
+	}
+	rel, data, absent, ok := s.cfg.WS.PreImage(b.Name, b.Input)
+	if !ok {
+		return nil, nil
+	}
+	img := proto.FileImage{Path: rel, Absent: absent}
+	if !absent {
+		h, err := s.cfg.Blobs.Put(data)
+		if err != nil {
+			return nil, err
+		}
+		img.Blob = h
+	}
+	return &proto.Checkpoint{ID: b.ID, Workspace: s.cfg.WS.Root(), Files: []proto.FileImage{img}}, nil
 }
 
 // takeSnapshot takes the snapshot a bash call's permission decision reads, and returns what its checkpoint event would say:
