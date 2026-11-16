@@ -299,13 +299,12 @@ func checkTests(root string, pkgs []string, timeout string, log io.Writer) []gat
 	var extra []gate.Cell
 	sandbox := false
 	if runtime.GOOS == "darwin" {
-		if canSandbox() {
+		can := canSandbox()
+		if can {
 			sandbox = true
-			args = append(args, "-tags", "sandboxtest") // the escape tests (internal/sandbox, internal/shell)
-		} else if needsSandbox(pkgs) {
-			extra = append(extra, gate.Cell{Name: "test sandbox escapes", Outcome: gate.Inconclusive,
-				Detail: "sandbox-exec cannot start here (already inside a sandbox?): the escape tests did not run; run touched outside tack's sandbox"})
+			args = append(args, "-tags", "sandboxtest") // the escape tests
 		}
+		extra = append(extra, escapeCells(root, pkgs, can)...)
 	}
 	args = append(args, "-timeout", testTimeout(timeout, sandbox))
 	cmd := exec.Command("go", append(args, pkgs...)...)
@@ -392,14 +391,59 @@ func canSandbox() bool {
 	return exec.Command("/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true").Run() == nil
 }
 
-// needsSandbox reports whether pkgs include one with escape tests (build tag sandboxtest).
-func needsSandbox(pkgs []string) bool {
-	for _, p := range pkgs {
-		if strings.HasSuffix(p, "/internal/sandbox") || strings.HasSuffix(p, "/internal/shell") {
-			return true
+// escapeCells is the INCONCLUSIVE cell for escape tests that did not run: sandbox-exec cannot start here (can is
+// false) and pkgs include a package with escape tests. It is empty when they ran or none is in pkgs.
+func escapeCells(root string, pkgs []string, can bool) []gate.Cell {
+	if can || len(pkgs) == 0 {
+		return nil
+	}
+	with, err := sandboxTestPackages(root, pkgs)
+	if err != nil {
+		return []gate.Cell{{Name: "test sandbox escapes", Outcome: gate.Inconclusive,
+			Detail: "sandbox-exec cannot start here and the packages with escape tests could not be listed: " + err.Error()}}
+	}
+	if len(with) == 0 {
+		return nil
+	}
+	return []gate.Cell{{Name: "test sandbox escapes", Outcome: gate.Inconclusive,
+		Detail: "sandbox-exec cannot start here (already inside a sandbox?): the escape tests of " + strings.Join(with, ", ") +
+			" did not run; run touched outside tack's sandbox"}}
+}
+
+// sandboxTestPackages names the packages of pkgs that have test files behind the build tag sandboxtest (the escape
+// tests), found by listing each for darwin with and without the tag; no package is named by hand.
+func sandboxTestPackages(root string, pkgs []string) ([]string, error) {
+	list := func(tags string) (map[string]int, error) {
+		args := []string{"list", "-e", "-json"}
+		if tags != "" {
+			args = append(args, "-tags", tags)
+		}
+		ps, err := goList(root, []string{"CGO_ENABLED=0", "GOOS=darwin"}, append(args, pkgs...)...)
+		if err != nil {
+			return nil, err
+		}
+		n := map[string]int{}
+		for _, p := range ps {
+			n[p.ImportPath] = len(p.TestGoFiles) + len(p.XTestGoFiles)
+		}
+		return n, nil
+	}
+	without, err := list("")
+	if err != nil {
+		return nil, err
+	}
+	with, err := list("sandboxtest")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for path, n := range with {
+		if n > without[path] {
+			names = append(names, path)
 		}
 	}
-	return false
+	sort.Strings(names)
+	return names, nil
 }
 
 // listPackages runs `go list -e -json ./...` with GOOS set when goos is non-empty.

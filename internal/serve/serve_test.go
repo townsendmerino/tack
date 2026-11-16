@@ -108,7 +108,16 @@ func fakeGoinfer(args []string) {
 const key = "the-serve-key"
 
 // front is a Front over this binary as goinfer-serve, with the lock check given, behind an HTTP test server.
+//
+// The load guard reads the memory pressure through models.ChildConfig.Pressure, which front sets to "normal": the tests
+// are about the front, and must not depend on what else the machine running them is doing (#159).
 func front(t *testing.T, idle time.Duration, lock func() error) (*Front, *httptest.Server) {
+	t.Helper()
+	return frontWithPressure(t, idle, lock, func() (models.Pressure, error) { return models.PressureNormal, nil })
+}
+
+// frontWithPressure is front with the load guard's memory-pressure reading given; nil reads the machine's own.
+func frontWithPressure(t *testing.T, idle time.Duration, lock func() error, pressure func() (models.Pressure, error)) (*Front, *httptest.Server) {
 	t.Helper()
 	t.Setenv("TACK_FAKE_GOINFER", "1")
 	dir, err := os.MkdirTemp("/tmp", "tksrv")
@@ -117,7 +126,8 @@ func front(t *testing.T, idle time.Duration, lock func() error) (*Front, *httpte
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	f, err := New(Options{Key: key, CheckLock: lock, Child: models.ChildConfig{Binary: os.Args[0], ModelPath: "/m/q.gguf", Model: "q",
-		Ctx: 16384, Args: []string{"-backend", "cuda"}, Dir: dir, IdleUnload: idle, IdleExit: idle, Admission: true}})
+		Ctx: 16384, Args: []string{"-backend", "cuda"}, Dir: dir, IdleUnload: idle, IdleExit: idle, Admission: true,
+		Pressure: pressure}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,5 +370,59 @@ func TestTheFastAliasReachesTheMac(t *testing.T) {
 	}
 	if len(ms) != 1 || ms[0].ID != "q" || ms[0].FastModel != "q-fast" {
 		t.Fatalf("/v1/models through tack serve: %+v; want q with its fast alias q-fast", ms)
+	}
+}
+
+// waitSettled waits for the front to leave Idle and Loading and returns where it stood.
+func waitSettled(t *testing.T, f *Front) Status {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if st := f.Status(); st.State != Idle && st.State != Loading {
+			return st
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state %+v; want it settled", f.Status())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestALoadIsRefusedAtWarningPressure: a start while the memory pressure reads warning fails with the guard's message
+// and starts no model (DESIGN §8.1); the reading is injected, so the answer does not depend on the host.
+func TestALoadIsRefusedAtWarningPressure(t *testing.T) {
+	f, ts := frontWithPressure(t, time.Minute, func() error { return nil },
+		func() (models.Pressure, error) { return models.PressureWarning, nil })
+	get(t, ts, "POST", "/tack/start", key)
+	st := waitSettled(t, f)
+	if st.State != Failed || !strings.Contains(st.Message, "memory pressure is warning") {
+		t.Fatalf("status %+v; want failed with the memory-pressure refusal", st)
+	}
+}
+
+// TestTheMachinesOwnPressureReadingGuardsTheLoad drives the real reading, models.MemoryPressure, through the front: a
+// load is refused while the machine reads warning or worse, and reaches ready while it reads anything else. It
+// compares the reading before and after the start; a reading that moved in between is no basis for either answer, and
+// the test says so by skipping.
+func TestTheMachinesOwnPressureReadingGuardsTheLoad(t *testing.T) {
+	before, err := models.MemoryPressure()
+	if err != nil {
+		t.Skipf("the machine's memory pressure cannot be read: %v", err)
+	}
+	f, ts := frontWithPressure(t, time.Minute, func() error { return nil }, nil)
+	get(t, ts, "POST", "/tack/start", key)
+	st := waitSettled(t, f)
+	after, err := models.MemoryPressure()
+	if err != nil || after != before {
+		t.Skipf("the machine's memory pressure moved during the run (%v, then %v, %v)", before, after, err)
+	}
+	if before >= models.PressureWarning {
+		if st.State != Failed || !strings.Contains(st.Message, "memory pressure is "+before.String()) {
+			t.Fatalf("pressure %v: status %+v; want the load refused", before, st)
+		}
+		return
+	}
+	if st.State != Ready {
+		t.Fatalf("pressure %v: status %+v; want ready", before, st)
 	}
 }

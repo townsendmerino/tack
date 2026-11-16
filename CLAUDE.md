@@ -51,6 +51,9 @@ doc comments say what each will hold.
   2026-11-10, replacing "merge once the local gates pass").
 - **Product code: auto-merge is not set until the owner has said yes.** Docs and measurement records go with the task
   that produced them.
+  - **Standing yes, P1 step 3 (checkpoints and rewind)** (owner, 2026-11-16): a session building step 3 pushes its branch
+    without asking each time; the coordinator reads the diff, opens the pull request and sets auto-merge. Step 4 and
+    later steps need the owner's yes again.
 - **CI** (`.github/workflows/ci.yml`) runs `touched -all`, `lint` and the release build on Linux and macOS for every
   pull request, docs-only ones included, and for every push to `main` that touches more than docs and eval records. A
   branch with no pull request gets no run, and a run on `main` is never cancelled.
