@@ -176,3 +176,48 @@ func TestTestTimeout(t *testing.T) {
 		}
 	}
 }
+
+// TestEscapeCells: where sandbox-exec cannot start, a touched package with a darwin && sandboxtest test file gets an
+// INCONCLUSIVE cell, whichever package it is (cmd/tack has such files, as internal/sandbox and internal/shell do), and a
+// package without one, or a run where sandbox-exec starts, gets none.
+func TestEscapeCells(t *testing.T) {
+	t.Setenv("GOWORK", "off")
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("go.mod", "module m\n\ngo 1.22\n")
+	write("cmd/tack/main.go", "package main\n\nfunc main() {}\n")
+	write("cmd/tack/e_sandbox_test.go", "//go:build darwin && sandboxtest\n\npackage main\n\nimport \"testing\"\n\nfunc TestE(t *testing.T) {}\n")
+	write("plain/p.go", "package plain\n")
+	write("plain/p_test.go", "package plain\n\nimport \"testing\"\n\nfunc TestP(t *testing.T) {}\n")
+	write("plain/p_darwin_test.go", "//go:build darwin\n\npackage plain\n\nimport \"testing\"\n\nfunc TestPD(t *testing.T) {}\n")
+	for _, c := range []struct {
+		name string
+		pkgs []string
+		can  bool
+		want int
+	}{
+		{"only cmd/tack, no sandbox-exec", []string{"m/cmd/tack"}, false, 1},
+		{"cmd/tack among others", []string{"m/plain", "m/cmd/tack"}, false, 1},
+		{"a darwin-only test file is not an escape test", []string{"m/plain"}, false, 0},
+		{"sandbox-exec starts", []string{"m/cmd/tack"}, true, 0},
+	} {
+		cells := escapeCells(dir, c.pkgs, c.can)
+		if len(cells) != c.want {
+			t.Errorf("%s: %d cells, want %d: %+v", c.name, len(cells), c.want, cells)
+			continue
+		}
+		for _, cell := range cells {
+			if cell.Outcome != gate.Inconclusive {
+				t.Errorf("%s: %q is %s, want INCONCLUSIVE", c.name, cell.Name, cell.Outcome)
+			}
+		}
+	}
+}
