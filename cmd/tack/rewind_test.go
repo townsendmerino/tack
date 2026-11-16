@@ -304,3 +304,125 @@ func TestRewindSeqMustBeANumber(t *testing.T) {
 		}
 	}
 }
+
+// imageSession is a session whose log holds two edit checkpoints and a write checkpoint over a workspace that is not a git
+// repository: a.txt edited twice, new.txt created. The files are left in their final state; the returned seqs are the
+// first edit's checkpoint and the write's.
+func imageSession(t *testing.T) (cfg, ws string, first, write int64) {
+	t.Helper()
+	cfg = writeConfig(t, "http://cassette.invalid")
+	state := filepath.Join(filepath.Dir(cfg), "state")
+	ws, _ = filepath.EvalSymlinks(t.TempDir())
+	st, err := store.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(s string) string {
+		h, err := st.Blobs.Put([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	log, err := st.Create("s_images")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	call := func(id, name string) {
+		in, _ := json.Marshal(map[string]string{"path": "x"})
+		log.Append(proto.EvToolCall, 0, proto.ToolCall{ID: id, Name: name, Input: in})
+	}
+	check := func(id string, imgs ...proto.FileImage) int64 {
+		ev, err := log.Append(proto.EvCheckpoint, 0, proto.Checkpoint{ID: id, Workspace: ws, Files: imgs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ev.Seq
+	}
+	call("e1", "edit")
+	first = check("e1", proto.FileImage{Path: "a.txt", Blob: put("v0\n")})
+	call("e2", "edit")
+	check("e2", proto.FileImage{Path: "a.txt", Blob: put("v1\n")})
+	call("w1", "write")
+	write = check("w1", proto.FileImage{Path: "sub/new.txt", Absent: true})
+	os.MkdirAll(filepath.Join(ws, "sub"), 0o755)
+	os.WriteFile(filepath.Join(ws, "a.txt"), []byte("v2\n"), 0o644)
+	os.WriteFile(filepath.Join(ws, "sub", "new.txt"), []byte("made\n"), 0o644)
+	return cfg, ws, first, write
+}
+
+// The list names an edit's file instead of calling it a command that can't be rewound, and a rewind to the first edit brings
+// back the oldest pre-image of each path and removes what a write created.
+func TestRewindRestoresEditPreImages(t *testing.T) {
+	cfg, ws, first, _ := imageSession(t)
+	code, out, _ := rewind(t, "-config", cfg, "s_images")
+	if code != exitOK || strings.Contains(out, "can't be rewound") || !strings.Contains(out, `before edit of "a.txt"`) || !strings.Contains(out, `before write of "sub/new.txt"`) {
+		t.Errorf("list: %d %q", code, out)
+	}
+	s := strconv.FormatInt(first, 10)
+	code, out, _ = rewind(t, "-config", cfg, "s_images", s)
+	if code != exitOK || !strings.Contains(out, `restore "a.txt"`) || !strings.Contains(out, `remove  "sub/new.txt"`) {
+		t.Errorf("preview: %d %q", code, out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "v2\n" {
+		t.Error("the preview changed the tree")
+	}
+	code, _, errs := rewind(t, "-config", cfg, "-yes", "-no-undo", "s_images", s)
+	if code != exitOK {
+		t.Fatalf("rewind: %d %s", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "v0\n" {
+		t.Errorf("a.txt: %q, want the oldest pre-image", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "sub", "new.txt")); err == nil {
+		t.Error("the written file stayed")
+	}
+}
+
+// A rewind to the write alone removes what it created and leaves the earlier edits as they are.
+func TestRewindToAWriteLeavesEarlierEdits(t *testing.T) {
+	cfg, ws, _, write := imageSession(t)
+	code, _, errs := rewind(t, "-config", cfg, "-yes", "-no-undo", "s_images", strconv.FormatInt(write, 10))
+	if code != exitOK {
+		t.Fatalf("rewind: %d %s", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "v2\n" {
+		t.Errorf("a.txt: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "sub", "new.txt")); err == nil {
+		t.Error("the written file stayed")
+	}
+	// Without -no-undo it refuses and changes nothing.
+	cfg2, ws2, first, _ := imageSession(t)
+	code, _, errs = rewind(t, "-config", cfg2, "-yes", "s_images", strconv.FormatInt(first, 10))
+	if code == exitOK || !strings.Contains(errs, "-no-undo") {
+		t.Errorf("without -no-undo: %d %q", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws2, "a.txt")); string(b) != "v2\n" {
+		t.Errorf("a.txt: %q", b)
+	}
+}
+
+// A path in a log that leaves the workspace, or goes through a symlink out of it, is refused and nothing is written: a log
+// is data and grants nothing.
+func TestRestoreImagesRefusesPathsOutsideTheWorkspace(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	outside, _ := filepath.EvalSymlinks(t.TempDir())
+	st, err := store.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := st.Blobs.Put([]byte("planted\n"))
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"../escape.txt", "/etc/escape.txt", "link/escape.txt"} {
+		if _, err := restoreImages(root, []proto.FileImage{{Path: p, Blob: h}}, st.Blobs); err == nil {
+			t.Errorf("%q: no error", p)
+		}
+	}
+	if ents, _ := os.ReadDir(outside); len(ents) != 0 {
+		t.Errorf("wrote outside the workspace: %v", ents)
+	}
+}

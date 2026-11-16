@@ -82,6 +82,8 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case point == nil:
 		return fail(fmt.Sprintf("seq %d is not a checkpoint of this session", seq))
+	case len(point.images) > 0:
+		return rewindImages(stateDir, st, session, *point, points, *yes, *noUndo, stdout, stderr)
 	case point.snapshot == "":
 		return fail(fmt.Sprintf("the command at seq %d can't be rewound: %s", seq, point.why))
 	}
@@ -151,10 +153,12 @@ type rewindPoint struct {
 	snapshot  string // "" when the command can't be rewound
 	why       string
 	what      string
+	files     []proto.FileImage // an edit or write: the pre-image of the file it changes
+	images    []proto.FileImage // what a rewind to this point restores (imagePoints)
 }
 
 func (p rewindPoint) String() string {
-	if p.snapshot == "" {
+	if p.snapshot == "" && len(p.files) == 0 {
 		return fmt.Sprintf("%6d  can't be rewound (%s): %s", p.seq, p.why, p.what)
 	}
 	return fmt.Sprintf("%6d  %s", p.seq, p.what)
@@ -163,6 +167,7 @@ func (p rewindPoint) String() string {
 // rewindPoints reads them off a session's log: each command's checkpoint, and the tree each rewind replaced.
 func rewindPoints(events []proto.Event) []rewindPoint {
 	commands := map[string]string{}
+	tools := map[string]string{}
 	var points []rewindPoint
 	for _, ev := range events {
 		v, err := ev.Decode()
@@ -171,6 +176,7 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 		}
 		switch e := v.(type) {
 		case proto.ToolCall:
+			tools[e.ID] = e.Name
 			var in struct {
 				Command string `json:"command"`
 			}
@@ -178,6 +184,11 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 				commands[e.ID] = in.Command
 			}
 		case proto.Checkpoint:
+			if len(e.Files) > 0 {
+				points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, files: e.Files,
+					what: fmt.Sprintf("before %s of %q", tools[e.ID], e.Files[0].Path)})
+				continue
+			}
 			points = append(points, rewindPoint{seq: ev.Seq, workspace: e.Workspace, snapshot: e.Snapshot, why: e.Unavailable,
 				what: fmt.Sprintf("before %q", commands[e.ID])})
 		case proto.Rewind:
@@ -185,7 +196,65 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 				what: fmt.Sprintf("before the rewind to seq %d", e.To)})
 		}
 	}
-	return points
+	return imagePoints(points)
+}
+
+// rewindImages is a rewind to an edit or write checkpoint: the files its pre-images name go back as they were before that call
+// and every later one. Commands that ran after it are not undone, and it can't be undone itself, which -no-undo accepts.
+func rewindImages(stateDir string, st *store.Store, session proto.SessionID, point rewindPoint, points []rewindPoint, yes, noUndo bool, stdout, stderr io.Writer) int {
+	fail := func(err any) int {
+		fmt.Fprintln(stderr, "tack rewind:", err)
+		return exitError
+	}
+	changes, err := planImages(point.workspace, point.images, st.Blobs)
+	if err != nil {
+		return fail(err)
+	}
+	if len(changes) == 0 {
+		fmt.Fprintln(stdout, "the files already match it")
+		return exitOK
+	}
+	for _, c := range changes {
+		verb := "restore"
+		if c.Kind == snap.Remove {
+			verb = "remove "
+		}
+		fmt.Fprintf(stdout, "%s %q\n", verb, c.Path)
+	}
+	for _, p := range points {
+		if p.seq > point.seq && len(p.files) == 0 {
+			fmt.Fprintln(stdout, "commands that ran after it are not undone")
+			break
+		}
+	}
+	const why = "a rewind of edited files keeps no undo"
+	if !yes {
+		fmt.Fprintf(stdout, "this rewind can't be undone: %s\nthis includes anything changed outside tack; run tack rewind -yes -no-undo %s %d to do it\n", why, session, point.seq)
+		return exitOK
+	}
+	if !noUndo {
+		return fail(fmt.Sprintf("this rewind can't be undone: %s; tack rewind -yes -no-undo %s %d does it anyway", why, session, point.seq))
+	}
+	if h, err := halt.Check(stateDir); err != nil {
+		return fail(err)
+	} else if h != nil {
+		return fail(fmt.Sprintf("tack is halted (%s); run tack resume", halt.Path(stateDir)))
+	}
+	n, restoreErr := restoreImages(point.workspace, point.images, st.Blobs)
+	log, err := st.OpenLog(session)
+	if err != nil {
+		return fail(err)
+	}
+	defer log.Close()
+	if _, err := log.Append(proto.EvRewind, point.seq, proto.Rewind{To: point.seq, Workspace: point.workspace, NoUndo: why, Changed: n}); err != nil {
+		return fail(err)
+	}
+	if restoreErr != nil {
+		fmt.Fprintf(stderr, "tack rewind: it stopped partway, so the files are part rewound: %v\n", restoreErr)
+		return exitError
+	}
+	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; it can't be undone: %s\n", n, point.seq, why)
+	return exitOK
 }
 
 // warnNoRewind says, once per reason in a run, why its commands can't be rewound.
