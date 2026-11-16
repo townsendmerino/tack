@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 // writeCall is a model reply that calls write.
@@ -62,5 +63,27 @@ func TestReadsAndRefusedEditsStoreNoPreImage(t *testing.T) {
 	}
 	if cps := h.checkpoints(); len(cps) != 0 {
 		t.Errorf("checkpoints %+v", cps)
+	}
+}
+
+// An edit and a write record the file's handle after the call in tool.finished, so a rewind can tell a file changed outside
+// tack; a call that is not an edit or write, and one refused before it ran, record none.
+func TestEditAndWriteRecordTheFileAfterTheCall(t *testing.T) {
+	h, _ := checkpointHarness(t, nil, false, readCall("r", "mcp/token_budget.go"), editCall("e", "mcp/token_budget.go", "package mcp", "package mcp // x"), writeCall("w", "new/made.txt", "hi\n"), goinfertest.Says("done"))
+	if _, err := h.sess.Turn(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := os.ReadFile(filepath.Join(h.ws.Root(), "mcp", "token_budget.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := h.finished("e").After, store.HandleOf(edited); got != want {
+		t.Errorf("edit After %q, want %q", got, want)
+	}
+	if got, want := h.finished("w").After, store.HandleOf([]byte("hi\n")); got != want {
+		t.Errorf("write After %q, want %q", got, want)
+	}
+	if got := h.finished("r").After; got != "" {
+		t.Errorf("read After %q", got)
 	}
 }

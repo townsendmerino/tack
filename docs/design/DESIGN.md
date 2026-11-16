@@ -899,7 +899,13 @@ tool-use smoke set compares this merged set against the split one before it is f
 **Snapshots as built (2026-11-03;** `internal/snapshot`, `tack rewind`**).** The conversation fork waits for
 `session/fork`; this is the snapshot and a rewind of the files. Edit pre-images are recorded: before `edit` or `write` runs, the
 file's content goes to the blob store and a `checkpoint` event carries `files` (path, blob, or `absent` for a new file).
-`tack rewind <session> <seq>` restores them: the oldest pre-image of each path from that call on, with no undo (so it takes `-no-undo`); commands after it are not undone. It does not yet ask about files changed outside tack.
+`tack rewind <session> <seq>` restores them: the oldest pre-image of each path from that call on, with no undo (so it takes `-no-undo`); commands after it are not undone.
+  - **Files changed outside tack** (owner, 2026-11-16, "A sounds good"). Each `edit` and `write` records the handle of the
+    file after the call in `tool.finished`'s `after` (`absent` when no file is there). Before restoring, a rewind compares
+    each path it would change with the last recorded `after` for that path and names every file that no longer matches, in
+    the preview and again when it refuses. With `-yes` it restores nothing until `-overwrite` says to replace those files. A
+    path with no recorded `after` (a log from before it was recorded) is not compared and not warned about. The `-overwrite`
+    flag is the implementation's reading of "asks", not an owner decision.
   - **The workspace is the session's.** It is the one the session's start event names; a checkpoint of any other workspace is
     listed as unrewindable and never restored, and a log with no start event has none to trust.
   - **Every file operation goes through an `os.Root` on the workspace**, so a symlink in a directory of the path or at the

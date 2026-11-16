@@ -346,10 +346,16 @@ func imageSession(t *testing.T) (cfg, ws string, first, write int64) {
 	}
 	call("e1", "edit")
 	first = check("e1", proto.FileImage{Path: "a.txt", Blob: put("v0\n")})
+	done := func(id, content string) {
+		log.Append(proto.EvToolFinished, 0, proto.ToolFinished{ID: id, Outcome: proto.OutcomeOK, After: store.HandleOf([]byte(content))})
+	}
+	done("e1", "v1\n")
 	call("e2", "edit")
 	check("e2", proto.FileImage{Path: "a.txt", Blob: put("v1\n")})
+	done("e2", "v2\n")
 	call("w1", "write")
 	write = check("w1", proto.FileImage{Path: "sub/new.txt", Absent: true})
+	done("w1", "made\n")
 	os.MkdirAll(filepath.Join(ws, "sub"), 0o755)
 	os.WriteFile(filepath.Join(ws, "a.txt"), []byte("v2\n"), 0o644)
 	os.WriteFile(filepath.Join(ws, "sub", "new.txt"), []byte("made\n"), 0o644)
@@ -594,5 +600,59 @@ func TestRewindTrustsTheSessionsWorkspace(t *testing.T) {
 	evs, _ = st.Events("s_nostart", 0)
 	if p := rewindPoints(evs); len(p) != 1 || len(p[0].images) != 0 {
 		t.Errorf("a log with no start event: %+v", p)
+	}
+}
+
+// A rewind warns, per file, when the file on disk is no longer what the last recorded call left, before it restores anything,
+// and without -overwrite it restores nothing. A file that matches is not mentioned.
+func TestRewindWarnsOfFilesChangedOutsideTack(t *testing.T) {
+	cfg, ws, first, _ := imageSession(t)
+	s := strconv.FormatInt(first, 10)
+	code, out, _ := rewind(t, "-config", cfg, "s_images", s)
+	if code != exitOK || strings.Contains(out, "changed outside tack") {
+		t.Errorf("untouched files: %d %q", code, out)
+	}
+	// By hand: a.txt edited, and the file the write made deleted and made again by someone else.
+	os.WriteFile(filepath.Join(ws, "a.txt"), []byte("v2 and my own line\n"), 0o644)
+	code, out, _ = rewind(t, "-config", cfg, "s_images", s)
+	if code != exitOK || !strings.Contains(out, `changed outside tack: "a.txt"`) || strings.Contains(out, `changed outside tack: "sub/new.txt"`) || !strings.Contains(out, "-overwrite") {
+		t.Errorf("preview: %d %q", code, out)
+	}
+	code, _, errs := rewind(t, "-config", cfg, "-yes", "-no-undo", "s_images", s)
+	if code == exitOK || !strings.Contains(errs, "a.txt") || !strings.Contains(errs, "-overwrite") {
+		t.Errorf("-yes over a changed file: %d %q", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "v2 and my own line\n" {
+		t.Errorf("it restored over the file anyway: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "sub", "new.txt")); err != nil {
+		t.Error("it removed a file before refusing")
+	}
+	code, _, errs = rewind(t, "-config", cfg, "-yes", "-no-undo", "-overwrite", "s_images", s)
+	if code != exitOK {
+		t.Fatalf("-overwrite: %d %s", code, errs)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "v0\n" {
+		t.Errorf("a.txt: %q", b)
+	}
+}
+
+// A call whose finish recorded no hash (a log from before it was recorded) leaves its path out, so nothing is warned about.
+func TestLastRecordedSkipsFinishesWithoutAHash(t *testing.T) {
+	cfg, _, _, _ := imageSession(t)
+	st, _ := store.Open(filepath.Join(filepath.Dir(cfg), "state"))
+	evs, _ := st.Events("s_images", 0)
+	if got := lastRecorded(evs); len(got) != 2 || got["a.txt"] != store.HandleOf([]byte("v2\n")) || got["sub/new.txt"] != store.HandleOf([]byte("made\n")) {
+		t.Errorf("recorded %v", got)
+	}
+	var bare []proto.Event
+	for _, ev := range evs {
+		if ev.Type == proto.EvToolFinished {
+			ev.Payload = []byte(`{"id":"e2","outcome":"ok","result":"","truncated":false}`)
+		}
+		bare = append(bare, ev)
+	}
+	if got := lastRecorded(bare); len(got) != 0 {
+		t.Errorf("hashes from finishes that have none: %v", got)
 	}
 }

@@ -25,8 +25,9 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "", "config file (default ~/.config/tack/config.toml)")
 	yes := fs.Bool("yes", false, "restore the files; without it, say what would change")
 	noUndo := fs.Bool("no-undo", false, "with -yes, restore the files even if the rewind can't be undone")
+	overwrite := fs.Bool("overwrite", false, "with -yes, restore files even where they changed outside tack since the last edit")
 	if err := fs.Parse(args); err != nil || fs.NArg() < 1 || fs.NArg() > 2 {
-		fmt.Fprintln(stderr, "usage: tack rewind [-yes [-no-undo]] <session> [seq]")
+		fmt.Fprintln(stderr, "usage: tack rewind [-yes [-no-undo] [-overwrite]] <session> [seq]")
 		return exitUsage
 	}
 	fail := func(err any) int {
@@ -83,7 +84,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	case point == nil:
 		return fail(fmt.Sprintf("seq %d is not a checkpoint of this session", seq))
 	case len(point.images) > 0:
-		return rewindImages(stateDir, st, session, *point, points, *yes, *noUndo, stdout, stderr)
+		return rewindImages(stateDir, st, session, *point, points, lastRecorded(events), *yes, *noUndo, *overwrite, stdout, stderr)
 	case point.snapshot == "":
 		return fail(fmt.Sprintf("the command at seq %d can't be rewound: %s", seq, point.why))
 	}
@@ -222,7 +223,7 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 
 // rewindImages is a rewind to an edit or write checkpoint: the files its pre-images name go back as they were before that call
 // and every later one. Commands that ran after it are not undone, and it can't be undone itself, which -no-undo accepts.
-func rewindImages(stateDir string, st *store.Store, session proto.SessionID, point rewindPoint, points []rewindPoint, yes, noUndo bool, stdout, stderr io.Writer) int {
+func rewindImages(stateDir string, st *store.Store, session proto.SessionID, point rewindPoint, points []rewindPoint, recorded map[string]string, yes, noUndo, overwrite bool, stdout, stderr io.Writer) int {
 	fail := func(err any) int {
 		fmt.Fprintln(stderr, "tack rewind:", err)
 		return exitError
@@ -253,10 +254,25 @@ func rewindImages(stateDir string, st *store.Store, session proto.SessionID, poi
 			break
 		}
 	}
+	var paths []string
+	for _, c := range changes {
+		paths = append(paths, c.Path)
+	}
+	outside := tree.changedOutside(paths, recorded)
+	for _, p := range outside {
+		fmt.Fprintf(stdout, "changed outside tack: %q is not what the last edit left, and the rewind would replace it\n", p)
+	}
 	const why = "a rewind of edited files keeps no undo"
 	if !yes {
-		fmt.Fprintf(stdout, "this rewind can't be undone: %s\nthis includes anything changed outside tack; run tack rewind -yes -no-undo %s %d to do it\n", why, session, point.seq)
+		how := "-yes -no-undo"
+		if len(outside) > 0 {
+			how += " -overwrite"
+		}
+		fmt.Fprintf(stdout, "this rewind can't be undone: %s\nrun tack rewind %s %s %d to do it\n", why, how, session, point.seq)
 		return exitOK
+	}
+	if len(outside) > 0 && !overwrite {
+		return fail(fmt.Sprintf("%q changed outside tack since the last edit, and nothing was restored; tack rewind -yes -no-undo -overwrite %s %d replaces it anyway", outside, session, point.seq))
 	}
 	if !noUndo {
 		return fail(fmt.Sprintf("this rewind can't be undone: %s; tack rewind -yes -no-undo %s %d does it anyway", why, session, point.seq))
