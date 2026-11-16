@@ -84,7 +84,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 	case point == nil:
 		return fail(fmt.Sprintf("seq %d is not a checkpoint of this session", seq))
 	case len(point.images) > 0:
-		return rewindImages(stateDir, st, session, *point, points, lastRecorded(events), *yes, *noUndo, *overwrite, stdout, stderr)
+		return rewindImages(stateDir, st, session, *point, points, events, lastRecorded(events), *yes, *noUndo, *overwrite, stdout, stderr)
 	case point.snapshot == "":
 		return fail(fmt.Sprintf("the command at seq %d can't be rewound: %s", seq, point.why))
 	}
@@ -144,7 +144,7 @@ func rewindCmd(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; %s\n", rewoundPaths(changes), seq, back)
-	return exitOK
+	return forkAfterRewind(st, session, events, seq, stdout, stderr)
 }
 
 // rewindPoint is one thing a session can be rewound to.
@@ -223,7 +223,7 @@ func rewindPoints(events []proto.Event) []rewindPoint {
 
 // rewindImages is a rewind to an edit or write checkpoint: the files its pre-images name go back as they were before that call
 // and every later one. Commands that ran after it are not undone, and it can't be undone itself, which -no-undo accepts.
-func rewindImages(stateDir string, st *store.Store, session proto.SessionID, point rewindPoint, points []rewindPoint, recorded map[string]string, yes, noUndo, overwrite bool, stdout, stderr io.Writer) int {
+func rewindImages(stateDir string, st *store.Store, session proto.SessionID, point rewindPoint, points []rewindPoint, events []proto.Event, recorded map[string]string, yes, noUndo, overwrite bool, stdout, stderr io.Writer) int {
 	fail := func(err any) int {
 		fmt.Fprintln(stderr, "tack rewind:", err)
 		return exitError
@@ -296,7 +296,7 @@ func rewindImages(stateDir string, st *store.Store, session proto.SessionID, poi
 		return exitError
 	}
 	fmt.Fprintf(stdout, "rewound %d path(s) to seq %d; it can't be undone: %s\n", n, point.seq, why)
-	return exitOK
+	return forkAfterRewind(st, session, events, point.seq, stdout, stderr)
 }
 
 // warnNoRewind says, once per reason in a run, why its commands can't be rewound.
