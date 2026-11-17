@@ -44,6 +44,7 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 		RepoMap:              cfg.Run.RepoMap,
 		Snapshots:            *cfg.Run.Snapshots,
 		SnapshotMaxBytes:     cfg.Run.SnapshotMaxBytes,
+		TripwireThreshold:    cfg.Guard.TripwireThreshold,
 		Budget: loop.Budget{MaxRequests: cfg.Run.MaxRequests, MaxToolCalls: cfg.Run.MaxToolCalls,
 			MaxWall: cfg.Run.MaxWall.Duration, MaxTokens: cfg.Run.MaxTokens, TurnTokens: cfg.Run.TurnTokens,
 			MaxErrors: cfg.Run.MaxErrors, SessionTokens: cfg.Run.SessionTokens, SessionToolCalls: cfg.Run.SessionToolCalls},

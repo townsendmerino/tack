@@ -37,6 +37,8 @@ type Config struct {
 	Serve *Serve `toml:"serve"`
 	// Session is [session]: what the owner wants a session to start with.
 	Session Session `toml:"session"`
+	// Guard is [guard]: thresholds that only the owner sets, here and never in a repository's .tack/config.toml (DESIGN §6.6, "The tripwire").
+	Guard Guard `toml:"guard"`
 }
 
 // Session is [session] in the owner's own config.toml. A repository's .tack/config.toml has a [session] of its own with no
@@ -45,6 +47,17 @@ type Session struct {
 	// Mode is the mode the TUI starts a session in when -mode is not given: plan, ask, edits or auto. Unset means plan.
 	Mode string `toml:"mode"`
 }
+
+// Guard is [guard] in the owner's own config.toml. A repository's .tack/config.toml has no such table: an unknown setting there is an error,
+// so a repository cannot move the threshold, and no model or file can.
+type Guard struct {
+	// TripwireThreshold is how many shell calls with a shape that has no honest use hold a session for the owner's review (default 3, at
+	// least 1, at most 100).
+	TripwireThreshold int `toml:"tripwire_threshold"`
+}
+
+// DefaultTripwireThreshold is Guard.TripwireThreshold when the owner sets none.
+const DefaultTripwireThreshold = 3
 
 // Serve is [serve]: what `tack serve` runs on demand on nobara (DESIGN §8.2). It runs Server, a goinfer-child of
 // [servers], behind its own listener: the first request starts it (refused while goinfer's timing lock is held), and
@@ -313,6 +326,11 @@ func Load(path string) (*Config, error) {
 	}
 	if md.IsDefined("session", "mode") && !ValidMode(c.Session.Mode) {
 		return nil, fmt.Errorf("config %s: [session] mode: %q is not a mode (plan, ask, edits or auto)", path, c.Session.Mode)
+	}
+	if !md.IsDefined("guard", "tripwire_threshold") {
+		c.Guard.TripwireThreshold = DefaultTripwireThreshold
+	} else if t := c.Guard.TripwireThreshold; t < 1 || t > 100 {
+		return nil, fmt.Errorf("config %s: [guard] tripwire_threshold: %d is not between 1 and 100", path, t)
 	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
