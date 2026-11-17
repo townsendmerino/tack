@@ -29,6 +29,8 @@ func (s *Status) Apply(ev proto.Event) {
 	switch e := v.(type) {
 	case proto.SessionCreated:
 		s.Model, s.Mode = e.Model, e.Mode
+	case proto.ModeChanged:
+		s.Mode = e.Mode
 	case proto.ModelStatus:
 		s.Server, s.Load = e.Server, ""
 		if e.State != "ready" { // loading, or moved to another server under memory pressure

@@ -17,11 +17,16 @@ import (
 
 type approver struct {
 	answer Approval
-	asked  []proto.PermissionRequested
+	// answerFor, when set, makes the answer from the rules the question shows (PermissionRequested.Rules).
+	answerFor func(shown []string) Approval
+	asked     []proto.PermissionRequested
 }
 
 func (a *approver) Approve(_ context.Context, req proto.PermissionRequested) (Approval, error) {
 	a.asked = append(a.asked, req)
+	if a.answerFor != nil {
+		return a.answerFor(req.Rules), nil
+	}
 	return a.answer, nil
 }
 

@@ -60,6 +60,7 @@ func (c *Core) reopen(id proto.SessionID) (*session, *proto.Error) {
 	if !ok {
 		return fail(proto.CodeInvalidParams, errors.New("its log does not begin with session.created, so it predates tack's daemon"))
 	}
+	created.Mode = modeFromLog(evs, created.Mode) // the last mode.changed, else the mode the session was created in
 	closed, err := closeInterrupted(log, evs, c.orphanCost(id))
 	if err != nil {
 		return fail(proto.CodeInternalError, err)
