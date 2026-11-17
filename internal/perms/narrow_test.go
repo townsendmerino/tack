@@ -1,6 +1,7 @@
 package perms
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -26,6 +27,9 @@ func TestNarrowingAcceptsOnlyWhatKeepsTheShownRuleAndAddsLiteralArguments(t *tes
 		}
 		if r.Program != prog || len(r.Args) < 1 || r.Args[0] != "vet" {
 			t.Errorf("%q gave %+v", ok, r)
+		}
+		if back, err := ParseRule(r.String()); err != nil || back.Program != r.Program || !slices.Equal(back.Args, r.Args) {
+			t.Errorf("%q written as %q reads back as %+v, %v", ok, r.String(), back, err)
 		}
 	}
 }
@@ -111,5 +115,45 @@ func TestSessionRulesAreWhatAllowForSessionAdds(t *testing.T) {
 	}
 	if got := SessionRules("write", parsed); len(got) != 0 {
 		t.Errorf("a tool's session rules: %+v", got)
+	}
+}
+
+// TestANarrowedRuleSurvivesBeingWrittenDown: the rule Narrowing returns is the one the user typed, and it reads back as itself through
+// String and ParseRule, which is how the shell child gets it and how rule_added shows it. Before the quoting fix, `vet ”` and
+// `vet ' '` came back as `vet`, `vet '#x'` as a comment, `vet "a b"` as three words and `vet '*'` not at all: the narrowing quietly
+// became the whole shown rule.
+func TestANarrowedRuleSurvivesBeingWrittenDown(t *testing.T) {
+	const prog = "/usr/local/go/bin/go"
+	for text, want := range map[string][]string{
+		prog + ` vet ''`:         {"vet", ""},
+		prog + ` vet ' '`:        {"vet", " "},
+		prog + ` vet '#x'`:       {"vet", "#x"},
+		prog + ` vet "a b"`:      {"vet", "a b"},
+		prog + ` vet '*'`:        {"vet", "*"},
+		prog + ` vet "./a b"`:    {"vet", "./a b"},
+		prog + ` vet 'it'"'"'s'`: {"vet", "it's"},
+		prog + ` vet '$HOME'`:    {"vet", "$HOME"},
+		prog + ` vet 'a;b'`:      {"vet", "a;b"},
+		prog + " vet '\n'":       {"vet", "\n"},
+	} {
+		r, err := Narrowing(shownGoVet(), text)
+		if err != nil {
+			t.Errorf("%q refused: %v", text, err)
+			continue
+		}
+		if !slices.Equal(r.Args, want) {
+			t.Errorf("%q gave arguments %q, want %q", text, r.Args, want)
+		}
+		back, err := ParseRule(r.String())
+		if err != nil || back.Program != r.Program || !slices.Equal(back.Args, r.Args) {
+			t.Errorf("%q: written as %q it reads back as %+v, %v", text, r.String(), back, err)
+		}
+		// What the child does with the engine's rules: the narrowing, and not the shown rule, is what it holds.
+		e := &Engine{}
+		e.AddRule(r)
+		child := childEngine(e)
+		if len(child.Rules) != 1 || !slices.Equal(child.Rules[0].Args, want) {
+			t.Errorf("%q: the child's rules are %+v", text, child.Rules)
+		}
 	}
 }

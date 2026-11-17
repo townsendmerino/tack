@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/townsendmerino/tack/internal/perms"
@@ -130,4 +131,45 @@ func TestAnEditOnAToolWithNoRulesIsRefused(t *testing.T) {
 		t.Errorf("the question did not stay open: %v", err)
 	}
 	_ = f
+}
+
+// TestAnEditIsHeldToTheRuleTheDaemonParsedNotToItsText: a command with an empty first argument, `ls ” -la`, is listed as the rule
+// `ls ”`; an edit that keeps the empty argument and adds one is accepted and held with both; the bare program, which the text "ls"
+// would have matched if the shown rule had been read back from its text without its quotes, is refused, and so is a first argument
+// that is a space. The rule the engine holds is the typed one, argument for argument.
+func TestAnEditIsHeldToTheRuleTheDaemonParsedNotToItsText(t *testing.T) {
+	f := newFixture(t, goinfertest.Calls("", "b1", "bash", `{"command":"ls '' -la"}`), goinfertest.Says("done"))
+	eng := &perms.Engine{Sandboxed: true, Path: os.Getenv("PATH")}
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		eng.Root = root
+		return EditKit{Shell: noShell{}, Engine: eng}, nil
+	}
+	sid, err := f.sessionIn(t, gitWorkspace(t, ""), proto.ModeAsk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl, events, _ := f.privileged(t)
+	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("list")}}, nil)
+	qev := await(t, events, proto.EvPermissionRequested)
+	v, _ := qev.Decode()
+	shown := v.(proto.PermissionRequested).Rules
+	if len(shown) != 1 || !strings.HasSuffix(shown[0], " ''") {
+		t.Fatalf("shown rules %q: the empty argument is not written", shown)
+	}
+	prog := strings.TrimSuffix(shown[0], " ''")
+	for name, rule := range map[string]string{"the bare program": prog, "a space as the argument": prog + " ' '", "another argument": prog + " -la"} {
+		err := respondWith(cl, sid, qev, proto.PermissionRespondParams{Decision: proto.DecisionAllow, Scope: "session", Rule: rule})
+		var pe *proto.Error
+		if !errors.As(err, &pe) || pe.Code != proto.CodeInvalidParams {
+			t.Errorf("%s: %v; want invalid params", name, err)
+		}
+	}
+	if err := respondWith(cl, sid, qev, proto.PermissionRespondParams{Decision: proto.DecisionAllow, Scope: "session", Rule: prog + " '' /tmp"}); err != nil {
+		t.Fatal(err)
+	}
+	untilTurnEnd(t, events)
+	if len(eng.Rules) != 1 || len(eng.Rules[0].Args) != 2 || eng.Rules[0].Args[0] != "" || eng.Rules[0].Args[1] != "/tmp" {
+		t.Errorf("engine rules %+v, want the empty argument then /tmp", eng.Rules)
+	}
 }
