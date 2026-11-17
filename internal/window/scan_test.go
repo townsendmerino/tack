@@ -1,11 +1,13 @@
 package window
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // The characters under test are built from their code points, not written, so that this file holds none of them (a
@@ -143,5 +145,75 @@ func TestLoadPagesScansThem(t *testing.T) {
 	}
 	if good.Notice != "" {
 		t.Errorf("a clean page has a notice: %q", good.Notice)
+	}
+}
+
+// TestScanPromptEveryFormatCharacter: every character of Unicode category Cf is found, the two joiners aside, which have
+// their own context rule; so is each of the others that render as nothing or break a line.
+func TestScanPromptEveryFormatCharacter(t *testing.T) {
+	n := 0
+	for _, rg := range unicode.Cf.R16 {
+		for r := rune(rg.Lo); r <= rune(rg.Hi); r += rune(rg.Stride) {
+			n++
+			checkFlagged(t, r)
+		}
+	}
+	for _, rg := range unicode.Cf.R32 {
+		for r := rune(rg.Lo); r <= rune(rg.Hi); r += rune(rg.Stride) {
+			n++
+			checkFlagged(t, r)
+		}
+	}
+	if n < 100 {
+		t.Fatalf("only %d format characters were visited", n)
+	}
+	for _, r := range []rune{0x00AD, 0x034F, 0x17B4, 0x17B5, 0x2800, 0x2028, 0x2029, 0xFE00, 0xFE0D, 0xFFF9, 0xFFFA, 0xFFFB,
+		0x1BCA0, 0x1BCA3, 0xE0100, 0xE01EF, 0x115F, 0x3164, 0xFFA0, 0xE0001, 0xE007F} {
+		checkFlagged(t, r)
+	}
+}
+
+func checkFlagged(t *testing.T, r rune) {
+	t.Helper()
+	if r == 0x200C || r == 0x200D {
+		return
+	}
+	fs := ScanPrompt("a" + string(r) + "b")
+	if len(fs) != 1 || fs[0].Kind != FindInvisible || fs[0].Detail != fmt.Sprintf("U+%04X", r) {
+		t.Errorf("U+%04X: %+v, want one invisible finding", r, fs)
+	}
+	if got := EscapeInvisible("a" + string(r) + "b"); strings.ContainsRune(got, r) {
+		t.Errorf("U+%04X was not escaped: %q", r, got)
+	}
+}
+
+// TestJoinersOnlyInEmojiOrPersian: a joiner is allowed between two emoji, or two Arabic-script letters, and nowhere else;
+// the variation selectors are allowed after an emoji and after a keycap base, and nowhere else.
+func TestJoinersOnlyInEmojiOrPersian(t *testing.T) {
+	heart := string(rune(0x2764))
+	vs16 := string(rune(0xFE0F))
+	vs1 := string(rune(0xFE00))
+	keycap := string(rune(0x20E3))
+	hebrewAlef := string(rune(0x05D0))
+	for _, c := range []struct {
+		name, text string
+		flagged    bool
+	}{
+		{"ZWJ between emoji", man + zwj + comp, false},
+		{"ZWJ after a heart and a variation selector", heart + vs16 + zwj + man, false},
+		{"ZWNJ between Arabic-script letters", mim + yeh + zwnj + khah, false},
+		{"ZWJ between a letter and an emoji", "a" + zwj + comp, true},
+		{"ZWJ between CJK and Latin", cjk + zwj + "a", true},
+		{"ZWNJ between Hebrew letters", hebrewAlef + zwnj + hebrewAlef, true},
+		{"ZWNJ after an emoji and before a letter", man + zwnj + "a", true},
+		{"VS16 after a heart", heart + vs16, false},
+		{"VS16 keycap", "1" + vs16 + keycap, false},
+		{"VS16 after a letter", "a" + vs16, true},
+		{"VS1 after a heart", heart + vs1, true},
+		{"VS16 alone", vs16, true},
+	} {
+		if got := len(ScanPrompt(c.text)) > 0; got != c.flagged {
+			t.Errorf("%s: flagged %v, want %v", c.name, got, c.flagged)
+		}
 	}
 }

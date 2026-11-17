@@ -63,3 +63,69 @@ func TestCheckExtraEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestCommandEnvDeniesMoreSecretShapes: credentials, agent sockets, askpass and ssh hooks are named like secrets too, even
+// when a repository's configuration asks for them; PAT counts as a whole word, so PATH and GOPATH are not caught by it.
+func TestCommandEnvDeniesMoreSecretShapes(t *testing.T) {
+	denied := []string{"GH_PAT", "NPM_PAT", "PAT", "SSH_AUTH_SOCK", "AUTH_HEADER", "BASIC_AUTH", "OAUTH_CODE", "AWS_CREDENTIALS",
+		"GOOGLE_CRED_FILE", "DB_PASSPHRASE", "DB_PASSWD", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH", "GIT_SSH_COMMAND", "DOCKER_SOCK",
+		"GOAUTH", "LC_AUTH", "gh_pat"}
+	for _, n := range denied {
+		if CommandEnvAllowed(n, []string{n}) {
+			t.Errorf("%s passed from a repository's extra names", n)
+		}
+	}
+	for _, n := range []string{"PATCH_LEVEL", "CI", "SPATH_X"} { // names a repository may add that only look like secrets
+		if !CommandEnvAllowed(n, []string{n}) {
+			t.Errorf("%s was refused though it holds no secret word", n)
+		}
+	}
+	for _, n := range []string{"PATH", "GOPATH", "LC_ALL"} {
+		if !CommandEnvAllowed(n, nil) {
+			t.Errorf("%s was refused", n)
+		}
+	}
+	for n := range commandEnv {
+		if !CommandEnvAllowed(n, nil) {
+			t.Errorf("%s is on the list and does not pass", n)
+		}
+	}
+}
+
+// TestCommandEnvBlocksWhatChangesPrograms: variables that make a program load or run something of the repository's never
+// reach a command, from the list or from a trusted configuration.
+func TestCommandEnvBlocksWhatChangesPrograms(t *testing.T) {
+	for _, n := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "BASH_ENV",
+		"ENV", "PROMPT_COMMAND"} {
+		if CommandEnvAllowed(n, []string{n}) {
+			t.Errorf("%s passed from a repository's extra names", n)
+		}
+	}
+	for _, n := range []string{"ENVIRONMENT_NAME", "MY_ENV", "LDFLAGS", "PROMPT"} {
+		if !CommandEnvAllowed(n, []string{n}) {
+			t.Errorf("%s was refused though it only looks like one", n)
+		}
+	}
+}
+
+// TestCommandEnvDropsAProxyWithCredentials: a GOPROXY value that carries user:token@ userinfo is dropped whole, in the
+// environment commands get and in what they are taken to have inherited.
+func TestCommandEnvDropsAProxyWithCredentials(t *testing.T) {
+	for value, keep := range map[string]bool{
+		"https://proxy.golang.org,direct":        true,
+		"off":                                    true,
+		"https://proxy.example/path@v1,direct":   true,
+		"https://user:tok@proxy.example,direct":  false,
+		"direct|https://u@proxy.example":         false,
+		"https://proxy.golang.org,http://a:b@h/": false,
+	} {
+		got := CommandEnv([]string{"GOPROXY=" + value}, nil)
+		if kept := len(got) == 1; kept != keep {
+			t.Errorf("GOPROXY=%s: kept %v, want %v", value, kept, keep)
+		}
+	}
+	t.Setenv("GOPROXY", "https://user:tok@proxy.example")
+	if got := InheritedEnv("GOPROXY", nil); got != "" {
+		t.Errorf("a proxy with credentials inherited as %q", got)
+	}
+}
