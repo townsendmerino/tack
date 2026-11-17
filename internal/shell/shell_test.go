@@ -829,3 +829,18 @@ func TestCommandsGetAShortEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// TestCommandsNeverSeeAProxyCredential: a GOPROXY that carries user:token@ userinfo is dropped from the commands'
+// environment, and a plain one passes.
+func TestCommandsNeverSeeAProxyCredential(t *testing.T) {
+	for value, want := range map[string]bool{"https://proxy.golang.org,direct": true, "https://bob:hunter2@proxy.example": false} {
+		t.Setenv("GOPROXY", value)
+		r := runOK(t, session(t, false), "/usr/bin/env")
+		if got := strings.Contains(r.Output, "GOPROXY="+value+"\n"); got != want {
+			t.Errorf("GOPROXY=%s reached the command: %v, want %v", value, got, want)
+		}
+		if strings.Contains(r.Output, "hunter2") {
+			t.Errorf("the credential reached the command")
+		}
+	}
+}
