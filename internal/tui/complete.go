@@ -43,9 +43,9 @@ type completedMsg struct {
 func atWord(input []rune) (start int, query string, ok bool) {
 	for i := len(input) - 1; i >= 0; i-- {
 		switch {
-		case input[i] == ' ':
+		case input[i] == ' ' || input[i] == '\n':
 			return 0, "", false
-		case input[i] == '@' && (i == 0 || input[i-1] == ' '):
+		case input[i] == '@' && (i == 0 || input[i-1] == ' ' || input[i-1] == '\n'):
 			return i, string(input[i+1:]), true
 		}
 	}
