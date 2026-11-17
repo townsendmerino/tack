@@ -619,6 +619,16 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **As built (2026-11-17):** every mode but `plan` gets the edit tools, the shell and the permission engine, and needs the
     sandbox to start (macOS-only for now); `plan` has none of them. Until then only `auto` was wired, and `ask` and `edits`
     behaved as `plan`, though the engine (`perms.Engine.Decide`) had decided all four.
+  - **Which mode a session starts in** (owner, 2026-11-17). With nothing set, the TUI starts in `plan`. Strictness runs
+    `plan` < `ask` < `edits` < `auto`: how much a session may do without asking.
+    - **A mode is only ever chosen by the owner:** by `tack -mode`, by the Shift+Tab key, or by `[session] mode` in
+      `~/.config/tack/config.toml`. The default is read from that file alone, never from a repository's
+      `.tack/config.toml`, so a repository cannot open a session in `auto`.
+    - **A repository can only lower it.** A repository the owner has trusted (§6.6, "A repo's own configuration is
+      untrusted until the owner trusts the repo") may set `[session] max_mode`, a ceiling: the session gets the stricter of the
+      mode asked for and the ceiling, in the daemon, when it is created and when it is moved. The repository has no setting
+      that picks a mode or raises one, and an untrusted or changed file sets no ceiling. A `max_mode` that is not a mode is an
+      error and applies nothing. `session.created` records the mode the session got.
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's

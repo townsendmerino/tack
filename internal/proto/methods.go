@@ -72,6 +72,39 @@ const (
 	ModeAuto  Mode = "auto"
 )
 
+// Strictness orders the modes by how much each lets a session do without asking: plan 0, ask 1, edits 2, auto 3. A mode that is
+// not one has -1.
+func (m Mode) Strictness() int {
+	switch m {
+	case ModePlan:
+		return 0
+	case ModeAsk:
+		return 1
+	case ModeEdits:
+		return 2
+	case ModeAuto:
+		return 3
+	}
+	return -1
+}
+
+// Valid reports whether m is one of the four modes.
+func (m Mode) Valid() bool { return m.Strictness() >= 0 }
+
+// Stricter is the stricter of two modes: the one that lets a session do less without asking. A mode that is not valid loses
+// to a valid one, so a bad value never raises anything.
+func Stricter(a, b Mode) Mode {
+	switch {
+	case !a.Valid():
+		return b
+	case !b.Valid():
+		return a
+	case b.Strictness() < a.Strictness():
+		return b
+	}
+	return a
+}
+
 // SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id.
 type SessionNewParams struct {
 	Workspace string `json:"workspace"`
