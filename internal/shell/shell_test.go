@@ -285,7 +285,9 @@ func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { os.RemoveAll(tmp) })
-			for _, cmd := range []string{`how=--soft; git reset $how HEAD`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
+			// What isn't on the list runs. Expanded or not, ordinary git and a temp directory go through. (git status stands where git reset did:
+			// reset is not read-only, so a rule no longer covers it, and the rule-approved run is stopped by the allowlist.)
+			for _, cmd := range []string{`how=--short; git status $how`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
 				if r := runBy(t, s, by, cmd); r.Stopped != "" {
 					t.Errorf("%s: stopped: %s", cmd, r.Stopped)
 				}
@@ -860,6 +862,71 @@ func TestCommandsNeverSeeAProxyCredential(t *testing.T) {
 		}
 		if strings.Contains(r.Output, "hunter2") {
 			t.Errorf("the credential reached the command")
+		}
+	}
+}
+
+// TestARuleApprovedCommandIsHeldToTheAllowlistAsItRuns: a command a rule approved runs only as the allowlist for its program accepts,
+// after expansion. The parse saw `find sub -type f $x` with an argument it could not read, which asks; if it is approved by a rule
+// anyway (here, by the rule's name), the run-time check stops what it became, -delete, and the file survives. The user's own approval
+// is what he saw and is not held to the list.
+func TestARuleApprovedCommandIsHeldToTheAllowlistAsItRuns(t *testing.T) {
+	for _, tc := range []struct {
+		cmd, by string // by: who stops it; "" is the allowlist, the rest are checks that were there before and stop it first
+	}{
+		{`x=-delete; find sub -type f $x`, "asks in every mode"}, {`x=-fprint; find sub -type f $x /tmp/tack-allowlist-out`, "asks in every mode"},
+		{`x=-nosuchprimary; find sub $x`, ""}, {`a=-ldflags=-extld=id; go build $a .`, ""}, {`a=-gcflags=-toolexec=id; go build $a .`, ""},
+	} {
+		cmd := tc.cmd
+		want := "not one a rule covers"
+		if tc.by != "" {
+			want = tc.by
+		}
+		s := session(t, true, "find sub", "go build")
+		keep := filepath.Join(s.Engine.Root, "sub", "keep.txt")
+		os.WriteFile(keep, []byte("x"), 0o644)
+		r := runBy(t, s, perms.ByRule, cmd)
+		if r.Exit == 0 || !strings.Contains(r.Stopped, want) {
+			t.Errorf("%s: not stopped by the allowlist: %+v", cmd, r)
+		}
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s: the file is gone", cmd)
+		}
+	}
+	// An allowed expansion runs.
+	s := session(t, true, "find sub")
+	os.WriteFile(filepath.Join(s.Engine.Root, "sub", "a.txt"), []byte("x"), 0o644)
+	if r := runBy(t, s, perms.ByRule, `n=a.txt; find sub -name $n -print`); r.Stopped != "" || !strings.Contains(r.Output, "a.txt") {
+		t.Errorf("an allowed expansion: %+v", r)
+	}
+}
+
+// A command a rule approved runs go or git only with the variables a rule allows, and git only where it would find the owner's
+// repository: the environment it reads and a repository a model wrote are both outside what the rule saw.
+func TestARuleApprovedGitRunsOnlyInTheOwnersRepositoryAndEnvironment(t *testing.T) {
+	s := session(t, true, "git status", "go build")
+	root := s.Engine.Root
+	ev := filepath.Join(root, "ev")
+	os.MkdirAll(filepath.Join(ev, "objects"), 0o755)
+	os.MkdirAll(filepath.Join(ev, "refs"), 0o755)
+	os.WriteFile(filepath.Join(ev, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	os.MkdirAll(filepath.Join(root, "gf"), 0o755)
+	os.WriteFile(filepath.Join(root, "gf", ".git"), []byte("gitdir: ../ev\n"), 0o644)
+	marker := filepath.Join(root, "ran")
+	os.WriteFile(filepath.Join(ev, "config"), []byte("[core]\n\tbare = true\n\tfsmonitor = touch "+marker+"\n"), 0o644)
+	if r := runBy(t, s, perms.ByRule, `git status`); r.Stopped != "" { // first: the loop below leaves exports in the session
+		t.Errorf("git status in the owner's own repository was stopped: %+v", r)
+	}
+	for _, cmd := range []string{`cd gf; git status`, `env HOME=ev git status`, `cd ev; git status`, `cd ev; git -C . status`, `x=HOME; export $x=ev; git status`, `n=GIT_DIR; export $n=ev; git status`, `export GOROOT=ev; go build .`} {
+		r := runBy(t, s, perms.ByRule, cmd)
+		if r.Exit == 0 || r.Stopped == "" {
+			t.Errorf("%s: not stopped: %+v", cmd, r)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s: the configured program ran", cmd)
 		}
 	}
 }

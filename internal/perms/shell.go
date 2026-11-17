@@ -166,7 +166,11 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 			why = append(why, e.redirect(n, dir)...)
 		}
 	})
+	why = append(why, e.ruleEnvReasons(f, cmds)...)
+	gitWrites := gitStateWrites(cmds)
+	why = append(why, gitWrites...)
 	always = e.scanAsks(f, scan{dir: e.startDir()})
+	always = appendNew(always, gitWrites...)
 	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
 	for _, name := range sortedKeys(e.SessionEnv) {
 		if v := e.SessionEnv[name]; v != InheritedEnv(name, e.EnvExtra) && runsProgramWith(f, name) {
@@ -176,6 +180,65 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 		}
 	}
 	return cmds, why, always
+}
+
+// ruleEnvReasons: a command with a rule for go or git sets only the variables RuleEnvOK names. go and git read much of their environment
+// (GOROOT, PKG_CONFIG, CGO_*FLAGS, HOME, GIT_DIR ...), so any other variable set anywhere in the line, or exported earlier in the session
+// and still different from tack's own, asks.
+func (e *Engine) ruleEnvReasons(f *syntax.File, cmds []Simple) []string {
+	var progs []string
+	for _, c := range cmds {
+		if c.Program != "" && EnvSensitive(c.Program) && e.allowed(c) && !slices.Contains(progs, filepath.Base(c.Program)) {
+			progs = append(progs, filepath.Base(c.Program))
+		}
+	}
+	if len(progs) == 0 {
+		return nil
+	}
+	var names []string
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.Assign:
+			name, _, dynamic := declared(n)
+			if dynamic {
+				name = unknownWord
+			}
+			if name != "" && !strings.HasPrefix(name, "-") {
+				names = append(names, name)
+			}
+		case *syntax.WordIter:
+			if n.Name != nil {
+				names = append(names, n.Name.Value)
+			}
+		case *syntax.ParamExp:
+			name, dynamic := expansionSets(n)
+			if dynamic {
+				name = unknownWord
+			}
+			if name != "" {
+				names = append(names, name)
+			}
+		case *syntax.CallExpr:
+			if len(n.Args) > 0 {
+				names = append(names, namedVars(n.Args)...)
+			}
+		}
+		return true
+	})
+	for name, v := range e.SessionEnv {
+		if v != InheritedEnv(name, e.EnvExtra) {
+			names = append(names, name)
+		}
+	}
+	var why []string
+	for _, name := range names {
+		if name == unknownWord {
+			why = appendNew(why, "a variable is set by a name that expands at run time, and go and git read much of their environment, so no rule covers it")
+		} else if !RuleEnvOK(name) {
+			why = appendNew(why, fmt.Sprintf("setting %s changes what %s runs or loads, which no rule covers", name, strings.Join(progs, " and ")))
+		}
+	}
+	return why
 }
 
 // simple resolves one simple command's program from dir, where it runs, looking through wrappers, and checks it against
@@ -211,6 +274,9 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 		s := Simple{Program: prog, Name: name}
 		s.Args, s.Literal = args(words[1:])
 		if filepath.Base(prog) == "env" {
+			if r := EnvInvocationUnsafe(s.Args); r != "" {
+				return &s, []string{r}
+			}
 			for i, a := range s.Args {
 				name, _, isAssign := strings.Cut(a, "=")
 				switch {
@@ -237,6 +303,21 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 			}
 			if len(why) > 0 {
 				return &s, why
+			}
+		}
+		if e.allowed(s) { // a rule matches; for a program with an allowlist it covers only what the allowlist accepts
+			if r := UnsafeInvocation(prog, s.Args); r != "" {
+				return &s, []string{r + ", which no rule covers"}
+			}
+			if filepath.Base(prog) == "go" && dir != "" {
+				if r := GoOutputEscapes(e.Root, dir, s.Args); r != "" {
+					return &s, []string{r}
+				}
+			}
+			if filepath.Base(prog) == "git" && dir != "" {
+				if !GitFindsOwnersRepo(prog, dir, e.Root) {
+					return &s, []string{"git would not use this workspace's own repository here, which a rule does not cover"}
+				}
 			}
 		}
 		if !e.allowed(s) {
@@ -537,6 +618,16 @@ func (e *Engine) Covers(s Simple) bool {
 			if !s.Literal[i] || runFlag(s.Program, a) != "" {
 				return false
 			}
+		}
+	}
+	if HasAllowlist(s.Program) {
+		for i := range s.Args {
+			if !s.Literal[i] {
+				return false
+			}
+		}
+		if UnsafeInvocation(s.Program, s.Args) != "" {
+			return false
 		}
 	}
 	return e.allowed(s)

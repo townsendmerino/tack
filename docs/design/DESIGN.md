@@ -654,6 +654,57 @@ tool-use smoke set compares this merged set against the split one before it is f
     back, through `ParseRule`, as the rule it wrote. Before, an argument that was empty, a space, a `#`, a word with a space or
     a glob was lost or merged on the way, so allowing `go '' build` for the session gave the child a rule for `go` with any
     arguments. A rule that would not read back is not added: the command keeps asking.
+  - **What a rule may cover: an allowlist of invocations** (owner, 2026-11-17, from a security review). A rule matches a program
+    and its leading arguments, so `go test` and `git status` matched anything after: `go test -ldflags='-extld=./evil'` made
+    the linker run a program, and `git grep -O id`, `git difftool -x id`, `git bisect run id` ran one. No list of dangerous
+    flags is ever complete, so for `go`, `git` and `find` a rule covers an invocation only if every subcommand and flag of it is
+    one known not to run a program or change configuration (`perms.UnsafeInvocation`, `internal/perms/safe.go`). Anything else
+    is not covered and asks; the user can still allow it once. The same function decides at approval and, after expansion, at
+    run time for a command a rule approved. What passes:
+    - **`go`:** `build`, `test`, `vet`, `run`, `list`, `version`, and `env` to read; their flags from a list of those that
+      neither run a program nor reach outside (not `-exec`, `-toolexec`, `-vettool`, `-overlay`, `-C`, `-modfile`, `-pkgdir`,
+      `-gccgoflags`). `-ldflags`, `-gcflags` and `-asmflags` are read word by word and pass only when every word is on a short
+      list (`-s`, `-w`, `-X name=value`, `-N`, `-l`, `-m`, `-D`, `-I` and the like); `-extld`, `-extldflags`, `-r`, `-toolexec`
+      and anything else ask. `go env -w` and `-u` ask under any rule, since they persist into later runs; `go generate`,
+      `install`, `get`, `mod`, `clean`, `fmt`, `work` and `tool` ask. After `-args` (test) or the first package (run) the
+      rest is the program's, not go's. `GOFLAGS` set in the command still asks, whatever it holds.
+    - **`git`:** the read-only commands (`status`, `diff`, `log`, `show`, `blame`, `grep`, `rev-parse`, `rev-list`, `ls-files`,
+      `describe` and their kind), `branch` and `tag` to list, `remote -v` and `show`, `stash list` and `show`, and `config`
+      only to read (`--get`, `--list`), each with its display and selection flags. Not `-c`, `-C`, `--exec-path`, `--ext-diff`,
+      `--textconv`, `grep -O`, `--output`, any `git config` write, `difftool`, `bisect`, `submodule`, `filter-branch`, or a
+      command that writes (`reset`, `commit`, `checkout`, `add`, `branch <name>`, `stash`, `tag <name>`). A write to config can
+      run a program later (`core.fsmonitor`, `alias.x '!…'`), so none is ever covered.
+    - **`find`:** the tests and the print actions; not `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fls`.
+    - **What `go` and `git` read besides their arguments** (security review of the allowlist). Arguments are not the only
+      input, so a rule for `go` or `git` also covers only a command that:
+      - sets no variable outside `GOOS`, `GOARCH`, `CGO_ENABLED` and `NO_COLOR` (`perms.RuleEnvOK`), by a prefix, `export`,
+        `declare`, `read`, `printf -v`, a `for` variable, `${V:=…}`, or an earlier command in the session. `GOROOT`,
+        `PKG_CONFIG`, `CGO_*FLAGS`, `HOME`, `XDG_CONFIG_HOME`, `GIT_DIR` and `GIT_WORK_TREE` ask. At run time a rule-approved
+        `go` or `git` is stopped if an exported variable outside that list differs from tack's own environment.
+      - runs `git` only where git finds the workspace's own repository. Discovery is not re-implemented: `perms.GitFindsOwnersRepo`
+        asks git (`rev-parse --absolute-git-dir`, with a minimal environment: no `GIT_*`, an empty `HOME`, no system or global
+        config, a ceiling above the root) from the command's directory and from the root, and the answers must be the same, with a
+        `.git` of the root's own that is not a symlink. A bare-shaped directory with a `config` (`HEAD`, `objects/`, `refs/`, which
+        the file tools do not refuse), a gitfile whose `gitdir:` names a directory a model wrote, a symlinked `.git`, a
+        `commondir`, or a `.git` git cannot read all make it differ or fail, and git is then not covered. Done at approval and at
+        run time. Chosen over `-c safe.bareRepository=explicit` (changes the approved argv) and a file-tool refusal (cannot
+        tell such a `config` from any other). A linked worktree works, since the root's own answer is the reference.
+      - makes no `.git` entry: `mkdir`, `mv`, `cp`, `ln`, `touch`, `tee`, `sed`, `rm` and the like naming a path with a `.git`
+        segment in any letter case, and any redirection to one, ask in every mode (`PathAsks`), so a covered writer cannot make
+        the gitfile or config the previous item is about.
+      - `env` in front of `go` or `git` is held to the same list: its flags and every variable it sets.
+      - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
+        `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment, and not through a symlink that leads out of the tree or into `.git`.
+      - names a git flag's value as git does: `--abbrev newname` is the flag and a name, so `branch` and `tag` read a bare
+        word after a value flag as a name to create.
+
+      Also not covered: `go run module@version` fetches and runs remote code, so a rule does not
+      cover it and it asks; `git ls-remote
+      evil::x` runs `git-remote-evil` from `PATH`, and `ls-remote`, `fetch`, `clone` and the other remote commands are not on
+      the list, so they ask.
+    - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
+      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
+      `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval
