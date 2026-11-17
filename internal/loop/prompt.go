@@ -73,6 +73,10 @@ const MaxNoToolCallResends = 2
 // NoToolCallClass is the error event's class for such a refusal; Rebuild adds NoToolCallNudge where it finds one.
 const NoToolCallClass = "no_tool_call"
 
+// NoticeClass is the error event's class for a warning to the owner about what loaded into the first prompt
+// (Config.Notices). It is a notice, not a failure: nothing retries and no turn stops for it.
+const NoticeClass = "instructions"
+
 // UserText is the text the model receives for a user's message. The first turn of a session carries the workspace
 // facts at the tail, where per-session bytes belong; later turns carry the message alone. Rebuilding a session from
 // its log calls it the same way, so the rebuilt request matches the one sent.

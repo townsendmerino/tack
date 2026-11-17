@@ -820,6 +820,25 @@ tool-use smoke set compares this merged set against the split one before it is f
   bidirectional overrides such as U+202E) and for text that tells the model to send files or secrets out. A flagged
   file is shown with the characters escaped and a warning, and the owner decides. §9.3's escaping covers control
   characters in tool output; these characters are not control characters, so they pass it.
+  - **As built** (`internal/window/scan.go`: `ScanPrompt`, `EscapeInvisible`, `ScanNotice`; loaded by
+    `internal/core.readInstructionFileScanned` and `window.LoadPages`):
+    - **Invisible:** every character of Unicode's format category Cf (zero-width and bidirectional controls, the soft
+      hyphen, tag characters, annotation anchors, the Arabic number signs), a byte order mark anywhere but the start, and
+      the others that show nothing: U+034F, the Khmer inherent vowels U+17B4 and U+17B5, the Braille blank U+2800, the
+      line and paragraph separators U+2028 and U+2029, the variation selectors, and the Hangul fillers. The two joiners are
+      allowed only between two emoji or two Arabic-script letters (Persian), and the emoji variation selectors only after an
+      emoji or under a keycap.
+    - **Tool results too:** the same escape runs in `loop.escapeControl`, the pass every tool result, build note and cut
+      goes through, so a file the model reads cannot hide text from the owner either (§9.3).
+    - **Send out:** a line holding an act of sending, a thing worth stealing and a destination, all three. "Never send
+      secrets" has no destination and passes. This is a heuristic that makes the owner look, not a boundary; the
+      sandbox, which has no network, is what stops data leaving.
+    - **What the owner sees:** the model is shown an instruction file or page with the invisible characters written as
+      `\u{XXXX}`, and the log gets one error event of class `instructions` after the session's first user message, naming
+      the file, each character and line, and each flagged line. A reopened session does not repeat it. The text that tells
+      the model to send things out is still loaded, so the warning, and the owner's look at the file, are the decision;
+      nothing here waits for an answer.
+    - **Not yet:** skills (not built), and instruction files below the root (not loaded yet).
 - **No sandbox inside the sandbox.** macOS refuses `sandbox-exec` inside an already sandboxed process. Tests that start
   `sandbox-exec` (the profile and escape tests) therefore cannot run from tack's own `bash` tool when tack is used to
   develop tack; they carry a build tag and run from the day-loop checker or CI, outside tack's sandbox.
@@ -1908,7 +1927,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
 | tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
-| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape, the short environment for commands | — | one-spawn grants and the network proxy (P5); the prompt-text scan; repo trust |
+| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape, the short environment for commands, the prompt-text scan | — | one-spawn grants and the network proxy (P5); repo trust |
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |

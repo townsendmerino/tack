@@ -95,7 +95,7 @@ var tackLayers = map[string]allow{
 	},
 	"internal/loop": {
 		Imports: []string{"internal/halt", "internal/models", "internal/perms", "internal/proto", "internal/server",
-			"internal/shell", "internal/store", "internal/tools"},
+			"internal/shell", "internal/store", "internal/tools", "internal/window"},
 		Tests: []string{"internal/sandbox", "internal/server/cassette", "internal/server/goinfer",
 			"internal/server/goinfer/goinfertest", "internal/snapshot"},
 	},
