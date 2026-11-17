@@ -130,6 +130,10 @@ var wrappers = map[string]bool{"exec": true, "command": true, "builtin": true, "
 //
 // always is what asks in every mode (AlwaysAsks, PathAsks), whatever the rules say.
 func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string) {
+	if strings.Contains(command, "\r") { // the parser drops or splits on a carriage return and bash keeps it: the words it saw are not the words that run
+		reason := []string{"the command contains a carriage return, which the shell reads differently from the analysis"}
+		return nil, reason, reason
+	}
 	f, err := syntax.NewParser().Parse(strings.NewReader(command), "")
 	if err != nil {
 		reason := []string{"the command does not parse: " + err.Error()}
@@ -394,23 +398,33 @@ func (e *Engine) allowed(s Simple) bool {
 	return false
 }
 
-// literal returns a word's text when it is fixed before the shell runs it: plain text and quoted text without
-// expansions. A word with a parameter, command or arithmetic expansion, an unquoted glob, or a leading tilde is not.
+// literal returns a word's text when bash will read it as exactly that text: plain text, and quoted text without expansions. A word
+// whose text bash decodes, or expands, before it runs is not literal, since the analyzer reads the word as written and bash reads
+// another: a parameter, command or arithmetic expansion, an unquoted glob, a leading tilde, a backslash escape (unquoted or inside
+// double quotes), a $'...' or $"..." string, brace expansion (a comma or range between braces), and a carriage return anywhere (the
+// parser drops or splits on it, bash keeps it). Single-quoted text is raw in bash, backslashes included, and stays literal. Everything
+// that is not literal is a word the parse cannot see, which asks (DESIGN §6.6).
 func literal(w *syntax.Word) (string, bool) {
 	var b strings.Builder
 	for i, part := range w.Parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
-			if strings.ContainsAny(p.Value, "*?[") || (i == 0 && strings.HasPrefix(p.Value, "~")) {
+			if strings.ContainsAny(p.Value, "*?[\\\r") || (i == 0 && strings.HasPrefix(p.Value, "~")) || braceExpands(p.Value) {
 				return "", false
 			}
 			b.WriteString(p.Value)
 		case *syntax.SglQuoted:
+			if p.Dollar || strings.Contains(p.Value, "\r") {
+				return "", false
+			}
 			b.WriteString(p.Value)
 		case *syntax.DblQuoted:
+			if p.Dollar {
+				return "", false
+			}
 			for _, q := range p.Parts {
 				lit, ok := q.(*syntax.Lit)
-				if !ok {
+				if !ok || strings.ContainsAny(lit.Value, "\\\r") {
 					return "", false
 				}
 				b.WriteString(lit.Value)
@@ -420,6 +434,21 @@ func literal(w *syntax.Word) (string, bool) {
 		}
 	}
 	return b.String(), true
+}
+
+// braceExpands reports whether s has braces bash would expand: a comma or a range (..) between a { and the next }.
+func braceExpands(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '{' {
+			continue
+		}
+		if j := strings.IndexByte(s[i:], '}'); j > 0 {
+			if seg := s[i+1 : i+j]; strings.Contains(seg, ",") || strings.Contains(seg, "..") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func args(words []*syntax.Word) ([]string, []bool) {

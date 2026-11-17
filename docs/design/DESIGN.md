@@ -691,6 +691,13 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **The rule (2026-11-02): when the parse cannot see exactly what will run, it asks, in every mode.** It does not read
     code inside text, or guess. These all ask:
     - `eval`, `trap`, `source` and `.`, and a program name that expands;
+    - **a word bash decodes before it runs** (security review, 2026-11-17): the analyzer reads each word as written, so a word
+      whose text bash changes is not a word it can match. A backslash escape (unquoted, or inside double quotes), a `$'…'` or
+      `$"…"` string, brace expansion (`-e{x,x}ec`), and a carriage return anywhere in the command (the parser drops or splits on
+      it, bash keeps it) are not literal: no rule covers them and no flag check trusts them, so `find . \-exec id ';'` and
+      `go test $'\x2dexec' id` ask even where `find .` or `go test` is allowed. Single-quoted text is raw in bash, backslashes
+      included, and stays literal. Allowing for the session a command whose first argument is such a word adds no rule, rather
+      than a rule for the whole program;
     - a shell handed code in any way, under any wrapper or flags, on a block or subshell around it too: `-c`, `-s`, a script that is stdin (`/dev/stdin`, `/dev/fd/N`,
       `/proc/…/fd/N`, or a symlink to one), and anything fed to it: a pipe (`curl … | sh` too), `<`, a here-document or a
       here-string, even with a named script;

@@ -204,7 +204,10 @@ func (e *Engine) AllowForSession(tool string, parsed []Simple) []string {
 			continue
 		}
 		r := Rule{Program: c.Program}
-		if len(c.Args) > 0 && c.Literal[0] {
+		if len(c.Args) > 0 {
+			if !c.Literal[0] { // a first argument the analysis cannot see gives no rule, not a rule for the whole program
+				continue
+			}
 			r.Args = []string{c.Args[0]}
 		}
 		e.Rules = append(e.Rules, r)
