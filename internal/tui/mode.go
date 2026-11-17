@@ -30,10 +30,10 @@ func nextMode(m proto.Mode) proto.Mode {
 }
 
 // setMode asks the daemon to move the session to m.
-func (a *App) setMode(m proto.Mode) tea.Cmd {
+func (a *App) setMode(m proto.Mode, confirmed bool) tea.Cmd {
 	b := a.Backend
 	return func() tea.Msg {
-		got, err := b.SetMode(m)
+		got, err := b.SetMode(m, confirmed)
 		return ModeSetMsg{Asked: m, Got: got, Err: err}
 	}
 }
@@ -46,7 +46,7 @@ func (a *App) cycleMode() tea.Cmd {
 		a.confirmAuto = true
 		return nil
 	}
-	return a.setMode(next)
+	return a.setMode(next, false)
 }
 
 // confirmKey answers the auto confirmation: y confirms, and any other key, Esc and a second Shift+Tab included, declines. The key
@@ -54,7 +54,7 @@ func (a *App) cycleMode() tea.Cmd {
 func (a *App) confirmKey(k tea.KeyMsg) tea.Cmd {
 	a.confirmAuto = false
 	if k.Type == tea.KeyRunes && len(k.Runes) == 1 && (k.Runes[0] == 'y' || k.Runes[0] == 'Y') {
-		return a.setMode(proto.ModeAuto)
+		return a.setMode(proto.ModeAuto, true)
 	}
 	return nil
 }

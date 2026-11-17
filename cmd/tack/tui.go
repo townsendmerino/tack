@@ -107,9 +107,9 @@ func (b tuiBackend) Complete(query string) ([]proto.CompletionItem, error) {
 }
 
 // SetMode moves the session to mode m and returns the mode it now has.
-func (b tuiBackend) SetMode(m proto.Mode) (proto.Mode, error) {
+func (b tuiBackend) SetMode(m proto.Mode, confirmed bool) (proto.Mode, error) {
 	var r proto.SessionSetModeResult
-	if err := b.c.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: b.sess, Mode: m}, &r); err != nil {
+	if err := b.c.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: b.sess, Mode: m, Confirmed: confirmed}, &r); err != nil {
 		return "", err
 	}
 	return r.Mode, nil

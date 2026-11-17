@@ -30,8 +30,8 @@ type Backend interface {
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
 	Complete(query string) ([]proto.CompletionItem, error)
 	// SetMode moves the session to a mode (session/setMode) and returns the mode it has now, which a repository's ceiling can
-	// make lower than the one asked for.
-	SetMode(m proto.Mode) (proto.Mode, error)
+	// make lower than the one asked for. confirmed says the user confirmed a move to auto: only the y key sets it.
+	SetMode(m proto.Mode, confirmed bool) (proto.Mode, error)
 }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.

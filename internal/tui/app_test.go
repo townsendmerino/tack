@@ -23,13 +23,15 @@ type fakeBackend struct {
 	queries     []string
 	completeErr error
 
-	modes   []proto.Mode // the SetMode calls
-	modeGot proto.Mode   // what SetMode answers; the mode asked for when empty
-	modeErr error
+	modes     []proto.Mode // the SetMode calls
+	confirmed []bool       // whether each said the owner confirmed it
+	modeGot   proto.Mode   // what SetMode answers; the mode asked for when empty
+	modeErr   error
 }
 
-func (f *fakeBackend) SetMode(m proto.Mode) (proto.Mode, error) {
+func (f *fakeBackend) SetMode(m proto.Mode, confirmed bool) (proto.Mode, error) {
 	f.modes = append(f.modes, m)
+	f.confirmed = append(f.confirmed, confirmed)
 	if f.modeGot != "" {
 		return f.modeGot, f.modeErr
 	}

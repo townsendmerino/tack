@@ -126,3 +126,29 @@ func TestSetModeAnswersShowAsNotes(t *testing.T) {
 		t.Errorf("a granted change said a repository lowered it:\n%s", f)
 	}
 }
+
+// TestOnlyTheYKeySendsTheConfirmation: a move to plan, ask or edits goes without `confirmed`; auto goes only after y, with it. No
+// other path (a second Shift+Tab, Enter, Esc) sends auto at all.
+func TestOnlyTheYKeySendsTheConfirmation(t *testing.T) {
+	for _, from := range []proto.Mode{proto.ModePlan, proto.ModeAsk, proto.ModeAuto} {
+		a, fb := inMode(t, from)
+		press(a, shiftTab)
+		if len(fb.confirmed) != 1 || fb.confirmed[0] {
+			t.Errorf("from %s: confirmed %v, want one unconfirmed move", from, fb.confirmed)
+		}
+	}
+	a, fb := inMode(t, proto.ModeEdits)
+	press(a, shiftTab)
+	press(a, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if len(fb.modes) != 1 || fb.modes[0] != proto.ModeAuto || len(fb.confirmed) != 1 || !fb.confirmed[0] {
+		t.Errorf("after y: modes %v, confirmed %v", fb.modes, fb.confirmed)
+	}
+	for _, k := range []tea.KeyMsg{shiftTab, {Type: tea.KeyEnter}, {Type: tea.KeyEsc}} {
+		a, fb = inMode(t, proto.ModeEdits)
+		press(a, shiftTab)
+		press(a, k)
+		if len(fb.modes) != 0 {
+			t.Errorf("key %v sent %v", k, fb.modes)
+		}
+	}
+}
