@@ -242,6 +242,10 @@ func (s *Session) append(typ proto.EventType, cause int64, payload any) (proto.E
 	return ev, nil
 }
 
+// SetMode changes the mode the session's permission engine decides in, from the next turn. The caller must not call it while a turn
+// runs. It is only for a move that leaves the tool set as it is: among the modes that have the edit tools, never to or from plan.
+func (s *Session) SetMode(m proto.Mode) { s.cfg.Mode = m }
+
 // Start records the user's message and opens a turn; Run completes it. Splitting them lets the protocol answer
 // session/prompt with the message's seq before the turn runs.
 func (s *Session) Start(text string) (int64, error) {

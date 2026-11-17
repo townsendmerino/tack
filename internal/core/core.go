@@ -241,6 +241,8 @@ type session struct {
 	injectRoot string
 	// mapRoot is the workspace the first prompt's repository map is built over (Options.RepoMap); "" for none.
 	mapRoot string
+	// mode is the mode the session's loop was built for, after a trusted repository's ceiling; setMode changes it. Under mu.
+	mode proto.Mode
 }
 
 // subscriber is one connection's subscription to one session. last is the highest persisted seq it has been sent, so
@@ -696,6 +698,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, unprivileged(req.Method)
 		}
 		return c.fork(p)
+	case proto.MethodSessionSetMode:
+		p, perr := params[proto.SessionSetModeParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		return c.setMode(p)
 	case proto.MethodWorkspaceTrust:
 		p, perr := params[proto.WorkspaceTrustParams](req)
 		if perr != nil {
@@ -858,6 +869,14 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 // edit kit in auto mode, the sweep target, and the loop. history is a reopened session's events, nil for a new one;
 // a session whose log has a user.message has been prompted, so the first prompt's additions are not made again.
 func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event) (*session, error) {
+	return c.build(id, log, ws, created, history, nil)
+}
+
+// build is open, and also the rebuild of a live session for another mode (setMode): with bind set, the loop it makes reports to
+// bind and its sandbox target is bind's, and the session it returns is only a carrier of the new loop, kit and instruction state,
+// which the caller moves onto bind. Nothing of bind is touched, no sweep target is registered and none dropped, so a rebuild that
+// fails leaves bind as it was.
+func (c *Core) build(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event, bind *session) (*session, error) {
 	// A log is data: a session whose mode is not one of the four is refused, never read as a mode that lets it change files.
 	// Every mode but plan gets the edit tools below, so this check is what keeps an empty or mistyped mode out of them.
 	if !created.Mode.Valid() {
@@ -883,10 +902,21 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	repoEnv, repoEv, repoNotice := c.repoConfig(ws.Root()) // the repository's own configuration, when the owner trusts it
 	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
 	s := &session{id: id, root: ws.Root(), log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
-		prompted: prompted}
-	if c.opt.HaltDir != "" {
-		if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {
-			return nil, err
+		prompted: prompted, mode: created.Mode}
+	rebuilding := bind != nil
+	if !rebuilding {
+		bind = s
+		if c.opt.HaltDir != "" {
+			if err := halt.Register(c.opt.HaltDir, string(id), s.target); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		s.target = bind.target // the same session: the same processes to sweep
+	}
+	unreg := func() { // a session that is not made after all drops its sweep target; a rebuild's was never its own
+		if !rebuilding {
+			c.unregister(id)
 		}
 	}
 	if c.opt.InjectContext && c.opt.OpenInject != nil && !prompted {
@@ -900,19 +930,19 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		FindRelated: c.opt.FindRelated}
 	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
-		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
+		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: bind.emitTurn, Record: bind.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
-	cfg.Approve = approver{s} // questions wait for permission/respond while a privileged client watches
+	cfg.Approve = approver{bind} // questions wait for permission/respond while a privileged client watches
 	// Every mode but plan gets the edit tools, the shell and the permission engine; the engine decides per mode what asks
 	// (perms.Engine.Decide). Plan is read-only, with neither.
 	if created.Mode != proto.ModePlan {
 		if c.opt.Edit == nil {
-			c.unregister(id)
+			unreg()
 			return nil, fmt.Errorf("%s mode changes the workspace, and this tack has no sandbox to run its commands in", created.Mode)
 		}
 		kit, err := c.opt.Edit(ws.Root(), s.target)
 		if err != nil {
-			c.unregister(id)
+			unreg()
 			return nil, fmt.Errorf("%s mode: %w", created.Mode, err)
 		}
 		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
@@ -944,7 +974,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		notices = append(notices, repoNotice)
 		if repoEv != nil { // a reopened session's log has it already
 			if _, err := log.Append(proto.EvRepoTrusted, 0, *repoEv); err != nil {
-				c.unregister(id)
+				unreg()
 				if s.kit != nil {
 					s.kit()
 				}
@@ -978,7 +1008,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if c.opt.Knowledge {
 			pages, err := window.LoadPages(ws.Root())
 			if err != nil {
-				c.unregister(id)
+				unreg()
 				if s.kit != nil {
 					s.kit()
 				}
@@ -994,7 +1024,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 					// as logged, with each page's freshness as the session judged it; what it loaded comes after the
 					// instruction file is sized, so the file sees the budget a new session's did.
 					if err := know.ReplayIndex(history); err != nil {
-						c.unregister(id)
+						unreg()
 						if s.kit != nil {
 							s.kit()
 						}
@@ -1019,7 +1049,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 		if know != nil && prompted {
 			if err := know.ReplayNotes(history); err != nil {
-				c.unregister(id)
+				unreg()
 				if s.kit != nil {
 					s.kit()
 				}
@@ -1054,7 +1084,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 	// share of the budget they share.
 	if s.sections != nil {
 		if err = s.sections.Replay(history); err != nil {
-			c.unregister(id)
+			unreg()
 			if s.kit != nil {
 				s.kit()
 			}
@@ -1062,7 +1092,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		}
 	}
 	if s.loop, err = loop.Resume(cfg, history); err != nil {
-		c.unregister(id)
+		unreg()
 		if s.kit != nil {
 			s.kit()
 		}
