@@ -207,3 +207,22 @@ func TestEnvironmentChangesAreNeverCovered(t *testing.T) {
 		t.Errorf("inherited GOFLAGS: %s %v", v.Action, v.Reasons)
 	}
 }
+
+// TestAnUnknownModeDeniesEverythingThatChangesSomething: a mode that is not one of the four lets read-only tools through and
+// nothing else, so an empty or mistyped mode never reads as edits or auto.
+func TestAnUnknownModeDeniesEverythingThatChangesSomething(t *testing.T) {
+	e := engine(t, true)
+	for _, mode := range []proto.Mode{"", "yolo", "AUTO", "Ask"} {
+		for _, tc := range []struct {
+			tool  string
+			input json.RawMessage
+		}{{"edit", nil}, {"write", nil}, {"bash", bash("go test")}, {"mcp_thing", nil}} {
+			if v := e.Decide(mode, tc.tool, false, tc.input); v.Action != Deny {
+				t.Errorf("mode %q, %s: %s", mode, tc.tool, v.Action)
+			}
+		}
+		if v := e.Decide(mode, "read", true, nil); v.Action != Allow {
+			t.Errorf("mode %q: a read-only tool is %s", mode, v.Action)
+		}
+	}
+}

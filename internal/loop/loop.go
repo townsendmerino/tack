@@ -242,6 +242,10 @@ func (s *Session) append(typ proto.EventType, cause int64, payload any) (proto.E
 	return ev, nil
 }
 
+// SetMode changes the mode the session's permission engine decides in, from the next turn. The caller must not call it while a turn
+// runs. It is only for a move that leaves the tool set as it is: among the modes that have the edit tools, never to or from plan.
+func (s *Session) SetMode(m proto.Mode) { s.cfg.Mode = m }
+
 // Start records the user's message and opens a turn; Run completes it. Splitting them lets the protocol answer
 // session/prompt with the message's seq before the turn runs.
 func (s *Session) Start(text string) (int64, error) {
@@ -743,6 +747,10 @@ type Approval struct {
 	Session bool
 	// Note is the user's words on a deny: they reach the model in the refused result, and PermissionResolved.Note.
 	Note string
+	// Rule is an edited rule the user wrote in place of the ones Session would add (with Allow and Session): the call is allowed and
+	// only this rule is added. permit holds it to a narrowing of the rules from its own parse of the call (perms.Narrowing); one that
+	// is not denies the call and adds nothing, whatever reached here.
+	Rule string
 }
 
 // permit decides a call that changes something, records the decision, and returns the call's refused result when it
@@ -789,6 +797,9 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 		for _, c := range v.Parsed {
 			req.Parsed = append(req.Parsed, c.String())
 		}
+		for _, r := range perms.SessionRules(b.Name, v.Parsed) {
+			req.Rules = append(req.Rules, r.String()) // what the user may edit, from the daemon's own parse
+		}
 	}
 	if _, err := s.record(proto.EvPermissionRequested, callSeq, req); err != nil {
 		return nil, "", err
@@ -815,6 +826,20 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 			Reasons: []string{why}, Note: a.Note})
 	}
 	r := proto.PermissionResolved{Decision: proto.DecisionAllow, By: proto.DecidedByUser, Scope: "once"}
+	if a.Rule != "" {
+		// Checked here against the call's own parse, not against what the client was shown: nothing a client sent is the baseline.
+		rule, err := perms.Narrowing(perms.SessionRules(b.Name, v.Parsed), a.Rule)
+		if err != nil || !a.Session {
+			why := "the edited rule was refused, so nothing was allowed"
+			if err != nil {
+				why += ": " + err.Error()
+			}
+			return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByUser, Scope: "once", Reasons: []string{why}})
+		}
+		s.cfg.Perms.AddRule(rule)
+		r.Scope, r.RuleAdded = "session", rule.String()
+		return resolve(r)
+	}
 	if a.Session {
 		r.Scope, r.RuleAdded = "session", strings.Join(s.cfg.Perms.AllowForSession(b.Name, v.Parsed), "; ")
 	}

@@ -45,6 +45,7 @@ const (
 	EvCheckpoint          EventType = "checkpoint"
 	EvRewind              EventType = "rewind"
 	EvRepoTrusted         EventType = "repo.trusted"
+	EvModeChanged         EventType = "mode.changed"
 	EvModelStatus         EventType = "model.status"
 )
 
@@ -82,6 +83,7 @@ var EventTypes = map[EventType]EventSpec{
 	EvCheckpoint:          {reflect.TypeFor[Checkpoint](), true, false},
 	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
 	EvRepoTrusted:         {reflect.TypeFor[RepoTrusted](), true, false},
+	EvModeChanged:         {reflect.TypeFor[ModeChanged](), true, true},
 }
 
 // ModelStatus is how a session's model server stands while a turn waits on it (DESIGN §8.2, §10), live only, for the
@@ -174,6 +176,9 @@ type PermissionRequested struct {
 	Command string   `json:"command,omitempty"`
 	Parsed  []string `json:"parsed,omitempty"`
 	Reasons []string `json:"reasons"`
+	// Rules is, for a shell command, what allowing for the session would add, one rule per line as the daemon wrote it (perms.SessionRules):
+	// the rules the user may edit, and the only ones an edited rule is held to. Absent for another tool, which has none.
+	Rules []string `json:"rules,omitempty"`
 }
 
 // Permission decisions, and who made them.
@@ -392,6 +397,15 @@ type Rewind struct {
 	Undo      string `json:"undo,omitempty"`
 	NoUndo    string `json:"no_undo,omitempty"`
 	Changed   int    `json:"changed"`
+}
+
+// ModeChanged records a session's mode changing between turns (session/setMode, DESIGN §6.6): Mode is the mode it has from
+// the next turn, which is the mode asked for lowered to a trusted repository's ceiling, so it can differ from the request. By
+// is who changed it: "user", or "system" for the change that undoes one that could not be applied. A reopened session takes
+// the last mode.changed's mode, else session.created's.
+type ModeChanged struct {
+	Mode Mode   `json:"mode"`
+	By   string `json:"by"`
 }
 
 // RepoTrusted records, right after session.created, that the owner's trust in the workspace's own configuration is in

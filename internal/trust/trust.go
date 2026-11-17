@@ -33,6 +33,15 @@ const maxConfig = 64 << 10
 // loudly (CLAUDE.md: settings are config).
 type Repo struct {
 	Commands Commands `toml:"commands"`
+	Session  Session  `toml:"session"`
+}
+
+// Session is [session]: what the repository asks of the sessions started in it. It can only ask for less.
+type Session struct {
+	// MaxMode is a ceiling on the mode a session starts in or is moved to: plan, ask, edits or auto. A session asks for a mode
+	// and gets the stricter of it and this; nothing here can raise a mode, and the repository has no setting that picks one.
+	// Its value is checked where it is used (core), since this package imports nothing of tack's.
+	MaxMode string `toml:"max_mode"`
 }
 
 // Commands is [commands]: what the repository's commands are given.

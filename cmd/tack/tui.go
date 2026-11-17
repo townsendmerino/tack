@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 
+	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/daemon"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/tui"
@@ -24,14 +26,62 @@ func (b tuiBackend) Prompt(text string) error {
 	return b.c.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: b.sess, Content: []proto.ContentBlock{proto.Text(text)}}, nil)
 }
 
-// tuiCmd is `tack` with no arguments on a terminal: a Bubble Tea screen over the daemon (DESIGN §10), starting the daemon
-// if none runs. It asks in plan mode, as `tack run --daemon` does, until the screen has a way to choose a mode; it answers permission
-// questions (a, s, d) cancels a turn with Esc and completes `@` paths. A lost connection ends the screen.
-func tuiCmd(stdout, stderr io.Writer) int {
+// tuiMain is `tack` or `tack -mode MODE` on a terminal. The flag is checked before anything starts: a value that is not a
+// mode, or an argument the screen does not take, is a usage error, and so is having no terminal.
+func tuiMain(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("tack", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	mode := fs.String("mode", "", "the mode to start in: plan, ask, edits or auto (default: [session] mode in config.toml, else plan)")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "usage: tack [-mode plan|ask|edits|auto]")
+		return exitUsage
+	}
+	given := false
+	fs.Visit(func(*flag.Flag) { given = true })
+	if given && !config.ValidMode(*mode) {
+		fmt.Fprintf(stderr, "tack: -mode %q is not a mode (plan, ask, edits or auto)\n", *mode)
+		return exitUsage
+	}
+	if !interactive() {
+		if given {
+			fmt.Fprintln(stderr, "tack: the screen needs a terminal")
+			return exitUsage
+		}
+		usage(stderr)
+		return exitUsage
+	}
+	return tuiCmd(*mode, stdout, stderr)
+}
+
+// startMode is the mode a session starts in: the -mode flag, else the owner's [session] mode, else plan. Both come from the owner
+// (the flag, and his own config.toml); a repository's configuration is never read here, and the daemon lowers the result to a
+// trusted repository's ceiling.
+func startMode(flagMode string, cfg *config.Config) (proto.Mode, error) {
+	m := flagMode
+	if m == "" {
+		m = cfg.Session.Mode
+	}
+	if m == "" {
+		return proto.ModePlan, nil
+	}
+	if !config.ValidMode(m) {
+		return "", fmt.Errorf("%q is not a mode (plan, ask, edits or auto)", m)
+	}
+	return proto.Mode(m), nil
+}
+
+// tuiCmd is the Bubble Tea screen over the daemon (DESIGN §10), starting the daemon if none runs, in the mode startMode gives. It
+// answers permission questions (a, s, d), cancels a turn with Esc and completes `@` paths. A lost connection ends the screen.
+func tuiCmd(flagMode string, stdout, stderr io.Writer) int {
 	cfg, path, stateDir, err := loadConfig("")
 	if err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
+	}
+	mode, err := startMode(flagMode, cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, "tack:", err)
+		return exitUsage
 	}
 	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
@@ -48,7 +98,7 @@ func tuiCmd(stdout, stderr io.Writer) int {
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithOutput(stdout))
 	c.OnEvent = func(e proto.SessionEventParams) { p.Send(tui.EventMsg(e.Event)) }
 	var sess proto.SessionNewResult
-	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModePlan}, &sess); err != nil {
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}

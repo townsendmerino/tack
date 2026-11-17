@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/townsendmerino/tack/internal/shell"
 )
@@ -17,12 +18,8 @@ func main() {
 }
 
 func dispatch(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		if interactive() {
-			return tuiCmd(stdout, stderr)
-		}
-		usage(stderr)
-		return 2
+	if len(args) == 0 || strings.HasPrefix(args[0], "-mode") || strings.HasPrefix(args[0], "--mode") {
+		return tuiMain(args, stdout, stderr)
 	}
 	switch args[0] {
 	case "run":
@@ -61,7 +58,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  tack                            the terminal screen, over the daemon (a terminal only; plan mode)
+  tack [-mode plan|ask|edits|auto]  the terminal screen, over the daemon (a terminal only; plan mode unless
+                                  -mode or [session] mode in config.toml says otherwise)
   tack run [flags] "<question>"   answer a question about a repository (read-only tools)
   tack eval models -manifest FILE -out DIR [-arm NAME] [-fit-only]
                                   E0, the model survey (docs/measurements/e0-preregistration-2026-10-16.md)
