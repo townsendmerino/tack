@@ -62,7 +62,7 @@ func TestForkIsRefusedWhereItCannotWork(t *testing.T) {
 	var pe *proto.Error
 
 	// No token: the client that made the session cannot fork it.
-	if err := f.client.Call(proto.MethodSessionFork, proto.SessionForkParams{Session: parent, AtSeq: end}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+	if err := f.unprivileged(t).Call(proto.MethodSessionFork, proto.SessionForkParams{Session: parent, AtSeq: end}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("unprivileged: %v", err)
 	}
 	cl, _, _ := f.privileged(t)

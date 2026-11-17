@@ -105,11 +105,15 @@ func Stricter(a, b Mode) Mode {
 	return a
 }
 
-// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id.
+// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id. A session in auto mode is
+// refused unless Confirmed says the owner chose auto knowingly: by the -mode flag, his own config.toml, or an edit task he
+// started. A client sets it only on those paths, never because a repository, a file or a model said so. It is a marker for the
+// daemon to hold the client to, not a defence against one that holds the client token: that token is the boundary (DESIGN §6.6).
 type SessionNewParams struct {
 	Workspace string `json:"workspace"`
 	Model     string `json:"model"`
 	Mode      Mode   `json:"mode"`
+	Confirmed bool   `json:"confirmed,omitempty"`
 }
 
 // SessionNewResult names the new session.

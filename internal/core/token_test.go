@@ -6,9 +6,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/sandbox"
 	"github.com/townsendmerino/tack/internal/store"
 )
 
@@ -75,4 +78,80 @@ func TestInitializeChecksTheClientToken(t *testing.T) {
 	if _, err := initialize(connect(noToken), "0123456789abcdef"); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("a token to a Core without one: %v, want code %d", err, proto.CodeUnauthorized)
 	}
+}
+
+// TestEveryMethodButInitializeNeedsTheToken: a connection that did not present the client token, as a command the model ran and
+// that reached the socket would be, is refused by every method in the protocol except initialize, and a session it names is not
+// made. The methods come from the protocol's own table, so a method added later is held to it too.
+func TestEveryMethodButInitializeNeedsTheToken(t *testing.T) {
+	f := newFixture(t)
+	un := f.unprivileged(t)
+	n := 0
+	for method, spec := range proto.Methods {
+		if method == proto.MethodInitialize || spec.Result == nil { // initialize, and notifications, which a client does not call
+			continue
+		}
+		n++
+		err := un.Call(method, map[string]any{}, nil)
+		var pe *proto.Error
+		if !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+			t.Errorf("%s without the token: %v; want unauthorized", method, err)
+		}
+	}
+	if n < 10 {
+		t.Errorf("only %d methods checked; the protocol's table is not being read", n)
+	}
+	err := un.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: f.workspace(t), Model: "main", Mode: proto.ModePlan}, nil)
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+		t.Errorf("session/new without the token: %v", err)
+	}
+	if ids, _ := f.core.opt.Store.Sessions(); len(ids) != 0 {
+		t.Errorf("a session was made without the token: %v", ids)
+	}
+	// A wrong token is refused and leaves the connection unprivileged too.
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go f.core.Serve(f.core.ctx, b)
+	wrong := NewClient(a)
+	if err := wrong.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "x", Version: "0"}, Protocol: proto.Version, Token: "not-it"}, nil); errCode(err) != proto.CodeUnauthorized {
+		t.Errorf("a wrong token: %v", err)
+	}
+	if err := wrong.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); errCode(err) != proto.CodeUnauthorized {
+		t.Errorf("after a wrong token: %v", err)
+	}
+}
+
+// TestAutoNeedsTheOwnersConfirmation: a session is not made in auto unless session/new says the owner chose it; the other modes
+// need no such word, and neither does anything else about a session in auto once it exists.
+func TestAutoNeedsTheOwnersConfirmation(t *testing.T) {
+	f := newFixture(t)
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	call := func(mode proto.Mode, confirmed bool) error {
+		return f.client.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: gitWorkspace(t, ""), Model: "main", Mode: mode, Confirmed: confirmed}, nil)
+	}
+	if err := call(proto.ModeAuto, false); errCode(err) != proto.CodeInvalidParams || !strings.Contains(err.Error(), "confirmation") {
+		t.Errorf("auto, unconfirmed: %v", err)
+	}
+	if ids, _ := f.core.opt.Store.Sessions(); len(ids) != 0 {
+		t.Errorf("an unconfirmed auto session left a log: %v", ids)
+	}
+	if err := call(proto.ModeAuto, true); err != nil {
+		t.Errorf("auto, confirmed: %v", err)
+	}
+	for _, m := range []proto.Mode{proto.ModePlan, proto.ModeAsk, proto.ModeEdits} {
+		if err := call(m, false); err != nil {
+			t.Errorf("%s without confirmation: %v", m, err)
+		}
+	}
+}
+
+func errCode(err error) int {
+	var pe *proto.Error
+	if errors.As(err, &pe) {
+		return pe.Code
+	}
+	return 0
 }

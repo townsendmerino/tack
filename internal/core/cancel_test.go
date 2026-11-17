@@ -78,7 +78,7 @@ func TestCancelWhenIdleIsANoOp(t *testing.T) {
 func TestCancelNeedsTheClientTokenAndAKnownSession(t *testing.T) {
 	f, tui, _, sid, _, _ := askingSession(t)
 	var pe *proto.Error
-	if err := f.client.Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: sid}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+	if err := f.unprivileged(t).Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: sid}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("without the token: %v; want unauthorized", err)
 	}
 	if err := tui.Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: "s_01JAMISSING000000000000000"}, nil); err == nil {

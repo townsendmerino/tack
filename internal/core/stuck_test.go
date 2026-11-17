@@ -50,7 +50,7 @@ func stuckSubscriber(t *testing.T, f *fixture, id proto.SessionID) net.Conn {
 			}
 		}
 	}
-	call(1, proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stuck", Version: "0"}, Protocol: proto.Version})
+	call(1, proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stuck", Version: "0"}, Protocol: proto.Version, Token: "tok"})
 	call(2, proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id})
 	return a
 }
@@ -255,7 +255,7 @@ func TestADroppedSubscriberLeavesOnATransportThatCannotClose(t *testing.T) {
 	for n, m := range []struct {
 		method string
 		params any
-	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stuck", Version: "0"}, Protocol: proto.Version}},
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stuck", Version: "0"}, Protocol: proto.Version, Token: "tok"}},
 		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
 		p, _ := json.Marshal(m.params)
 		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
@@ -307,7 +307,7 @@ func TestFinishUnblocksAStuckWriter(t *testing.T) {
 	f := newFixture(t)
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close(); b.Close() })
-	p, _ := json.Marshal(proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version})
+	p, _ := json.Marshal(proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: "tok"})
 	line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodInitialize, Params: p})
 	served := make(chan struct{})
 	go func() {
@@ -416,7 +416,7 @@ func TestAClientCatchingUpIsNotDropped(t *testing.T) {
 	for n, m := range []struct {
 		method string
 		params any
-	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version}},
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version, Token: "tok"}},
 		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
 		p, _ := json.Marshal(m.params)
 		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
@@ -470,7 +470,7 @@ func TestAClientThatStopsWhileCatchingUpCostsOneWait(t *testing.T) {
 	for n, m := range []struct {
 		method string
 		params any
-	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stops", Version: "0"}, Protocol: proto.Version}},
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "stops", Version: "0"}, Protocol: proto.Version, Token: "tok"}},
 		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
 		p, _ := json.Marshal(m.params)
 		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})
@@ -519,7 +519,7 @@ func TestASlowReaderCannotPaceTheSession(t *testing.T) {
 	for n, m := range []struct {
 		method string
 		params any
-	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version}},
+	}{{proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "slow", Version: "0"}, Protocol: proto.Version, Token: "tok"}},
 		{proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: id}}} {
 		p, _ := json.Marshal(m.params)
 		line, _ := json.Marshal(proto.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(n + 1)), Method: m.method, Params: p})

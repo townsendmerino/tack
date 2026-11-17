@@ -608,6 +608,12 @@ func params[T any](req proto.Request) (T, *proto.Error) {
 }
 
 func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
+	// Only initialize, which is how a client presents the token, answers without it. Every other method needs a privileged
+	// connection: a socket that anything running as the owner can reach (a command the model ran) must not be enough to open a
+	// session, in any mode, or to read one.
+	if req.Method != proto.MethodInitialize && !cn.privileged {
+		return nil, unprivileged(req.Method)
+	}
 	switch req.Method {
 	case proto.MethodInitialize:
 		cn.privileged = false // a re-initialize starts over, and one that fails for any reason leaves none
@@ -807,6 +813,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
 		return "", fmt.Errorf("mode %q", p.Mode)
+	}
+	if p.Mode == proto.ModeAuto && !p.Confirmed {
+		return "", errors.New("a session in auto mode needs the owner's confirmation (confirmed: true): the -mode flag, his own config.toml, or an edit task he started")
 	}
 	root := p.Workspace
 	if rest, ok := strings.CutPrefix(root, "~/"); ok {

@@ -422,3 +422,27 @@ func TestReadThroughASymlink(t *testing.T) {
 		t.Errorf("a [sandbox] read symlink is not readable: %q", out)
 	}
 }
+
+// TestClientTokenIsOutOfReach: a command cannot read the daemon's client token, whose real name in tack's state directory is
+// client.token (TestEscapes' fixture file is named "token"). With the token a connection is privileged, so a command that read it
+// could open a session in any mode. It reads it with no sandbox and is stopped by the profile; sections tack and read each stop it,
+// so a [sandbox] read that covers the state directory does not reopen it.
+func TestClientTokenIsOutOfReach(t *testing.T) {
+	f := setup(t)
+	if err := os.WriteFile(filepath.Join(f.state, "client.token"), []byte("SECRET=the-client-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const script = `cat "$STATE/client.token" 2>&1; ls "$STATE" 2>&1`
+	const mark = "the-client-token"
+	if out := f.run(nil, script); !strings.Contains(out, mark) {
+		t.Fatalf("with no sandbox the token was not read, so this test cannot see it: %q", out)
+	}
+	if out := f.run(&f.cfg, script); strings.Contains(out, mark) || strings.Contains(out, "client.token") {
+		t.Errorf("the profile let a command read or list the client token: %q", out)
+	}
+	open := f.cfg
+	open.Read = append(slices.Clone(f.cfg.Read), f.home, f.state)
+	if out := f.run(&open, script); strings.Contains(out, mark) {
+		t.Errorf("with the state directory readable the token was read: %q", out)
+	}
+}

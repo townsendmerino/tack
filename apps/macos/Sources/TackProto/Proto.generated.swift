@@ -508,11 +508,13 @@ public struct SessionNewParams: Codable, Equatable, Sendable {
     public var workspace: String
     public var model: String
     public var mode: Mode
+    public var confirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
         case model = "model"
         case mode = "mode"
+        case confirmed = "confirmed"
     }
 }
 
