@@ -2,6 +2,7 @@ package perms
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -101,7 +102,8 @@ var (
 	goBoolFlags = set("a", "n", "x", "v", "work", "race", "msan", "asan", "trimpath", "modcacherw", "linkshared", "c", "short", "failfast",
 		"json", "cover", "benchmem", "e", "deps", "m", "find", "versions", "compiled", "export", "test", "buildvcs", "i", "changed")
 	goValueFlags = set("p", "tags", "o", "mod", "buildmode", "compiler", "pgo", "run", "bench", "benchtime", "count", "timeout", "parallel",
-		"cpu", "coverprofile", "covermode", "coverpkg", "skip", "shuffle", "list", "fuzz", "fuzztime", "f", "vet")
+		"cpu", "coverprofile", "covermode", "coverpkg", "skip", "shuffle", "list", "fuzz", "fuzztime", "f", "vet",
+		"cpuprofile", "memprofile", "blockprofile", "mutexprofile", "trace", "outputdir")
 	goToolFlags = set("ldflags", "gcflags", "asmflags")
 )
 
@@ -141,6 +143,9 @@ func goUnsafe(args []string) string {
 		}
 		if !strings.HasPrefix(tok, "-") || tok == "-" {
 			if sub == "run" {
+				if strings.Contains(tok, "@") {
+					return not("go", "run "+tok+" (it fetches and runs code from a module)")
+				}
 				return "" // the first package or file ends go's flags; the rest are the program's
 			}
 			continue
@@ -157,6 +162,9 @@ func goUnsafe(args []string) string {
 					return not("go", sub+" "+tok)
 				}
 				val = rest[i]
+			}
+			if goOutputFlags[name] && !outputPathOK(val) {
+				return not("go", sub+" "+tok+" "+val+" (it writes outside the working tree or into .git)")
 			}
 			if (name == "mod" && val != "readonly" && val != "vendor" && val != "mod") || (name == "compiler" && val != "gc") {
 				return not("go", sub+" "+tok+" "+val)
@@ -266,7 +274,7 @@ var (
 )
 
 var gitSubShow = set("diff", "show", "log", "shortlog", "diff-tree", "blame", "whatchanged")
-var gitSubMisc = set("rev-parse", "rev-list", "ls-files", "ls-tree", "describe", "name-rev", "merge-base", "show-ref", "cat-file", "for-each-ref", "count-objects", "var", "version", "check-ignore", "diff-index", "diff-files", "ls-remote")
+var gitSubMisc = set("rev-parse", "rev-list", "ls-files", "ls-tree", "describe", "name-rev", "merge-base", "show-ref", "cat-file", "for-each-ref", "count-objects", "var", "version", "check-ignore", "diff-index", "diff-files")
 
 func gitUnsafe(args []string) string {
 	i := 0
@@ -363,10 +371,11 @@ func gitFlags(sub string, rest []string, bools, vals map[string]bool, noNames bo
 		name, val, has := strings.Cut(tok, "=")
 		switch {
 		case vals[name]:
-			if !has {
-				if i+1 < len(rest) && !strings.HasPrefix(rest[i+1], "-") {
-					i++
-				}
+			// Whether git takes the next word as the flag's value depends on the flag (--abbrev takes one only after "="), which these lists do
+			// do not record. Where a bare name would create something it is read as the name, so it is refused; elsewhere it is a path or a value, which
+			// does not matter.
+			if !has && !noNames && i+1 < len(rest) && !strings.HasPrefix(rest[i+1], "-") {
+				i++
 			}
 			_ = val
 		case bools[name]:
@@ -417,3 +426,58 @@ func findUnsafe(args []string) string {
 	}
 	return ""
 }
+
+// ---- what a rule's go and git read besides their arguments ----
+
+// ruleEnv are the variables a command may set and still be covered by a rule for go or git: they choose a target, and neither names a
+// program, a directory the toolchain loads code from, or a configuration file. Every other variable (GOROOT, PKG_CONFIG, CGO_CFLAGS,
+// HOME, XDG_CONFIG_HOME, GIT_DIR and the rest) asks, since go and git read far more of their environment than ChangesPrograms lists.
+var ruleEnv = set("GOOS", "GOARCH", "CGO_ENABLED", "NO_COLOR")
+
+// RuleEnvOK reports whether a command covered by a rule for go or git may set the variable name.
+func RuleEnvOK(name string) bool { return ruleEnv[name] }
+
+// EnvSensitive reports whether prog is one whose rule covers only commands that set no variable outside RuleEnvOK.
+func EnvSensitive(prog string) bool {
+	switch filepath.Base(prog) {
+	case "go", "git":
+		return true
+	}
+	return false
+}
+
+// BareRepoAbove returns the directory git would take for a bare repository when run from dir, or "". Git looks in each directory from
+// dir upward for a .git, and failing that treats the directory itself as a repository if it has the shape of one (HEAD, objects, refs).
+// A model can write such a shape with the file tools, and its config then runs programs (core.fsmonitor, diff.external, core.pager), so
+// a rule does not cover git there.
+func BareRepoAbove(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return "" // a repository git finds first: the owner's
+		}
+		if isFile(filepath.Join(d, "HEAD")) && isDir(filepath.Join(d, "objects")) && isDir(filepath.Join(d, "refs")) {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+func isFile(p string) bool { st, err := os.Stat(p); return err == nil && st.Mode().IsRegular() }
+func isDir(p string) bool  { st, err := os.Stat(p); return err == nil && st.IsDir() }
+
+// outputPathOK: a path a go flag writes to stays inside the working tree and out of .git: relative, no "..", no home, no .git segment.
+func outputPathOK(p string) bool {
+	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "~") || strings.ContainsAny(p, "$`") {
+		return false
+	}
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." || strings.EqualFold(seg, ".git") {
+			return false
+		}
+	}
+	return true
+}
+
+var goOutputFlags = set("o", "coverprofile", "cpuprofile", "memprofile", "blockprofile", "mutexprofile", "trace", "outputdir", "pkgdir")

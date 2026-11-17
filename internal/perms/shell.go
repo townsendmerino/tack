@@ -166,6 +166,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 			why = append(why, e.redirect(n, dir)...)
 		}
 	})
+	why = append(why, e.ruleEnvReasons(f, cmds)...)
 	always = e.scanAsks(f, scan{dir: e.startDir()})
 	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
 	for _, name := range sortedKeys(e.SessionEnv) {
@@ -176,6 +177,65 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 		}
 	}
 	return cmds, why, always
+}
+
+// ruleEnvReasons: a command with a rule for go or git sets only the variables RuleEnvOK names. go and git read much of their environment
+// (GOROOT, PKG_CONFIG, CGO_*FLAGS, HOME, GIT_DIR ...), so any other variable set anywhere in the line, or exported earlier in the session
+// and still different from tack's own, asks.
+func (e *Engine) ruleEnvReasons(f *syntax.File, cmds []Simple) []string {
+	var progs []string
+	for _, c := range cmds {
+		if c.Program != "" && EnvSensitive(c.Program) && e.allowed(c) && !slices.Contains(progs, filepath.Base(c.Program)) {
+			progs = append(progs, filepath.Base(c.Program))
+		}
+	}
+	if len(progs) == 0 {
+		return nil
+	}
+	var names []string
+	syntax.Walk(f, func(n syntax.Node) bool {
+		switch n := n.(type) {
+		case *syntax.Assign:
+			name, _, dynamic := declared(n)
+			if dynamic {
+				name = unknownWord
+			}
+			if name != "" && !strings.HasPrefix(name, "-") {
+				names = append(names, name)
+			}
+		case *syntax.WordIter:
+			if n.Name != nil {
+				names = append(names, n.Name.Value)
+			}
+		case *syntax.ParamExp:
+			name, dynamic := expansionSets(n)
+			if dynamic {
+				name = unknownWord
+			}
+			if name != "" {
+				names = append(names, name)
+			}
+		case *syntax.CallExpr:
+			if len(n.Args) > 0 {
+				names = append(names, namedVars(n.Args)...)
+			}
+		}
+		return true
+	})
+	for name, v := range e.SessionEnv {
+		if v != InheritedEnv(name, e.EnvExtra) {
+			names = append(names, name)
+		}
+	}
+	var why []string
+	for _, name := range names {
+		if name == unknownWord {
+			why = appendNew(why, "a variable is set by a name that expands at run time, and go and git read much of their environment, so no rule covers it")
+		} else if !RuleEnvOK(name) {
+			why = appendNew(why, fmt.Sprintf("setting %s changes what %s runs or loads, which no rule covers", name, strings.Join(progs, " and ")))
+		}
+	}
+	return why
 }
 
 // simple resolves one simple command's program from dir, where it runs, looking through wrappers, and checks it against
@@ -242,6 +302,11 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 		if e.allowed(s) { // a rule matches; for a program with an allowlist it covers only what the allowlist accepts
 			if r := UnsafeInvocation(prog, s.Args); r != "" {
 				return &s, []string{r + ", which no rule covers"}
+			}
+			if filepath.Base(prog) == "git" && dir != "" {
+				if b := BareRepoAbove(dir); b != "" {
+					return &s, []string{"git would use " + b + " as a repository, which a rule does not cover"}
+				}
 			}
 		}
 		if !e.allowed(s) {

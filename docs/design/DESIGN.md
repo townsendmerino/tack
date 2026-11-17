@@ -675,6 +675,27 @@ tool-use smoke set compares this merged set against the split one before it is f
       command that writes (`reset`, `commit`, `checkout`, `add`, `branch <name>`, `stash`, `tag <name>`). A write to config can
       run a program later (`core.fsmonitor`, `alias.x '!…'`), so none is ever covered.
     - **`find`:** the tests and the print actions; not `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fls`.
+    - **What `go` and `git` read besides their arguments** (security review of the allowlist). Arguments are not the only
+      input, so a rule for `go` or `git` also covers only a command that:
+      - sets no variable outside `GOOS`, `GOARCH`, `CGO_ENABLED` and `NO_COLOR` (`perms.RuleEnvOK`), by a prefix, `export`,
+        `declare`, `read`, `printf -v`, a `for` variable, `${V:=…}`, or an earlier command in the session. `GOROOT`,
+        `PKG_CONFIG`, `CGO_*FLAGS`, `HOME`, `XDG_CONFIG_HOME`, `GIT_DIR` and `GIT_WORK_TREE` ask. At run time a rule-approved
+        `go` or `git` is stopped if an exported variable outside that list differs from tack's own environment.
+      - runs `git` where git would find no repository of the owner's first. The file tools refuse a `.git` path but not
+        `HEAD`, `objects/`, `refs/` and a `config` written elsewhere, which git takes for a bare repository whose
+        `core.fsmonitor`, `diff.external` or `core.pager` it then runs through a shell. Git's own discovery is followed
+        (`perms.BareRepoAbove`: upward from the directory, a `.git` first wins, else a directory of that shape), at approval
+        and at run time. This was chosen over `-c safe.bareRepository=explicit`, which changes the argv that was approved,
+        and over a file-tool refusal, which cannot tell such a `config` from any other.
+      - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
+        `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment.
+      - names a git flag's value as git does: `--abbrev newname` is the flag and a name, so `branch` and `tag` read a bare
+        word after a value flag as a name to create.
+
+      Also not covered: `go run module@version` fetches and runs remote code, so a rule does not
+      cover it and it asks; `git ls-remote
+      evil::x` runs `git-remote-evil` from `PATH`, and `ls-remote`, `fetch`, `clone` and the other remote commands are not on
+      the list, so they ask.
     - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
       rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
       `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
