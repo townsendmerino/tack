@@ -224,6 +224,9 @@ type session struct {
 	question *question
 	target   sandbox.Target // what Halt sweeps for this session
 	kit      func() error   // the edit kit's Close, or nil
+	// engine is the permission engine the session's commands are decided by, nil in plan. Under mu. A question's editable rules are computed
+	// from it (session.ask), the way the loop computes the ones it lists.
+	engine *perms.Engine
 	// instructions is the instruction file's text for the first prompt (WholeInstructions, SectionInstructions);
 	// prompted says it has been. notesFirst puts it before the prompt, which then follows under "Task:" (the budgeted
 	// head, instructions.go; the sections); else it follows the prompt.
@@ -956,6 +959,7 @@ func (c *Core) build(id proto.SessionID, log *store.Log, ws *tools.Workspace, cr
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
+		s.engine = kit.Engine
 		root := ws.Root()
 		cfg.Changed = func() (bool, error) { return workspaceChanged(root) }
 		if c.opt.Snapshots {

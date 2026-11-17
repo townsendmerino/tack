@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -25,6 +26,10 @@ type question struct {
 	seq int64
 	id  string
 	ch  chan answer
+	// shown is the rules the question offers for editing, computed here from the session engine's own parse of the call, the way the loop
+	// computes the ones it lists, and not read back from the text of the event. An edited rule is held to these, never to anything the
+	// client says it was shown.
+	shown []perms.Rule
 }
 
 // ask registers the question ev asks, as ev is emitted and before any subscriber can see it, so an answer can never
@@ -39,7 +44,12 @@ func (s *session) ask(ev proto.Event) {
 	if err != nil {
 		return
 	}
-	s.question = &question{seq: ev.Seq, id: v.(proto.PermissionRequested).ID, ch: make(chan answer, 1)}
+	req := v.(proto.PermissionRequested)
+	var shown []perms.Rule
+	if req.Tool == "bash" && s.engine != nil { // called from the turn's own goroutine as the event is recorded, so the engine is not in use elsewhere
+		shown = perms.SessionRules("bash", s.engine.Analyze(req.Command))
+	}
+	s.question = &question{seq: ev.Seq, id: req.ID, ch: make(chan answer, 1), shown: shown}
 }
 
 // approver is a session's loop.Approver: the question its permission.requested event registered (session.ask) waits for
@@ -114,7 +124,10 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: `permission/respond: scope is "once" or "session", not "` + p.Scope + `"`}
 	}
 	if p.Rule != "" {
-		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: an edited rule is not built yet; answer with scope once or session"}
+		if !ap.Allow || !ap.Session {
+			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: an edited rule goes with decision allow and scope session"}
+		}
+		ap.Rule = p.Rule
 	}
 	if p.Seq <= 0 {
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: seq is the permission.requested event's"}
@@ -130,6 +143,12 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 		s.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeNotPending, Message: "permission/respond: the question at seq " + strconv.FormatInt(p.Seq, 10) +
 			" is not waiting: it was answered, asked again, or never asked"}
+	}
+	if ap.Rule != "" { // checked before the question is settled, so a refused edit leaves it open for another answer
+		if _, err := perms.Narrowing(q.shown, ap.Rule); err != nil {
+			s.mu.Unlock()
+			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: " + err.Error()}
+		}
 	}
 	s.question = nil
 	s.mu.Unlock()
