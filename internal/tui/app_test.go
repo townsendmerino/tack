@@ -12,11 +12,25 @@ import (
 )
 
 type fakeBackend struct {
-	sent []string
-	err  error
+	sent       []string
+	err        error
+	answers    []answer
+	respondErr error
+}
+
+// answer is one Respond call.
+type answer struct {
+	id              string
+	seq             int64
+	decision, scope string
 }
 
 func (f *fakeBackend) Prompt(text string) error { f.sent = append(f.sent, text); return f.err }
+
+func (f *fakeBackend) Respond(id string, seq int64, decision, scope string) error {
+	f.answers = append(f.answers, answer{id, seq, decision, scope})
+	return f.respondErr
+}
 
 func typed(a *App, s string) {
 	for _, r := range s {

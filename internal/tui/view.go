@@ -30,6 +30,23 @@ type View struct {
 	stream    []entry
 	streamIdx map[int]int
 	unread    map[proto.EventType]bool // the event types already noted as unreadable
+	pending   *Question                // the open permission question, if any
+}
+
+// Question is an open permission question: the tool call's id and the seq of the permission.requested event, which
+// permission/respond must name.
+type Question struct {
+	ID  string
+	Seq int64
+}
+
+// Pending is the question awaiting an answer, from the events folded so far: a permission.requested with no
+// permission.resolved after it and no turn.end. A replay that ends on one offers it, so a re-attached screen can answer.
+func (v *View) Pending() (Question, bool) {
+	if v.pending == nil {
+		return Question{}, false
+	}
+	return *v.pending, true
 }
 
 // entry is one item of the transcript: a head paragraph and the paragraphs under it, which Render wraps.
@@ -104,8 +121,12 @@ func (v *View) Apply(ev proto.Event) {
 		if t := v.call(e.ID); t != nil {
 			q := e
 			t.asking = &q
+			v.pending = &Question{ID: e.ID, Seq: ev.Seq}
 		}
 	case proto.PermissionResolved:
+		if v.pending != nil && v.pending.ID == e.ID {
+			v.pending = nil
+		}
 		if t := v.call(e.ID); t != nil {
 			asked := t.asking != nil
 			t.asking = nil
@@ -162,6 +183,7 @@ func (v *View) Apply(ev proto.Event) {
 	case proto.DaemonHaltRefused:
 		v.note(fmt.Sprintf("! the halt killed nothing (%d processes): %s", len(e.Processes), e.Reason))
 	case proto.TurnEnd:
+		v.pending = nil // a turn that ended has no question waiting
 		v.endStream()
 		switch e.StopReason {
 		case proto.StopEndTurn, proto.StopDone, proto.StopHalted: // a halt said so already, in daemon.halted

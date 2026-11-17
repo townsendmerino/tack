@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"errors"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,11 +18,17 @@ type EventMsg proto.Event
 // SentMsg is the answer to a Backend.Prompt: nil Err means the daemon took the prompt.
 type SentMsg struct{ Err error }
 
-// Backend is what the terminal layer needs from the daemon connection: start a turn with the user's message. The
+// Backend is what the terminal layer needs from the daemon connection: start a turn with the user's message, and answer an
+// open permission question by the seq of its permission.requested event (decision allow or deny, scope once or session). The
 // session's events come back as EventMsg through the program's Send.
 type Backend interface {
 	Prompt(text string) error
+	Respond(id string, seq int64, decision, scope string) error
 }
+
+// AnsweredMsg is the answer to a Backend.Respond: nil Err means the daemon took it, and the permission.resolved event that
+// follows is what closes the question on screen.
+type AnsweredMsg struct{ Err error }
 
 // App is the Bubble Tea model (DESIGN §10): a View (Screen) of the session, a one-line composer under it, and keys. It holds no
 // connection state; a prompt goes through Backend, whose call runs in a command so the UI never blocks on the daemon.
@@ -45,6 +53,17 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Err != nil {
 			a.Screen.note("! prompt: " + m.Err.Error())
 		}
+	case AnsweredMsg:
+		var pe *proto.Error
+		switch {
+		case m.Err == nil:
+		case errors.As(m.Err, &pe) && pe.Code == proto.CodeNotPending:
+			a.Screen.note("! that question was already answered")
+		case errors.As(m.Err, &pe) && pe.Code == proto.CodeMethodNotFound:
+			a.Screen.note("! the daemon is older than this screen and cannot take answers; restart it")
+		default:
+			a.Screen.note("! answer: " + m.Err.Error())
+		}
 	case tea.WindowSizeMsg:
 		a.width, a.height = m.Width, m.Height
 	case tea.KeyMsg:
@@ -58,6 +77,28 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
 		return a, tea.Quit
+	}
+	// While a question is open its keys answer it, and nothing else is typed: a letter the user meant for the composer must
+	// not be taken for an answer after the question has gone, nor one meant as an answer land in the composer.
+	if q, ok := a.Screen.Pending(); ok && (k.Type == tea.KeyRunes || k.Type == tea.KeySpace || k.Type == tea.KeyEnter) {
+		decision, scope := "", "once"
+		if k.Type == tea.KeyRunes && len(k.Runes) == 1 {
+			switch unicode.ToLower(k.Runes[0]) {
+			case 'a':
+				decision = proto.DecisionAllow
+			case 's':
+				decision, scope = proto.DecisionAllow, "session"
+			case 'd':
+				decision = proto.DecisionDeny
+			}
+		}
+		if decision == "" {
+			return a, nil
+		}
+		b := a.Backend
+		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope)} }
+	}
+	switch k.Type {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(string(a.input))
 		if text == "" {
