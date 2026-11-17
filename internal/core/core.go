@@ -834,7 +834,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 		c.opt.Store.Discard(log) // a session that could not be made leaves no log
 		hold.Release()
 	}
-	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: p.Mode}
+	// The session starts in the stricter of the mode asked for and a trusted repository's ceiling (DESIGN §6.6); session.created
+	// records the mode it got.
+	created := proto.SessionCreated{Workspace: ws.Root(), Model: p.Model, Mode: c.clampMode(ws.Root(), p.Mode)}
 	if _, err := log.Append(proto.EvSessionCreated, 0, created); err != nil {
 		discard()
 		return "", err

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -24,7 +25,36 @@ func (c *Core) repoConfig(root string) (env []string, ev *proto.RepoTrusted, not
 	if err := perms.CheckExtraEnv(st.Repo.Commands.Env); err != nil {
 		return nil, nil, trust.ConfigPath + " is not applied: " + err.Error()
 	}
+	if err := checkRepoMode(st.Repo); err != nil {
+		return nil, nil, trust.ConfigPath + " is not applied: " + err.Error()
+	}
 	return st.Repo.Commands.Env, &proto.RepoTrusted{Workspace: root, Trusted: []string{"config"}, Config: st.Digest}, ""
+}
+
+// clampMode is mode as the repository at root allows it: the stricter of mode and the ceiling in its .tack/config.toml, when
+// the owner has trusted that file as it stands. An untrusted or changed file, and a daemon with no trust store, give the
+// mode back unchanged. A repository can only lower a mode.
+func (c *Core) clampMode(root string, mode proto.Mode) proto.Mode {
+	if c.opt.Trust == nil {
+		return mode
+	}
+	st := c.opt.Trust.Check(root)
+	if !st.Applied || st.Repo.Session.MaxMode == "" {
+		return mode
+	}
+	ceiling := proto.Mode(st.Repo.Session.MaxMode)
+	if !ceiling.Valid() { // trusted out of band: fail closed rather than ignore a ceiling the owner may have meant
+		ceiling = proto.ModePlan
+	}
+	return proto.Stricter(mode, ceiling)
+}
+
+// checkRepoMode refuses a repository configuration whose max_mode is not a mode.
+func checkRepoMode(repo trust.Repo) error {
+	if m := repo.Session.MaxMode; m != "" && !proto.Mode(m).Valid() {
+		return fmt.Errorf("%s: [session] max_mode: %q is not a mode (plan, ask, edits or auto)", trust.ConfigPath, m)
+	}
+	return nil
 }
 
 // trustWorkspace is workspace/trust: it records the owner's trust in the repository at p.Root, as its configuration is now.
@@ -43,6 +73,9 @@ func (c *Core) trustWorkspace(p proto.WorkspaceTrustParams) (any, *proto.Error) 
 	repo, digest, err := trust.ReadRepo(root)
 	if err == nil {
 		err = perms.CheckExtraEnv(repo.Commands.Env)
+	}
+	if err == nil {
+		err = checkRepoMode(repo)
 	}
 	if err != nil {
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "workspace/trust: " + err.Error() + "; nothing was trusted"}
