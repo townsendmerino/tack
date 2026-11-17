@@ -31,6 +31,7 @@ type View struct {
 	streamIdx map[int]int
 	unread    map[proto.EventType]bool // the event types already noted as unreadable
 	pending   *Question                // the open permission question, if any
+	todos     todoState                // the session's task list, from the model's todo calls (todos.go)
 }
 
 // Question is an open permission question: the tool call's id and the seq of the permission.requested event, which
@@ -117,6 +118,7 @@ func (v *View) Apply(ev proto.Event) {
 			}
 		}
 	case proto.ToolCall:
+		v.todos.call(e)
 		v.calls[e.ID] = len(v.entries)
 		v.entries = append(v.entries, entry{kind: "tool", head: "● " + e.Name + callArg(e.Input)})
 	case proto.PermissionRequested:
@@ -153,6 +155,7 @@ func (v *View) Apply(ev proto.Event) {
 			t.started = true
 		}
 	case proto.ToolFinished:
+		v.todos.finished(e)
 		if t := v.call(e.ID); t != nil {
 			t.result = resultLine(e)
 		}
