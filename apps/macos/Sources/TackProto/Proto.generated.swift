@@ -556,10 +556,12 @@ public struct SessionPromptResult: Codable, Equatable, Sendable {
 public struct SessionSetModeParams: Codable, Equatable, Sendable {
     public var session: SessionID
     public var mode: Mode
+    public var confirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case session = "session"
         case mode = "mode"
+        case confirmed = "confirmed"
     }
 }
 

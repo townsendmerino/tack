@@ -36,6 +36,9 @@ func (c *Core) setMode(p proto.SessionSetModeParams) (any, *proto.Error) {
 	if !p.Mode.Valid() {
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: fmt.Sprintf("%q is not a mode (plan, ask, edits or auto)", p.Mode)}
 	}
+	if p.Mode == proto.ModeAuto && !p.Confirmed { // asked for, whatever a ceiling would make of it
+		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "moving to auto mode needs the owner's confirmation (confirmed: true)"}
+	}
 	s, perr := c.session(p.Session)
 	if perr != nil {
 		return nil, perr
