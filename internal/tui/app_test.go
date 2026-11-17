@@ -18,9 +18,18 @@ type fakeBackend struct {
 	respondErr error
 	cancels    int
 	cancelErr  error
+
+	items       map[string][]proto.CompletionItem // by query
+	queries     []string
+	completeErr error
 }
 
 func (f *fakeBackend) Cancel() error { f.cancels++; return f.cancelErr }
+
+func (f *fakeBackend) Complete(query string) ([]proto.CompletionItem, error) {
+	f.queries = append(f.queries, query)
+	return f.items[query], f.completeErr
+}
 
 // answer is one Respond call.
 type answer struct {

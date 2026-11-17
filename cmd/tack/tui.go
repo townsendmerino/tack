@@ -26,7 +26,7 @@ func (b tuiBackend) Prompt(text string) error {
 
 // tuiCmd is `tack` with no arguments on a terminal: a Bubble Tea screen over the daemon (DESIGN §10), starting the daemon
 // if none runs. It asks in plan mode, as `tack run --daemon` does, until the screen has a way to choose a mode; it answers permission
-// questions (a, s, d) and cancels a turn with Esc, but cannot yet complete `@`. A lost connection ends the screen.
+// questions (a, s, d) cancels a turn with Esc and completes `@` paths. A lost connection ends the screen.
 func tuiCmd(stdout, stderr io.Writer) int {
 	cfg, path, stateDir, err := loadConfig("")
 	if err != nil {
@@ -95,4 +95,13 @@ func (b tuiBackend) Respond(id string, seq int64, decision, scope string) error 
 // Cancel ends the session's running turn.
 func (b tuiBackend) Cancel() error {
 	return b.c.Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: b.sess}, nil)
+}
+
+// Complete lists the session's workspace paths that query, the text after an @, matches.
+func (b tuiBackend) Complete(query string) ([]proto.CompletionItem, error) {
+	var r proto.WorkspaceCompleteResult
+	if err := b.c.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: b.sess, Query: query}, &r); err != nil {
+		return nil, err
+	}
+	return r.Items, nil
 }
