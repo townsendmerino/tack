@@ -1454,7 +1454,9 @@ and small, because tack's session model was drawn close to ACP's.
 
 **Commands**
 
-- `tack` — the TUI, in the current directory's workspace.
+- `tack [-mode plan|ask|edits|auto]` — the TUI, in the current directory's workspace. It starts in the `-mode` given, else
+  `[session] mode` in the owner's own `~/.config/tack/config.toml`, else `plan` (§6.6, "Which mode a session starts in"). A
+  value that is not a mode is a usage error before anything starts.
 - `tack run "<prompt>" [--mode] [--model] [--budget] [--json]` — headless; non-zero exit on failure or a budget trip;
   `--json` streams events.
 - `tack sessions list|show|attach|fork|export`, `tack ctx <session>` (the context ledger), `tack usage [--since]`.
