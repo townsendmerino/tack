@@ -638,6 +638,11 @@ tool-use smoke set compares this merged set against the split one before it is f
       recorded, and the ceiling is read each time.
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
+  - **A rule is the same rule written down and read back** (security review, 2026-11-17). Rules travel as text (to the shell
+    child, into `permission.resolved`), so `Rule.String` quotes every word that is not plainly safe, and what it writes reads
+    back, through `ParseRule`, as the rule it wrote. Before, an argument that was empty, a space, a `#`, a word with a space or
+    a glob was lost or merged on the way, so allowing `go '' build` for the session gave the child a rule for `go` with any
+    arguments. A rule that would not read back is not added: the command keeps asking.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval

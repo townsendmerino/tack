@@ -45,7 +45,44 @@ type Rule struct {
 	Args    []string // the leading arguments, literal
 }
 
-func (r Rule) String() string { return strings.TrimSpace(r.Program + " " + strings.Join(r.Args, " ")) }
+// String writes the rule as a command that ParseRule reads back as the same rule: each word is quoted unless it is plainly safe, so an empty
+// argument, a space, a word with a space, a "#", a glob or a quote is not lost, merged or turned into a comment. Rules travel as text (to the
+// shell child, into permission.resolved), so a rule that read back as another would be another rule.
+func (r Rule) String() string {
+	words := make([]string, 0, 1+len(r.Args))
+	words = append(words, quoteWord(r.Program, true))
+	for _, a := range r.Args {
+		words = append(words, quoteWord(a, false))
+	}
+	return strings.Join(words, " ")
+}
+
+// quoteWord is w as one shell word that reads back, through ParseRule, as w and nothing else: unquoted only when every byte is plainly
+// safe, otherwise in single quotes, with each single quote inside as '"'"' (a double-quoted quote). A first word with "=" is quoted so
+// it is never an assignment.
+func quoteWord(w string, first bool) string {
+	safe := w != ""
+	for i := 0; i < len(w) && safe; i++ {
+		c := w[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-', c == '.', c == '/', c == ',', c == ':', c == '+', c == '@', c == '%':
+		case c == '=' && !first:
+		default:
+			safe = false
+		}
+	}
+	if safe {
+		return w
+	}
+	return "'" + strings.ReplaceAll(w, "'", `'"'"'`) + "'"
+}
+
+// readsBack reports whether r, written by String, is read back by ParseRule as r. Every rule String writes is meant to; this is the check
+// that a rule is only used if it does.
+func (r Rule) readsBack() bool {
+	got, err := ParseRule(r.String())
+	return err == nil && got.Program == r.Program && slices.Equal(got.Args, r.Args)
+}
 
 // ParseRule reads a rule written as a command: a program and its leading arguments, all literal.
 func ParseRule(s string) (Rule, error) {
@@ -225,6 +262,9 @@ func SessionRules(tool string, parsed []Simple) []Rule {
 		if len(c.Args) > 0 && c.Literal[0] {
 			r.Args = []string{c.Args[0]}
 		}
+		if !r.readsBack() { // a rule that would be read as another is not offered or added: the command keeps asking
+			continue
+		}
 		rules = append(rules, r)
 	}
 	return rules
@@ -243,6 +283,9 @@ func Narrowing(shown []Rule, edited string) (Rule, error) {
 	e, err := ParseRule(strings.TrimSpace(edited))
 	if err != nil {
 		return Rule{}, err
+	}
+	if !e.readsBack() { // what is held and shown must be what was typed: a rule that reads back as another is refused
+		return Rule{}, fmt.Errorf("perms: rule %q does not read back as the rule it was written as", edited)
 	}
 	for _, s := range shown {
 		if e.Program == s.Program && len(e.Args) >= len(s.Args) && slices.Equal(e.Args[:len(s.Args)], s.Args) {
