@@ -33,15 +33,15 @@ func (f *fakeBackend) Complete(query string) ([]proto.CompletionItem, error) {
 
 // answer is one Respond call.
 type answer struct {
-	id              string
-	seq             int64
-	decision, scope string
+	id                    string
+	seq                   int64
+	decision, scope, rule string
 }
 
 func (f *fakeBackend) Prompt(text string) error { f.sent = append(f.sent, text); return f.err }
 
-func (f *fakeBackend) Respond(id string, seq int64, decision, scope string) error {
-	f.answers = append(f.answers, answer{id, seq, decision, scope})
+func (f *fakeBackend) Respond(id string, seq int64, decision, scope, rule string) error {
+	f.answers = append(f.answers, answer{id, seq, decision, scope, rule})
 	return f.respondErr
 }
 
