@@ -54,4 +54,5 @@ const (
 	CodeUnauthorized   = -32004 // a wrong client token, or a method that needs the token on a connection without it
 	CodeShuttingDown   = -32005 // the daemon is draining for a shutdown; no new turns
 	CodeNotPending     = -32006 // permission/respond to a question that is not waiting: resolved already, or never asked
+	CodeHeld           = -32007 // the session is held for the owner's review; session/release lifts it
 )

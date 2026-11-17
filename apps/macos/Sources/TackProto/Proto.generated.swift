@@ -16,6 +16,7 @@ public enum Method {
     public static let sessionFork = "session/fork"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
+    public static let sessionRelease = "session/release"
     public static let sessionSetMode = "session/setMode"
     public static let sessionSubscribe = "session/subscribe"
     public static let usageSummary = "usage/summary"
@@ -519,6 +520,14 @@ public struct SessionForkResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct SessionHeld: Codable, Equatable, Sendable {
+    public var commands: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case commands = "commands"
+    }
+}
+
 public struct SessionNewParams: Codable, Equatable, Sendable {
     public var workspace: String
     public var model: String
@@ -556,6 +565,26 @@ public struct SessionPromptResult: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case seq = "seq"
+    }
+}
+
+public struct SessionReleaseParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+    }
+}
+
+public struct SessionReleaseResult: Codable, Equatable, Sendable {
+    public init() {}
+}
+
+public struct SessionReleased: Codable, Equatable, Sendable {
+    public var by: String
+
+    enum CodingKeys: String, CodingKey {
+        case by = "by"
     }
 }
 
@@ -638,6 +667,18 @@ public struct ToolStarted: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
+    }
+}
+
+public struct TripwireHit: Codable, Equatable, Sendable {
+    public var id: String
+    public var command: String
+    public var count: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case command = "command"
+        case count = "count"
     }
 }
 
@@ -791,9 +832,12 @@ public enum EventPayload: Equatable, Sendable {
     case requestSent(RequestSent)
     case rewind(Rewind)
     case sessionCreated(SessionCreated)
+    case sessionHeld(SessionHeld)
+    case sessionReleased(SessionReleased)
     case toolCall(ToolCall)
     case toolFinished(ToolFinished)
     case toolStarted(ToolStarted)
+    case tripwireHit(TripwireHit)
     case turnEnd(TurnEnd)
     case usage(Usage)
     case userMessage(UserMessage)
@@ -839,9 +883,12 @@ public struct Event: Codable, Equatable, Sendable {
         case "request.sent": payload = .requestSent(try c.decode(RequestSent.self, forKey: .payload))
         case "rewind": payload = .rewind(try c.decode(Rewind.self, forKey: .payload))
         case "session.created": payload = .sessionCreated(try c.decode(SessionCreated.self, forKey: .payload))
+        case "session.held": payload = .sessionHeld(try c.decode(SessionHeld.self, forKey: .payload))
+        case "session.released": payload = .sessionReleased(try c.decode(SessionReleased.self, forKey: .payload))
         case "tool.call": payload = .toolCall(try c.decode(ToolCall.self, forKey: .payload))
         case "tool.finished": payload = .toolFinished(try c.decode(ToolFinished.self, forKey: .payload))
         case "tool.started": payload = .toolStarted(try c.decode(ToolStarted.self, forKey: .payload))
+        case "tripwire.hit": payload = .tripwireHit(try c.decode(TripwireHit.self, forKey: .payload))
         case "turn.end": payload = .turnEnd(try c.decode(TurnEnd.self, forKey: .payload))
         case "usage": payload = .usage(try c.decode(Usage.self, forKey: .payload))
         case "user.message": payload = .userMessage(try c.decode(UserMessage.self, forKey: .payload))
@@ -873,9 +920,12 @@ public struct Event: Codable, Equatable, Sendable {
         case .requestSent(let p): try c.encode(p, forKey: .payload)
         case .rewind(let p): try c.encode(p, forKey: .payload)
         case .sessionCreated(let p): try c.encode(p, forKey: .payload)
+        case .sessionHeld(let p): try c.encode(p, forKey: .payload)
+        case .sessionReleased(let p): try c.encode(p, forKey: .payload)
         case .toolCall(let p): try c.encode(p, forKey: .payload)
         case .toolFinished(let p): try c.encode(p, forKey: .payload)
         case .toolStarted(let p): try c.encode(p, forKey: .payload)
+        case .tripwireHit(let p): try c.encode(p, forKey: .payload)
         case .turnEnd(let p): try c.encode(p, forKey: .payload)
         case .usage(let p): try c.encode(p, forKey: .payload)
         case .userMessage(let p): try c.encode(p, forKey: .payload)

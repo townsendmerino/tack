@@ -66,6 +66,9 @@ type Config struct {
 	Log    *store.Log
 	Blobs  *store.Blobs
 	Budget Budget
+	// TripwireLimit is how many counted shell calls hold the session (guard.go). It is the owner's setting, from his own config.toml and
+	// never a repository's; 0 turns the guard off.
+	TripwireLimit int
 	// Sampling goes with every request (server.Conversation.Sampling).
 	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
@@ -159,6 +162,7 @@ type Config struct {
 
 // Session is one session's loop. Turns run one at a time; it is not safe for concurrent use, except Drain.
 type Session struct {
+	guard    guard       // the tripwire's count and hold (guard.go)
 	pruned   bool        // Config.Snapshots has pruned its old checkpoints for this session
 	draining atomic.Bool // Drain was called: the running turn stops between steps
 	cfg      Config
@@ -249,6 +253,9 @@ func (s *Session) SetMode(m proto.Mode) { s.cfg.Mode = m }
 // Start records the user's message and opens a turn; Run completes it. Splitting them lets the protocol answer
 // session/prompt with the message's seq before the turn runs.
 func (s *Session) Start(text string) (int64, error) {
+	if s.Held() {
+		return 0, ErrHeld
+	}
 	if s.pending != "" {
 		return 0, errors.New("loop: a turn is already started")
 	}
@@ -311,6 +318,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 
 	// stopped ends a turn whose context was cancelled: by the user, or by tack's halt, which the log records first.
 	stopped := func() (string, error) {
+		if errors.Is(context.Cause(ctx), ErrHeld) { // held while a question waited (core counted a refused edit of a rule)
+			return end(proto.StopHeld)
+		}
 		if errors.Is(context.Cause(ctx), ErrShutdown) {
 			return end(proto.StopShutdown)
 		}
@@ -690,6 +700,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		if finished {
 			return end(proto.StopDone)
 		}
+		if s.Held() { // the guard held the session on one of this response's calls: the turn ends here
+			return end(proto.StopHeld)
+		}
 		if over != nil {
 			return trip(over.Budget, over.Limit, over.Value)
 		}
@@ -775,6 +788,12 @@ func (s *Session) permit(ctx context.Context, b proto.ModelBlock, callSeq int64)
 				strings.Join(r.Reasons, "; ") + "). Find a way that needs no approval, or say what you would run and why."
 		}
 		return &proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: text}, "", nil
+	}
+	if b.Name == "bash" && s.cfg.TripwireLimit > 0 && s.cfg.Perms != nil {
+		if cmd := bashCommand(b); len(s.cfg.Perms.Tripwire(cmd)) > 0 {
+			fin, err := s.tripwire(b, callSeq, cmd)
+			return fin, "", err
+		}
 	}
 	if s.cfg.Perms == nil {
 		return resolve(proto.PermissionResolved{Decision: proto.DecisionDeny, By: proto.DecidedByMode,
