@@ -13,6 +13,7 @@ const (
 	MethodSessionPrompt     = "session/prompt"
 	MethodSessionCancel     = "session/cancel"
 	MethodSessionFork       = "session/fork"
+	MethodSessionSetMode    = "session/setMode"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -72,6 +73,39 @@ const (
 	ModeAuto  Mode = "auto"
 )
 
+// Strictness orders the modes by how much each lets a session do without asking: plan 0, ask 1, edits 2, auto 3. A mode that is
+// not one has -1.
+func (m Mode) Strictness() int {
+	switch m {
+	case ModePlan:
+		return 0
+	case ModeAsk:
+		return 1
+	case ModeEdits:
+		return 2
+	case ModeAuto:
+		return 3
+	}
+	return -1
+}
+
+// Valid reports whether m is one of the four modes.
+func (m Mode) Valid() bool { return m.Strictness() >= 0 }
+
+// Stricter is the stricter of two modes: the one that lets a session do less without asking. A mode that is not valid loses
+// to a valid one, so a bad value never raises anything.
+func Stricter(a, b Mode) Mode {
+	switch {
+	case !a.Valid():
+		return b
+	case !b.Valid():
+		return a
+	case b.Strictness() < a.Strictness():
+		return b
+	}
+	return a
+}
+
 // SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id.
 type SessionNewParams struct {
 	Workspace string `json:"workspace"`
@@ -125,6 +159,26 @@ type SessionForkParams struct {
 // subscribes to it and prompts it like any session.
 type SessionForkResult struct {
 	Session SessionID `json:"session"`
+}
+
+// SessionSetModeParams changes a session's mode between turns (DESIGN §6.6). It needs the client token and is refused as busy
+// while a turn runs. The mode asked for is lowered to a trusted repository's ceiling, and the change is the mode.changed event it
+// logs. Among ask, edits and auto it only changes how the permission engine decides; to or from plan the session is rebuilt from
+// its log with the other tool set, so its tool list changes once, and what the user allowed "for the session" is forgotten.
+//
+// A move to auto is refused unless Confirmed says the owner chose it knowingly, which the TUI sets only after showing what auto
+// allows and getting the y key. Like session/new's, it is a marker the daemon holds a client to, not a defence against one that
+// holds the client token.
+type SessionSetModeParams struct {
+	Session   SessionID `json:"session"`
+	Mode      Mode      `json:"mode"`
+	Confirmed bool      `json:"confirmed,omitempty"`
+}
+
+// SessionSetModeResult gives the mode the session now has, which is the one asked for unless a ceiling lowered it; it is the
+// session's current mode, with no event, when that is what was asked for.
+type SessionSetModeResult struct {
+	Mode Mode `json:"mode"`
 }
 
 // SessionPromptResult acknowledges the prompt with the seq of its user.message event; the turn's progress arrives
@@ -202,8 +256,10 @@ type UsageSummaryResult struct {
 // Seq is the question's permission.requested event's seq and ID its PermissionRequested.ID (the tool call's id): the
 // seq names the question, since a call can be asked again under the same id. Decision is allow or deny; Scope is once (or
 // empty) or session, which extends an allow to the rest of the session as a rule. Note, on a deny, reaches the model
-// in the refused result; it is content and grants nothing. Rule is reserved for an edited rule and refused until it
-// is built. It needs a privileged connection; the first answer wins, and another gets CodeNotPending.
+// in the refused result; it is content and grants nothing. Rule is an edited rule: with allow and scope session it stands in
+// for the rules allowing for the session would add, and must be no wider than one of PermissionRequested.Rules (perms.Narrowing);
+// anything else is invalid params and leaves the question open. It needs a privileged connection; the first answer wins, and
+// another gets CodeNotPending.
 type PermissionRespondParams struct {
 	Session  SessionID `json:"session"`
 	ID       string    `json:"id"`
@@ -266,6 +322,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionPrompt:     {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
 	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
 	MethodSessionFork:       {reflect.TypeFor[SessionForkParams](), reflect.TypeFor[SessionForkResult]()},
+	MethodSessionSetMode:    {reflect.TypeFor[SessionSetModeParams](), reflect.TypeFor[SessionSetModeResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},

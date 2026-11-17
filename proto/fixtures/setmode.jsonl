@@ -1,0 +1,7 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-tui","version":"0.2.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/setMode","params":{"session":"s_01JAFIXTURE0000000000000015","mode":"auto"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000015","event":{"seq":4,"time":"2026-11-17T12:00:00Z","type":"mode.changed","payload":{"mode":"ask","by":"user"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"mode":"ask"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/setMode","params":{"session":"s_01JAFIXTURE0000000000000015","mode":"edits"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"error":{"code":-32003,"message":"a turn is already running in s_01JAFIXTURE0000000000000015"}}}
