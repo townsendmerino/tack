@@ -900,3 +900,25 @@ func TestARuleApprovedCommandIsHeldToTheAllowlistAsItRuns(t *testing.T) {
 		t.Errorf("an allowed expansion: %+v", r)
 	}
 }
+
+// A command a rule approved runs go or git only with the variables a rule allows, and git only where it would find the owner's
+// repository: the environment it reads and a repository a model wrote are both outside what the rule saw.
+func TestARuleApprovedGitRunsOnlyInTheOwnersRepositoryAndEnvironment(t *testing.T) {
+	s := session(t, true, "git status", "go build")
+	root := s.Engine.Root
+	ev := filepath.Join(root, "ev")
+	os.MkdirAll(filepath.Join(ev, "objects"), 0o755)
+	os.MkdirAll(filepath.Join(ev, "refs"), 0o755)
+	os.WriteFile(filepath.Join(ev, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
+	marker := filepath.Join(root, "ran")
+	os.WriteFile(filepath.Join(ev, "config"), []byte("[core]\n\tbare = true\n\tfsmonitor = touch "+marker+"\n"), 0o644)
+	for _, cmd := range []string{`cd ev; git status`, `cd ev; git -C . status`, `x=HOME; export $x=ev; git status`, `n=GIT_DIR; export $n=ev; git status`, `export GOROOT=ev; go build .`} {
+		r := runBy(t, s, perms.ByRule, cmd)
+		if r.Exit == 0 || r.Stopped == "" {
+			t.Errorf("%s: not stopped: %+v", cmd, r)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s: the configured program ran", cmd)
+		}
+	}
+}
