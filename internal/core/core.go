@@ -909,14 +909,18 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		to.Subagent = c.subagent(id, ws, created)
 		cfg.Tools = tools.New(to)
 	}
+	var notices []string // the scan's warnings about what loads into the first prompt (window.ScanNotice), "" for a clean file
 	switch {
 	case prompted: // the instructions joined the first prompt, which the log holds
 	case c.opt.WholeInstructions && c.opt.InstructionsHead:
-		if name, content := readInstructionFile(ws.Root()); name != "" {
+		if name, content, note := readInstructionFileScanned(ws.Root()); name != "" {
 			s.instructions, s.notesFirst = instructionHead(name, content, servedWindow(c.ctx, src)), true
+			notices = append(notices, note)
 		}
 	case c.opt.WholeInstructions:
-		s.instructions = readInstructions(ws.Root())
+		var note string
+		s.instructions, note = readInstructions(ws.Root())
+		notices = append(notices, note)
 	}
 	// Sections and knowledge pages are tracked in a resumed session too: its tool calls still bring them in. Its first
 	// message, which the log holds, is not built again.
@@ -938,6 +942,9 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 				}
 				return nil, fmt.Errorf("knowledge pages: %w", err)
 			}
+			for _, p := range pages {
+				notices = append(notices, p.Notice)
+			}
 			if len(pages) > 0 {
 				know = window.NewKnowledge(ws.Root(), pages, w, budget)
 				if prompted {
@@ -957,7 +964,8 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			}
 		}
 		if c.opt.SectionInstructions {
-			if name, content := readInstructionFile(ws.Root()); name != "" {
+			if name, content, note := readInstructionFileScanned(ws.Root()); name != "" {
+				notices = append(notices, note)
 				in := window.NewInstructions(name, content, budget)
 				if first := in.Initial(); first != "" { // with no room at all, Initial gives nothing
 					parts = append(parts, first)
@@ -991,6 +999,9 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		if len(loads) > 0 {
 			cfg.Sections = loads
 		}
+	}
+	if !prompted { // a reopened session's first message, and its warning, are in its log
+		cfg.Notices = slices.DeleteFunc(notices, func(n string) bool { return n == "" })
 	}
 	if history == nil {
 		s.loop = loop.New(cfg)
@@ -1448,22 +1459,32 @@ func (m multiSections) Drop(id string) {
 	}
 }
 
-// readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "".
-func readInstructions(root string) string {
-	if name, content := readInstructionFile(root); name != "" {
-		return "Project instructions, from " + name + ":\n\n" + content
-	}
-	return ""
-}
-
-// readInstructionFile is the first of instructionFiles at root and its content, or "".
-func readInstructionFile(root string) (name, content string) {
-	for _, name := range instructionFiles {
-		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
-			return name, string(b)
-		}
+// readInstructions returns the first of instructionFiles at root, whole and labelled with its name, or "", and the scan's
+// warning about it.
+func readInstructions(root string) (text, notice string) {
+	if name, content, note := readInstructionFileScanned(root); name != "" {
+		return "Project instructions, from " + name + ":\n\n" + content, note
 	}
 	return "", ""
+}
+
+// readInstructionFile is the first of instructionFiles at root and its content, as the model is shown it (invisible
+// characters escaped), or "".
+func readInstructionFile(root string) (name, content string) {
+	name, content, _ = readInstructionFileScanned(root)
+	return name, content
+}
+
+// readInstructionFileScanned is readInstructionFile with the scan's warning for the owner (window.ScanPrompt), "" when the
+// file is clean. Every instruction file a session loads comes through here.
+func readInstructionFileScanned(root string) (name, content, notice string) {
+	for _, name := range instructionFiles {
+		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
+			raw := string(b)
+			return name, window.EscapeInvisible(raw), window.ScanNotice(name, window.ScanPrompt(raw))
+		}
+	}
+	return "", "", ""
 }
 
 // currentSymbol is the index an auto-mode session's current-symbol note reads (Options.CurrentSymbol): symbols when the

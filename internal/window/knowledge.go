@@ -53,6 +53,9 @@ type Page struct {
 	Title string
 	Pins  []Pin
 	Body  string // the text after the frontmatter
+	// Notice is the scan's warning about the file (ScanNotice), "" when it is clean. The page's text, the title included, is
+	// shown with its invisible characters escaped (LoadPages).
+	Notice string
 }
 
 // ParsePage reads a page's frontmatter: its title (else its first heading, else its file name) and its pins. A pin
@@ -113,7 +116,8 @@ func (pg *Page) addPin(v string) {
 	pg.Pins = append(pg.Pins, pin)
 }
 
-// LoadPages reads every .md file under root's KnowledgeDir, in path order; none when the directory is missing.
+// LoadPages reads every .md file under root's KnowledgeDir, in path order; none when the directory is missing. A page is
+// scanned first (ScanPrompt): its invisible characters are escaped, and what the scan found is its Notice.
 func LoadPages(root string) ([]Page, error) {
 	dir := filepath.Join(root, filepath.FromSlash(KnowledgeDir))
 	var pages []Page
@@ -132,7 +136,10 @@ func LoadPages(root string) ([]Page, error) {
 			return err
 		}
 		rel, _ := filepath.Rel(root, p)
-		pages = append(pages, ParsePage(filepath.ToSlash(rel), string(b)))
+		rel = filepath.ToSlash(rel)
+		pg := ParsePage(rel, EscapeInvisible(string(b)))
+		pg.Notice = ScanNotice(rel, ScanPrompt(string(b)))
+		pages = append(pages, pg)
 		return nil
 	})
 	sort.Slice(pages, func(i, j int) bool { return pages[i].Path < pages[j].Path })

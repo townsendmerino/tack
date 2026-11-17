@@ -70,6 +70,9 @@ type Config struct {
 	Sampling server.Sampling
 	// Emit receives every event as it happens, persisted or live-only, after the log has it.
 	Emit func(proto.Event)
+	// Notices are warnings for the owner about what loaded into the first prompt (the prompt-text scan, DESIGN §6.6). Start
+	// records each as an error event of class NoticeClass right after the session's first user message, once.
+	Notices []string
 	// Record, when set, brackets each event a turn records from Run, its append and its Emit together: it must call
 	// record once and return its error. A caller with other writers to the log (core's Halt) holds its write lock across
 	// both, so no event of theirs takes a higher seq and goes out first (core's session.recordTurn). The turn's last
@@ -250,6 +253,12 @@ func (s *Session) Start(text string) (int64, error) {
 		return 0, err
 	}
 	s.pending, s.userSeq = text, ev.Seq
+	for _, n := range s.cfg.Notices {
+		if _, err := s.append(proto.EvError, ev.Seq, proto.ErrorEvent{Class: NoticeClass, Message: n}); err != nil {
+			return 0, err
+		}
+	}
+	s.cfg.Notices = nil // once
 	return ev.Seq, nil
 }
 
