@@ -47,6 +47,7 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
+	pane          string // the pane shown above the composer: "", or a name from panes (panes.go)
 	input         []rune
 	width, height int
 	quit          bool
@@ -214,7 +215,11 @@ func (a *App) Frame() string {
 	if len(rows) > a.height-3 { // the popup never takes the screen: the transcript keeps at least two rows
 		rows = rows[:max(a.height-3, 0)]
 	}
-	body := a.Screen.Render(a.width, a.height-1-len(rows))
+	pane := a.paneRows(a.height - 3 - len(rows)) // what the popup left, less the transcript's two rows
+	body := a.Screen.Render(a.width, a.height-1-len(rows)-len(pane))
+	for _, r := range pane {
+		body += "\n" + r
+	}
 	for _, r := range rows {
 		body += "\n" + r
 	}
