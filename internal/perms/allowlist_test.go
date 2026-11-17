@@ -26,7 +26,7 @@ func allowEngine(t *testing.T) *Engine {
 	if out, err := exec.Command(git, "init", "-q", root).CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v %s", err, out)
 	}
-	e := &Engine{Root: root, Path: bin + string(os.PathListSeparator) + filepath.Dir(git), Sandboxed: true}
+	e := &Engine{Root: root, Path: bin + string(os.PathListSeparator) + os.Getenv("PATH") + string(os.PathListSeparator) + filepath.Dir(git), Sandboxed: true}
 	for _, s := range []string{"go test", "go build", "go vet", "go run", "go list", "go env", "go version", "git status", "git diff", "git log", "git show",
 		"git grep", "git branch", "git tag", "git remote", "git stash", "git config", "git rev-parse", "git reset", "git commit", "git difftool", "git bisect",
 		"git submodule", "git filter-branch", "git checkout", "git", "go", "find ."} {
@@ -124,7 +124,7 @@ func TestAFlagNobodyListedAsksUnderEveryRuleAndSubcommand(t *testing.T) {
 // covered, so the change reaches nothing else.
 func TestAProgramWithoutAnAllowlistIsCoveredAsBefore(t *testing.T) {
 	e := allowEngine(t)
-	bin := e.Path
+	bin := filepath.SplitList(e.Path)[0] // the fake programs' directory, first on the path
 	os.WriteFile(filepath.Join(bin, "make"), []byte("#!/bin/sh\n"), 0o755)
 	r, _ := ParseRule("make test")
 	e.Rules = append(e.Rules, r)

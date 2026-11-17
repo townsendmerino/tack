@@ -86,7 +86,7 @@ func TestGitRunsUnderARuleOnlyWhereItFindsTheWorkspacesOwnRepository(t *testing.
 		t.Error("a root with no repository")
 	}
 	e := allowEngine(t)
-	e.Root, e.Path = root, filepath.Dir(git)
+	e.Root, e.Path = root, filepath.Dir(git)+string(os.PathListSeparator)+os.Getenv("PATH")
 	e.SessionDir = filepath.Join(root, "ev")
 	if v := decide(e, `git status`); v.Action != Ask || !strings.Contains(strings.Join(v.Reasons, ";"), "own repository") {
 		t.Errorf("git status in the look-alike: %s %v", v.Action, v.Reasons)
