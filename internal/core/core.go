@@ -858,6 +858,14 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 // edit kit in auto mode, the sweep target, and the loop. history is a reopened session's events, nil for a new one;
 // a session whose log has a user.message has been prompted, so the first prompt's additions are not made again.
 func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event) (*session, error) {
+	// A log is data: a session whose mode is not one of the four is refused, never read as a mode that lets it change files.
+	// Every mode but plan gets the edit tools below, so this check is what keeps an empty or mistyped mode out of them.
+	if !created.Mode.Valid() {
+		return nil, fmt.Errorf("session.created names the mode %q, which is not plan, ask, edits or auto", created.Mode)
+	}
+	// A trusted repository's ceiling applies to a session as it is opened, not only as it is created, so one made before its
+	// repository was trusted, or before the ceiling was set, does not reopen above it. session.created keeps the mode recorded.
+	created.Mode = c.clampMode(ws.Root(), created.Mode)
 	src, err := c.source(created.Model)
 	if err != nil {
 		return nil, err
@@ -895,15 +903,17 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	cfg.Approve = approver{s} // questions wait for permission/respond while a privileged client watches
-	if created.Mode == proto.ModeAuto {
+	// Every mode but plan gets the edit tools, the shell and the permission engine; the engine decides per mode what asks
+	// (perms.Engine.Decide). Plan is read-only, with neither.
+	if created.Mode != proto.ModePlan {
 		if c.opt.Edit == nil {
 			c.unregister(id)
-			return nil, errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
+			return nil, fmt.Errorf("%s mode changes the workspace, and this tack has no sandbox to run its commands in", created.Mode)
 		}
 		kit, err := c.opt.Edit(ws.Root(), s.target)
 		if err != nil {
 			c.unregister(id)
-			return nil, fmt.Errorf("auto mode: %w", err)
+			return nil, fmt.Errorf("%s mode: %w", created.Mode, err)
 		}
 		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
