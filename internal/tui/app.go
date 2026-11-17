@@ -123,6 +123,12 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// cancel asks the daemon to end the running turn.
+func (a *App) cancel() tea.Cmd {
+	b := a.Backend
+	return func() tea.Msg { return CancelledMsg{Err: b.Cancel()} }
+}
+
 func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyCtrlC, tea.KeyCtrlD:
@@ -130,8 +136,7 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case tea.KeyEsc:
 		// Esc ends the turn, a pending question included (the daemon denies it); the composer keeps its text.
-		b := a.Backend
-		return a, func() tea.Msg { return CancelledMsg{Err: b.Cancel()} }
+		return a, a.cancel()
 	}
 	// While a question is open its keys answer it, and nothing else is typed: a letter the user meant for the composer must
 	// not be taken for an answer after the question has gone, nor one meant as an answer land in the composer.
@@ -158,6 +163,14 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(string(a.input))
 		if text == "" {
 			return a, nil
+		}
+		if strings.HasPrefix(text, "//") {
+			text = text[1:] // a prompt that really starts with a slash
+		} else if cmd, handled, known := a.runSlash(text); handled {
+			if known {
+				a.input = nil
+			}
+			return a, cmd
 		}
 		a.input = nil
 		a.Screen.Scroll = 0
