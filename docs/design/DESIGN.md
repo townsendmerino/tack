@@ -799,9 +799,13 @@ tool-use smoke set compares this merged set against the split one before it is f
       the grant, one that was not there when the owner trusted a repo with none, and a repo with no grant are all untrusted;
       the session's first prompt gets a warning (the `instructions` class, as the prompt-text scan's) saying which and what
       to run. This goes beyond "a trust step" in the text above: a repo whose file a pull rewrites must not stay trusted.
-    - **How to trust:** `tack trust [path]` shows the file, invisible characters escaped, and `-yes` records the grant;
-      `workspace/trust {root}` (§9.2) does the same for an app and needs the client token. The grants are `trust.json` in
-      the state directory, which the sandbox denies to commands, so a command cannot trust its own repo.
+    - **How to trust:** `tack trust [path]` shows the file, invisible characters escaped, with its digest;
+      `tack trust -yes <digest> [path]` records the grant, and only for the file whose digest starts with the one it was
+      given (at least 8 characters), so a file that changed after you read it is refused. `-yes` also needs a terminal on
+      stdin and is refused inside any sandbox (macOS refuses `sandbox-exec` inside one, which is how it tells), so a script
+      or a command a model ran cannot make the grant. `workspace/trust {root}` (§9.2) is the app's way and needs the client
+      token. The grants are `trust.json` in the state directory, which the sandbox denies to commands, so a command
+      cannot write one either.
     - **The event:** a session started in a repo with an applied configuration gets `repo.trusted` right after
       `session.created`, naming the repo, what took effect (`config`) and the file's digest. A reopened session applies the
       configuration again if it is still trusted and does not repeat the event.

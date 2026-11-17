@@ -6,7 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/mattn/go-isatty"
 
 	"github.com/townsendmerino/tack/internal/config"
 	"github.com/townsendmerino/tack/internal/perms"
@@ -22,14 +25,26 @@ func trustCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "config file (default ~/.config/tack/config.toml)")
-	yes := fs.Bool("yes", false, "trust the repository's configuration as it is now; without it, show it")
+	yes := fs.String("yes", "", "trust the configuration whose digest starts with this, as shown; without it, show the file")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 1 {
-		fmt.Fprintln(stderr, "usage: tack trust [-yes] [-config FILE] [path]")
+		fmt.Fprintln(stderr, "usage: tack trust [-yes DIGEST] [-config FILE] [path]")
 		return exitUsage
 	}
 	fail := func(err any) int {
 		fmt.Fprintln(stderr, "tack trust:", err)
 		return exitError
+	}
+	yesGiven := false
+	fs.Visit(func(f *flag.Flag) { yesGiven = yesGiven || f.Name == "yes" })
+	if yesGiven {
+		// A grant is the owner's act. It needs a person at a terminal, and it is refused inside a sandbox, where the one
+		// asking could be a command a model ran.
+		if inSandboxNow() {
+			return fail("-yes is refused inside a sandbox: run tack trust from your own terminal, outside tack's sandbox")
+		}
+		if !stdinIsTerminal() {
+			return fail("-yes needs a terminal on stdin: trusting a repository is for you to do, not a script or a command")
+		}
 	}
 	path := "."
 	if fs.NArg() == 1 {
@@ -74,9 +89,18 @@ func trustCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s/%s, as it is now (invisible characters shown escaped):\n\n%s\n", root, trust.ConfigPath, window.EscapeInvisible(string(text)))
 		fmt.Fprintf(stdout, "Trusting it lets this repository's commands see the environment variables %v, in addition to the usual short list.\n", repo.Commands.Env)
 	}
-	if !*yes {
-		fmt.Fprintf(stdout, "tack trust -yes %s trusts exactly this content; a change to it, by anyone, untrusts it.\n", path)
+	if !yesGiven {
+		fmt.Fprintf(stdout, "tack trust -yes %s %s trusts exactly this content; a change to it, by anyone, untrusts it.\n", shortDigest(digest), path)
 		return exitOK
+	}
+	// The digest the owner read is the one trusted: a file that changed since it was shown is a different file.
+	given := strings.ToLower(strings.TrimSpace(*yes))
+	matches := digest == "" && given == "none" || digest != "" && strings.HasPrefix(digest, given)
+	switch {
+	case digest != "" && len(given) < minDigest:
+		return fail(fmt.Sprintf("the digest is too short: give at least %d characters of the one shown", minDigest))
+	case !matches:
+		return fail(fmt.Sprintf("the digest %q is not the file that was shown: its digest is now %s; run tack trust %s to read it again", *yes, shortDigest(digest), path))
 	}
 	if err := trust.Open(stateDir).Trust(root, digest, time.Now()); err != nil {
 		return fail(err)
@@ -91,3 +115,13 @@ func shortDigest(d string) string {
 	}
 	return d[:12]
 }
+
+// stdinIsTerminal and inSandboxNow are who is asking, as -yes checks it; tests replace them.
+var (
+	stdinIsTerminal = func() bool { return isatty.IsTerminal(os.Stdin.Fd()) }
+	inSandboxNow    = inSandbox
+)
+
+// minDigest is the fewest characters of the digest -yes takes: enough that a file crafted to share a short prefix with the
+// one shown is out of reach.
+const minDigest = 8

@@ -75,7 +75,7 @@ func usage(w io.Writer) {
                                   the usage table: requests and tokens by day and model server
   tack rewind [-yes [-no-undo]] <session> [seq]
                                   list a session's checkpoints, or put the files back as they were at one
-  tack trust [-yes] [path]        show a repository's .tack/config.toml, or with -yes trust it as it is now
+  tack trust [-yes DIGEST] [path] show a repository's .tack/config.toml and its digest; -yes DIGEST trusts that file
   tack version
 `)
 }
