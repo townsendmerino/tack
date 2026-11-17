@@ -478,7 +478,9 @@ func TestAShutdownRefusesNewConnectionsBeforeItStopsAccepting(t *testing.T) {
 	}
 	defer nc.Close()
 	late := core.NewClient(nc)
-	if err := late.Call(proto.MethodDaemonStatus, proto.DaemonStatusParams{}, nil); err != nil {
+	// Without the token, which is how it is told apart from a privileged client later: initialize is the one method that answers
+	// that connection.
+	if err := late.Call(proto.MethodInitialize, proto.InitializeParams{Client: testClient, Protocol: proto.Version}, nil); err != nil {
 		t.Fatal(err) // the daemon has accepted it and serves it
 	}
 	var initErr error

@@ -1437,6 +1437,20 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
 - `initialize` — versions and capabilities, and the client token from `client.token` when the client has one. The token
   is checked once and marks the connection as privileged; it never travels in any other method's parameters, so a debug
   log or a fixture recorder cannot capture it.
+  - **Every other method needs a privileged connection** (owner, 2026-11-17, from a security review). The socket is 0600, so a
+    process running as the owner can reach it, a command the model ran among them if the sandbox let it; reaching it must
+    not be enough to open or read a session. The sandbox does not let it (§6.6: tack's socket and state are out of reach,
+    and the macOS escape tests, `TestDaemonSocketIsOutOfReach` and `TestClientTokenIsOutOfReach`, hold it); the daemon no
+    longer relies on that alone. A client that cannot read `client.token` can initialize and do nothing else. `tack run`
+    without the daemon makes a token for its own in-process Core and presents it on its own pipe.
+  - **Privileged is not attended.** A permission question waits only for a client that is privileged and says at `initialize`
+    (`client.attended`) that a person is at it: the TUI, the app. A privileged client that is not attended (`tack run`, in
+    process or through the daemon) is not someone to wait for, so its question is denied at once as `no_user`, as when such a
+    client had no token. Without this a headless `tack run --edit`, now privileged, would wait forever for an answer. Only a
+    privileged connection can claim it.
+  - **Auto needs the owner's confirmation.** `session/new` in `auto` is refused unless it says `confirmed: true`, which the
+    CLI sets only for a start in auto the owner chose (`-mode`, his own config, an edit task he started). This is a marker for
+    the daemon to hold a client to, not a defence against a client that holds the token: the token is the boundary.
 - `workspace/open {root}`, `workspace/trust {root}`, `workspace/list`, `workspace/status` (index warming or ready, file
   count, ken generation); notification `workspace/indexing`. (`workspace/trust` is built: it needs the client token, records
   the grant for the repo's `.tack/config.toml` as it is now, and refuses a file that does not parse; §6.6.)

@@ -264,7 +264,7 @@ func TestSetModeRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := setMode(f.client, id, proto.ModeAuto); code(err) != proto.CodeUnauthorized {
+	if _, err := setMode(f.unprivileged(t), id, proto.ModeAuto); code(err) != proto.CodeUnauthorized {
 		t.Errorf("unprivileged: %v", err)
 	}
 	for _, bad := range []proto.Mode{"", "yolo", "AUTO"} {

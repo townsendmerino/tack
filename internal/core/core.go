@@ -325,13 +325,15 @@ var errDropped = errors.New("core: the connection was dropped: its client stoppe
 // connection are handled in order, so it needs no lock. What is sent goes out in order through one writer.
 type conn struct {
 	privileged bool
-	out        chan any      // what waits to be written
-	stopped    chan struct{} // closed when nothing more is written: the connection was dropped, or Serve ended
-	stop       sync.Once
-	closing    chan struct{} // closed by Serve's end: the writer writes what is queued, then ends
-	written    chan struct{} // closed when the writer ends
-	closer     io.Closer     // the connection itself, when it can be closed; nil otherwise
-	onDrop     func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
+	// attended is set by an initialize on a privileged connection that says a person is at the client (proto.ClientInfo.Attended).
+	attended bool
+	out      chan any      // what waits to be written
+	stopped  chan struct{} // closed when nothing more is written: the connection was dropped, or Serve ended
+	stop     sync.Once
+	closing  chan struct{} // closed by Serve's end: the writer writes what is queued, then ends
+	written  chan struct{} // closed when the writer ends
+	closer   io.Closer     // the connection itself, when it can be closed; nil otherwise
+	onDrop   func()        // run once, on its own goroutine, when the connection is dropped: Serve unsubscribes it
 	// catchingUp is set while what a replay queued is still being written: live events then wait longer for room, so a
 	// client reading its replay is not dropped for a full queue it is draining. It ends when the writer reaches
 	// catchTarget (the replay's last message written), or at catchUntil (unix nanoseconds, sendTimeout after it began),
@@ -613,9 +615,15 @@ func params[T any](req proto.Request) (T, *proto.Error) {
 }
 
 func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
+	// Only initialize, which is how a client presents the token, answers without it. Every other method needs a privileged
+	// connection: a socket that anything running as the owner can reach (a command the model ran) must not be enough to open a
+	// session, in any mode, or to read one.
+	if req.Method != proto.MethodInitialize && !cn.privileged {
+		return nil, unprivileged(req.Method)
+	}
 	switch req.Method {
 	case proto.MethodInitialize:
-		cn.privileged = false // a re-initialize starts over, and one that fails for any reason leaves none
+		cn.privileged, cn.attended = false, false // a re-initialize starts over, and one that fails for any reason leaves none
 		p, perr := params[proto.InitializeParams](req)
 		if perr != nil {
 			return nil, perr
@@ -636,6 +644,7 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 				return nil, &proto.Error{Code: proto.CodeUnauthorized, Message: "initialize: the client token is wrong; read it again from client.token"}
 			}
 			cn.privileged = true
+			cn.attended = p.Client.Attended // a claim that only a privileged connection may make
 		}
 		ken := ""
 		if c.opt.OpenSearcher != nil {
@@ -821,6 +830,9 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 	case proto.ModeAsk, proto.ModePlan, proto.ModeEdits, proto.ModeAuto:
 	default:
 		return "", fmt.Errorf("mode %q", p.Mode)
+	}
+	if p.Mode == proto.ModeAuto && !p.Confirmed {
+		return "", errors.New("a session in auto mode needs the owner's confirmation (confirmed: true): the -mode flag, his own config.toml, or an edit task he started")
 	}
 	root := p.Workspace
 	if rest, ok := strings.CutPrefix(root, "~/"); ok {

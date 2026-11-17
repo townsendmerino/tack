@@ -32,7 +32,7 @@ func daemonOn(t *testing.T, st *store.Store, url string, set ...func(*Options)) 
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	opt := Options{Store: st, Version: "test",
+	opt := Options{Store: st, Version: "test", ClientToken: "tok",
 		Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20,
 			MaxErrors: 8, SessionTokens: 1 << 20, SessionToolCalls: 100},
 		Source: func(string) (models.Source, error) { return models.NewRemote("local", url, "", "", nil), nil }}
@@ -47,7 +47,7 @@ func daemonOn(t *testing.T, st *store.Store, url string, set ...func(*Options)) 
 	cl := NewClient(a)
 	events := make(chan proto.Event, 256)
 	cl.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
-	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: "tok"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	return c, cl, events
@@ -360,7 +360,7 @@ func TestAFailedSessionLeavesNoLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, cl, _ := daemonOn(t, st, "http://127.0.0.1:1")
-	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModeAuto}, nil); err == nil {
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: repo(t), Model: "main", Mode: proto.ModeAuto, Confirmed: true}, nil); err == nil {
 		t.Fatal("auto mode without a sandbox made a session")
 	}
 	if ids, err := st.Sessions(); err != nil || len(ids) != 0 {
@@ -736,7 +736,7 @@ func connect(t *testing.T, c *Core) (*Client, chan proto.Event) {
 	cl := NewClient(a)
 	events := make(chan proto.Event, 256)
 	cl.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
-	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: "tok"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	return cl, events
@@ -991,7 +991,7 @@ func TestAReopenedSessionKeepsItsSections(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, "CLAUDE.md"), []byte("# notes\n\nIntro.\n\n## Testing\n\nRun go test with -v.\n\n## Filler\n\n"+
 		strings.Repeat("a line of filler text to push the file over its budget\n", 300)), 0o644)
 	var sess proto.SessionNewResult
-	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModeAuto}, &sess); err != nil {
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: proto.ModeAuto, Confirmed: true}, &sess); err != nil {
 		t.Fatal(err)
 	}
 	cl.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)

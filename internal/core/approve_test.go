@@ -27,7 +27,7 @@ func (f *fixture) privileged(t *testing.T) (*Client, chan proto.Event, net.Conn)
 	cl := NewClient(a)
 	events := make(chan proto.Event, 256)
 	cl.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
-	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tui", Version: "0"},
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tui", Version: "0", Attended: true},
 		Protocol: proto.Version, Token: "tok"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestRespondChecksWhatItIsGiven(t *testing.T) {
 		}
 		return 0
 	}
-	if c := code(f.client, proto.PermissionRespondParams{Session: sid, Seq: 6, ID: "w1", Decision: proto.DecisionAllow}); c != proto.CodeUnauthorized {
+	if c := code(f.unprivileged(t), proto.PermissionRespondParams{Session: sid, Seq: 6, ID: "w1", Decision: proto.DecisionAllow}); c != proto.CodeUnauthorized {
 		t.Errorf("without the token: code %d; want unauthorized", c)
 	}
 	for name, p := range map[string]proto.PermissionRespondParams{

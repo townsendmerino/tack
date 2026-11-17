@@ -30,6 +30,10 @@ type SessionID string
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// Attended says a person is at this client and can answer a permission question: the TUI, the app. Only a privileged connection
+	// may claim it. A question waits for an attended client that is subscribed and is otherwise denied at once as no_user, so a headless
+	// run (tack run, with a token of its own or the daemon's) never waits for an answer no one will give.
+	Attended bool `json:"attended,omitempty"`
 }
 
 // InitializeParams opens a connection. Token is the daemon's client token, read from client.token in its state directory
@@ -106,11 +110,15 @@ func Stricter(a, b Mode) Mode {
 	return a
 }
 
-// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id.
+// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id. A session in auto mode is
+// refused unless Confirmed says the owner chose auto knowingly: by the -mode flag, his own config.toml, or an edit task he
+// started. A client sets it only on those paths, never because a repository, a file or a model said so. It is a marker for the
+// daemon to hold the client to, not a defence against one that holds the client token: that token is the boundary (DESIGN §6.6).
 type SessionNewParams struct {
 	Workspace string `json:"workspace"`
 	Model     string `json:"model"`
 	Mode      Mode   `json:"mode"`
+	Confirmed bool   `json:"confirmed,omitempty"`
 }
 
 // SessionNewResult names the new session.

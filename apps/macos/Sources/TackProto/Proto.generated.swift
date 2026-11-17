@@ -92,10 +92,12 @@ public struct Checkpoint: Codable, Equatable, Sendable {
 public struct ClientInfo: Codable, Equatable, Sendable {
     public var name: String
     public var version: String
+    public var attended: Bool?
 
     enum CodingKeys: String, CodingKey {
         case name = "name"
         case version = "version"
+        case attended = "attended"
     }
 }
 
@@ -521,11 +523,13 @@ public struct SessionNewParams: Codable, Equatable, Sendable {
     public var workspace: String
     public var model: String
     public var mode: Mode
+    public var confirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
         case model = "model"
         case mode = "mode"
+        case confirmed = "confirmed"
     }
 }
 

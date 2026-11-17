@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -170,6 +172,12 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+	token, err := localToken()
+	if err != nil {
+		fmt.Fprintln(stderr, "tack run:", err)
+		return exitError
+	}
+	opts.ClientToken = token // this process's own, for its own pipe (drive)
 	c := core.New(ctx, opts)
 	defer c.Close()
 	go halt.Watch(ctx, stateDir, halt.Interval, c.Halt, c.Resume)
@@ -181,10 +189,10 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		code = bestOf(ctx, k, ws, opts.Edit, func(_ int, out io.Writer) int {
-			return drive(ctx, c, ws, question, mode, *jsonOut, out, stderr)
+			return drive(ctx, c, token, ws, question, mode, *jsonOut, out, stderr)
 		}, stdout, stderr)
 	} else {
-		code = drive(ctx, c, ws, question, mode, *jsonOut, stdout, stderr)
+		code = drive(ctx, c, token, ws, question, mode, *jsonOut, stdout, stderr)
 	}
 
 	if rec != nil {
@@ -236,13 +244,15 @@ func runPreflight(ctx context.Context, edit func(string, sandbox.Target) (core.E
 }
 
 // drive runs one turn through the protocol, against the Core over an in-memory pipe (--no-daemon, DESIGN §9.1).
-func drive(ctx context.Context, c *core.Core, ws, question string, mode proto.Mode, jsonOut bool, stdout, stderr io.Writer) int {
+func drive(ctx context.Context, c *core.Core, token, ws, question string, mode proto.Mode, jsonOut bool, stdout, stderr io.Writer) int {
 	a, b := net.Pipe()
 	defer a.Close()
 	go func() { _ = c.Serve(ctx, b); b.Close() }()
 	cl := core.NewClient(a)
+	// The Core is this process's own, and the token is made for it in runCmd and never leaves the process: the pipe is as
+	// privileged as the process that made it.
 	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tack-cli", Version: version},
-		Protocol: proto.Version}, nil); err != nil {
+		Protocol: proto.Version, Token: token}, nil); err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
@@ -368,7 +378,8 @@ func ask(ctx context.Context, cl *core.Client, ws, question string, mode proto.M
 	cl.OnEvent = onEvent
 
 	var sess proto.SessionNewResult
-	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
+	// Auto is only ever the edit task the owner started with -edit, so it is confirmed.
+	if err := cl.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode, Confirmed: mode == proto.ModeAuto}, &sess); err != nil {
 		fmt.Fprintln(stderr, "tack run:", err)
 		return exitError
 	}
@@ -473,4 +484,14 @@ func newDaemonNote(oldPID, newPID int) string {
 		return ""
 	}
 	return fmt.Sprintf("tack run: a new daemon (pid %d) has taken over from pid %d; the turn the old one was running ended with it", newPID, oldPID)
+}
+
+// localToken is a random client token for a Core that lives and dies in this process (tack run without the daemon). It is the
+// connection's credential on the in-memory pipe, and exists nowhere else.
+func localToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
