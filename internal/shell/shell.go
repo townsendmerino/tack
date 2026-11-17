@@ -464,6 +464,13 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
 		}
+		// A command a rule approved runs only as the allowlist for its program accepts, as it expanded here: what approval saw as a
+		// rule's command and what runs are held to the same list. A command the user approved is what he saw.
+		if ck.req.ApprovedBy == perms.ByRule {
+			if r := perms.UnsafeInvocation(path, args[1:]); r != "" {
+				return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+			}
+		}
 		// The parse told the user it couldn't see what this runs, and they approved it: what it became is what they approved, so the
 		// checks below, of what approval saw, don't apply. The check above does, whatever they approved.
 		if covered {

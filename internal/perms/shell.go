@@ -239,6 +239,11 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 				return &s, why
 			}
 		}
+		if e.allowed(s) { // a rule matches; for a program with an allowlist it covers only what the allowlist accepts
+			if r := UnsafeInvocation(prog, s.Args); r != "" {
+				return &s, []string{r + ", which no rule covers"}
+			}
+		}
 		if !e.allowed(s) {
 			return &s, []string{"no rule allows " + s.String()}
 		}
@@ -537,6 +542,16 @@ func (e *Engine) Covers(s Simple) bool {
 			if !s.Literal[i] || runFlag(s.Program, a) != "" {
 				return false
 			}
+		}
+	}
+	if HasAllowlist(s.Program) {
+		for i := range s.Args {
+			if !s.Literal[i] {
+				return false
+			}
+		}
+		if UnsafeInvocation(s.Program, s.Args) != "" {
+			return false
 		}
 	}
 	return e.allowed(s)

@@ -654,6 +654,30 @@ tool-use smoke set compares this merged set against the split one before it is f
     back, through `ParseRule`, as the rule it wrote. Before, an argument that was empty, a space, a `#`, a word with a space or
     a glob was lost or merged on the way, so allowing `go '' build` for the session gave the child a rule for `go` with any
     arguments. A rule that would not read back is not added: the command keeps asking.
+  - **What a rule may cover: an allowlist of invocations** (owner, 2026-11-17, from a security review). A rule matches a program
+    and its leading arguments, so `go test` and `git status` matched anything after: `go test -ldflags='-extld=./evil'` made
+    the linker run a program, and `git grep -O id`, `git difftool -x id`, `git bisect run id` ran one. No list of dangerous
+    flags is ever complete, so for `go`, `git` and `find` a rule covers an invocation only if every subcommand and flag of it is
+    one known not to run a program or change configuration (`perms.UnsafeInvocation`, `internal/perms/safe.go`). Anything else
+    is not covered and asks; the user can still allow it once. The same function decides at approval and, after expansion, at
+    run time for a command a rule approved. What passes:
+    - **`go`:** `build`, `test`, `vet`, `run`, `list`, `version`, and `env` to read; their flags from a list of those that
+      neither run a program nor reach outside (not `-exec`, `-toolexec`, `-vettool`, `-overlay`, `-C`, `-modfile`, `-pkgdir`,
+      `-gccgoflags`). `-ldflags`, `-gcflags` and `-asmflags` are read word by word and pass only when every word is on a short
+      list (`-s`, `-w`, `-X name=value`, `-N`, `-l`, `-m`, `-D`, `-I` and the like); `-extld`, `-extldflags`, `-r`, `-toolexec`
+      and anything else ask. `go env -w` and `-u` ask under any rule, since they persist into later runs; `go generate`,
+      `install`, `get`, `mod`, `clean`, `fmt`, `work` and `tool` ask. After `-args` (test) or the first package (run) the
+      rest is the program's, not go's. `GOFLAGS` set in the command still asks, whatever it holds.
+    - **`git`:** the read-only commands (`status`, `diff`, `log`, `show`, `blame`, `grep`, `rev-parse`, `rev-list`, `ls-files`,
+      `describe` and their kind), `branch` and `tag` to list, `remote -v` and `show`, `stash list` and `show`, and `config`
+      only to read (`--get`, `--list`), each with its display and selection flags. Not `-c`, `-C`, `--exec-path`, `--ext-diff`,
+      `--textconv`, `grep -O`, `--output`, any `git config` write, `difftool`, `bisect`, `submodule`, `filter-branch`, or a
+      command that writes (`reset`, `commit`, `checkout`, `add`, `branch <name>`, `stash`, `tag <name>`). A write to config can
+      run a program later (`core.fsmonitor`, `alias.x '!…'`), so none is ever covered.
+    - **`find`:** the tests and the print actions; not `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fls`.
+    - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
+      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
+      `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval

@@ -285,7 +285,9 @@ func TestDestroyingWorkStopsAtRunTime(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { os.RemoveAll(tmp) })
-			for _, cmd := range []string{`how=--soft; git reset $how HEAD`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
+			// What isn't on the list runs. Expanded or not, ordinary git and a temp directory go through. (git status stands where git reset did:
+			// reset is not read-only, so a rule no longer covers it, and the rule-approved run is stopped by the allowlist.)
+			for _, cmd := range []string{`how=--short; git status $how`, `git status`, `d=` + tmp + `; rm -rf $d`, `d=node_modules; rm -rf $d`} {
 				if r := runBy(t, s, by, cmd); r.Stopped != "" {
 					t.Errorf("%s: stopped: %s", cmd, r.Stopped)
 				}
@@ -861,5 +863,40 @@ func TestCommandsNeverSeeAProxyCredential(t *testing.T) {
 		if strings.Contains(r.Output, "hunter2") {
 			t.Errorf("the credential reached the command")
 		}
+	}
+}
+
+// TestARuleApprovedCommandIsHeldToTheAllowlistAsItRuns: a command a rule approved runs only as the allowlist for its program accepts,
+// after expansion. The parse saw `find sub -type f $x` with an argument it could not read, which asks; if it is approved by a rule
+// anyway (here, by the rule's name), the run-time check stops what it became, -delete, and the file survives. The user's own approval
+// is what he saw and is not held to the list.
+func TestARuleApprovedCommandIsHeldToTheAllowlistAsItRuns(t *testing.T) {
+	for _, tc := range []struct {
+		cmd, by string // by: who stops it; "" is the allowlist, the rest are checks that were there before and stop it first
+	}{
+		{`x=-delete; find sub -type f $x`, "asks in every mode"}, {`x=-fprint; find sub -type f $x /tmp/tack-allowlist-out`, "asks in every mode"},
+		{`x=-nosuchprimary; find sub $x`, ""}, {`a=-ldflags=-extld=id; go build $a .`, ""}, {`a=-gcflags=-toolexec=id; go build $a .`, ""},
+	} {
+		cmd := tc.cmd
+		want := "not one a rule covers"
+		if tc.by != "" {
+			want = tc.by
+		}
+		s := session(t, true, "find sub", "go build")
+		keep := filepath.Join(s.Engine.Root, "sub", "keep.txt")
+		os.WriteFile(keep, []byte("x"), 0o644)
+		r := runBy(t, s, perms.ByRule, cmd)
+		if r.Exit == 0 || !strings.Contains(r.Stopped, want) {
+			t.Errorf("%s: not stopped by the allowlist: %+v", cmd, r)
+		}
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s: the file is gone", cmd)
+		}
+	}
+	// An allowed expansion runs.
+	s := session(t, true, "find sub")
+	os.WriteFile(filepath.Join(s.Engine.Root, "sub", "a.txt"), []byte("x"), 0o644)
+	if r := runBy(t, s, perms.ByRule, `n=a.txt; find sub -name $n -print`); r.Stopped != "" || !strings.Contains(r.Output, "a.txt") {
+		t.Errorf("an allowed expansion: %+v", r)
 	}
 }
