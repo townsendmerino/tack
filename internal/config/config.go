@@ -35,6 +35,15 @@ type Config struct {
 	// Serve configures `tack serve`, the on-demand model server on the box with the GPU (DESIGN §8.2); absent means
 	// this machine serves none.
 	Serve *Serve `toml:"serve"`
+	// Session is [session]: what the owner wants a session to start with.
+	Session Session `toml:"session"`
+}
+
+// Session is [session] in the owner's own config.toml. A repository's .tack/config.toml has a [session] of its own with no
+// such setting: it cannot pick a mode (DESIGN §6.6).
+type Session struct {
+	// Mode is the mode the TUI starts a session in when -mode is not given: plan, ask, edits or auto. Unset means plan.
+	Mode string `toml:"mode"`
 }
 
 // Serve is [serve]: what `tack serve` runs on demand on nobara (DESIGN §8.2). It runs Server, a goinfer-child of
@@ -302,10 +311,23 @@ func Load(path string) (*Config, error) {
 		sort.Strings(keys)
 		return nil, fmt.Errorf("config %s: unknown keys: %s", path, strings.Join(keys, ", "))
 	}
+	if md.IsDefined("session", "mode") && !ValidMode(c.Session.Mode) {
+		return nil, fmt.Errorf("config %s: [session] mode: %q is not a mode (plan, ask, edits or auto)", path, c.Session.Mode)
+	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// ValidMode reports whether m is one of the permission modes (DESIGN §6.6). The list is repeated here because this package
+// imports nothing of tack's; internal/proto's Mode is the source, and a test in cmd/tack holds them together.
+func ValidMode(m string) bool {
+	switch m {
+	case "plan", "ask", "edits", "auto":
+		return true
+	}
+	return false
 }
 
 func (c *Config) validate() error {
