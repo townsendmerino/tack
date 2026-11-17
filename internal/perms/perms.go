@@ -98,6 +98,9 @@ type Engine struct {
 	// SessionEnv is the exported variables earlier commands set in this session (internal/shell.Session keeps it
 	// current). One that changes what programs run makes every command ask.
 	SessionEnv map[string]string
+	// EnvExtra is the names of variables, beyond the list in CommandEnvAllowed, that reach this session's commands: what a
+	// trusted repository's configuration adds. A name like a secret never passes.
+	EnvExtra []string
 
 	tools map[string]bool // tools the user allowed for the session (AllowForSession)
 }

@@ -163,11 +163,10 @@ func TestMain(m *testing.M) {
 // step 2c).
 func bashHarness(t *testing.T, mode proto.Mode, ap Approver, replies ...goinfertest.Reply) *harness {
 	t.Helper()
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	h := newHarness(t, Budget{}, replies...)
 	cfg := h.sess.cfg
 	cfg.Perms = &perms.Engine{Root: h.ws.Root(), Path: os.Getenv("PATH")}
-	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms}
+	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms, Env: []string{"TACK_SHELL_CHILD=1"}}
 	cfg.Tools = tools.New(tools.Options{Write: true, Shell: sh})
 	cfg.Mode, cfg.Approve = mode, ap
 	h.sess = New(cfg)

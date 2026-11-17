@@ -22,12 +22,11 @@ import (
 // not a redirection, so the run-time check lets it start and the kernel stops the write; network is refused; and
 // the shell still works inside.
 func TestShellInsideTheSandbox(t *testing.T) {
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	dir := func() string { d, _ := filepath.EvalSymlinks(t.TempDir()); return d }
 	ws, home, tmp, cache, outside := dir(), dir(), dir(), dir(), dir()
 	cfg := sandbox.Config{Workspace: ws, Temp: tmp, GoCache: cache, Home: home}
 	e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
-	s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
+	s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"TACK_SHELL_CHILD=1", "HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
 		Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
 			cfg := cfg
 			cfg.Group, cfg.Mark = group, mark
@@ -68,7 +67,6 @@ func TestShellInsideTheSandbox(t *testing.T) {
 // runs past its timeout. Killing the process group misses the detached process; the sweep by the command's sandbox
 // mark kills it.
 func TestCancelReachesDetachedProcesses(t *testing.T) {
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	dir := func() string { d, _ := filepath.EvalSymlinks(t.TempDir()); return d }
 	ws, home, tmp, cache := dir(), dir(), dir(), dir()
 	cfg := sandbox.Config{Workspace: ws, Temp: tmp, GoCache: cache, Home: home}
@@ -79,7 +77,7 @@ func TestCancelReachesDetachedProcesses(t *testing.T) {
 	run := func(sweep func(sandbox.Target) (sandbox.Report, error)) (Result, int) {
 		os.Remove(filepath.Join(ws, "detached.pid"))
 		e := &perms.Engine{Root: ws, Path: os.Getenv("PATH"), Sandboxed: true}
-		s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
+		s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"TACK_SHELL_CHILD=1", "HOME=" + home, "TMPDIR=" + tmp, "GOCACHE=" + cache},
 			Wrap: func(c *exec.Cmd, group, mark string) *exec.Cmd {
 				cfg := cfg
 				cfg.Group, cfg.Mark = group, mark
