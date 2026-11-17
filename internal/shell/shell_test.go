@@ -27,7 +27,6 @@ func TestMain(m *testing.M) {
 // session is a shell over a fresh workspace, with the given rules, inside or outside the sandbox.
 func session(t *testing.T, sandboxed bool, rules ...string) *Session {
 	t.Helper()
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +41,7 @@ func session(t *testing.T, sandboxed bool, rules ...string) *Session {
 		}
 		e.Rules = append(e.Rules, r)
 	}
-	s := &Session{Exe: os.Args[0], Engine: e}
+	s := &Session{Exe: os.Args[0], Engine: e, Env: []string{"TACK_SHELL_CHILD=1"}} // the short environment drops it, so it is given
 	if sandboxed {
 		s.Wrap, s.Sweep, s.Group = pretendSandbox, pretendSweep, pretendGroup
 	}
@@ -786,5 +785,62 @@ func TestRunTimeCheckKnowsWhatsStaged(t *testing.T) {
 	s.Engine.Staged = false
 	if r := runBy(t, s, perms.ByMode, `git reset --hard`); r.Stopped != "" {
 		t.Errorf("nothing staged: %+v", r)
+	}
+}
+
+// TestCommandsGetAShortEnvironment: a command sees the allowlisted variables and nothing else of tack's environment
+// (DESIGN §6.6, "Commands get a short environment, not tack's"). One `env` must not put a token in the model's context, so
+// neither the program's environment nor the shell's own variables hold what is not on the list, whatever its name, and
+// nothing named like a secret passes even from the list's families.
+func TestCommandsGetAShortEnvironment(t *testing.T) {
+	secrets := map[string]string{
+		"GH_TOKEN": "ghp_secret1", "AWS_SECRET_ACCESS_KEY": "aws_secret2", "ANTHROPIC_API_KEY": "sk_secret3",
+		"SSH_AUTH_SOCK": "/tmp/agent.secret4", "GOOGLE_APPLICATION_CREDENTIALS": "/creds.secret5", // starts with GO, is no Go setting
+		"LC_TOKEN": "lc_secret6", "GOPASSWORD": "go_secret7", "PAGER": "pager_secret8", "EDITOR": "editor_secret9",
+	}
+	for k, v := range secrets {
+		t.Setenv(k, v)
+	}
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("TERM", "xterm-test")
+	s := session(t, false)
+	r := runOK(t, s, "/usr/bin/env; echo \"shell:$GH_TOKEN:$GOOGLE_APPLICATION_CREDENTIALS:$SSH_AUTH_SOCK:\"")
+	if r.Exit != 0 || r.Stopped != "" {
+		t.Fatalf("env: %+v", r)
+	}
+	for k, v := range secrets {
+		if strings.Contains(r.Output, v) || strings.Contains(r.Output, k+"=") {
+			t.Errorf("%s reached the command:\n%s", k, r.Output)
+		}
+	}
+	if !strings.Contains(r.Output, "shell:::\n") && !strings.Contains(r.Output, "shell:::") {
+		t.Errorf("the shell's own variables hold what the allowlist drops:\n%s", r.Output)
+	}
+	for _, want := range []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "LC_ALL=C", "GOFLAGS=-mod=mod", "TERM=xterm-test"} {
+		if !strings.Contains(r.Output, want+"\n") {
+			t.Errorf("%q did not reach the command:\n%s", want, r.Output)
+		}
+	}
+	// What carries to the next command is the short environment too.
+	for k, v := range s.Engine.SessionEnv {
+		if _, drop := secrets[k]; drop {
+			t.Errorf("session state carries %s=%s", k, v)
+		}
+	}
+}
+
+// TestCommandsNeverSeeAProxyCredential: a GOPROXY that carries user:token@ userinfo is dropped from the commands'
+// environment, and a plain one passes.
+func TestCommandsNeverSeeAProxyCredential(t *testing.T) {
+	for value, want := range map[string]bool{"https://proxy.golang.org,direct": true, "https://bob:hunter2@proxy.example": false} {
+		t.Setenv("GOPROXY", value)
+		r := runOK(t, session(t, false), "/usr/bin/env")
+		if got := strings.Contains(r.Output, "GOPROXY="+value+"\n"); got != want {
+			t.Errorf("GOPROXY=%s reached the command: %v, want %v", value, got, want)
+		}
+		if strings.Contains(r.Output, "hunter2") {
+			t.Errorf("the credential reached the command")
+		}
 	}
 }

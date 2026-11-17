@@ -405,11 +405,10 @@ func TestDoneNotesCoverTheirTurn(t *testing.T) {
 // childHarness is a turn through the real shell's child, in ask mode with every question answered yes.
 func childHarness(t *testing.T, replies ...goinfertest.Reply) *harness {
 	t.Helper()
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	h := newHarness(t, Budget{}, replies...)
 	cfg := h.sess.cfg
 	cfg.Perms = &perms.Engine{Root: h.ws.Root(), Path: os.Getenv("PATH")}
-	cfg.Tools = tools.New(tools.Options{Write: true, Shell: &shell.Session{Exe: os.Args[0], Engine: cfg.Perms}, Done: true})
+	cfg.Tools = tools.New(tools.Options{Write: true, Shell: &shell.Session{Exe: os.Args[0], Engine: cfg.Perms, Env: []string{"TACK_SHELL_CHILD=1"}}, Done: true})
 	cfg.Mode, cfg.Approve, cfg.EditTask = proto.ModeAsk, &approver{answer: Approval{Allow: true}}, true
 	h.sess = New(cfg)
 	return h

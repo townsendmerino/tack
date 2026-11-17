@@ -167,7 +167,9 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.ExtraFiles = []*os.File{wr}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), s.Env...)
+	// The child, and so every command, starts with the short environment (perms.CommandEnv), not tack's; s.Env is tack's own
+	// additions for the sandbox.
+	cmd.Env = append(perms.CommandEnv(os.Environ(), s.Engine.EnvExtra), s.Env...)
 	target := sandbox.Target{Mark: sandbox.NewMark("c"), Since: time.Now()} // before the child exists
 	if s.Wrap != nil {
 		cmd = s.Wrap(cmd, s.Group.Mark, target.Mark)

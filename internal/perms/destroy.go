@@ -91,7 +91,7 @@ func (e *Engine) ApprovalFor(command string) Approval {
 	}
 	e.scanAsks(f, scan{dir: e.startDir(), rec: &a})
 	for _, name := range sortedKeys(e.SessionEnv) {
-		if v := e.SessionEnv[name]; v != os.Getenv(name) && HooksOff(name, v) != "" && runsProgramWith(f, name) {
+		if v := e.SessionEnv[name]; v != InheritedEnv(name, e.EnvExtra) && HooksOff(name, v) != "" && runsProgramWith(f, name) {
 			a.Vars = append(a.Vars, name)
 		}
 	}

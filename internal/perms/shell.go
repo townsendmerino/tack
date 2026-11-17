@@ -136,7 +136,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 		return nil, reason, reason
 	}
 	for _, name := range sortedKeys(e.SessionEnv) {
-		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != os.Getenv(name) {
+		if v := e.SessionEnv[name]; ChangesPrograms(name) && v != InheritedEnv(name, e.EnvExtra) {
 			why = append(why, fmt.Sprintf("%s=%s was set by an earlier command in this session and changes what programs "+
 				"run, which no rule covers", name, v))
 		}
@@ -165,7 +165,7 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 	always = e.scanAsks(f, scan{dir: e.startDir()})
 	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
 	for _, name := range sortedKeys(e.SessionEnv) {
-		if v := e.SessionEnv[name]; v != os.Getenv(name) && runsProgramWith(f, name) {
+		if v := e.SessionEnv[name]; v != InheritedEnv(name, e.EnvExtra) && runsProgramWith(f, name) {
 			if r := HooksOff(name, v); r != "" {
 				always = appendNew(always, r)
 			}

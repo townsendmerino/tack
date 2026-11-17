@@ -508,10 +508,9 @@ func TestStagedWorkKeepsAsking(t *testing.T) {
 // and with the snapshots and answers given.
 func realShellHarness(t *testing.T, snaps Snapshotter, ap Approver, replies ...goinfertest.Reply) *harness {
 	t.Helper()
-	t.Setenv("TACK_SHELL_CHILD", "1")
 	h, _ := checkpointHarness(t, ap, false, replies...)
 	cfg := h.sess.cfg
-	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms, Group: sandbox.Target{Mark: "s-test", Since: time.Now()},
+	sh := &shell.Session{Exe: os.Args[0], Engine: cfg.Perms, Env: []string{"TACK_SHELL_CHILD=1"}, Group: sandbox.Target{Mark: "s-test", Since: time.Now()},
 		Wrap:  func(c *exec.Cmd, _, _ string) *exec.Cmd { return c },
 		Sweep: func(sandbox.Target) (sandbox.Report, error) { return sandbox.Report{}, nil }}
 	cfg.Tools, cfg.Shell, cfg.Snapshots = tools.New(tools.Options{Write: true, Shell: sh}), nil, snaps

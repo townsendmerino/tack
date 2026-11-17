@@ -803,6 +803,18 @@ tool-use smoke set compares this merged set against the split one before it is f
   - The fix: an allowlist (`PATH`, `HOME`, `USER`, `LANG` and `LC_*`, `TMPDIR`, `TERM`, and Go's `GO*` settings such
     as `GOPATH`, `GOCACHE`, `GOFLAGS`), plus what a trusted repo's config adds. Nothing named like a secret (`*TOKEN*`,
     `*KEY*`, `*SECRET*`, `*PASSWORD*`) passes, even from config.
+  - **As built** (`internal/perms/env.go`: `CommandEnvAllowed`, `CommandEnv`, `InheritedEnv`; `internal/shell.Session.Run`):
+    `tack shell`, the child, starts with the short environment, so the interpreter's variables and every program's
+    environment are the same short set. Go's settings are a list of names (`GOPATH`, `GOCACHE`, `GOFLAGS`, …), not a `GO`
+    prefix, which would pass `GOOGLE_APPLICATION_CREDENTIALS`. The session's own additions (`Session.Env`: tack's Go cache,
+    the session's temp directory) are not filtered. `Engine.EnvExtra` holds the names a trusted repository's config adds;
+    nothing sets it until repo trust is built. The guards that ask whether a command changed a variable compare with
+    what a command inherits (`InheritedEnv`), not with tack's own value.
+    - **Never passes, from the list or from a config:** a name holding `TOKEN`, `KEY`, `SECRET`, `PASS` (so `PASSWD`,
+      `PASSPHRASE`, `ASKPASS`), `AUTH`, `CRED`, `SOCK` (`SSH_AUTH_SOCK`) or `GIT_SSH`, or `PAT` as a whole word between
+      underscores (`GH_PAT`; not `PATH` or `GOPATH`); and what makes a program load or run something else: `LD_*`,
+      `DYLD_*`, `BASH_ENV`, `ENV`, `PROMPT_COMMAND`. `GOAUTH` is therefore not passed.
+    - **By value:** a `GOPROXY` with `user:token@` userinfo in any of its URLs is dropped whole.
 - **Text loaded into the prompt is scanned first** (added 2026-11-08, after Hermes Agent). Instruction files,
   `.agents/knowledge/` pages and skills are checked before loading for invisible Unicode (zero-width characters, and
   bidirectional overrides such as U+202E) and for text that tells the model to send files or secrets out. A flagged
@@ -1896,7 +1908,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
 | tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
-| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape | — | one-spawn grants and the network proxy (P5); the short environment for commands; the prompt-text scan; repo trust |
+| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape, the short environment for commands | — | one-spawn grants and the network proxy (P5); the prompt-text scan; repo trust |
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
