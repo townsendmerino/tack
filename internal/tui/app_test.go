@@ -16,7 +16,11 @@ type fakeBackend struct {
 	err        error
 	answers    []answer
 	respondErr error
+	cancels    int
+	cancelErr  error
 }
+
+func (f *fakeBackend) Cancel() error { f.cancels++; return f.cancelErr }
 
 // answer is one Respond call.
 type answer struct {

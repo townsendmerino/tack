@@ -26,7 +26,7 @@ func (b tuiBackend) Prompt(text string) error {
 
 // tuiCmd is `tack` with no arguments on a terminal: a Bubble Tea screen over the daemon (DESIGN §10), starting the daemon
 // if none runs. It asks in plan mode, as `tack run --daemon` does, until the screen has a way to choose a mode; it answers permission
-// questions (a, s, d) but cannot yet cancel a turn or complete `@`. A lost connection ends the screen.
+// questions (a, s, d) and cancels a turn with Esc, but cannot yet complete `@`. A lost connection ends the screen.
 func tuiCmd(stdout, stderr io.Writer) int {
 	cfg, path, stateDir, err := loadConfig("")
 	if err != nil {
@@ -90,4 +90,9 @@ func interactive() bool {
 // Respond answers the open permission question that the permission.requested event at seq asked for the call id.
 func (b tuiBackend) Respond(id string, seq int64, decision, scope string) error {
 	return b.c.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: b.sess, ID: id, Seq: seq, Decision: decision, Scope: scope}, nil)
+}
+
+// Cancel ends the session's running turn.
+func (b tuiBackend) Cancel() error {
+	return b.c.Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: b.sess}, nil)
 }
