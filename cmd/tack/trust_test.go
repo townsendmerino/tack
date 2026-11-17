@@ -119,8 +119,13 @@ func TestTrustYesIsForTheFileThatWasShown(t *testing.T) {
 			t.Errorf("%s: a grant was recorded", name)
 		}
 	}
-	refused("the wrong digest", "not the file that was shown", "-yes", "0123456789ab", ws)
+	refused("the wrong digest", "not the file that was shown", "-yes", "0123456789abcdef", ws)
+	if len(shown) < 16 {
+		t.Fatalf("the digest shown is %d characters; -yes takes 16 (64 bits), so it must show at least that", len(shown))
+	}
 	refused("a digest too short to mean it", "too short", "-yes", shown[:4], ws)
+	refused("32 bits is within brute force", "too short", "-yes", shown[:8], ws)
+	refused("48 bits is too", "too short", "-yes", shown[:12], ws)
 	refused("no digest", "digest", "-yes", ws)
 
 	// The file changes between the showing and the -yes.

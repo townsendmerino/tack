@@ -113,7 +113,7 @@ func shortDigest(d string) string {
 	if d == "" {
 		return "none"
 	}
-	return d[:12]
+	return d[:minDigest]
 }
 
 // stdinIsTerminal and inSandboxNow are who is asking, as -yes checks it; tests replace them.
@@ -122,6 +122,7 @@ var (
 	inSandboxNow    = inSandbox
 )
 
-// minDigest is the fewest characters of the digest -yes takes: enough that a file crafted to share a short prefix with the
-// one shown is out of reach.
-const minDigest = 8
+// minDigest is the fewest characters of the digest -yes takes, and the number tack trust shows: 16 hex characters are 64
+// bits, enough that a file crafted to share its prefix with the one shown is out of reach of brute force (32 bits is
+// minutes on a GPU).
+const minDigest = 16

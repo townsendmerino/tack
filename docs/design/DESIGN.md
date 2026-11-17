@@ -801,7 +801,7 @@ tool-use smoke set compares this merged set against the split one before it is f
       to run. This goes beyond "a trust step" in the text above: a repo whose file a pull rewrites must not stay trusted.
     - **How to trust:** `tack trust [path]` shows the file, invisible characters escaped, with its digest;
       `tack trust -yes <digest> [path]` records the grant, and only for the file whose digest starts with the one it was
-      given (at least 8 characters), so a file that changed after you read it is refused. `-yes` also needs a terminal on
+      given (at least 16 hex characters, 64 bits; it shows that many), so a file that changed after you read it is refused. `-yes` also needs a terminal on
       stdin and is refused inside any sandbox (macOS refuses `sandbox-exec` inside one, which is how it tells), so a script
       or a command a model ran cannot make the grant. `workspace/trust {root}` (§9.2) is the app's way and needs the client
       token. The grants are `trust.json` in the state directory, which the sandbox denies to commands, so a command
