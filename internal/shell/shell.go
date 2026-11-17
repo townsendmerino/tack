@@ -464,6 +464,33 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 					filepath.Base(path), f, strings.Join(args, " "))
 			}
 		}
+		// A command a rule approved runs only as the allowlist for its program accepts, as it expanded here: what approval saw as a
+		// rule's command and what runs are held to the same list. A command the user approved is what he saw.
+		if ck.req.ApprovedBy == perms.ByRule {
+			if r := perms.UnsafeInvocation(path, args[1:]); r != "" {
+				return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+			}
+			if filepath.Base(path) == "env" {
+				if r := perms.EnvInvocationUnsafe(args[1:]); r != "" {
+					return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+				}
+			}
+			if perms.EnvSensitive(path) {
+				if v := ruleEnvChanged(hc.Env); v != "" {
+					return ck.stop("%s would run with %s, which a rule does not cover", filepath.Base(path), v)
+				}
+			}
+			if filepath.Base(path) == "go" {
+				if r := perms.GoOutputEscapes(ck.req.Root, hc.Dir, args[1:]); r != "" {
+					return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+				}
+			}
+			if filepath.Base(path) == "git" {
+				if !perms.GitFindsOwnersRepo(path, hc.Dir, ck.req.Root) {
+					return ck.stop("git would not use this workspace's own repository here, which a rule does not cover")
+				}
+			}
+		}
 		// The parse told the user it couldn't see what this runs, and they approved it: what it became is what they approved, so the
 		// checks below, of what approval saw, don't apply. The check above does, whatever they approved.
 		if covered {
@@ -526,6 +553,20 @@ func changedEnv(env expand.Environ) string {
 	var out string
 	env.Each(func(name string, vr expand.Variable) bool {
 		if vr.Exported && vr.Kind == expand.String && perms.ChangesPrograms(name) && vr.Str != os.Getenv(name) {
+			out = name + "=" + vr.Str
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// ruleEnvChanged returns, as NAME=value, the first exported variable outside perms.RuleEnvOK that differs from tack's own environment,
+// or "": what go or git run with under a rule is tack's environment plus the variables that choose a target.
+func ruleEnvChanged(env expand.Environ) string {
+	var out string
+	env.Each(func(name string, vr expand.Variable) bool {
+		if vr.Exported && vr.Kind == expand.String && !perms.RuleEnvOK(name) && vr.Str != os.Getenv(name) {
 			out = name + "=" + vr.Str
 			return false
 		}

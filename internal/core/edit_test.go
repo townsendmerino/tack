@@ -54,7 +54,7 @@ func gitWorkspace(t *testing.T, instructions string) string {
 
 func (f *fixture) sessionIn(t *testing.T, ws string, mode proto.Mode) (proto.SessionID, error) {
 	var r proto.SessionNewResult
-	err := f.client.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &r)
+	err := f.client.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode, Confirmed: mode == proto.ModeAuto}, &r)
 	return r.Session, err
 }
 

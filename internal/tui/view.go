@@ -39,6 +39,8 @@ type View struct {
 type Question struct {
 	ID  string
 	Seq int64
+	// Rules is the rules allowing for the session would add, as the daemon listed them in the question: what the e key may edit.
+	Rules []string
 }
 
 // Pending is the question awaiting an answer, from the events folded so far: a permission.requested with no
@@ -123,7 +125,7 @@ func (v *View) Apply(ev proto.Event) {
 		if t := v.call(e.ID); t != nil {
 			q := e
 			t.asking = &q
-			v.pending = &Question{ID: e.ID, Seq: ev.Seq}
+			v.pending = &Question{ID: e.ID, Seq: ev.Seq, Rules: e.Rules}
 		}
 	case proto.PermissionResolved:
 		if v.pending != nil && v.pending.ID == e.ID {
@@ -278,7 +280,11 @@ func (e *entry) paragraphs() [][2]string {
 		for _, r := range q.Reasons {
 			add("    ", "- "+r)
 		}
-		add("  ", "[a]llow once  [s] for the session  [d]eny")
+		hint := "[a]llow once  [s] for the session  [d]eny"
+		if len(q.Rules) > 0 {
+			hint += "  [e]dit rule"
+		}
+		add("  ", hint)
 	}
 	if e.resolved != "" {
 		add("  ", e.resolved)

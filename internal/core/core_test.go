@@ -102,7 +102,7 @@ func newFixtureOn(t *testing.T, h http.Handler) *fixture {
 	t.Cleanup(ts.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := New(ctx, Options{Store: st, Version: "test", Servers: []string{"goinfer@local"},
+	c := New(ctx, Options{Store: st, Version: "test", ClientToken: "tok", Servers: []string{"goinfer@local"},
 		Budget: loop.Budget{MaxRequests: 4, MaxToolCalls: 4, MaxWall: time.Minute, MaxTokens: 64, TurnTokens: 1 << 20,
 			MaxErrors: 8, SessionTokens: 1 << 20, SessionToolCalls: 100},
 		Source: func(string) (models.Source, error) { return models.NewRemote("local", ts.URL, "", "", nil), nil }})
@@ -117,7 +117,7 @@ func newFixtureOn(t *testing.T, h http.Handler) *fixture {
 		f.mu.Unlock()
 		f.events <- p.Event
 	}
-	if err := f.client.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
+	if err := f.client.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "t", Version: "0"}, Protocol: proto.Version, Token: "tok"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -304,4 +304,18 @@ func (f *fixture) logTiming(t *testing.T) {
 	}
 	fmt.Fprintf(os.Stderr, "%s: %d events; first-to-second event gap %s; fsyncs: %s\n", t.Name(), len(f.arrivals),
 		gap.Round(time.Microsecond), strings.Join(f.syncs, ", "))
+}
+
+// unprivileged is a connection that has initialized without the client token, as a command the model ran would: it is answered
+// by initialize and by nothing else.
+func (f *fixture) unprivileged(t *testing.T) *Client {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go f.core.Serve(f.core.ctx, b)
+	cl := NewClient(a)
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "cmd", Version: "0"}, Protocol: proto.Version}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return cl
 }

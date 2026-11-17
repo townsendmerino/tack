@@ -322,3 +322,7 @@ func stopWaitFor(stateDir string, grace time.Duration) time.Duration {
 func spawnWaitFor(stateDir string, grace time.Duration) time.Duration {
 	return stopWaitFor(stateDir, grace) + startHeadroom
 }
+
+// tuiClient is the screen's identity at initialize: attended, since a person is at it and can answer a permission question. Every
+// other client of the daemon is headless, so a question it would raise is denied at once rather than waited on.
+var tuiClient = proto.ClientInfo{Name: "tack-tui", Version: version, Attended: true}

@@ -305,8 +305,9 @@ func TestAllowForSessionDoesNotCoverDestroyedWork(t *testing.T) {
 	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset --hard HEAD~1")); v.Action != Ask {
 		t.Fatalf("after allow for session: %s", v.Action)
 	}
-	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset src/api.ts")); v.Action != Allow {
-		t.Fatalf("the rule it added should still cover an ordinary reset: %s %v", v.Action, v.Reasons)
+	// git reset is not read-only, so no rule covers it, the one `s` added included: it asks, ordinary reset or not (the allowlist, safe.go).
+	if v := e.Decide(proto.ModeAsk, "bash", false, bashInput("git reset src/api.ts")); v.Action != Ask {
+		t.Fatalf("a rule must not cover git reset, which is not read-only: %s %v", v.Action, v.Reasons)
 	}
 }
 

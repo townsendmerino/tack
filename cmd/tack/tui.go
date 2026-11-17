@@ -83,7 +83,7 @@ func tuiCmd(flagMode string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitUsage
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
+	c, err := daemon.Dial(stateDir, tuiClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
@@ -98,7 +98,9 @@ func tuiCmd(flagMode string, stdout, stderr io.Writer) int {
 	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithOutput(stdout))
 	c.OnEvent = func(e proto.SessionEventParams) { p.Send(tui.EventMsg(e.Event)) }
 	var sess proto.SessionNewResult
-	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode}, &sess); err != nil {
+	// The screen starts in auto only when the owner said so: by -mode or by [session] mode in his own config.toml (startMode reads
+	// nothing else), so a start in auto is confirmed.
+	if err := c.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: ws, Model: "main", Mode: mode, Confirmed: mode == proto.ModeAuto}, &sess); err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError
 	}
@@ -138,8 +140,8 @@ func interactive() bool {
 }
 
 // Respond answers the open permission question that the permission.requested event at seq asked for the call id.
-func (b tuiBackend) Respond(id string, seq int64, decision, scope string) error {
-	return b.c.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: b.sess, ID: id, Seq: seq, Decision: decision, Scope: scope}, nil)
+func (b tuiBackend) Respond(id string, seq int64, decision, scope, rule string) error {
+	return b.c.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: b.sess, ID: id, Seq: seq, Decision: decision, Scope: scope, Rule: rule}, nil)
 }
 
 // Cancel ends the session's running turn.
