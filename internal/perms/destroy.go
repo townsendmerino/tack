@@ -1851,6 +1851,7 @@ func (e *Engine) PathAsks(path string) []string {
 
 const (
 	kindCI          = "a CI definition, which runs with the repository's credentials"
+	kindGitState    = "git's own state, whose config runs programs"
 	kindInstruction = "an instruction file, which could change a model's standing orders"
 )
 
@@ -1870,6 +1871,9 @@ func protectedKind(rel string) string {
 		return kindInstruction
 	case slices.Contains(ciFiles, base):
 		return kindCI
+	}
+	if slices.Contains(segs, ".git") { // a .git entry anywhere: a gitfile or a config there makes git run what a model wrote
+		return kindGitState
 	}
 	dirs := segs[:len(segs)-1]
 	under := func(path ...string) bool {

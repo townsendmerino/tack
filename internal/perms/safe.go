@@ -1,11 +1,14 @@
 package perms
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // An allowlist of invocations for the programs a rule is most likely to cover (DESIGN §6.6, "What a rule may cover"). A rule matches a
@@ -446,28 +449,46 @@ func EnvSensitive(prog string) bool {
 	return false
 }
 
-// BareRepoAbove returns the directory git would take for a bare repository when run from dir, or "". Git looks in each directory from
-// dir upward for a .git, and failing that treats the directory itself as a repository if it has the shape of one (HEAD, objects, refs).
-// A model can write such a shape with the file tools, and its config then runs programs (core.fsmonitor, diff.external, core.pager), so
-// a rule does not cover git there.
-func BareRepoAbove(dir string) string {
-	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
-		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
-			return "" // a repository git finds first: the owner's
-		}
-		if isFile(filepath.Join(d, "HEAD")) && isDir(filepath.Join(d, "objects")) && isDir(filepath.Join(d, "refs")) {
-			return d
-		}
-		if filepath.Dir(d) == d {
+// GitFindsOwnersRepo reports whether git, run from dir, uses the same repository as it does from the workspace root, and that root has a
+// .git of its own. Discovery is git's, not a copy of it: a gitfile whose gitdir: names a directory a model wrote, a .git that is not a valid
+// repository (git skips it and goes on up), a commondir, a bare-shaped directory with a config that runs programs (core.fsmonitor,
+// diff.external, core.pager) all make git use something else, and a rule does not cover git there. git is asked with a minimal environment:
+// no GIT_* variables, an empty HOME, no system or global config, and a ceiling at the root's parent. rev-parse runs no configured program.
+func GitFindsOwnersRepo(gitPath, dir, root string) bool {
+	if st, err := os.Lstat(filepath.Join(root, ".git")); err != nil || st.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	home, err := os.MkdirTemp("", "tack-git-home-")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(home)
+	find := func(from string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, gitPath, "rev-parse", "--absolute-git-dir")
+		cmd.Dir = from
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CEILING_DIRECTORIES=" + filepath.Dir(filepath.Clean(root)), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"}
+		out, err := cmd.Output()
+		if err != nil {
 			return ""
 		}
+		p := strings.TrimSpace(string(out))
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		return p
 	}
+	at := find(root)
+	return at != "" && at == find(dir)
 }
 
-func isFile(p string) bool { st, err := os.Stat(p); return err == nil && st.Mode().IsRegular() }
-func isDir(p string) bool  { st, err := os.Stat(p); return err == nil && st.IsDir() }
+var goOutputFlags = set("o", "coverprofile", "cpuprofile", "memprofile", "blockprofile", "mutexprofile", "trace", "outputdir", "pkgdir")
 
-// outputPathOK: a path a go flag writes to stays inside the working tree and out of .git: relative, no "..", no home, no .git segment.
+// outputPathOK: a path a go flag writes to stays inside the working tree and out of .git: relative, no "..", no home, no .git segment in
+// any letter case. A symlink inside the tree can still lead out of it; the sandbox bounds that, and run-time resolution below refuses a
+// path whose existing part resolves outside the tree or into .git (OutputPathResolves).
 func outputPathOK(p string) bool {
 	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "~") || strings.ContainsAny(p, "$`") {
 		return false
@@ -480,4 +501,111 @@ func outputPathOK(p string) bool {
 	return true
 }
 
-var goOutputFlags = set("o", "coverprofile", "cpuprofile", "memprofile", "blockprofile", "mutexprofile", "trace", "outputdir", "pkgdir")
+// OutputPathResolves reports whether path, taken from dir, still lands inside root and out of any .git once the symlinks in its existing
+// part are followed.
+func OutputPathResolves(root, dir, path string) bool {
+	p := path
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	d := filepath.Dir(p)
+	var r string
+	var err error
+	for { // the nearest directory that exists: the rest is made by the command
+		if r, err = filepath.EvalSymlinks(d); err == nil || filepath.Dir(d) == d {
+			break
+		}
+		d = filepath.Dir(d)
+	}
+	if err != nil {
+		return true
+	}
+	rootR, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	if rel, err := filepath.Rel(rootR, r); err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(r), "/") {
+		if strings.EqualFold(seg, ".git") {
+			return false
+		}
+	}
+	return true
+}
+
+// GoOutputEscapes returns why a go command writes, through a symlink, outside root or into .git (-o and the profile flags), or "".
+func GoOutputEscapes(root, dir string, args []string) string {
+	for i, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, val, has := flagParts(a)
+		if !goOutputFlags[name] {
+			continue
+		}
+		if !has && i+1 < len(args) {
+			val = args[i+1]
+		}
+		if val != "" && !OutputPathResolves(root, dir, val) {
+			return "go " + a + " " + val + " writes through a symlink outside the working tree or into .git, which no rule covers"
+		}
+	}
+	return ""
+}
+
+// gitStateWriters are programs whose arguments name what they create or change. One naming a .git entry (in any letter case, at any
+// depth) asks in every mode: a .git file or directory, or a config in one, makes git use what a model wrote (GitFindsOwnersRepo), and
+// the file tools and redirections already refuse the same paths (PathAsks).
+var gitStateWriters = set("mkdir", "mv", "cp", "ln", "touch", "tee", "install", "rsync", "dd", "truncate", "sed", "ed", "unzip", "tar", "patch", "chmod", "rm", "rmdir")
+
+// gitStateWrites returns why a command in cmds writes a .git entry.
+func gitStateWrites(cmds []Simple) []string {
+	var why []string
+	for _, c := range cmds {
+		name := c.Name
+		if name == "" {
+			name = filepath.Base(c.Program)
+		}
+		if c.Builtin != "" || !gitStateWriters[name] {
+			continue
+		}
+		for _, a := range c.Args {
+			if _, v, ok := strings.Cut(a, "="); ok && strings.HasPrefix(a, "of=") {
+				a = v
+			}
+			for _, seg := range strings.Split(filepath.ToSlash(a), "/") {
+				if strings.EqualFold(seg, ".git") {
+					why = appendNew(why, name+" "+a+" writes git's own state, whose config runs programs")
+				}
+			}
+		}
+	}
+	return why
+}
+
+// EnvInvocationUnsafe returns why env, given args, may not run go or git under a rule: its flags (-i, -u, -S, -C) and every variable it
+// sets are held to the same list as a prefix assignment (RuleEnvOK). Approval and the run time of a rule-approved command both ask it.
+func EnvInvocationUnsafe(args []string) string {
+	inner := ""
+	for _, a := range args { // the first word that is go or git, wherever env's own flags and their values put it
+		if EnvSensitive(a) {
+			inner = a
+			break
+		}
+	}
+	if inner == "" {
+		return ""
+	}
+	for _, a := range args {
+		if a == inner {
+			break
+		}
+		name, _, isAssign := strings.Cut(a, "=")
+		if strings.HasPrefix(a, "-") || (isAssign && !RuleEnvOK(name)) {
+			return fmt.Sprintf("env %s changes what %s runs or loads, which no rule covers", a, inner)
+		}
+	}
+	return ""
+}

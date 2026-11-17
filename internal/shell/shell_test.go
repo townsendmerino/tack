@@ -910,9 +910,17 @@ func TestARuleApprovedGitRunsOnlyInTheOwnersRepositoryAndEnvironment(t *testing.
 	os.MkdirAll(filepath.Join(ev, "objects"), 0o755)
 	os.MkdirAll(filepath.Join(ev, "refs"), 0o755)
 	os.WriteFile(filepath.Join(ev, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	os.MkdirAll(filepath.Join(root, "gf"), 0o755)
+	os.WriteFile(filepath.Join(root, "gf", ".git"), []byte("gitdir: ../ev\n"), 0o644)
 	marker := filepath.Join(root, "ran")
 	os.WriteFile(filepath.Join(ev, "config"), []byte("[core]\n\tbare = true\n\tfsmonitor = touch "+marker+"\n"), 0o644)
-	for _, cmd := range []string{`cd ev; git status`, `cd ev; git -C . status`, `x=HOME; export $x=ev; git status`, `n=GIT_DIR; export $n=ev; git status`, `export GOROOT=ev; go build .`} {
+	if r := runBy(t, s, perms.ByRule, `git status`); r.Stopped != "" { // first: the loop below leaves exports in the session
+		t.Errorf("git status in the owner's own repository was stopped: %+v", r)
+	}
+	for _, cmd := range []string{`cd gf; git status`, `env HOME=ev git status`, `cd ev; git status`, `cd ev; git -C . status`, `x=HOME; export $x=ev; git status`, `n=GIT_DIR; export $n=ev; git status`, `export GOROOT=ev; go build .`} {
 		r := runBy(t, s, perms.ByRule, cmd)
 		if r.Exit == 0 || r.Stopped == "" {
 			t.Errorf("%s: not stopped: %+v", cmd, r)

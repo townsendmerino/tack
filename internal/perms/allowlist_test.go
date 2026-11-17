@@ -2,6 +2,7 @@ package perms
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -13,10 +14,19 @@ import (
 func allowEngine(t *testing.T) *Engine {
 	t.Helper()
 	bin := t.TempDir()
-	for _, p := range []string{"go", "git", "find", "id"} {
+	// git is the real one, over a real repository: the engine asks it which repository a command would use (GitFindsOwnersRepo).
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on PATH")
+	}
+	for _, p := range []string{"go", "find", "id"} {
 		os.WriteFile(filepath.Join(bin, p), []byte("#!/bin/sh\n"), 0o755)
 	}
-	e := &Engine{Root: t.TempDir(), Path: bin, Sandboxed: true}
+	root := t.TempDir()
+	if out, err := exec.Command(git, "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	e := &Engine{Root: root, Path: bin + string(os.PathListSeparator) + filepath.Dir(git), Sandboxed: true}
 	for _, s := range []string{"go test", "go build", "go vet", "go run", "go list", "go env", "go version", "git status", "git diff", "git log", "git show",
 		"git grep", "git branch", "git tag", "git remote", "git stash", "git config", "git rev-parse", "git reset", "git commit", "git difftool", "git bisect",
 		"git submodule", "git filter-branch", "git checkout", "git", "go", "find ."} {

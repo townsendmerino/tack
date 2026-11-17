@@ -470,14 +470,24 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 			if r := perms.UnsafeInvocation(path, args[1:]); r != "" {
 				return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
 			}
+			if filepath.Base(path) == "env" {
+				if r := perms.EnvInvocationUnsafe(args[1:]); r != "" {
+					return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+				}
+			}
 			if perms.EnvSensitive(path) {
 				if v := ruleEnvChanged(hc.Env); v != "" {
 					return ck.stop("%s would run with %s, which a rule does not cover", filepath.Base(path), v)
 				}
 			}
+			if filepath.Base(path) == "go" {
+				if r := perms.GoOutputEscapes(ck.req.Root, hc.Dir, args[1:]); r != "" {
+					return ck.stop("%s (the command expanded to: %s)", r, strings.Join(args, " "))
+				}
+			}
 			if filepath.Base(path) == "git" {
-				if b := perms.BareRepoAbove(hc.Dir); b != "" {
-					return ck.stop("git would use %s as a repository, which a rule does not cover", b)
+				if !perms.GitFindsOwnersRepo(path, hc.Dir, ck.req.Root) {
+					return ck.stop("git would not use this workspace's own repository here, which a rule does not cover")
 				}
 			}
 		}
