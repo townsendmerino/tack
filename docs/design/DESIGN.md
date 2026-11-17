@@ -810,6 +810,11 @@ tool-use smoke set compares this merged set against the split one before it is f
     the session's temp directory) are not filtered. `Engine.EnvExtra` holds the names a trusted repository's config adds;
     nothing sets it until repo trust is built. The guards that ask whether a command changed a variable compare with
     what a command inherits (`InheritedEnv`), not with tack's own value.
+    - **Never passes, from the list or from a config:** a name holding `TOKEN`, `KEY`, `SECRET`, `PASS` (so `PASSWD`,
+      `PASSPHRASE`, `ASKPASS`), `AUTH`, `CRED`, `SOCK` (`SSH_AUTH_SOCK`) or `GIT_SSH`, or `PAT` as a whole word between
+      underscores (`GH_PAT`; not `PATH` or `GOPATH`); and what makes a program load or run something else: `LD_*`,
+      `DYLD_*`, `BASH_ENV`, `ENV`, `PROMPT_COMMAND`. `GOAUTH` is therefore not passed.
+    - **By value:** a `GOPROXY` with `user:token@` userinfo in any of its URLs is dropped whole.
 - **Text loaded into the prompt is scanned first** (added 2026-11-08, after Hermes Agent). Instruction files,
   `.agents/knowledge/` pages and skills are checked before loading for invisible Unicode (zero-width characters, and
   bidirectional overrides such as U+202E) and for text that tells the model to send files or secrets out. A flagged
