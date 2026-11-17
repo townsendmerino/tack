@@ -1951,7 +1951,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
-| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI's screen model (`internal/tui`) | — | the TUI's terminal layer (P1 step 8b); `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
+| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d), Esc to cancel and `@` path completion | — | the TUI's choice of mode (it opens in plan mode), multi-line composer, `/` commands, inspector, changes and todo panes, "edit rule"; `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
 | clients (§9.4, §11) | generated Swift protocol types | — | `internal/render`, `internal/acp`, the macOS app |
 | evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the full E1 run and the P1 rule |
 
