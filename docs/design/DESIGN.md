@@ -628,6 +628,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     to a trusted repository's ceiling, and the answer says the mode the session now has. The change is logged as
     `mode.changed {mode, by}` before it is applied; if it cannot be applied, a second `mode.changed` by `system` puts the log
     back, so the log always says the session's mode, and a reopened session (and a fork of it) takes the last one.
+    - **A move to `auto` needs `confirmed: true`**, which the TUI sets only after showing what auto allows and getting `y`; the daemon refuses it otherwise, before any ceiling is applied. It is a marker to hold a client to, not a defence against one that holds the token.
     - **Among `ask`, `edits` and `auto`** the tool set and the prompt are the same, so only the mode the permission engine
       decides in changes: no rebuild, and the cached prefix is kept.
     - **To or from `plan`** the loop session is rebuilt from its log with the other tool set, in place, with its subscribers,

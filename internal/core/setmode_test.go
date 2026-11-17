@@ -36,7 +36,7 @@ func modeChanges(t *testing.T, f *fixture, id proto.SessionID) []proto.ModeChang
 
 func setMode(cl *Client, id proto.SessionID, m proto.Mode) (proto.SessionSetModeResult, error) {
 	var r proto.SessionSetModeResult
-	err := cl.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: id, Mode: m}, &r)
+	err := cl.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: id, Mode: m, Confirmed: m == proto.ModeAuto}, &r) // auto is the confirmed move; see the test below for the unconfirmed one
 	return r, err
 }
 
@@ -358,5 +358,37 @@ func TestAReopenedSessionTakesItsLastModeChange(t *testing.T) {
 					c.created, c.changes, forked, werr == nil, permission(evs) != nil, c.write, c.asks)
 			}
 		}
+	}
+}
+
+// TestMovingToAutoNeedsTheOwnersConfirmation: setMode to auto without `confirmed` is refused as invalid, changes nothing and logs
+// nothing, even where a ceiling would have lowered it anyway; with it the move is made. The other modes need no such word.
+func TestMovingToAutoNeedsTheOwnersConfirmation(t *testing.T) {
+	f := newFixture(t)
+	withKit(f)
+	cl, _, _ := f.privileged(t)
+	id, err := f.sessionIn(t, gitWorkspace(t, ""), proto.ModeAsk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := func(m proto.Mode, confirmed bool) error {
+		return cl.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: id, Mode: m, Confirmed: confirmed}, nil)
+	}
+	if err := raw(proto.ModeAuto, false); code(err) != proto.CodeInvalidParams || !strings.Contains(err.Error(), "confirmation") {
+		t.Fatalf("unconfirmed auto: %v", err)
+	}
+	if got := modeChanges(t, f, id); len(got) != 0 {
+		t.Errorf("a refused move was logged: %+v", got)
+	}
+	for _, m := range []proto.Mode{proto.ModePlan, proto.ModeEdits, proto.ModeAsk} {
+		if err := raw(m, false); err != nil {
+			t.Errorf("%s without confirmation: %v", m, err)
+		}
+	}
+	if err := raw(proto.ModeAuto, true); err != nil {
+		t.Errorf("confirmed auto: %v", err)
+	}
+	if got := modeChanges(t, f, id); len(got) == 0 || got[len(got)-1].Mode != proto.ModeAuto {
+		t.Errorf("mode.changed %+v", got)
 	}
 }
