@@ -21,6 +21,9 @@ type pane struct {
 func panes() []pane {
 	return []pane{
 		{"todos", "the model's task list", func(a *App, n int) []string { return todoRows(a.Screen.Todos(), n) }},
+		{"inspector", "requests, window fill and what the prompt holds", func(a *App, n int) []string {
+			return inspectorRows(a.Screen.Inspect(), a.Screen.Status.Window, n)
+		}},
 		{"changes", "the files its edits and writes changed", func(a *App, n int) []string { return changeRows(a.Screen.Changes(), n) }},
 	}
 }
