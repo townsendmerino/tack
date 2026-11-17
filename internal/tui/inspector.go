@@ -51,6 +51,9 @@ func (v *View) Inspect() Inspection { return v.inspect.i }
 
 // inspectorRows draws the inspection in at most rows lines.
 func inspectorRows(i Inspection, window, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
 	if i.Window > 0 {
 		window = i.Window
 	}
@@ -90,8 +93,12 @@ func inspectorRows(i Inspection, window, rows int) []string {
 	for _, k := range kinds {
 		out = append(out, fmt.Sprintf("  %-14s %s", k, kilo(i.Composition[k])))
 	}
-	if len(out) > rows {
-		out = append(out[:max(rows-1, 0)], fmt.Sprintf("… %d more", len(out)-max(rows-1, 0)))
+	switch {
+	case len(out) <= rows:
+	case rows == 1: // the count of what is left out has no line of its own: the first line is what shows
+		out = out[:1]
+	default:
+		out = append(out[:rows-1], fmt.Sprintf("… %d more", len(out)-(rows-1)))
 	}
 	return out
 }
