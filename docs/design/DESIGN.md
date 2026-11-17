@@ -616,6 +616,9 @@ tool-use smoke set compares this merged set against the split one before it is f
 
 - **Modes.** `ask` (default); `edits` (file edits inside the workspace are approved, shell commands ask); `plan`
   (read-only); `auto` (anything that stays inside the sandbox is approved; anything that needs to leave it asks).
+  - **As built (2026-11-17):** every mode but `plan` gets the edit tools, the shell and the permission engine, and needs the
+    sandbox to start (macOS-only for now); `plan` has none of them. Until then only `auto` was wired, and `ask` and `edits`
+    behaved as `plan`, though the engine (`perms.Engine.Decide`) had decided all four.
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's

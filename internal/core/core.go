@@ -893,15 +893,17 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: s.emitTurn, Record: s.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
 		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
 	cfg.Approve = approver{s} // questions wait for permission/respond while a privileged client watches
-	if created.Mode == proto.ModeAuto {
+	// Every mode but plan gets the edit tools, the shell and the permission engine; the engine decides per mode what asks
+	// (perms.Engine.Decide). Plan is read-only, with neither.
+	if created.Mode != proto.ModePlan {
 		if c.opt.Edit == nil {
 			c.unregister(id)
-			return nil, errors.New("auto mode changes the workspace, and this tack has no sandbox to run its commands in")
+			return nil, fmt.Errorf("%s mode changes the workspace, and this tack has no sandbox to run its commands in", created.Mode)
 		}
 		kit, err := c.opt.Edit(ws.Root(), s.target)
 		if err != nil {
 			c.unregister(id)
-			return nil, fmt.Errorf("auto mode: %w", err)
+			return nil, fmt.Errorf("%s mode: %w", created.Mode, err)
 		}
 		to = tools.Options{Searcher: searcher, Symbols: symbols, Write: true, Shell: kit.Shell, Done: c.opt.EditTask,
 			EditMessages: c.opt.EditMessages, RefuseDuplicateEdits: c.opt.RefuseDuplicateEdits, LineEdits: c.opt.EditLines,
