@@ -633,6 +633,11 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **To or from `plan`** the loop session is rebuilt from its log with the other tool set, in place, with its subscribers,
       log and sweep target kept: the tool list changes once, so goinfer's cached prefix is lost once, and what the user
       allowed "for the session" and the shell's working directory are forgotten. A rebuild that fails leaves the old session.
+    - **The TUI's key** is Shift+Tab: plan, ask, edits, auto, and round again, each press a `session/setMode`; the screen's mode
+      changes only when the daemon's `mode.changed` says so. A move to `auto` is not asked for until the screen has said what
+      auto allows (approves file edits and sandboxed shell commands without asking; still asks for what leaves the sandbox,
+      destroys work, or changes a CI definition or an instruction file) and the user has pressed `y`; any other key declines.
+      A ceiling that lowered the mode, a turn running, and an older daemon each show as a note.
   - **Which mode a session starts in** (owner, 2026-11-17). With nothing set, the TUI starts in `plan`. Strictness runs
     `plan` < `ask` < `edits` < `auto`: how much a session may do without asking.
     - **A mode is only ever chosen by the owner:** by `tack -mode`, by the Shift+Tab key, or by `[session] mode` in

@@ -105,3 +105,12 @@ func (b tuiBackend) Complete(query string) ([]proto.CompletionItem, error) {
 	}
 	return r.Items, nil
 }
+
+// SetMode moves the session to mode m and returns the mode it now has.
+func (b tuiBackend) SetMode(m proto.Mode) (proto.Mode, error) {
+	var r proto.SessionSetModeResult
+	if err := b.c.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: b.sess, Mode: m}, &r); err != nil {
+		return "", err
+	}
+	return r.Mode, nil
+}

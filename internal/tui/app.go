@@ -29,6 +29,9 @@ type Backend interface {
 	Cancel() error
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
 	Complete(query string) ([]proto.CompletionItem, error)
+	// SetMode moves the session to a mode (session/setMode) and returns the mode it has now, which a repository's ceiling can
+	// make lower than the one asked for.
+	SetMode(m proto.Mode) (proto.Mode, error)
 }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
@@ -47,6 +50,7 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
+	confirmAuto   bool // the confirmation for moving to auto is open (mode.go)
 	input         []rune
 	width, height int
 	quit          bool
@@ -75,6 +79,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			a.Screen.note("! answer: " + m.Err.Error())
 		}
+	case ModeSetMsg:
+		a.modeSet(m)
 	case CancelledMsg:
 		var pe *proto.Error
 		switch {
@@ -124,7 +130,12 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.confirmAuto && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
+		return a, a.confirmKey(k) // the confirmation takes the next key, whatever it is
+	}
 	switch k.Type {
+	case tea.KeyShiftTab:
+		return a, a.cycleMode()
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
 		return a, tea.Quit
@@ -197,7 +208,7 @@ func (a *App) Frame() string {
 		_, n := utf8.DecodeRuneInString(line)
 		line = line[n:]
 	}
-	rows := a.popup()
+	rows := append(a.confirmRows(), a.popup()...)
 	if len(rows) > a.height-3 { // the popup never takes the screen: the transcript keeps at least two rows
 		rows = rows[:max(a.height-3, 0)]
 	}
