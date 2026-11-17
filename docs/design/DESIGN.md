@@ -681,14 +681,20 @@ tool-use smoke set compares this merged set against the split one before it is f
         `declare`, `read`, `printf -v`, a `for` variable, `${V:=…}`, or an earlier command in the session. `GOROOT`,
         `PKG_CONFIG`, `CGO_*FLAGS`, `HOME`, `XDG_CONFIG_HOME`, `GIT_DIR` and `GIT_WORK_TREE` ask. At run time a rule-approved
         `go` or `git` is stopped if an exported variable outside that list differs from tack's own environment.
-      - runs `git` where git would find no repository of the owner's first. The file tools refuse a `.git` path but not
-        `HEAD`, `objects/`, `refs/` and a `config` written elsewhere, which git takes for a bare repository whose
-        `core.fsmonitor`, `diff.external` or `core.pager` it then runs through a shell. Git's own discovery is followed
-        (`perms.BareRepoAbove`: upward from the directory, a `.git` first wins, else a directory of that shape), at approval
-        and at run time. This was chosen over `-c safe.bareRepository=explicit`, which changes the argv that was approved,
-        and over a file-tool refusal, which cannot tell such a `config` from any other.
+      - runs `git` only where git finds the workspace's own repository. Discovery is not re-implemented: `perms.GitFindsOwnersRepo`
+        asks git (`rev-parse --absolute-git-dir`, with a minimal environment: no `GIT_*`, an empty `HOME`, no system or global
+        config, a ceiling above the root) from the command's directory and from the root, and the answers must be the same, with a
+        `.git` of the root's own that is not a symlink. A bare-shaped directory with a `config` (`HEAD`, `objects/`, `refs/`, which
+        the file tools do not refuse), a gitfile whose `gitdir:` names a directory a model wrote, a symlinked `.git`, a
+        `commondir`, or a `.git` git cannot read all make it differ or fail, and git is then not covered. Done at approval and at
+        run time. Chosen over `-c safe.bareRepository=explicit` (changes the approved argv) and a file-tool refusal (cannot
+        tell such a `config` from any other). A linked worktree works, since the root's own answer is the reference.
+      - makes no `.git` entry: `mkdir`, `mv`, `cp`, `ln`, `touch`, `tee`, `sed`, `rm` and the like naming a path with a `.git`
+        segment in any letter case, and any redirection to one, ask in every mode (`PathAsks`), so a covered writer cannot make
+        the gitfile or config the previous item is about.
+      - `env` in front of `go` or `git` is held to the same list: its flags and every variable it sets.
       - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
-        `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment.
+        `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment, and not through a symlink that leads out of the tree or into `.git`.
       - names a git flag's value as git does: `--abbrev newname` is the flag and a name, so `branch` and `tag` read a bare
         word after a value flag as a name to create.
 

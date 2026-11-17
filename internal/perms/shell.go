@@ -167,7 +167,10 @@ func (e *Engine) checkShell(command string) (cmds []Simple, why, always []string
 		}
 	})
 	why = append(why, e.ruleEnvReasons(f, cmds)...)
+	gitWrites := gitStateWrites(cmds)
+	why = append(why, gitWrites...)
 	always = e.scanAsks(f, scan{dir: e.startDir()})
+	always = appendNew(always, gitWrites...)
 	// What an earlier command exported: it reaches every program this one runs, unless unset first. Builtins run none, so unset gets out.
 	for _, name := range sortedKeys(e.SessionEnv) {
 		if v := e.SessionEnv[name]; v != InheritedEnv(name, e.EnvExtra) && runsProgramWith(f, name) {
@@ -271,6 +274,9 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 		s := Simple{Program: prog, Name: name}
 		s.Args, s.Literal = args(words[1:])
 		if filepath.Base(prog) == "env" {
+			if r := EnvInvocationUnsafe(s.Args); r != "" {
+				return &s, []string{r}
+			}
 			for i, a := range s.Args {
 				name, _, isAssign := strings.Cut(a, "=")
 				switch {
@@ -303,9 +309,14 @@ func (e *Engine) simple(words []*syntax.Word, dir string) (*Simple, []string) {
 			if r := UnsafeInvocation(prog, s.Args); r != "" {
 				return &s, []string{r + ", which no rule covers"}
 			}
+			if filepath.Base(prog) == "go" && dir != "" {
+				if r := GoOutputEscapes(e.Root, dir, s.Args); r != "" {
+					return &s, []string{r}
+				}
+			}
 			if filepath.Base(prog) == "git" && dir != "" {
-				if b := BareRepoAbove(dir); b != "" {
-					return &s, []string{"git would use " + b + " as a repository, which a rule does not cover"}
+				if !GitFindsOwnersRepo(prog, dir, e.Root) {
+					return &s, []string{"git would not use this workspace's own repository here, which a rule does not cover"}
 				}
 			}
 		}
