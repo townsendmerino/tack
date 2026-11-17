@@ -59,22 +59,63 @@ func TestSlashChangesTogglesThePane(t *testing.T) {
 	a := &App{Backend: &fakeBackend{}}
 	a.Update(tea.WindowSizeMsg{Width: 50, Height: 14})
 	enter(a, "/changes")
-	if f := a.Frame(); !strings.Contains(f, "no changes") {
-		t.Errorf("empty:\n%s", f)
+	if rows := a.paneRows(10); len(rows) != 2 || !strings.HasPrefix(rows[0], "── changes") || rows[1] != "no changes yet" {
+		t.Errorf("empty pane: %q", rows)
 	}
 	enter(a, "/changes")
+	if rows := a.paneRows(10); len(rows) != 0 {
+		t.Errorf("the pane stayed: %q", rows)
+	}
 	seq := edited(t, &a.Screen, 1, "e1", "edit", "a.go", false, proto.OutcomeOK)
 	edited(t, &a.Screen, seq, "w1", "write", "new/b.go", true, proto.OutcomeOK)
 	enter(a, "/changes")
-	f := a.Frame()
-	for _, want := range []string{"── changes", "a.go", "1 edit", "new/b.go", "new"} {
-		if !strings.Contains(f, want) {
-			t.Errorf("no %q:\n%s", want, f)
-		}
+	// The pane's own rows, not the frame: the transcript also names both files, and "new" is a part of "new/b.go".
+	rows := a.paneRows(10)
+	want := []string{"a.go  1 edit", "new/b.go  1 edit  new"}
+	if len(rows) != 3 || !strings.HasPrefix(rows[0], "── changes") || rows[1] != want[0] || rows[2] != want[1] {
+		t.Fatalf("pane rows %q, want a header then %q", rows, want)
+	}
+	if f := a.Frame(); !strings.Contains(f, strings.Join(rows, "\n")) {
+		t.Errorf("the frame does not draw the pane's rows together:\n%s", f)
 	}
 	enter(a, "/todos")
-	if f := a.Frame(); strings.Contains(f, "1 edit") || !strings.Contains(f, "── todos") {
-		t.Errorf("another pane did not replace it:\n%s", f)
+	rows = a.paneRows(10)
+	if len(rows) == 0 || !strings.HasPrefix(rows[0], "── todos") {
+		t.Fatalf("another pane did not replace it: %q", rows)
+	}
+	for _, r := range rows {
+		if strings.Contains(r, "edit") {
+			t.Errorf("the replaced pane's row is still there: %q", r)
+		}
+	}
+}
+
+// TestChangeRowsPluralAndNewMarks: two edits say "2 edits", and only a file the session made says "new".
+func TestChangeRowsPluralAndNewMarks(t *testing.T) {
+	got := changeRows([]Change{{Path: "a.go", Edits: 2}, {Path: "b.go", Edits: 1, New: true}, {Path: "c.go", Edits: 3, New: true}}, 10)
+	want := []string{"a.go  2 edits", "b.go  1 edit  new", "c.go  3 edits  new"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("rows %q, want %q", got, want)
+	}
+}
+
+// TestChangeRowsShowAFileWhenThereIsRoomForOneLine: with room for one line the first file shows, not only a count; with none there
+// are no rows.
+func TestChangeRowsShowAFileWhenThereIsRoomForOneLine(t *testing.T) {
+	list := []Change{{Path: "a.go", Edits: 1}, {Path: "b.go", Edits: 1}, {Path: "c.go", Edits: 1}}
+	if got := changeRows(list, 1); len(got) != 1 || got[0] != "a.go  1 edit" {
+		t.Errorf("room 1: %q", got)
+	}
+	for _, n := range []int{0, -1} {
+		if got := changeRows(list, n); len(got) != 0 {
+			t.Errorf("room %d: %q", n, got)
+		}
+		if got := changeRows(nil, n); len(got) != 0 {
+			t.Errorf("none, room %d: %q", n, got)
+		}
+	}
+	if got := changeRows(list, 2); len(got) != 2 || got[1] != "… 2 more" {
+		t.Errorf("room 2: %q", got)
 	}
 }
 

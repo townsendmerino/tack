@@ -71,12 +71,17 @@ func (v *View) Changes() []Change {
 
 // changeRows draws the changes for a pane, cut to rows lines with a count of what was left out.
 func changeRows(list []Change, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
 	if len(list) == 0 {
 		return []string{"no changes yet"}
 	}
 	show := list
 	if len(show) > rows {
-		show = show[:max(rows-1, 0)]
+		// The count of what is left out takes a line of its own, except when there is only one line: then it is the first file
+		// that shows, since a count with no file above it says nothing.
+		show = show[:max(rows-1, 1)]
 	}
 	var out []string
 	for _, c := range show {
@@ -89,7 +94,7 @@ func changeRows(list []Change, rows int) []string {
 		}
 		out = append(out, s)
 	}
-	if len(show) < len(list) {
+	if len(show) < len(list) && rows >= 2 {
 		out = append(out, fmt.Sprintf("… %d more", len(list)-len(show)))
 	}
 	return out

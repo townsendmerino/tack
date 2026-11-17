@@ -112,3 +112,28 @@ func TestTodoRowsNeverExceedTheirRoom(t *testing.T) {
 		}
 	}
 }
+
+// TestTodoRowsAlwaysShowATaskWhenThereIsRoomForOne: with room for a single line the first task shows, not only a count of what
+// was left out; with none there are no rows at all, however few the list.
+func TestTodoRowsAlwaysShowATaskWhenThereIsRoomForOne(t *testing.T) {
+	list := []Todo{{"first", "in_progress"}, {"second", "pending"}, {"third", "pending"}}
+	got := todoRows(list, 1)
+	if len(got) != 1 || got[0] != "[>] first" {
+		t.Errorf("room 1: %q", got)
+	}
+	if got := todoRows(list[:1], 1); len(got) != 1 || got[0] != "[>] first" {
+		t.Errorf("one task, room 1: %q", got)
+	}
+	for _, n := range []int{0, -1, -5} {
+		if got := todoRows(list, n); len(got) != 0 {
+			t.Errorf("room %d: %q", n, got)
+		}
+		if got := todoRows(nil, n); len(got) != 0 {
+			t.Errorf("no tasks, room %d: %q", n, got)
+		}
+	}
+	// With room for two or more, the cut is as before: tasks, then how many were left out.
+	if got := todoRows(list, 2); len(got) != 2 || got[0] != "[>] first" || got[1] != "… 2 more" {
+		t.Errorf("room 2: %q", got)
+	}
+}
