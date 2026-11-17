@@ -24,7 +24,7 @@ type SentMsg struct{ Err error }
 // session's events come back as EventMsg through the program's Send.
 type Backend interface {
 	Prompt(text string) error
-	Respond(id string, seq int64, decision, scope string) error
+	Respond(id string, seq int64, decision, scope, rule string) error
 	// Cancel ends the session's running turn (session/cancel); with none running it does nothing and succeeds.
 	Cancel() error
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
@@ -47,6 +47,7 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
+	rule          *ruleEdit // the rule editor is open (rule.go)
 	input         []rune
 	width, height int
 	quit          bool
@@ -60,6 +61,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
 		a.Screen.Apply(proto.Event(m))
+		if _, open := a.Screen.Pending(); !open {
+			a.rule = nil // the question is gone, answered elsewhere or ended: a rule for it would go to nothing
+		}
 	case SentMsg:
 		if m.Err != nil {
 			a.Screen.note("! prompt: " + m.Err.Error())
@@ -134,6 +138,9 @@ func (a *App) cancel() tea.Cmd {
 }
 
 func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.rule != nil && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
+		return a, a.ruleKey(k) // the editor takes every other key
+	}
 	switch k.Type {
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
@@ -154,13 +161,16 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				decision, scope = proto.DecisionAllow, "session"
 			case 'd':
 				decision = proto.DecisionDeny
+			case 'e':
+				a.openRuleEdit()
+				return a, nil
 			}
 		}
 		if decision == "" {
 			return a, nil
 		}
 		b := a.Backend
-		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope)} }
+		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope, "")} }
 	}
 	switch k.Type {
 	case tea.KeyCtrlJ:
@@ -224,7 +234,7 @@ func (a *App) Frame() string {
 		return a.Screen.Render(a.width, a.height)
 	}
 	composer := a.composerRows()
-	rows := a.popup()
+	rows := append(a.ruleRows(), a.popup()...)
 	avail := a.height - len(composer)
 	if len(rows) > avail-2 { // the popup never takes the screen: the transcript keeps at least two rows
 		rows = rows[:max(avail-2, 0)]

@@ -138,8 +138,8 @@ func interactive() bool {
 }
 
 // Respond answers the open permission question that the permission.requested event at seq asked for the call id.
-func (b tuiBackend) Respond(id string, seq int64, decision, scope string) error {
-	return b.c.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: b.sess, ID: id, Seq: seq, Decision: decision, Scope: scope}, nil)
+func (b tuiBackend) Respond(id string, seq int64, decision, scope, rule string) error {
+	return b.c.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: b.sess, ID: id, Seq: seq, Decision: decision, Scope: scope, Rule: rule}, nil)
 }
 
 // Cancel ends the session's running turn.
