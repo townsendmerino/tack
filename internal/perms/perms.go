@@ -128,6 +128,9 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 	if readOnly {
 		return Verdict{Action: Allow, By: ByReadOnly}
 	}
+	if !mode.Valid() { // never read an empty or mistyped mode as one that allows something
+		return Verdict{Action: Deny, By: ByMode, Reasons: []string{fmt.Sprintf("%q is not a mode, so nothing that changes anything runs", mode)}}
+	}
 	if mode == proto.ModePlan {
 		return Verdict{Action: Deny, By: ByMode, Reasons: []string{"plan mode is read-only: propose the plan, and the " +
 			"user switches the mode to carry it out"}}

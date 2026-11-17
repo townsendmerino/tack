@@ -858,6 +858,14 @@ func (c *Core) newSession(p proto.SessionNewParams) (proto.SessionID, error) {
 // edit kit in auto mode, the sweep target, and the loop. history is a reopened session's events, nil for a new one;
 // a session whose log has a user.message has been prompted, so the first prompt's additions are not made again.
 func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, created proto.SessionCreated, history []proto.Event) (*session, error) {
+	// A log is data: a session whose mode is not one of the four is refused, never read as a mode that lets it change files.
+	// Every mode but plan gets the edit tools below, so this check is what keeps an empty or mistyped mode out of them.
+	if !created.Mode.Valid() {
+		return nil, fmt.Errorf("session.created names the mode %q, which is not plan, ask, edits or auto", created.Mode)
+	}
+	// A trusted repository's ceiling applies to a session as it is opened, not only as it is created, so one made before its
+	// repository was trusted, or before the ceiling was set, does not reopen above it. session.created keeps the mode recorded.
+	created.Mode = c.clampMode(ws.Root(), created.Mode)
 	src, err := c.source(created.Model)
 	if err != nil {
 		return nil, err
