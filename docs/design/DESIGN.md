@@ -792,6 +792,21 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **A repo's own configuration is untrusted until the owner trusts the repo.** Its hooks, MCP servers (P5) and
   `.tack/config.toml` take effect only after a trust step, recorded as an event; MCP servers then run under a sandbox
   profile of their own.
+  - **As built** (`internal/trust`; `internal/core/trust.go`; `cmd/tack/trust.go`): only `.tack/config.toml` exists to
+    trust, with one setting, `[commands] env`, the names of tack's environment variables that reach the repo's commands
+    beyond the short list. Hooks and MCP servers arrive with P5 and join the same grant.
+    - **A grant names the file's exact content** (SHA-256), not just the repo, the way direnv's does. A file changed after
+      the grant, one that was not there when the owner trusted a repo with none, and a repo with no grant are all untrusted;
+      the session's first prompt gets a warning (the `instructions` class, as the prompt-text scan's) saying which and what
+      to run. This goes beyond "a trust step" in the text above: a repo whose file a pull rewrites must not stay trusted.
+    - **How to trust:** `tack trust [path]` shows the file, invisible characters escaped, and `-yes` records the grant;
+      `workspace/trust {root}` (§9.2) does the same for an app and needs the client token. The grants are `trust.json` in
+      the state directory, which the sandbox denies to commands, so a command cannot trust its own repo.
+    - **The event:** a session started in a repo with an applied configuration gets `repo.trusted` right after
+      `session.created`, naming the repo, what took effect (`config`) and the file's digest. A reopened session applies the
+      configuration again if it is still trusted and does not repeat the event.
+    - **A secret never passes:** a file that names a variable like `GH_TOKEN` is refused when the owner trusts it, and not
+      applied if it gets to a session another way (`perms.CheckExtraEnv`).
 - **Secrets.** A default read deny-list (`.env*`, `*.pem`, `*.key`, `~/.ssh`, `~/.aws`, `~/.config/gh`, keychain files),
   compiled into the sandbox profile as `file-read*` denials, so `cat .env` in a shell command is stopped by the kernel,
   not only by tack's own file tools; plus a redaction pass over tool output for well-known key formats before it
@@ -1366,7 +1381,8 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
   is checked once and marks the connection as privileged; it never travels in any other method's parameters, so a debug
   log or a fixture recorder cannot capture it.
 - `workspace/open {root}`, `workspace/trust {root}`, `workspace/list`, `workspace/status` (index warming or ready, file
-  count, ken generation); notification `workspace/indexing`.
+  count, ken generation); notification `workspace/indexing`. (`workspace/trust` is built: it needs the client token, records
+  the grant for the repo's `.tack/config.toml` as it is now, and refuses a file that does not parse; §6.6.)
 - `session/new {workspace, model, mode}`, `session/list`, `session/get`, `session/subscribe {session, from_seq}`,
   `session/unsubscribe`, `session/prompt {session, content}`, `session/steer`, `session/cancel {session}` (built: ends the running turn, denies a pending question as the user "cancelled", turn.end cancelled; a no-op when idle; needs the client token),
   `session/fork {session, at_seq}`, `session/rewind {session, to_seq}`, `session/setMode`, `session/setModel`,
@@ -1917,7 +1933,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
 | tools (§6.5) | `read`, `glob`, `grep`, `edit`, `write`, `bash`, `read_output`, `search`, `symbol`, `todo`, `ask_user`, `done`; `task` with `subagents` | `edit_lines`, `current_symbol`, `recently_changed`, `find_related`, `lean_results` | `web_fetch`, MCP tools (P5) |
-| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape, the short environment for commands, the prompt-text scan | — | one-spawn grants and the network proxy (P5); repo trust |
+| permissions and sandbox (§6.6) | modes, rules on parsed commands, `tackd shell` with its run-time check, the Seatbelt profile with escape tests, the read allowlist, the always-ask guard, redaction, the control-character escape, the short environment for commands, the prompt-text scan, repo trust for `.tack/config.toml` | — | one-spawn grants and the network proxy (P5); trusted hooks and MCP servers (P5) |
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |

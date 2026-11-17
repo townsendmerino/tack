@@ -1,6 +1,7 @@
 package perms
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -62,4 +63,15 @@ func InheritedEnv(name string, extra []string) string {
 		return ""
 	}
 	return os.Getenv(name)
+}
+
+// CheckExtraEnv refuses names a repository's configuration may not add to its commands' environment: one named like a
+// secret never passes (CommandEnvAllowed). It is checked when the owner trusts the file and again when a session reads it.
+func CheckExtraEnv(names []string) error {
+	for _, n := range names {
+		if !CommandEnvAllowed(n, []string{n}) {
+			return fmt.Errorf("[commands] env names %s, which is named like a secret and never reaches commands", n)
+		}
+	}
+	return nil
 }

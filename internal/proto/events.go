@@ -44,6 +44,7 @@ const (
 	EvCompaction          EventType = "compaction"
 	EvCheckpoint          EventType = "checkpoint"
 	EvRewind              EventType = "rewind"
+	EvRepoTrusted         EventType = "repo.trusted"
 	EvModelStatus         EventType = "model.status"
 )
 
@@ -80,6 +81,7 @@ var EventTypes = map[EventType]EventSpec{
 	EvCompaction:          {reflect.TypeFor[Compaction](), true, false},
 	EvCheckpoint:          {reflect.TypeFor[Checkpoint](), true, false},
 	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
+	EvRepoTrusted:         {reflect.TypeFor[RepoTrusted](), true, false},
 }
 
 // ModelStatus is how a session's model server stands while a turn waits on it (DESIGN §8.2, §10), live only, for the
@@ -390,6 +392,15 @@ type Rewind struct {
 	Undo      string `json:"undo,omitempty"`
 	NoUndo    string `json:"no_undo,omitempty"`
 	Changed   int    `json:"changed"`
+}
+
+// RepoTrusted records, right after session.created, that the owner's trust in the workspace's own configuration is in
+// effect for this session (DESIGN §6.6): Trusted names what took effect ("config" for .tack/config.toml) and Config is
+// the digest of the file's exact content that the owner trusted. A session whose repository is not trusted has none.
+type RepoTrusted struct {
+	Workspace string   `json:"workspace"`
+	Trusted   []string `json:"trusted"`
+	Config    string   `json:"config,omitempty"`
 }
 
 // Compaction records a rewrite of the history before request Request (DESIGN §7.6), the one place history changes

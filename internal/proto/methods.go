@@ -19,6 +19,7 @@ const (
 	MethodUsageSummary      = "usage/summary"
 	MethodPermissionRespond = "permission/respond"
 	MethodWorkspaceComplete = "workspace/complete"
+	MethodWorkspaceTrust    = "workspace/trust"
 )
 
 // SessionID names a session: "s_" and a ULID.
@@ -237,6 +238,20 @@ type WorkspaceCompleteResult struct {
 	Items []CompletionItem `json:"items"`
 }
 
+// WorkspaceTrustParams trusts the repository at Root: its .tack/config.toml, as it is now, takes effect in sessions started
+// afterwards (DESIGN §6.6). It needs the client token. The file is checked first; one that does not parse is refused.
+type WorkspaceTrustParams struct {
+	Root string `json:"root"`
+}
+
+// WorkspaceTrustResult says what was trusted: Root as the grant is keyed (absolute, links resolved), Trusted what the
+// repository has that the grant covers ("config", or none), and Config the digest of the configuration file's content.
+type WorkspaceTrustResult struct {
+	Root    string   `json:"root"`
+	Trusted []string `json:"trusted"`
+	Config  string   `json:"config,omitempty"`
+}
+
 // MethodSpec gives a method's params and result types; Result is nil for a notification.
 type MethodSpec struct {
 	Params, Result reflect.Type
@@ -257,6 +272,7 @@ var Methods = map[string]MethodSpec{
 	MethodUsageSummary:      {reflect.TypeFor[UsageSummaryParams](), reflect.TypeFor[UsageSummaryResult]()},
 	MethodPermissionRespond: {reflect.TypeFor[PermissionRespondParams](), reflect.TypeFor[PermissionRespondResult]()},
 	MethodWorkspaceComplete: {reflect.TypeFor[WorkspaceCompleteParams](), reflect.TypeFor[WorkspaceCompleteResult]()},
+	MethodWorkspaceTrust:    {reflect.TypeFor[WorkspaceTrustParams](), reflect.TypeFor[WorkspaceTrustResult]()},
 }
 
 // ReuseShare is the share of the known requests' prompt tokens served from the cached prefix, and false when no

@@ -19,6 +19,7 @@ public enum Method {
     public static let sessionSubscribe = "session/subscribe"
     public static let usageSummary = "usage/summary"
     public static let workspaceComplete = "workspace/complete"
+    public static let workspaceTrust = "workspace/trust"
 }
 
 public typealias EventType = String
@@ -399,6 +400,18 @@ public struct PermissionRespondResult: Codable, Equatable, Sendable {
     public init() {}
 }
 
+public struct RepoTrusted: Codable, Equatable, Sendable {
+    public var workspace: String
+    public var trusted: [String]
+    public var config: String?
+
+    enum CodingKeys: String, CodingKey {
+        case workspace = "workspace"
+        case trusted = "trusted"
+        case config = "config"
+    }
+}
+
 public struct RequestSent: Codable, Equatable, Sendable {
     public var request: Int
     public var server: String
@@ -703,6 +716,26 @@ public struct WorkspaceCompleteResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct WorkspaceTrustParams: Codable, Equatable, Sendable {
+    public var root: String
+
+    enum CodingKeys: String, CodingKey {
+        case root = "root"
+    }
+}
+
+public struct WorkspaceTrustResult: Codable, Equatable, Sendable {
+    public var root: String
+    public var trusted: [String]
+    public var config: String?
+
+    enum CodingKeys: String, CodingKey {
+        case root = "root"
+        case trusted = "trusted"
+        case config = "config"
+    }
+}
+
 public enum EventPayload: Equatable, Sendable {
     case assistantDelta(AssistantDelta)
     case assistantMessage(AssistantMessage)
@@ -716,6 +749,7 @@ public enum EventPayload: Equatable, Sendable {
     case modelStatus(ModelStatus)
     case permissionRequested(PermissionRequested)
     case permissionResolved(PermissionResolved)
+    case repoTrusted(RepoTrusted)
     case requestSent(RequestSent)
     case rewind(Rewind)
     case sessionCreated(SessionCreated)
@@ -762,6 +796,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "model.status": payload = .modelStatus(try c.decode(ModelStatus.self, forKey: .payload))
         case "permission.requested": payload = .permissionRequested(try c.decode(PermissionRequested.self, forKey: .payload))
         case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
+        case "repo.trusted": payload = .repoTrusted(try c.decode(RepoTrusted.self, forKey: .payload))
         case "request.sent": payload = .requestSent(try c.decode(RequestSent.self, forKey: .payload))
         case "rewind": payload = .rewind(try c.decode(Rewind.self, forKey: .payload))
         case "session.created": payload = .sessionCreated(try c.decode(SessionCreated.self, forKey: .payload))
@@ -794,6 +829,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .modelStatus(let p): try c.encode(p, forKey: .payload)
         case .permissionRequested(let p): try c.encode(p, forKey: .payload)
         case .permissionResolved(let p): try c.encode(p, forKey: .payload)
+        case .repoTrusted(let p): try c.encode(p, forKey: .payload)
         case .requestSent(let p): try c.encode(p, forKey: .payload)
         case .rewind(let p): try c.encode(p, forKey: .payload)
         case .sessionCreated(let p): try c.encode(p, forKey: .payload)
