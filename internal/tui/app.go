@@ -27,9 +27,14 @@ type Backend interface {
 	Respond(id string, seq int64, decision, scope, rule string) error
 	// Cancel ends the session's running turn (session/cancel); with none running it does nothing and succeeds.
 	Cancel() error
+	// Release lifts the session's hold (session/release): the guard held it for the owner's review, and only a person at this screen can.
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
 	Complete(query string) ([]proto.CompletionItem, error)
+	Release() error
 }
+
+// ReleasedMsg is the answer to a Backend.Release: the session.released event that follows is what ends the hold on screen.
+type ReleasedMsg struct{ Err error }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
 type CancelledMsg struct{ Err error }

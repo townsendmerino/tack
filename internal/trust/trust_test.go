@@ -135,3 +135,19 @@ func TestTrustWritesOwnerOnlyAndKeepsOthers(t *testing.T) {
 		t.Errorf("the state directory holds %d entries, want trust.json alone", len(ents))
 	}
 }
+
+// TestARepositoryCannotSetTheGuardsThreshold: [guard] and tripwire_threshold are the owner's config.toml's; in a repository's own file they
+// are unknown settings, so the file is refused rather than applied, whatever table they are in.
+func TestARepositoryCannotSetTheGuardsThreshold(t *testing.T) {
+	for name, body := range map[string]string{
+		"a guard table":     "[guard]\ntripwire_threshold = 100\n",
+		"in session":        "[session]\ntripwire_threshold = 100\n",
+		"at the top":        "tripwire_threshold = 100\n",
+		"in commands":       "[commands]\ntripwire_threshold = 100\n",
+		"a guard with none": "[guard]\n",
+	} {
+		if _, _, err := ReadRepo(repoWith(t, body)); err == nil {
+			t.Errorf("%s: the repository's file was accepted", name)
+		}
+	}
+}

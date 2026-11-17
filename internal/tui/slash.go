@@ -23,6 +23,14 @@ func (a *App) commands() []command {
 			}
 			return nil
 		}},
+		{"release", "lift the hold the guard put on this session (it shows the commands that caused it)", func(a *App, _ string) tea.Cmd {
+			if !a.Screen.held {
+				a.Screen.note("· this session is not held")
+				return nil
+			}
+			b := a.Backend
+			return func() tea.Msg { return ReleasedMsg{Err: b.Release()} }
+		}},
 		{"cancel", "end the running turn (also Esc)", func(a *App, _ string) tea.Cmd { return a.cancel() }},
 		{"quit", "leave the screen (also Ctrl-C)", func(a *App, _ string) tea.Cmd {
 			a.quit = true

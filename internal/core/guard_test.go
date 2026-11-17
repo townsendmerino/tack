@@ -88,7 +88,7 @@ func TestTheThirdCountedCallHoldsASessionAndOnlyAPersonReleasesIt(t *testing.T) 
 	// Who may release.
 	un := c.opt.ClientToken
 	_ = un
-	if err := headless.Call(proto.MethodSessionRelease, proto.SessionReleaseParams{Session: sess.Session}, nil); err == nil {
+	if err := headless.Call(proto.MethodSessionRelease, proto.SessionReleaseParams(sess), nil); err == nil {
 		t.Error("a client no person is at released the session")
 	}
 	if err := c.Close(); err != nil {
@@ -110,7 +110,7 @@ func TestTheThirdCountedCallHoldsASessionAndOnlyAPersonReleasesIt(t *testing.T) 
 	}
 	// Release by the person: recorded, and the session takes a prompt.
 	person2.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
-	if err := person2.Call(proto.MethodSessionRelease, proto.SessionReleaseParams{Session: sess.Session}, nil); err != nil {
+	if err := person2.Call(proto.MethodSessionRelease, proto.SessionReleaseParams(sess), nil); err != nil {
 		t.Fatal(err)
 	}
 	await(t, events2, proto.EvSessionReleased) // the replay of the held turn comes first, then the live release

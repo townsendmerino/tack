@@ -18,13 +18,16 @@ type fakeBackend struct {
 	respondErr error
 	cancels    int
 	cancelErr  error
+	releases   int
+	releaseErr error
 
 	items       map[string][]proto.CompletionItem // by query
 	queries     []string
 	completeErr error
 }
 
-func (f *fakeBackend) Cancel() error { f.cancels++; return f.cancelErr }
+func (f *fakeBackend) Release() error { f.releases++; return f.releaseErr }
+func (f *fakeBackend) Cancel() error  { f.cancels++; return f.cancelErr }
 
 func (f *fakeBackend) Complete(query string) ([]proto.CompletionItem, error) {
 	f.queries = append(f.queries, query)

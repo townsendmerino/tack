@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/townsendmerino/tack/internal/proto"
 )
 
 // enter types s and presses Enter, running what it returns.
@@ -79,5 +81,36 @@ func TestACommandNeedsItsOwnWord(t *testing.T) {
 	enter(a, "/helpme")
 	if f := a.Frame(); !strings.Contains(f, "unknown command /helpme") {
 		t.Errorf("a prefix matched:\n%s", f)
+	}
+}
+
+// TestAHeldSessionShowsItsCommandsAndOnlyReleaseLiftsIt: session.held puts the three commands on screen (control characters made visible,
+// a newline flattened), /release asks the daemon, and session.released ends the hold on screen; /release with nothing held says so and
+// asks nothing.
+func TestAHeldSessionShowsItsCommandsAndOnlyReleaseLiftsIt(t *testing.T) {
+	fb := &fakeBackend{}
+	a := &App{Backend: fb}
+	a.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	enter(a, "/release")
+	if fb.releases != 0 || !strings.Contains(a.Frame(), "not held") {
+		t.Fatalf("releases %d with nothing held; frame:\n%s", fb.releases, a.Frame())
+	}
+	a.Update(EventMsg(event(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{`go test \-exec id`, "git config core.fsmonitor id\x1b[2J", "a\nb"}})))
+	f := a.Frame()
+	for _, want := range []string{"held for the owner's review", `go test \-exec id`, "git config core.fsmonitor id␛[2J", "a ⏎ b", "/release"} {
+		if !strings.Contains(f, want) {
+			t.Errorf("the frame lacks %q:\n%s", want, f)
+		}
+	}
+	if strings.Contains(f, "\x1b") {
+		t.Error("a raw escape reached the screen")
+	}
+	enter(a, "/release")
+	if fb.releases != 1 {
+		t.Errorf("releases %d", fb.releases)
+	}
+	a.Update(EventMsg(event(t, proto.EvSessionReleased, proto.SessionReleased{By: "user"})))
+	if a.Screen.held || !strings.Contains(a.Frame(), "hold lifted") {
+		t.Errorf("still held:\n%s", a.Frame())
 	}
 }

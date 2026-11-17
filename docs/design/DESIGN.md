@@ -705,6 +705,23 @@ tool-use smoke set compares this merged set against the split one before it is f
     - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
       rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
       `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
+- **The tripwire: a counted shape holds the session** (owner, 2026-11-17). The allowlist prevents; this detects. `perms.Engine.Tripwire`
+  counts only shapes with no honest use: a run-a-program flag written behind an escape (`\-exec`, `$'\x2dexec'`, `-e{x,x}ec`,
+  found by decoding the word as bash does); `-extld`, `-toolexec` or `-exec` hidden in `-ldflags`, `-gcflags`, `-asmflags`,
+  `-gccgoflags` or `GOFLAGS`; a config write that runs something later (`git config` of `core.fsmonitor`, `core.hooksPath`,
+  `core.sshCommand`, `diff.external`, `core.askPass` or an `alias.x '!…'`; `go env -w` of `GOFLAGS`, `GOCACHEPROG`, `CC`,
+  `CXX`); and an edited rule that does not read back or that widens what was shown (core's `permission/respond`). A plain
+  dangerous flag (`find . -exec`, `go test -exec`) just asks, as before, and does not count; neither does `-extldflags`.
+  - A counted call is refused with `it needs the owner's review` and nothing else: neither the model's result nor the recorded
+    decision names the pattern. It is logged as `tripwire.hit` with its command and the count.
+  - The third hit since the last release (the threshold) ends the turn with stop reason `held` and records `session.held`
+    with the commands. `session/prompt` is then refused (`CodeHeld`) until `session/release`, which needs the token and a
+    client a person is at (`ClientInfo.Attended`): the TUI's `/release`, which shows the commands. It records
+    `session.released` and the count starts again.
+  - The count and the hold are in the log: reopening a session or forking it (which copies the events) keeps them.
+  - **The threshold is a guard threshold.** `[guard] tripwire_threshold` (default 3, 1 to 100) is read from the owner's
+    `config.toml` only. A repository's `.tack/config.toml` has no `[guard]`, so one there is an unknown setting and the file is
+    refused; only the owner changes it.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval
