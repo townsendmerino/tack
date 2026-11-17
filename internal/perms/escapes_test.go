@@ -19,24 +19,24 @@ func decide(e *Engine, cmd string) Verdict { return e.Decide(proto.ModeAsk, "bas
 func TestAWordTheShellDecodesDifferentlyIsNeverCovered(t *testing.T) {
 	e := engine(t, true)
 	for _, cmd := range []string{
-		`go test \-exec id`,      // an unquoted backslash: bash passes -exec
-		`go test -e\xec id`,      // a backslash inside the flag
-		`go test $'\x2dexec' id`, // ANSI-C hex
-		`go test $'\055exec' id`, // ANSI-C octal
-		`go test $'-exec' id`,    // ANSI-C with nothing to decode is still a different kind of word
-		`go test $'-exec' id`,    // ANSI-C unicode
-		`go test "\-exec" id`,    // a backslash in double quotes: bash keeps it here, but a \" or \$ would not, so none is trusted
-		`go test -e{x,x}ec id`,   // brace expansion: bash passes -exec -exec
-		`go test {-exec,x} id`,   // ... or a word of its own
-		"go test -exec\rid",      // a carriage return, which the parser takes for a space and bash for a character
-		"go test 'a\rb'",         // a raw CR inside single quotes, which the parser drops
-		"go test a\rb",           // an unquoted CR, which the parser splits on
-		"go\rtest ./...",         // in the program position
-		`go test $"-exec" id`,    // a locale-translated string
-		`go test "a\"b"`,         // an escaped quote inside double quotes
-		`go test "a\$b"`,         // an escaped dollar
-		`go test "a\\b"`,         // an escaped backslash
-		"go test ./...\r&& id",   // a CR before the next command
+		`go test \-exec id`,        // an unquoted backslash: bash passes -exec
+		`go test -e\xec id`,        // a backslash inside the flag
+		`go test $'\x2dexec' id`,   // ANSI-C hex
+		`go test $'\055exec' id`,   // ANSI-C octal
+		`go test $'-exec' id`,      // ANSI-C with nothing to decode is still a different kind of word
+		`go test $'\u002dexec' id`, // ANSI-C unicode
+		`go test "\-exec" id`,      // a backslash in double quotes: bash keeps it here, but a \" or \$ would not, so none is trusted
+		`go test -e{x,x}ec id`,     // brace expansion: bash passes -exec -exec
+		`go test {-exec,x} id`,     // ... or a word of its own
+		"go test -exec\rid",        // a carriage return, which the parser takes for a space and bash for a character
+		"go test 'a\rb'",           // a raw CR inside single quotes, which the parser drops
+		"go test a\rb",             // an unquoted CR, which the parser splits on
+		"go\rtest ./...",           // in the program position
+		`go test $"-exec" id`,      // a locale-translated string
+		`go test "a\"b"`,           // an escaped quote inside double quotes
+		`go test "a\$b"`,           // an escaped dollar
+		`go test "a\\b"`,           // an escaped backslash
+		"go test ./...\r&& id",     // a CR before the next command
 	} {
 		if v := decide(e, cmd); v.Action != Ask {
 			t.Errorf("%q: %s (%v); it must ask", cmd, v.Action, v.Reasons)
