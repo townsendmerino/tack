@@ -24,7 +24,12 @@ type SentMsg struct{ Err error }
 type Backend interface {
 	Prompt(text string) error
 	Respond(id string, seq int64, decision, scope string) error
+	// Cancel ends the session's running turn (session/cancel); with none running it does nothing and succeeds.
+	Cancel() error
 }
+
+// CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
+type CancelledMsg struct{ Err error }
 
 // AnsweredMsg is the answer to a Backend.Respond: nil Err means the daemon took it, and the permission.resolved event that
 // follows is what closes the question on screen.
@@ -64,6 +69,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			a.Screen.note("! answer: " + m.Err.Error())
 		}
+	case CancelledMsg:
+		var pe *proto.Error
+		switch {
+		case m.Err == nil:
+		case errors.As(m.Err, &pe) && pe.Code == proto.CodeMethodNotFound:
+			a.Screen.note("! the daemon is older than this screen and cannot cancel; restart it")
+		default:
+			a.Screen.note("! cancel: " + m.Err.Error())
+		}
 	case tea.WindowSizeMsg:
 		a.width, a.height = m.Width, m.Height
 	case tea.KeyMsg:
@@ -77,6 +91,10 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
 		return a, tea.Quit
+	case tea.KeyEsc:
+		// Esc ends the turn, a pending question included (the daemon denies it); the composer keeps its text.
+		b := a.Backend
+		return a, func() tea.Msg { return CancelledMsg{Err: b.Cancel()} }
 	}
 	// While a question is open its keys answer it, and nothing else is typed: a letter the user meant for the composer must
 	// not be taken for an answer after the question has gone, nor one meant as an answer land in the composer.
