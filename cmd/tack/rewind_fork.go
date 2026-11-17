@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
 )
@@ -32,6 +33,10 @@ func forkAfterRewind(st *store.Store, session proto.SessionID, events []proto.Ev
 	child := store.NewSessionID(time.Now())
 	if err := st.Fork(session, child, at); err != nil {
 		fmt.Fprintf(stderr, "tack rewind: the files are rewound, but the conversation could not be forked at seq %d: %v\n", at, err)
+		return exitError
+	}
+	if err := loop.CarryGuardTo(st, session, child); err != nil {
+		fmt.Fprintf(stderr, "tack rewind: the conversation was forked as %s, but the session's tripwire count could not be carried to it: %v\n", child, err)
 		return exitError
 	}
 	fmt.Fprintf(stdout, "forked the conversation at seq %d as %s; what came after it is not in it\n", at, child)

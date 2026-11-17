@@ -534,6 +534,10 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 					fin.Result += verify.tests.report(verify.last, verify.change)
 				}
 			default:
+				if s.Held() { // the guard held the session on an earlier call of this response: nothing after it runs
+					fin = proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: refusalText}
+					break
+				}
 				calls++
 				s.calls++
 				checkpoint := s.takeSnapshot(ctx, b)

@@ -152,6 +152,15 @@ func TestRefusedEditedRulesCountTowardTheHold(t *testing.T) {
 	v, _ := qev.Decode()
 	shown := v.(proto.PermissionRequested).Rules[0]
 	widen := proto.PermissionRespondParams{Decision: proto.DecisionAllow, Scope: "session", Rule: "ls"}
+	for _, typo := range []string{"   ", shown + "; rm -rf x", shown + " | sh", shown + " $HOME"} { // do not parse as one literal command: a typo, not counted
+		p := proto.PermissionRespondParams{Decision: proto.DecisionAllow, Scope: "session", Rule: typo}
+		if err := respondWith(cl, sid, qev, p); errCode(err) != proto.CodeInvalidParams {
+			t.Fatalf("%q: %v", typo, err)
+		}
+	}
+	if hits := guardHits(f, sid); hits != 0 {
+		t.Fatalf("an edit that does not parse counted: %d", hits)
+	}
 	for i := 1; i <= 3; i++ {
 		if err := respondWith(cl, sid, qev, widen); errCode(err) != proto.CodeInvalidParams {
 			t.Fatalf("widening %d: %v", i, err)
@@ -185,4 +194,54 @@ func guardHits(f *fixture, sid proto.SessionID) int {
 		}
 	}
 	return n
+}
+
+// TestAForkCutBeforeTheFirstHitIsStillHeld: a session with a clean turn and then a held one, forked at the first turn's end (before any
+// tripwire.hit), gives a child that is held with the whole count; forking is privileged but not attended, so it cannot be a way out.
+func TestAForkCutBeforeTheFirstHitIsStillHeld(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := goinfertest.NewScripted("m", 16384, goinfertest.Says("first"),
+		goinfertest.Calls("", "b1", "bash", `{"command":"go test \\-exec id"}`, "b2", "bash", `{"command":"git config core.fsmonitor id"}`, "b3", "bash", `{"command":"go build -ldflags=-extld=./x ."}`))
+	ts := httptest.NewServer(script)
+	t.Cleanup(ts.Close)
+	c, _, _ := daemonOn(t, st, ts.URL, guardOptions)
+	person, events := client(t, c, true)
+	headless, _ := client(t, c, false)
+	var sess proto.SessionNewResult
+	if err := person.Call(proto.MethodSessionNew, proto.SessionNewParams{Workspace: gitWorkspace(t, ""), Model: "main", Mode: proto.ModeAsk}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	person.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sess.Session}, nil)
+	prompt := func(cl *Client, sid proto.SessionID) error {
+		return cl.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("go")}}, nil)
+	}
+	if err := prompt(person, sess.Session); err != nil {
+		t.Fatal(err)
+	}
+	first := untilTurnEnd(t, events)
+	cut := first[len(first)-1].Seq
+	if err := prompt(person, sess.Session); err != nil {
+		t.Fatal(err)
+	}
+	untilTurnEnd(t, events)
+	var fork proto.SessionForkResult
+	if err := headless.Call(proto.MethodSessionFork, proto.SessionForkParams{Session: sess.Session, AtSeq: cut}, &fork); err != nil {
+		t.Fatal(err)
+	}
+	if err := prompt(person, fork.Session); errCode(err) != proto.CodeHeld {
+		t.Fatalf("a prompt in an early fork of a held session: %v", err)
+	}
+	evs, _ := st.Events(fork.Session, 0)
+	hits := 0
+	for _, ev := range evs {
+		if ev.Type == proto.EvTripwireHit {
+			hits++
+		}
+	}
+	if hits != 3 {
+		t.Errorf("the child carries %d hits, want 3", hits)
+	}
 }

@@ -95,9 +95,9 @@ func TestAHeldSessionShowsItsCommandsAndOnlyReleaseLiftsIt(t *testing.T) {
 	if fb.releases != 0 || !strings.Contains(a.Frame(), "not held") {
 		t.Fatalf("releases %d with nothing held; frame:\n%s", fb.releases, a.Frame())
 	}
-	a.Update(EventMsg(event(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{`go test \-exec id`, "git config core.fsmonitor id\x1b[2J", "a\nb"}})))
+	a.Update(EventMsg(event(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{`go test \-exec id`, "git config core.fsmonitor id\x1b[2J", "a\nb", "ok\rgit push", "x\u202eevil", "tab\there", "e\x1b]52;c;AAAA\x07", "caf\u00e9 \u0430"}})))
 	f := a.Frame()
-	for _, want := range []string{"held for the owner's review", `go test \-exec id`, "git config core.fsmonitor id␛[2J", "a ⏎ b", "/release"} {
+	for _, want := range []string{"held for the owner's review", `"go test \\-exec id"`, `\x1b[2J`, `"a\nb"`, `"ok\rgit push"`, "\\u202e", `\t`, `\x1b]52`, `caf\u00e9 \u0430`, "/release"} {
 		if !strings.Contains(f, want) {
 			t.Errorf("the frame lacks %q:\n%s", want, f)
 		}

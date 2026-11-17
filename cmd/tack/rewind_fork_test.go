@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
 )
@@ -131,5 +133,40 @@ func TestRewindToASnapshotForksAndAForkFailureIsReported(t *testing.T) {
 	st, _ := store.Open(filepath.Join(filepath.Dir(cfg), "state"))
 	if code := forkAfterRewind(st, "s_gone", nil, 5, &out2, &err2); code == exitOK || !strings.Contains(err2.String(), "files are rewound") {
 		t.Errorf("a failed fork: %d %q", code, err2.String())
+	}
+}
+
+// A rewind's fork of a held session is held too, with the parent's whole count, however early the rewind point is.
+func TestARewindForkOfAHeldSessionIsHeld(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := store.NewSessionID(time.Now())
+	l, err := st.Create(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: t.TempDir(), Model: "main", Mode: proto.ModeAsk})
+	l.Append(proto.EvUserMessage, 0, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("one")}})
+	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopEndTurn})
+	for i, c := range []string{"a", "b", "c"} {
+		l.Append(proto.EvTripwireHit, 0, proto.TripwireHit{ID: "x", Command: c, Count: i + 1})
+	}
+	l.Append(proto.EvSessionHeld, 0, proto.SessionHeld{Commands: []string{"a", "b", "c"}})
+	l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: proto.StopHeld})
+	l.Close()
+	evs, _ := st.Events(parent, 0)
+	var out, errs strings.Builder
+	if code := forkAfterRewind(st, parent, evs, 3, &out, &errs); code != exitOK {
+		t.Fatalf("%d %s", code, errs.String())
+	}
+	m := regexp.MustCompile(`as (s_\S+);`).FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("output %q", out.String())
+	}
+	cev, _ := st.Events(proto.SessionID(m[1]), 0)
+	if hits, held := loop.GuardState(cev); !held || len(hits) != 3 {
+		t.Errorf("the rewind fork: hits %v held %v", hits, held)
 	}
 }

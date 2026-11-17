@@ -708,9 +708,12 @@ tool-use smoke set compares this merged set against the split one before it is f
 - **The tripwire: a counted shape holds the session** (owner, 2026-11-17). The allowlist prevents; this detects. `perms.Engine.Tripwire`
   counts only shapes with no honest use: a run-a-program flag written behind an escape (`\-exec`, `$'\x2dexec'`, `-e{x,x}ec`,
   found by decoding the word as bash does); `-extld`, `-toolexec` or `-exec` hidden in `-ldflags`, `-gcflags`, `-asmflags`,
-  `-gccgoflags` or `GOFLAGS`; a config write that runs something later (`git config` of `core.fsmonitor`, `core.hooksPath`,
-  `core.sshCommand`, `diff.external`, `core.askPass` or an `alias.x '!…'`; `go env -w` of `GOFLAGS`, `GOCACHEPROG`, `CC`,
-  `CXX`); and an edited rule that does not read back or that widens what was shown (core's `permission/respond`). A plain
+  `-gccgoflags` or `GOFLAGS` (also through `env`, and written with `$'…'`); a config write that makes something run
+  later, and only those (`git config` of `core.fsmonitor` to a program, `core.hooksPath` outside the repository, `core.pager`,
+  `diff.external`, a `diff.<driver>.textconv`, or an `alias.x '!…'`, with `-C`, `-c` and `config set` read; `go env -w` of a
+  `GOFLAGS` holding a run word); other config writes (`core.hooksPath .githooks`, `CC=clang`, `GOFLAGS=-mod=mod`) just ask; and an
+  edited rule that parses and reads back but widens what was shown (core's `permission/respond`; one that does not parse is as
+  likely the owner's typo, and only fails). A plain
   dangerous flag (`find . -exec`, `go test -exec`) just asks, as before, and does not count; neither does `-extldflags`.
   - A counted call is refused with `it needs the owner's review` and nothing else: neither the model's result nor the recorded
     decision names the pattern. It is logged as `tripwire.hit` with its command and the count.
@@ -718,7 +721,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     with the commands. `session/prompt` is then refused (`CodeHeld`) until `session/release`, which needs the token and a
     client a person is at (`ClientInfo.Attended`): the TUI's `/release`, which shows the commands. It records
     `session.released` and the count starts again.
-  - The count and the hold are in the log: reopening a session or forking it (which copies the events) keeps them.
+  - The count and the hold are in the log: reopening a session or forking it keeps them. A fork carries the parent's whole count and hold whatever seq it is cut at (`loop.CarryGuardTo`, called by `session/fork` and by `tack rewind`'s fork), so a fork cannot shed a hold. Once the session is held, the rest of that response's calls are refused, not run. The held view shows each command with every control, escape, bidi and non-ASCII rune spelled out.
   - **The threshold is a guard threshold.** `[guard] tripwire_threshold` (default 3, 1 to 100) is read from the owner's
     `config.toml` only. A repository's `.tack/config.toml` has no `[guard]`, so one there is an unknown setting and the file is
     refused; only the owner changes it.

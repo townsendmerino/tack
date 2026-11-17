@@ -2,9 +2,11 @@ package loop
 
 import (
 	"errors"
+	"slices"
 	"sync"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 // The guard counts shell calls that have a shape with no honest use (perms.Engine.Tripwire; DESIGN §6.6, "The tripwire"). Each such call
@@ -103,4 +105,71 @@ func (s *Session) tripwire(b proto.ModelBlock, callSeq int64, command string) (*
 		return nil, err
 	}
 	return &proto.ToolFinished{ID: b.ID, Outcome: proto.OutcomeDenied, Result: refusalText}, nil
+}
+
+// GuardState is the count and the hold a log's events leave.
+func GuardState(evs []proto.Event) (hits []string, held bool) {
+	var g guard
+	for _, ev := range evs {
+		if v, err := ev.Decode(); err == nil {
+			g.restore(v)
+		}
+	}
+	return g.hits, g.held
+}
+
+// GuardEvent is one event a fork records in its child to carry the parent's tripwire state.
+type GuardEvent struct {
+	Type    proto.EventType
+	Payload any
+}
+
+// CarryGuard returns the events that make a fork's tripwire state the parent's whole current state, whatever seq the fork was cut at: a
+// fork cut before the parent's first hit would otherwise start with no count, and an unheld child of a held session is a way out of the
+// hold. The child's prefix may hold fewer hits (the missing ones are added) or more (a release in the parent after the cut: the child's
+// are released and the parent's added). Nothing is returned when the two already agree.
+func CarryGuard(parent, child []proto.Event) []GuardEvent {
+	ph, pheld := GuardState(parent)
+	ch, cheld := GuardState(child)
+	var out []GuardEvent
+	have := ch
+	if len(ch) > len(ph) || !slices.Equal(ch, ph[:min(len(ch), len(ph))]) {
+		out = append(out, GuardEvent{proto.EvSessionReleased, proto.SessionReleased{By: "fork"}})
+		have, cheld = nil, false
+	}
+	for i := len(have); i < len(ph); i++ {
+		out = append(out, GuardEvent{proto.EvTripwireHit, proto.TripwireHit{ID: "fork", Command: ph[i], Count: i + 1}})
+	}
+	if pheld && !cheld {
+		out = append(out, GuardEvent{proto.EvSessionHeld, proto.SessionHeld{Commands: ph}})
+	}
+	return out
+}
+
+// CarryGuardTo records, in a fork just made, the events CarryGuard says: every way a session is forked (session/fork, tack rewind's
+// fork) calls it, so none sheds the parent's count or hold.
+func CarryGuardTo(st *store.Store, parent, child proto.SessionID) error {
+	pe, err := st.Events(parent, 0)
+	if err != nil {
+		return err
+	}
+	ce, err := st.Events(child, 0)
+	if err != nil {
+		return err
+	}
+	add := CarryGuard(pe, ce)
+	if len(add) == 0 {
+		return nil
+	}
+	l, err := st.OpenLog(child)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	for _, e := range add {
+		if _, err := l.Append(e.Type, 0, e.Payload); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -168,7 +169,7 @@ func (v *View) Apply(ev proto.Event) {
 		v.held = true
 		v.note("— this session is held for the owner's review: the guard counted these commands —")
 		for _, c := range e.Commands {
-			v.note("    " + strings.ReplaceAll(c, "\n", " ⏎ "))
+			v.note("    " + strconv.QuoteToASCII(c)) // every control, escape, bidi and non-ASCII rune is spelled out, so nothing hides or spoofs what the owner reviews
 		}
 		v.note("— nothing more runs until you type /release —")
 	case proto.SessionReleased:

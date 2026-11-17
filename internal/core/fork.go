@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"time"
 
+	"github.com/townsendmerino/tack/internal/loop"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/store"
 )
@@ -19,6 +20,9 @@ func (c *Core) fork(p proto.SessionForkParams) (any, *proto.Error) {
 	child := store.NewSessionID(time.Now())
 	switch err := c.opt.Store.Fork(p.Session, child, p.AtSeq); {
 	case err == nil:
+		if err := loop.CarryGuardTo(c.opt.Store, p.Session, child); err != nil {
+			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "fork: " + err.Error()}
+		}
 		return proto.SessionForkResult{Session: child}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, &proto.Error{Code: proto.CodeUnknownSession, Message: "no session " + string(p.Session)}

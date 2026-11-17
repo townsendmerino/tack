@@ -2,8 +2,11 @@ package loop
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
@@ -189,5 +192,88 @@ func TestNoLimitMeansNoGuard(t *testing.T) {
 	h.sess.Turn(context.Background(), "go")
 	if got := hitsOf(h); len(got) != 0 || strings.Contains(h.finished("b1").Result, "owner's review") {
 		t.Errorf("hits %+v, result %q", got, h.finished("b1").Result)
+	}
+}
+
+// Calls after the hold, in the same response, do not run: the third counted call holds the session and the fourth, an honest echo, is
+// refused with the same plain text.
+func TestCallsAfterTheHoldInTheSameResponseDoNotRun(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	h := bashHarness(t, proto.ModeAsk, &approver{answer: Approval{Allow: true}}, goinfertest.Calls("", "b1", "bash", `{"command":"go test \\-exec id"}`, "b2", "bash", `{"command":"go build -ldflags=-extld=./x ."}`,
+		"b3", "bash", `{"command":"git config core.fsmonitor id"}`, "b4", "bash", `{"command":"touch `+marker+`"}`))
+	cfg := h.sess.cfg
+	cfg.TripwireLimit = 3
+	h.sess = New(cfg)
+	stop, _ := h.sess.Turn(context.Background(), "go")
+	if stop != proto.StopHeld {
+		t.Fatalf("stop %q", stop)
+	}
+	if f := h.finished("b4"); f.Outcome != proto.OutcomeDenied || f.Result != refusalText {
+		t.Errorf("the call after the hold: %+v", f)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the call after the hold ran")
+	}
+	if got := hitsOf(h); len(got) != 3 {
+		t.Errorf("%d hits", len(got))
+	}
+}
+
+func guardLog(t *testing.T, types ...any) []proto.Event {
+	t.Helper()
+	var out []proto.Event
+	for i, p := range types {
+		var typ proto.EventType
+		switch p.(type) {
+		case proto.TripwireHit:
+			typ = proto.EvTripwireHit
+		case proto.SessionHeld:
+			typ = proto.EvSessionHeld
+		case proto.SessionReleased:
+			typ = proto.EvSessionReleased
+		default:
+			typ = proto.EvTurnEnd
+		}
+		ev, err := proto.NewEvent(int64(i+1), time.Now(), typ, 0, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// TestAForkCarriesTheParentsWholeCount: whatever the cut, the child ends with the parent's hits and hold.
+func TestAForkCarriesTheParentsWholeCount(t *testing.T) {
+	hit := func(c string, n int) proto.TripwireHit { return proto.TripwireHit{ID: "x", Command: c, Count: n} }
+	parent := guardLog(t, proto.TurnEnd{}, hit("a", 1), hit("b", 2), hit("c", 3), proto.SessionHeld{Commands: []string{"a", "b", "c"}})
+	for name, cut := range map[string]int{"before the first hit": 1, "after two": 3, "the whole": 5} {
+		child := parent[:cut]
+		add := CarryGuard(parent, child)
+		var evs []proto.Event
+		evs = append(evs, child...)
+		for i, a := range add {
+			ev, _ := proto.NewEvent(int64(len(child)+i+1), time.Now(), a.Type, 0, a.Payload)
+			evs = append(evs, ev)
+		}
+		hits, held := GuardState(evs)
+		if !held || len(hits) != 3 || hits[2] != "c" {
+			t.Errorf("%s: hits %v held %v", name, hits, held)
+		}
+		if cut == 5 && len(add) != 0 {
+			t.Errorf("%s: added %d events to a child that agrees", name, len(add))
+		}
+	}
+	// The parent released after the cut: the child's own hits are released, the parent's (none, then one) are carried.
+	parent = guardLog(t, hit("a", 1), hit("b", 2), proto.SessionReleased{By: "user"}, hit("z", 1))
+	child := parent[:2]
+	var evs []proto.Event
+	evs = append(evs, child...)
+	for i, a := range CarryGuard(parent, child) {
+		ev, _ := proto.NewEvent(int64(len(child)+i+1), time.Now(), a.Type, 0, a.Payload)
+		evs = append(evs, ev)
+	}
+	if hits, held := GuardState(evs); held || len(hits) != 1 || hits[0] != "z" {
+		t.Errorf("after a release in the parent: hits %v held %v", hits, held)
 	}
 }

@@ -1,6 +1,8 @@
 package perms
 
 import (
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -34,6 +36,9 @@ func (e *Engine) Tripwire(command string) []string {
 				if hiddenToolFlag(base, a) {
 					add("tool-flag")
 				}
+				if envGoflags(base, a) {
+					add("goflags")
+				}
 				// the flag and its value as two words: -ldflags '-extld=x'
 				if i+1 < len(c.Args) && c.Literal[i+1] && base == "go" && isToolFlagName(a) && hasRunWord(c.Args[i+1]) {
 					add("tool-flag")
@@ -46,6 +51,9 @@ func (e *Engine) Tripwire(command string) []string {
 				continue
 			}
 			for _, cand := range cands {
+				if envGoflags(base, cand) {
+					add("goflags")
+				}
 				if cand != a && (runFlag(c.Program, cand) != "" || hiddenToolFlag(base, cand)) {
 					add("escaped-flag")
 				}
@@ -66,7 +74,7 @@ func (e *Engine) Tripwire(command string) []string {
 			}
 			for _, a := range assigns {
 				if a.Name != nil && a.Name.Value == "GOFLAGS" && a.Value != nil {
-					if v, ok := literal(a.Value); ok && hasRunWord(v) {
+					if goflagsRuns(a.Value) {
 						add("goflags")
 					}
 				}
@@ -92,6 +100,9 @@ func hasRunWord(v string) bool {
 		words = strings.Fields(v)
 	}
 	for _, w := range words {
+		if n, v, ok := strings.Cut(w, "="); ok && (n == "-ldflags" || n == "-gcflags" || n == "-asmflags" || n == "-gccgoflags") && hasRunWord(v) {
+			return true // GOFLAGS carries the toolchain flags too, with their own value
+		}
 		name, _, _ := strings.Cut(strings.TrimPrefix(w, "all="), "=")
 		if name == "-extld" || name == "-toolexec" || name == "-exec" {
 			return true
@@ -118,45 +129,77 @@ func hiddenToolFlag(prog, arg string) bool {
 	return hasRunWord(val)
 }
 
-// configWriteRuns: `git config` writing a key that makes git run a program later (a filesystem monitor, a hooks path, an ssh command,
-// an external diff, a shell alias), or `go env -w` of a variable that changes what go runs (GOFLAGS, GOCACHEPROG, CC, CXX).
+// envGoflags: an argument of env that sets GOFLAGS to a value holding a run word.
+func envGoflags(prog, arg string) bool {
+	name, v, ok := strings.Cut(arg, "=")
+	return prog == "env" && ok && name == "GOFLAGS" && hasRunWord(v)
+}
+
+// goflagsRuns reports whether the value assigned to GOFLAGS, as bash decodes it, holds a word that makes the toolchain run a program.
+func goflagsRuns(w *syntax.Word) bool {
+	if v, ok := literal(w); ok {
+		return hasRunWord(v)
+	}
+	cands, ok := decodeCandidates(source(w))
+	if !ok {
+		return false
+	}
+	for _, c := range cands {
+		if hasRunWord(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// configWriteRuns counts only a write that makes something run later, and only the writes below; every other config write asks, as before.
+//   - git config of core.fsmonitor to a program (not true, false or empty), of core.hooksPath to a directory outside the repository (an
+//     absolute path, ~, or one with ..; a relative in-tree path such as .githooks is an ordinary setup), of core.pager or diff.external,
+//     of a diff.<driver>.textconv, and of an alias that starts with "!";
+//   - go env -w of GOFLAGS whose value holds -toolexec, -exec or -extld.
+//
+// git's own options before the subcommand are read (-C and -c take a value), and so is the newer `git config set key value`.
 func configWriteRuns(prog string, c Simple) bool {
 	args := c.Args
 	switch prog {
 	case "git":
-		var rest []string
-		skipped := false
-		for _, a := range args {
-			if !skipped && !strings.HasPrefix(a, "-") && a != "" {
-				skipped = true
-				if a != "config" {
-					return false
-				}
-				continue
+		i := 0
+		for i < len(args) && strings.HasPrefix(args[i], "-") {
+			switch args[i] {
+			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path":
+				i++ // the option's value is the next word
 			}
-			if skipped {
-				rest = append(rest, a)
-			}
+			i++
 		}
-		if !skipped {
+		if i >= len(args) || args[i] != "config" {
 			return false
 		}
 		var pos []string
-		for _, a := range rest {
-			if a == "--get" || a == "--get-all" || a == "--get-regexp" || a == "--list" || a == "-l" || a == "--unset" || a == "--unset-all" {
+		for _, a := range args[i+1:] {
+			switch a {
+			case "--get", "--get-all", "--get-regexp", "--list", "-l", "--unset", "--unset-all", "get", "list", "unset":
 				return false // reading, or removing, is not planting
 			}
 			if !strings.HasPrefix(a, "-") {
 				pos = append(pos, a)
 			}
 		}
+		if len(pos) > 0 && pos[0] == "set" {
+			pos = pos[1:]
+		}
 		if len(pos) < 2 {
 			return false
 		}
 		key, val := strings.ToLower(pos[0]), pos[1]
 		switch {
-		case key == "core.fsmonitor", key == "core.hookspath", key == "core.sshcommand", key == "diff.external", key == "core.askpass":
-			return true
+		case key == "core.fsmonitor":
+			return val != "" && val != "true" && val != "false"
+		case key == "core.hookspath":
+			return filepath.IsAbs(val) || strings.HasPrefix(val, "~") || slices.Contains(strings.Split(filepath.ToSlash(val), "/"), "..")
+		case key == "core.pager", key == "diff.external":
+			return val != ""
+		case strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv"):
+			return val != ""
 		case strings.HasPrefix(key, "alias.") && strings.HasPrefix(val, "!"):
 			return true
 		}
@@ -171,9 +214,7 @@ func configWriteRuns(prog string, c Simple) bool {
 				continue
 			}
 			if write {
-				name, _, _ := strings.Cut(a, "=")
-				switch name {
-				case "GOFLAGS", "GOCACHEPROG", "CC", "CXX":
+				if name, v, _ := strings.Cut(a, "="); name == "GOFLAGS" && hasRunWord(v) {
 					return true
 				}
 			}

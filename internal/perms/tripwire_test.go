@@ -17,8 +17,9 @@ func TestTheTripwireCountsOnlyShapesWithNoHonestUse(t *testing.T) {
 		`GOFLAGS="-mod=mod -toolexec=id" go build .`,
 		// a configuration write that runs a program later
 		`git config core.fsmonitor id`, `git config --global core.fsmonitor ./x`, `git config alias.x '!id'`, `git config --local alias.y "!sh -c id"`,
-		`git config core.hooksPath ./hooks`, `git config core.sshCommand 'ssh -o ProxyCommand=id'`, `git config diff.external id`, `git config core.askPass x`,
-		`go env -w GOFLAGS=-toolexec=id`, `go env -w GOCACHEPROG=id`, `go env -w CC=./evil`, `go env -w CXX=./evil`, `go env -w GOFLAGS=-mod=mod`,
+		`git config core.hooksPath /tmp/hooks`, `git config core.hooksPath ../hooks`, `git config core.hooksPath ~/h`, `git config diff.external id`, `git config core.pager "sh -c id"`,
+		`git config diff.x.textconv id`, `git -C . config core.fsmonitor x`, `git config set core.fsmonitor x`, `git -c a=b -C . config alias.x '!id'`, `env GOFLAGS=-toolexec=x go build .`,
+		`GOFLAGS=$'-toolexec=x' go build .`, `env GOFLAGS=$'-toolexec=x' go build .`, `go env -w GOFLAGS=-toolexec=id`, `go env -w GOFLAGS='-ldflags=-extld=x'`,
 	} {
 		if got := e.Tripwire(cmd); len(got) == 0 {
 			t.Errorf("%q does not count", cmd)
@@ -34,7 +35,7 @@ func TestTheTripwireDoesNotCountAnHonestCommand(t *testing.T) {
 		`find . -exec id ';'`, `find . -delete`, `go test -exec id`, `go test -exec=id .`, `go build -toolexec=id .`, `go vet -vettool=/x .`, `git -c core.pager=id log`,
 		`go build -ldflags '-extldflags=-static' .`, `go build -ldflags='-s -w -X main.v=1' .`, `go build -ldflags "-extldflags '-static'" .`, `go build -gcflags=all=-N .`,
 		`GOFLAGS=-mod=mod go test ./...`, `GOFLAGS=-race go build .`, `export GOFLAGS=-count=1`, `go env -w GOTOOLCHAIN=local`, `go env -w GOPRIVATE=example.com`, `go env GOFLAGS`,
-		`git config user.name x`, `git config core.editor vim`, `git config alias.co checkout`, `git config --get alias.x`, `git config --list`, `git config --unset core.fsmonitor`,
+		`git config core.hooksPath .githooks`, `git config core.fsmonitor true`, `git config core.sshCommand ssh`, `go env -w CC=clang`, `go env -w GOCACHEPROG=x`, `go env -w GOFLAGS=-mod=mod`, `env GOFLAGS=-mod=mod go build .`, `git -C sub config user.name x`, `git config user.name x`, `git config core.editor vim`, `git config alias.co checkout`, `git config --get alias.x`, `git config --list`, `git config --unset core.fsmonitor`,
 		`git config core.fsmonitor`, `git log --oneline`, `git status`,
 		`echo \-exec`, `echo $'\x2dexec'`, `ls \-la`, `ls $'a\nb'`, `go test -run 'a\nb' .`, `go test "a b" .`, `printf '%s' "\$HOME"`, `grep \-n x file`, `ls -e{x,y}ec`,
 		`go test -ldflags=-extldflag .`, `go build -ldflags '-extld' `,
