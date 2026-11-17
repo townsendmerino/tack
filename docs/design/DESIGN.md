@@ -623,6 +623,17 @@ tool-use smoke set compares this merged set against the split one before it is f
       now gets the edit tools (asking in `ask`, as the mode says).
     - **A mode that is not one is never read as one that allows something.** A session whose `session.created` names an empty
       or unknown mode is refused when it opens, and `Decide` denies every call that changes something under such a mode.
+  - **Changing the mode of a live session** (`session/setMode`, owner's decision 2026-11-17, option A). It needs the client
+    token and is refused as busy while a turn runs, so no approval is ever judged by two modes. The mode asked for is lowered
+    to a trusted repository's ceiling, and the answer says the mode the session now has. The change is logged as
+    `mode.changed {mode, by}` before it is applied; if it cannot be applied, a second `mode.changed` by `system` puts the log
+    back, so the log always says the session's mode, and a reopened session (and a fork of it) takes the last one.
+    - **A move to `auto` needs `confirmed: true`**, which the TUI sets only after showing what auto allows and getting `y`; the daemon refuses it otherwise, before any ceiling is applied. It is a marker to hold a client to, not a defence against one that holds the token.
+    - **Among `ask`, `edits` and `auto`** the tool set and the prompt are the same, so only the mode the permission engine
+      decides in changes: no rebuild, and the cached prefix is kept.
+    - **To or from `plan`** the loop session is rebuilt from its log with the other tool set, in place, with its subscribers,
+      log and sweep target kept: the tool list changes once, so goinfer's cached prefix is lost once, and what the user
+      allowed "for the session" and the shell's working directory are forgotten. A rebuild that fails leaves the old session.
   - **Which mode a session starts in** (owner, 2026-11-17). With nothing set, the TUI starts in `plan`. Strictness runs
     `plan` < `ask` < `edits` < `auto`: how much a session may do without asking.
     - **A mode is only ever chosen by the owner:** by `tack -mode`, by the Shift+Tab key, or by `[session] mode` in
@@ -2119,6 +2130,7 @@ App Store.
 | `tool.output` | chunked to the blob store | stream, bytes |
 | `tool.finished` | yes | exit status, truncation, blob handle, diff hunks |
 | `checkpoint` | yes | files and pre-image hashes, or a snapshot id |
+| `mode.changed` | yes (fsync) | mode, by (`user`, or `system` for a change that could not be applied and was undone) |
 | `compaction` | yes | before and after composition, summary blobs |
 | `usage` | yes | server, prompt tokens, reused, prefilled, output, prefill time, decode rate |
 | `budget.exceeded` | yes | which budget, the value |

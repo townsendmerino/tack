@@ -13,6 +13,7 @@ const (
 	MethodSessionPrompt     = "session/prompt"
 	MethodSessionCancel     = "session/cancel"
 	MethodSessionFork       = "session/fork"
+	MethodSessionSetMode    = "session/setMode"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -160,6 +161,26 @@ type SessionForkResult struct {
 	Session SessionID `json:"session"`
 }
 
+// SessionSetModeParams changes a session's mode between turns (DESIGN §6.6). It needs the client token and is refused as busy
+// while a turn runs. The mode asked for is lowered to a trusted repository's ceiling, and the change is the mode.changed event it
+// logs. Among ask, edits and auto it only changes how the permission engine decides; to or from plan the session is rebuilt from
+// its log with the other tool set, so its tool list changes once, and what the user allowed "for the session" is forgotten.
+//
+// A move to auto is refused unless Confirmed says the owner chose it knowingly, which the TUI sets only after showing what auto
+// allows and getting the y key. Like session/new's, it is a marker the daemon holds a client to, not a defence against one that
+// holds the client token.
+type SessionSetModeParams struct {
+	Session   SessionID `json:"session"`
+	Mode      Mode      `json:"mode"`
+	Confirmed bool      `json:"confirmed,omitempty"`
+}
+
+// SessionSetModeResult gives the mode the session now has, which is the one asked for unless a ceiling lowered it; it is the
+// session's current mode, with no event, when that is what was asked for.
+type SessionSetModeResult struct {
+	Mode Mode `json:"mode"`
+}
+
 // SessionPromptResult acknowledges the prompt with the seq of its user.message event; the turn's progress arrives
 // as events.
 type SessionPromptResult struct {
@@ -299,6 +320,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionPrompt:     {reflect.TypeFor[SessionPromptParams](), reflect.TypeFor[SessionPromptResult]()},
 	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
 	MethodSessionFork:       {reflect.TypeFor[SessionForkParams](), reflect.TypeFor[SessionForkResult]()},
+	MethodSessionSetMode:    {reflect.TypeFor[SessionSetModeParams](), reflect.TypeFor[SessionSetModeResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},

@@ -16,6 +16,7 @@ public enum Method {
     public static let sessionFork = "session/fork"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
+    public static let sessionSetMode = "session/setMode"
     public static let sessionSubscribe = "session/subscribe"
     public static let usageSummary = "usage/summary"
     public static let workspaceComplete = "workspace/complete"
@@ -304,6 +305,16 @@ public struct MaskedResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct ModeChanged: Codable, Equatable, Sendable {
+    public var mode: Mode
+    public var by: String
+
+    enum CodingKeys: String, CodingKey {
+        case mode = "mode"
+        case by = "by"
+    }
+}
+
 public struct ModelBlock: Codable, Equatable, Sendable {
     public var type: String
     public var text: String?
@@ -542,6 +553,26 @@ public struct SessionPromptResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct SessionSetModeParams: Codable, Equatable, Sendable {
+    public var session: SessionID
+    public var mode: Mode
+    public var confirmed: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case session = "session"
+        case mode = "mode"
+        case confirmed = "confirmed"
+    }
+}
+
+public struct SessionSetModeResult: Codable, Equatable, Sendable {
+    public var mode: Mode
+
+    enum CodingKeys: String, CodingKey {
+        case mode = "mode"
+    }
+}
+
 public struct SessionSubscribeParams: Codable, Equatable, Sendable {
     public var session: SessionID
     public var fromSeq: Int64
@@ -746,6 +777,7 @@ public enum EventPayload: Equatable, Sendable {
     case daemonHaltRefused(DaemonHaltRefused)
     case daemonHalted(DaemonHalted)
     case error(ErrorEvent)
+    case modeChanged(ModeChanged)
     case modelStatus(ModelStatus)
     case permissionRequested(PermissionRequested)
     case permissionResolved(PermissionResolved)
@@ -793,6 +825,7 @@ public struct Event: Codable, Equatable, Sendable {
         case "daemon.halt_refused": payload = .daemonHaltRefused(try c.decode(DaemonHaltRefused.self, forKey: .payload))
         case "daemon.halted": payload = .daemonHalted(try c.decode(DaemonHalted.self, forKey: .payload))
         case "error": payload = .error(try c.decode(ErrorEvent.self, forKey: .payload))
+        case "mode.changed": payload = .modeChanged(try c.decode(ModeChanged.self, forKey: .payload))
         case "model.status": payload = .modelStatus(try c.decode(ModelStatus.self, forKey: .payload))
         case "permission.requested": payload = .permissionRequested(try c.decode(PermissionRequested.self, forKey: .payload))
         case "permission.resolved": payload = .permissionResolved(try c.decode(PermissionResolved.self, forKey: .payload))
@@ -826,6 +859,7 @@ public struct Event: Codable, Equatable, Sendable {
         case .daemonHaltRefused(let p): try c.encode(p, forKey: .payload)
         case .daemonHalted(let p): try c.encode(p, forKey: .payload)
         case .error(let p): try c.encode(p, forKey: .payload)
+        case .modeChanged(let p): try c.encode(p, forKey: .payload)
         case .modelStatus(let p): try c.encode(p, forKey: .payload)
         case .permissionRequested(let p): try c.encode(p, forKey: .payload)
         case .permissionResolved(let p): try c.encode(p, forKey: .payload)

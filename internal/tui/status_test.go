@@ -86,3 +86,23 @@ func TestStatusLineNeverShowsAnUnreportedReuseAsZero(t *testing.T) {
 		t.Errorf("no reuse reported: %q; want the fill alone", line)
 	}
 }
+
+// TestAModeChangeUpdatesTheStatusLine: mode.changed sets the mode the status line shows, and the transcript notes it.
+func TestAModeChangeUpdatesTheStatusLine(t *testing.T) {
+	var v View
+	v.Apply(ev(t, 1, proto.EvSessionCreated, proto.SessionCreated{Workspace: "/w", Model: "m", Mode: proto.ModePlan}))
+	if !strings.Contains(v.Status.Line(), "plan") {
+		t.Fatalf("status %q", v.Status.Line())
+	}
+	v.Apply(ev(t, 2, proto.EvModeChanged, proto.ModeChanged{Mode: proto.ModeAsk, By: "user"}))
+	if l := v.Status.Line(); !strings.Contains(l, "ask") || strings.Contains(l, "plan") {
+		t.Errorf("status %q", l)
+	}
+	if f := v.Render(60, 8); !strings.Contains(f, "mode is now ask") {
+		t.Errorf("no note:\n%s", f)
+	}
+	v.Apply(ev(t, 3, proto.EvModeChanged, proto.ModeChanged{Mode: proto.ModePlan, By: "system"}))
+	if f := v.Render(100, 8); !strings.Contains(f, "stays as it was") {
+		t.Errorf("no note for an undone change:\n%s", f)
+	}
+}
