@@ -95,12 +95,17 @@ func TestNarrowingPicksTheShownRuleItKeeps(t *testing.T) {
 func TestSessionRulesAreWhatAllowForSessionAdds(t *testing.T) {
 	parsed := []Simple{
 		{Program: "/usr/bin/go", Name: "go", Args: []string{"vet", "./..."}, Literal: []bool{true, true}},
+		// A first argument the analysis cannot see (it expands at run time) gives NO rule. This case used to expect the bare program
+		// `/usr/bin/make`, which would have allowed make with any target or flag for the session, wider than the one command the user
+		// saw; the stricter rule (words bash decodes or expands are not literal) leaves it asking.
 		{Program: "/usr/bin/make", Name: "make", Args: []string{"$T"}, Literal: []bool{false}},
+		// A command with no arguments at all still gets the bare program, as the user saw exactly that.
+		{Program: "/usr/bin/uname", Name: "uname"},
 		{Builtin: "cd", Args: []string{"x"}, Literal: []bool{true}},
 		{Program: "/bin/ls", Name: "ls"},
 	}
 	got := SessionRules("bash", parsed)
-	want := []Rule{{Program: "/usr/bin/go", Args: []string{"vet"}}, {Program: "/usr/bin/make"}, {Program: "/bin/ls"}}
+	want := []Rule{{Program: "/usr/bin/go", Args: []string{"vet"}}, {Program: "/usr/bin/uname"}, {Program: "/bin/ls"}}
 	if len(got) != len(want) {
 		t.Fatalf("rules %+v, want %+v", got, want)
 	}
@@ -154,6 +159,21 @@ func TestANarrowedRuleSurvivesBeingWrittenDown(t *testing.T) {
 		child := childEngine(e)
 		if len(child.Rules) != 1 || !slices.Equal(child.Rules[0].Args, want) {
 			t.Errorf("%q: the child's rules are %+v", text, child.Rules)
+		}
+	}
+}
+
+// TestAFirstArgumentTheAnalysisCannotSeeGivesNoRule: `make $T` and `make $(id)` get no rule from allowing for the session, where
+// they used to get one for the whole program; the same for a word bash decodes. The command keeps asking.
+func TestAFirstArgumentTheAnalysisCannotSeeGivesNoRule(t *testing.T) {
+	for _, first := range []string{"$T", "$(id)", `$'a\nb'`, `\-x`} {
+		parsed := []Simple{{Program: "/usr/bin/make", Name: "make", Args: []string{first}, Literal: []bool{false}}}
+		if got := SessionRules("bash", parsed); len(got) != 0 {
+			t.Errorf("first argument %s: offered %+v", first, got)
+		}
+		e := &Engine{}
+		if added := e.AllowForSession("bash", parsed); len(added) != 0 || len(e.Rules) != 0 {
+			t.Errorf("first argument %s: added %v", first, added)
 		}
 	}
 }
