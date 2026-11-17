@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/townsendmerino/tack/internal/window"
 )
 
 // escapeControl replaces the control characters in a tool's output with a visible escape, so that output can't move a
@@ -14,6 +16,10 @@ import (
 //   - C0 and DEL become \xNN, except any other carriage return, which becomes \r.
 //   - C1 becomes \uNNNN, and a lone invalid byte in the C1 range becomes \xNN.
 //   - Other invalid bytes pass: they control nothing, and their encoding on the way to a client is not this pass's.
+//
+// Invisible characters that are not control characters (a zero-width space, a bidirectional override, a soft hyphen) get
+// the same treatment, written \u{XXXX} (window.EscapeInvisible, the pass instruction files and knowledge pages also go
+// through): a file the model reads can hide text from the owner as well as an instruction file can.
 //
 // The escape is one-way: text that already spells \x1b looks the same. A string with nothing to escape returns as is.
 func escapeControl(s string) string {
@@ -41,8 +47,8 @@ func escapeControl(s string) string {
 		i += n
 	}
 	if copied == 0 {
-		return s
+		return window.EscapeInvisible(s)
 	}
 	b.WriteString(s[copied:])
-	return b.String()
+	return window.EscapeInvisible(b.String())
 }

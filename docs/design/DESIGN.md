@@ -822,9 +822,14 @@ tool-use smoke set compares this merged set against the split one before it is f
   characters in tool output; these characters are not control characters, so they pass it.
   - **As built** (`internal/window/scan.go`: `ScanPrompt`, `EscapeInvisible`, `ScanNotice`; loaded by
     `internal/core.readInstructionFileScanned` and `window.LoadPages`):
-    - **Invisible:** zero-width space, word joiner and the invisible operators, the bidirectional controls, tag characters,
-      the variation-selector supplement, Hangul fillers and a byte order mark anywhere but the start; the two joiners
-      only between two ASCII characters, so emoji sequences and Persian text pass.
+    - **Invisible:** every character of Unicode's format category Cf (zero-width and bidirectional controls, the soft
+      hyphen, tag characters, annotation anchors, the Arabic number signs), a byte order mark anywhere but the start, and
+      the others that show nothing: U+034F, the Khmer inherent vowels U+17B4 and U+17B5, the Braille blank U+2800, the
+      line and paragraph separators U+2028 and U+2029, the variation selectors, and the Hangul fillers. The two joiners are
+      allowed only between two emoji or two Arabic-script letters (Persian), and the emoji variation selectors only after an
+      emoji or under a keycap.
+    - **Tool results too:** the same escape runs in `loop.escapeControl`, the pass every tool result, build note and cut
+      goes through, so a file the model reads cannot hide text from the owner either (§9.3).
     - **Send out:** a line holding an act of sending, a thing worth stealing and a destination, all three. "Never send
       secrets" has no destination and passes. This is a heuristic that makes the owner look, not a boundary; the
       sandbox, which has no network, is what stops data leaving.

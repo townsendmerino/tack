@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -27,23 +28,59 @@ const (
 )
 
 // invisible reports whether r is a character that renders as nothing, or flips what is shown (the Trojan Source
-// overrides), and that text has no reason to hold: zero-width and joining characters, the bidirectional controls,
-// the tag characters that hide a message in plain sight, and the hidden fillers. prev and next are its neighbours, for
-// the two joiners that emoji and some scripts use between characters of their own.
+// overrides), and that text has no reason to hold: every character of Unicode's format category Cf (zero-width and
+// bidirectional controls, the soft hyphen, tag characters, annotation anchors, the Arabic number signs), the others that
+// show nothing (the combining grapheme joiner, the Khmer inherent vowels, the Braille blank, the Hangul fillers, the
+// variation selectors) and the line and paragraph separators, which break a line the owner sees as one. prev and next are
+// its neighbours, for the characters that legitimately appear between others: the two joiners (in emoji sequences and in
+// Persian) and the emoji variation selectors.
 func invisible(r, prev, next rune) bool {
 	switch {
-	case r == 0x200C || r == 0x200D: // zero-width non-joiner and joiner: only between two ASCII characters are they out of place
-		return prev < utf8.RuneSelf && next < utf8.RuneSelf // the ends of the text count as ASCII
-	case r == 0x200B, r == 0x2060, r >= 0x2061 && r <= 0x2064, r == 0x180E, r == 0xFEFF:
+	case r == 0x200C || r == 0x200D:
+		return !joinerOK(prev, next)
+	case r == 0xFE0E || r == 0xFE0F:
+		return !emojiSelectorOK(prev, next)
+	case unicode.Is(unicode.Cf, r):
 		return true
-	case r == 0x200E, r == 0x200F, r == 0x061C, r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+	case r >= 0xE0000 && r <= 0xE007F, r >= 0xE0100 && r <= 0xE01EF: // tag characters, the variation selectors supplement
 		return true
-	case r >= 0xE0000 && r <= 0xE007F, r >= 0xE0100 && r <= 0xE01EF: // tag characters, variation selectors supplement
+	case r >= 0xFE00 && r <= 0xFE0D: // variation selectors 1 to 14
+		return true
+	case r == 0x034F, r == 0x17B4, r == 0x17B5, r == 0x2800, r == 0x2028, r == 0x2029:
 		return true
 	case r == 0x115F, r == 0x1160, r == 0x3164, r == 0xFFA0: // Hangul fillers
 		return true
 	}
 	return false
+}
+
+// emojiish reports whether r belongs to an emoji sequence: a pictograph or symbol, a skin-tone modifier, an emoji
+// presentation selector, or a keycap.
+func emojiish(r rune) bool {
+	switch {
+	case r >= 0x1F000 && r <= 0x1FAFF, r == 0xFE0F, r == 0x20E3, r == 0x203C, r == 0x2049:
+		return true
+	}
+	return unicode.Is(unicode.So, r)
+}
+
+// joinerOK reports whether a zero-width joiner or non-joiner between prev and next belongs there: between two characters
+// of an emoji sequence, or between two Arabic-script letters (Persian's half-space). Anywhere else, the ends of the text
+// included, it is hidden.
+func joinerOK(prev, next rune) bool {
+	if prev == 0 || next == 0 {
+		return false
+	}
+	return emojiish(prev) && emojiish(next) || unicode.Is(unicode.Arabic, prev) && unicode.Is(unicode.Arabic, next)
+}
+
+// emojiSelectorOK reports whether the text or emoji presentation selector (U+FE0E, U+FE0F) after prev belongs there:
+// after an emoji, or after the digit, # or * under a keycap.
+func emojiSelectorOK(prev, next rune) bool {
+	if prev == 0 {
+		return false
+	}
+	return emojiish(prev) || (prev == '#' || prev == '*' || prev >= '0' && prev <= '9') && next == 0x20E3
 }
 
 // exfil is a line that tells the model to send something valuable out: an act of sending, a thing worth stealing, and
@@ -82,6 +119,15 @@ func ScanPrompt(text string) []Finding {
 	return out
 }
 
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 func cut(s string, n int) string {
 	if r := []rune(s); len(r) > n {
 		return string(r[:n]) + "…"
@@ -92,20 +138,30 @@ func cut(s string, n int) string {
 // EscapeInvisible returns text with each invisible character (the ones ScanPrompt finds) written as \u{XXXX}, so it shows.
 // A byte order mark at the very start stays.
 func EscapeInvisible(text string) string {
-	rs := []rune(text)
+	if isASCII(text) { // nothing to find, and tool output is mostly this
+		return text
+	}
 	var b strings.Builder
 	var prev rune
-	for i, r := range rs {
+	for i := 0; i < len(text); {
+		r, n := utf8.DecodeRuneInString(text[i:])
+		if r == utf8.RuneError && n == 1 { // an invalid byte is not this pass's: it passes as it is
+			b.WriteByte(text[i])
+			prev = utf8.RuneError
+			i++
+			continue
+		}
 		var next rune
-		if i+1 < len(rs) {
-			next = rs[i+1]
+		if i+n < len(text) {
+			next, _ = utf8.DecodeRuneInString(text[i+n:])
 		}
 		if !(i == 0 && r == 0xFEFF) && invisible(r, prev, next) {
 			fmt.Fprintf(&b, `\u{%04X}`, r)
 		} else {
-			b.WriteRune(r)
+			b.WriteString(text[i : i+n])
 		}
 		prev = r
+		i += n
 	}
 	return b.String()
 }
