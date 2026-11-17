@@ -160,6 +160,12 @@ func (v *View) Apply(ev proto.Event) {
 		}
 	case proto.Rewind:
 		v.note(fmt.Sprintf("↺ rewound %d paths to the checkpoint at %d", e.Changed, e.To))
+	case proto.ModeChanged:
+		s := "· mode is now " + string(e.Mode)
+		if e.By == "system" {
+			s += " (the change could not be applied, so the session stays as it was)"
+		}
+		v.note(s)
 	case proto.RepoTrusted:
 		v.note("— you trust this repository: its " + strings.Join(e.Trusted, ", ") + " is applied —")
 	case proto.Compaction:

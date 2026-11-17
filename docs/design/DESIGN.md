@@ -616,6 +616,24 @@ tool-use smoke set compares this merged set against the split one before it is f
 
 - **Modes.** `ask` (default); `edits` (file edits inside the workspace are approved, shell commands ask); `plan`
   (read-only); `auto` (anything that stays inside the sandbox is approved; anything that needs to leave it asks).
+  - **As built (2026-11-17):** every mode but `plan` gets the edit tools, the shell and the permission engine, and needs the
+    sandbox to start (macOS-only for now); `plan` has none of them. Until then only `auto` was wired, and `ask` and `edits`
+    behaved as `plan`, though the engine (`perms.Engine.Decide`) had decided all four.
+    - **Release note:** a session recorded in `ask` or `edits` before this change was effectively read-only, and on reopen it
+      now gets the edit tools (asking in `ask`, as the mode says).
+    - **A mode that is not one is never read as one that allows something.** A session whose `session.created` names an empty
+      or unknown mode is refused when it opens, and `Decide` denies every call that changes something under such a mode.
+  - **Changing the mode of a live session** (`session/setMode`, owner's decision 2026-11-17, option A). It needs the client
+    token and is refused as busy while a turn runs, so no approval is ever judged by two modes. The mode asked for is lowered
+    to a trusted repository's ceiling, and the answer says the mode the session now has. The change is logged as
+    `mode.changed {mode, by}` before it is applied; if it cannot be applied, a second `mode.changed` by `system` puts the log
+    back, so the log always says the session's mode, and a reopened session (and a fork of it) takes the last one.
+    - **A move to `auto` needs `confirmed: true`**, which the TUI sets only after showing what auto allows and getting `y`; the daemon refuses it otherwise, before any ceiling is applied. It is a marker to hold a client to, not a defence against one that holds the token.
+    - **Among `ask`, `edits` and `auto`** the tool set and the prompt are the same, so only the mode the permission engine
+      decides in changes: no rebuild, and the cached prefix is kept.
+    - **To or from `plan`** the loop session is rebuilt from its log with the other tool set, in place, with its subscribers,
+      log and sweep target kept: the tool list changes once, so goinfer's cached prefix is lost once, and what the user
+      allowed "for the session" and the shell's working directory are forgotten. A rebuild that fails leaves the old session.
   - **Which mode a session starts in** (owner, 2026-11-17). With nothing set, the TUI starts in `plan`. Strictness runs
     `plan` < `ask` < `edits` < `auto`: how much a session may do without asking.
     - **A mode is only ever chosen by the owner:** by `tack -mode`, by the Shift+Tab key, or by `[session] mode` in
@@ -624,10 +642,18 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **A repository can only lower it.** A repository the owner has trusted (§6.6, "A repo's own configuration is
       untrusted until the owner trusts the repo") may set `[session] max_mode`, a ceiling: the session gets the stricter of the
       mode asked for and the ceiling, in the daemon, when it is created and when it is moved. The repository has no setting
-      that picks a mode or raises one, and an untrusted or changed file sets no ceiling. A `max_mode` that is not a mode is an
-      error and applies nothing. `session.created` records the mode the session got.
+      that picks a mode or raises one, and an untrusted or changed file sets no ceiling. A `max_mode` that is not a mode is
+      refused by `workspace/trust`; if a grant for such a file exists anyway, the ceiling is `plan` (it fails closed).
+      `session.created` records the mode the session got. The ceiling also applies when a session is opened, so one made
+      before its repository was trusted, or before the ceiling was set, does not reopen above it; the log keeps the mode it
+      recorded, and the ceiling is read each time.
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
+  - **A rule is the same rule written down and read back** (security review, 2026-11-17). Rules travel as text (to the shell
+    child, into `permission.resolved`), so `Rule.String` quotes every word that is not plainly safe, and what it writes reads
+    back, through `ParseRule`, as the rule it wrote. Before, an argument that was empty, a space, a `#`, a word with a space or
+    a glob was lost or merged on the way, so allowing `go '' build` for the session gave the child a rule for `go` with any
+    arguments. A rule that would not read back is not added: the command keeps asking.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval
@@ -2118,6 +2144,7 @@ App Store.
 | `tool.output` | chunked to the blob store | stream, bytes |
 | `tool.finished` | yes | exit status, truncation, blob handle, diff hunks |
 | `checkpoint` | yes | files and pre-image hashes, or a snapshot id |
+| `mode.changed` | yes (fsync) | mode, by (`user`, or `system` for a change that could not be applied and was undone) |
 | `compaction` | yes | before and after composition, summary blobs |
 | `usage` | yes | server, prompt tokens, reused, prefilled, output, prefill time, decode rate |
 | `budget.exceeded` | yes | which budget, the value |
