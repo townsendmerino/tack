@@ -121,7 +121,17 @@ func TestEscapes(t *testing.T) {
 		{"writing git config", secs(SecLater), `git config core.fsmonitor /evil && echo ESCAPED-gitconfig`, "ESCAPED-gitconfig"},
 		{"writing git's config.worktree", secs(SecLater), `echo x > .git/config.worktree && echo ESCAPED-cfgwt`, "ESCAPED-cfgwt"},
 		{"writing git's info", secs(SecLater), `mkdir -p .git/info && echo x > .git/info/exclude && echo ESCAPED-info`, "ESCAPED-info"},
-		{"writing inside .git after a cd", secs(SecLater), `cd .git && echo x > description && echo ESCAPED-cd`, "ESCAPED-cd"},
+		{"writing .git/config after a cd", secs(SecLater), `cd .git && printf '[user]\n\tname = t\n' > config && echo ESCAPED-cd`, "ESCAPED-cd"},
+		{"writing a rebase todo", secs(SecLater), `mkdir -p .git/rebase-merge && echo x > .git/rebase-merge/git-rebase-todo && echo ESCAPED-rebase`, "ESCAPED-rebase"},
+		{"writing a sequencer todo", secs(SecLater), `mkdir -p .git/sequencer && echo x > .git/sequencer/todo && echo ESCAPED-seq`, "ESCAPED-seq"},
+		{"writing a remote definition", secs(SecLater), `mkdir -p .git/remotes && echo x > .git/remotes/o && echo ESCAPED-remotes`, "ESCAPED-remotes"},
+		{"writing a submodule's commondir", secs(SecLater), `mkdir -p .git/modules/n && echo x > .git/modules/n/commondir && echo ESCAPED-modcommon`, "ESCAPED-modcommon"},
+		// Routes that bring a .git in without writing one at a listed path. A rename or a hard link is checked by the path the profile sees, so
+		// these may get out; they are here to find out on a Mac, and a failure is a hole to close, not a test to loosen.
+		{"renaming in a directory that holds a .git", secs(SecLater), `mkdir -p "$TMPDIR/a-$$/.git/hooks" && echo x > "$TMPDIR/a-$$/.git/hooks/pre-commit" && mv "$TMPDIR/a-$$" sub-in-$$ && test -f sub-in-$$/.git/hooks/pre-commit && echo ESCAPED-renamein`, "ESCAPED-renamein"},
+		{"renaming in a .git itself", secs(SecLater), `mkdir -p "$TMPDIR/b-$$/.git" && mkdir -p sub-b-$$ && mv "$TMPDIR/b-$$/.git" sub-b-$$/.git && echo ESCAPED-renamegit`, "ESCAPED-renamegit"},
+		{"a symlink to a directory that holds a .git", secs(SecLater), `mkdir -p "$TMPDIR/c-$$/.git/hooks" && ln -s "$TMPDIR/c-$$" sub-l-$$ && test -e sub-l-$$/.git/hooks && echo ESCAPED-symlinkin`, "ESCAPED-symlinkin"},
+		{"a hard link to .git/config written through", secs(SecLater), `ln .git/config "$TMPDIR/hl-$$" && printf '[user]\n\tsigningkey = x\n' >> "$TMPDIR/hl-$$" && echo ESCAPED-hardlink`, "ESCAPED-hardlink"},
 		{"making a gitfile", secs(SecLater), `mkdir -p sub && echo "gitdir: ../x" > sub/.git && echo ESCAPED-gitfile`, "ESCAPED-gitfile"},
 		{"making a .GIT directory", secs(SecLater), `mkdir -p sub/.GIT && echo ESCAPED-upper`, "ESCAPED-upper"},
 		{"writing .git/hooks", secs(SecLater), `mkdir -p .git/hooks && echo x > .git/hooks/pre-commit && echo ESCAPED-hooks`, "ESCAPED-hooks"},

@@ -234,6 +234,9 @@ func Profile(c Config) string {
 // ancestor, so a state directory not yet created still compares correctly.
 func (c Config) Check() error {
 	ws := resolve(c.Workspace)
+	if strings.ContainsAny(ws, "\"\n\r\x00") { // the profile writes the path into a regular expression; a path that needs more than quoting is refused
+		return fmt.Errorf("the workspace path %q holds a double quote or a control character, which the profile does not accept", ws)
+	}
 	for _, p := range c.Tack {
 		t := resolve(p)
 		if within(ws, t) || within(t, ws) {
@@ -288,7 +291,7 @@ func Wrap(c Config, cmd *exec.Cmd) *exec.Cmd {
 func regexQuote(p string) string {
 	var b strings.Builder
 	for _, r := range p {
-		if strings.ContainsRune(`.^$*+?()[]{}|\`, r) {
+		if strings.ContainsRune(`.^$*+?()[]{}|\"`, r) {
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)
@@ -319,8 +322,12 @@ func gitRedirects(ws string) []string {
 		re("/" + ci("info") + "(/.*)?$"),      // attributes (filter and diff drivers), exclude, sparse-checkout: they select drivers and paths
 		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("alternates") + "$"), // another object directory git trusts
 		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("http-alternates") + "$"),
-		re("/" + ci("modules") + "/.*/" + ci("config") + "$"), // a submodule's own config: the same keys
-		re("/" + ci("modules") + "/.*/" + ci("hooks") + "(/.*)?$"),
+		re("/" + ci("modules") + "(/.*)?$"),      // every submodule repository: its config, config.worktree, commondir, info/, hooks/ and alternates redirect git too
+		re("/" + ci("remotes") + "(/.*)?$"),      // legacy remote definitions: change where the owner's later push goes
+		re("/" + ci("branches") + "(/.*)?$"),     // the same
+		re("/" + ci("rebase-merge") + "(/.*)?$"), // git-rebase-todo: its exec lines run on the owner's rebase --continue
+		re("/" + ci("rebase-apply") + "(/.*)?$"),
+		re("/" + ci("sequencer") + "(/.*)?$"), // cherry-pick and revert todo: the same
 		re("/" + ci("worktrees") + "/[^/]+/(" + ci("commondir") + "|" + ci("gitdir") + "|" + ci("config.worktree") + ")$"), // a linked worktree's redirects
 	}
 }

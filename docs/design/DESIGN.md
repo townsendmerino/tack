@@ -869,14 +869,22 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **Writes that would run later outside the sandbox** are denied or asked about: the parts of every `.git` in the workspace (any depth, any letter case) that redirect git or run programs
     (`sandbox.gitRedirects`): `config` and `config.worktree` (`core.fsmonitor`, `core.hooksPath`, `!` aliases, `diff.external`,
     `core.pager`, textconv), `commondir`, `hooks/`, `info/` (attributes select filter and diff drivers; `exclude`,
-    `sparse-checkout`), `objects/info/alternates` and `http-alternates`, `modules/*/config` and `modules/*/hooks/`,
-    `worktrees/*/commondir`, `gitdir` and `config.worktree`, and the `.git` entry itself at any depth (so a gitfile naming a
+    `sparse-checkout`), `objects/info/alternates` and `http-alternates`, all of `modules/` (a submodule's config, `commondir`,
+    `info/`, hooks and alternates redirect too), `remotes/` and `branches/` (where the owner's later push goes), `rebase-merge/`,
+    `rebase-apply/` and `sequencer/` (a todo's `exec` lines run on the owner's `rebase --continue`), `worktrees/*/commondir`,
+    `gitdir` and `config.worktree`, and the `.git` entry itself at any depth (so a gitfile naming a
     `gitdir:` a command wrote cannot be made or swapped in). `index`, `objects/` (but not `objects/info/alternates`), `refs/`,
     `HEAD`, `logs/`, `packed-refs`, `ORIG_HEAD`, `FETCH_HEAD` and `COMMIT_EDITMSG` stay writable. Not covered: the directory
     `core.hooksPath` names when it is under `.git` (the profile does not read the config; the config is denied to commands, so
     only the owner sets it), and an in-tree hooks directory (such as `.githooks`), whose hook files a command may write and the
     owner's next commit would run: nothing denies or asks about such a write today (the tripwire does not count an in-tree
-    `core.hooksPath`), and protecting that directory is a decision not yet taken. `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
+    `core.hooksPath`), and protecting that directory is a decision not yet taken.
+    Also writable by design: the index, whose assume-unchanged and skip-worktree bits can hide an edit from the owner's
+    `git diff`, and gitlink (160000) entries, which make the owner's `git status` recurse into a directory. A linked worktree
+    whose gitdir is outside the workspace cannot add or commit in the sandbox, since that directory is not writable. Two routes
+    the profile cannot see by path are covered by escape tests that run on a Mac, and their result decides whether more is
+    needed: renaming into the workspace a directory that holds a `.git` (a rename is checked by the moved directory's own
+    path), a symlink to one, and a hard link to a listed file written through its other name. `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.

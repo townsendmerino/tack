@@ -64,13 +64,15 @@ func TestTheGitDenyListMatchesWhatItIsFor(t *testing.T) {
 	for _, p := range []string{".git", "sub/.git", "sub/deep/.GIT", ".git/config", ".git/CONFIG", ".git/Config.Worktree", ".git/commondir", ".git/hooks", ".git/hooks/pre-commit",
 		".git/HOOKS/x", ".git/info/exclude", ".git/info/attributes", ".git/info/sparse-checkout", ".git/objects/info/alternates", ".git/objects/INFO/Alternates",
 		".git/objects/info/http-alternates", ".git/modules/m/config", ".git/modules/a/b/config", ".git/modules/m/hooks/post-commit", ".git/worktrees/w/commondir",
+		".git/rebase-merge/git-rebase-todo", ".git/rebase-apply/patch", ".git/sequencer/todo", ".git/REBASE-MERGE/x", ".git/remotes/origin", ".git/branches/b",
+		".git/modules/m/commondir", ".git/modules/m/config.worktree", ".git/modules/m/info/exclude", ".git/modules/m/objects/info/alternates", ".git/modules/m/HEAD",
 		".git/worktrees/w/gitdir", ".git/worktrees/w/config.worktree", "sub/.git/config", "sub/.Git/hooks/x"} {
 		if !denied(ws + "/" + p) {
 			t.Errorf("%s is writable", p)
 		}
 	}
 	for _, p := range []string{".git/index", ".git/index.lock", ".git/HEAD", ".git/ORIG_HEAD", ".git/FETCH_HEAD", ".git/COMMIT_EDITMSG", ".git/packed-refs", ".git/refs/heads/main",
-		".git/logs/HEAD", ".git/objects/ab/cdef", ".git/objects/pack/pack-1.pack", ".git/objects/info/packs", ".git/worktrees/w/HEAD", ".git/modules/m/HEAD",
+		".git/logs/HEAD", ".git/objects/ab/cdef", ".git/objects/pack/pack-1.pack", ".git/objects/info/packs", ".git/worktrees/w/HEAD",
 		".gitignore", ".github/workflows/x", "a.git", "sub/.gitattributes", "config", "hooks/x", "info/x", "sub/config"} {
 		if denied(ws + "/" + p) {
 			t.Errorf("%s is denied", p)
@@ -82,5 +84,26 @@ func TestTheGitDenyListMatchesWhatItIsFor(t *testing.T) {
 	}
 	if got := regexQuote("/a.b[c]/d+e"); got != `/a\.b\[c\]/d\+e` {
 		t.Errorf("regexQuote = %q", got)
+	}
+	if got := regexQuote(`/a"b\c`); got != `/a\"b\\c` {
+		t.Errorf("regexQuote of a quote and a backslash = %q", got)
+	}
+}
+
+// TestCheckRefusesAWorkspacePathTheProfileCannotQuote: a double quote or a control character in the workspace path is refused, so the path
+// written into the profile's regular expressions never needs more than regexQuote.
+func TestCheckRefusesAWorkspacePathTheProfileCannotQuote(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	for _, name := range []string{`a"b`, "a\nb", "a\rb"} {
+		ws := filepath.Join(root, name)
+		os.MkdirAll(ws, 0o755)
+		if err := (Config{Workspace: ws, Tack: []string{filepath.Join(root, "elsewhere")}}).Check(); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+	}
+	ws := filepath.Join(root, "fine [x].y")
+	os.MkdirAll(ws, 0o755)
+	if err := (Config{Workspace: ws, Tack: []string{filepath.Join(root, "elsewhere")}}).Check(); err != nil {
+		t.Errorf("brackets and dots: %v", err)
 	}
 }
