@@ -16,6 +16,7 @@ import (
 	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/trust"
 	"github.com/townsendmerino/tack/internal/window"
 )
 
@@ -97,6 +98,7 @@ func coreOptions(cfg *config.Config, name, stateDir string, st *store.Store, hc 
 		}
 	}
 	opts.Sweep, opts.HaltDir = sweepTarget, stateDir
+	opts.Trust = trust.Open(stateDir) // the owner's grants of trust in repositories' own configuration (tack trust)
 	if s, ok := cfg.Servers[name]; ok {
 		opts.Sampling = server.Sampling{Temperature: s.Temperature, TopP: s.TopP, TopK: s.TopK}
 	}

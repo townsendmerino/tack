@@ -41,6 +41,8 @@ func dispatch(args []string, stdout, stderr io.Writer) int {
 		return usageCmd(args[1:], stdout, stderr)
 	case "rewind":
 		return rewindCmd(args[1:], stdout, stderr)
+	case "trust":
+		return trustCmd(args[1:], stdout, stderr)
 	case "shell":
 		// Internal: the child internal/shell.Session starts for each bash command. It reads its request on stdin and
 		// writes its reply to fd 3; it is not for people.
@@ -73,6 +75,7 @@ func usage(w io.Writer) {
                                   the usage table: requests and tokens by day and model server
   tack rewind [-yes [-no-undo]] <session> [seq]
                                   list a session's checkpoints, or put the files back as they were at one
+  tack trust [-yes DIGEST] [path] show a repository's .tack/config.toml and its digest; -yes DIGEST trusts that file
   tack version
 `)
 }

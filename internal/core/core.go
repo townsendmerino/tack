@@ -31,6 +31,7 @@ import (
 	"github.com/townsendmerino/tack/internal/snapshot"
 	"github.com/townsendmerino/tack/internal/store"
 	"github.com/townsendmerino/tack/internal/tools"
+	"github.com/townsendmerino/tack/internal/trust"
 	"github.com/townsendmerino/tack/internal/window"
 )
 
@@ -44,6 +45,10 @@ type Options struct {
 	// ClientToken is the daemon's client token (internal/daemon). A connection that presents it at initialize is
 	// privileged; a wrong token is refused. Empty means there is no token, and any token presented is wrong.
 	ClientToken string
+	// Trust is the owner's grants of trust in repositories' own configuration (internal/trust). A session starting in a
+	// repository whose .tack/config.toml the owner trusted applies it; with none, no repository configuration is ever
+	// applied and workspace/trust is refused.
+	Trust *trust.Store
 	// Shutdown, when set, is what a privileged daemon/shutdown asks for: the daemon drains (Drain) and exits. It is called
 	// once, after the request is answered, and must not block. Without it, daemon/shutdown is refused: no daemon hosts
 	// this Core.
@@ -691,6 +696,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, unprivileged(req.Method)
 		}
 		return c.fork(p)
+	case proto.MethodWorkspaceTrust:
+		p, perr := params[proto.WorkspaceTrustParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		return c.trustWorkspace(p)
 	case proto.MethodWorkspaceComplete:
 		p, perr := params[proto.WorkspaceCompleteParams](req)
 		if perr != nil {
@@ -856,6 +870,7 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			return nil, fmt.Errorf("summary_retrieve's index: %w", err)
 		}
 	}
+	repoEnv, repoEv, repoNotice := c.repoConfig(ws.Root()) // the repository's own configuration, when the owner trusts it
 	prompted := slices.ContainsFunc(history, func(ev proto.Event) bool { return ev.Type == proto.EvUserMessage })
 	s := &session{id: id, root: ws.Root(), log: log, subs: map[*subscriber]bool{}, target: sandbox.Target{Mark: sandbox.NewMark("s"), Since: time.Now()},
 		prompted: prompted}
@@ -893,6 +908,9 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 			CurrentSymbol: c.currentSymbol(ws.Root(), symbols), EditTolerances: c.opt.EditTolerances, LeanResults: c.opt.LeanResults,
 			RecentlyChanged: c.opt.RecentlyChanged, FindRelated: c.opt.FindRelated}
 		cfg.Tools = tools.New(to)
+		if kit.Engine != nil {
+			kit.Engine.EnvExtra = repoEnv // the extra variables the owner trusted the repository to add to its commands
+		}
 		cfg.Perms, cfg.Mode, cfg.EditTask = kit.Engine, created.Mode, c.opt.EditTask
 		cfg.BuildAfterEdit, cfg.Shell = c.opt.BuildAfterEdit, kit.Shell
 		s.kit = kit.Close
@@ -910,6 +928,18 @@ func (c *Core) open(id proto.SessionID, log *store.Log, ws *tools.Workspace, cre
 		cfg.Tools = tools.New(to)
 	}
 	var notices []string // the scan's warnings about what loads into the first prompt (window.ScanNotice), "" for a clean file
+	if history == nil {
+		notices = append(notices, repoNotice)
+		if repoEv != nil { // a reopened session's log has it already
+			if _, err := log.Append(proto.EvRepoTrusted, 0, *repoEv); err != nil {
+				c.unregister(id)
+				if s.kit != nil {
+					s.kit()
+				}
+				return nil, err
+			}
+		}
+	}
 	switch {
 	case prompted: // the instructions joined the first prompt, which the log holds
 	case c.opt.WholeInstructions && c.opt.InstructionsHead:

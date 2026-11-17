@@ -59,7 +59,7 @@ var tackLayers = map[string]allow{
 			"internal/eval/mine", "internal/eval/pilot", "internal/halt", "internal/kensearch", "internal/loop",
 			"internal/models", "internal/perms", "internal/proto", "internal/sandbox", "internal/serve",
 			"internal/server", "internal/server/cassette", "internal/server/goinfer", "internal/shell",
-			"internal/snapshot", "internal/store", "internal/tools", "internal/tui", "internal/usage",
+			"internal/snapshot", "internal/store", "internal/tools", "internal/trust", "internal/tui", "internal/usage",
 			"internal/window", "tools/gate"},
 		Tests: []string{"internal/kenrun", "internal/server/goinfer/goinfertest"},
 	},
@@ -68,7 +68,7 @@ var tackLayers = map[string]allow{
 	"internal/core": {
 		Imports: []string{"internal/halt", "internal/loop", "internal/models", "internal/perms", "internal/proto",
 			"internal/sandbox", "internal/server", "internal/snapshot", "internal/store", "internal/tools",
-			"internal/usage", "internal/window"},
+			"internal/trust", "internal/usage", "internal/window"},
 		Tests: []string{"internal/eval/pilot", "internal/server/goinfer/goinfertest", "internal/shell"},
 	},
 	"internal/daemon": {
@@ -145,6 +145,7 @@ var tackLayers = map[string]allow{
 	"internal/tools": {
 		Imports: []string{"internal/perms", "internal/server", "internal/shell"},
 	},
+	"internal/trust": {},
 	"internal/tui": {
 		Imports: []string{"internal/proto"},
 		Tests:   []string{"proto/fixtures"},

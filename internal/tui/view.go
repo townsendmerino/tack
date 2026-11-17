@@ -160,6 +160,8 @@ func (v *View) Apply(ev proto.Event) {
 		}
 	case proto.Rewind:
 		v.note(fmt.Sprintf("↺ rewound %d paths to the checkpoint at %d", e.Changed, e.To))
+	case proto.RepoTrusted:
+		v.note("— you trust this repository: its " + strings.Join(e.Trusted, ", ") + " is applied —")
 	case proto.Compaction:
 		s := fmt.Sprintf("— compacted at %s/%s: %d results masked", kilo(e.Prompt), kilo(e.Window), len(e.Masked))
 		if len(e.Summarized) > 0 {

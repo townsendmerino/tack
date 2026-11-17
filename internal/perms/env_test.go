@@ -2,6 +2,7 @@ package perms
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,17 @@ func TestInheritedEnv(t *testing.T) {
 	}
 	if got := InheritedEnv("EDITOR", []string{"EDITOR"}); got != "vim" {
 		t.Errorf("EDITOR added by a repository inherited as %q", got)
+	}
+}
+
+func TestCheckExtraEnv(t *testing.T) {
+	if err := CheckExtraEnv([]string{"CI", "FEATURE_FLAGS"}); err != nil {
+		t.Errorf("ordinary names: %v", err)
+	}
+	for _, n := range []string{"GH_TOKEN", "my_api_key", "DB_PASSWORD", "AWS_SECRET_ACCESS_KEY"} {
+		if err := CheckExtraEnv([]string{"CI", n}); err == nil || !strings.Contains(err.Error(), n) {
+			t.Errorf("%s: %v", n, err)
+		}
 	}
 }
 

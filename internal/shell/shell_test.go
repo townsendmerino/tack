@@ -830,6 +830,25 @@ func TestCommandsGetAShortEnvironment(t *testing.T) {
 	}
 }
 
+// TestEnvExtraNamesReachCommands: the variables a trusted repository's configuration adds (Engine.EnvExtra) reach its
+// commands, and a name like a secret does not, even named there.
+func TestEnvExtraNamesReachCommands(t *testing.T) {
+	t.Setenv("MY_FLAG", "on")
+	t.Setenv("DEPLOY_TOKEN", "tok_secret")
+	t.Setenv("NOT_ADDED", "off")
+	s := session(t, false)
+	s.Engine.EnvExtra = []string{"MY_FLAG", "DEPLOY_TOKEN"}
+	r := runOK(t, s, "/usr/bin/env; echo \"shell:$MY_FLAG:$NOT_ADDED:$DEPLOY_TOKEN:\"")
+	if !strings.Contains(r.Output, "MY_FLAG=on\n") || !strings.Contains(r.Output, "shell:on::") {
+		t.Errorf("an added variable did not reach the command:\n%s", r.Output)
+	}
+	for _, v := range []string{"NOT_ADDED=", "DEPLOY_TOKEN=", "tok_secret"} {
+		if strings.Contains(r.Output, v) {
+			t.Errorf("%s reached the command:\n%s", v, r.Output)
+		}
+	}
+}
+
 // TestCommandsNeverSeeAProxyCredential: a GOPROXY that carries user:token@ userinfo is dropped from the commands'
 // environment, and a plain one passes.
 func TestCommandsNeverSeeAProxyCredential(t *testing.T) {
