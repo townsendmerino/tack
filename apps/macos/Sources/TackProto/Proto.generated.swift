@@ -92,10 +92,12 @@ public struct Checkpoint: Codable, Equatable, Sendable {
 public struct ClientInfo: Codable, Equatable, Sendable {
     public var name: String
     public var version: String
+    public var attended: Bool?
 
     enum CodingKeys: String, CodingKey {
         case name = "name"
         case version = "version"
+        case attended = "attended"
     }
 }
 

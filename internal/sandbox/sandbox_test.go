@@ -437,8 +437,8 @@ func TestClientTokenIsOutOfReach(t *testing.T) {
 	if out := f.run(nil, script); !strings.Contains(out, mark) {
 		t.Fatalf("with no sandbox the token was not read, so this test cannot see it: %q", out)
 	}
-	if out := f.run(&f.cfg, script); strings.Contains(out, mark) || strings.Contains(out, "client.token") {
-		t.Errorf("the profile let a command read or list the client token: %q", out)
+	if out := f.run(&f.cfg, script); strings.Contains(out, mark) || !strings.Contains(out, "Operation not permitted") {
+		t.Errorf("the profile let a command read the client token, or it was not stopped by the kernel's refusal (the error names the path, so the path is not what is checked): %q", out)
 	}
 	open := f.cfg
 	open.Read = append(slices.Clone(f.cfg.Read), f.home, f.state)

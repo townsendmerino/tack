@@ -82,10 +82,10 @@ func (a approver) Approve(ctx context.Context, req proto.PermissionRequested) (l
 	}
 }
 
-// watched says whether a privileged client is subscribed to the session. The caller holds s.mu.
+// watched says whether an attended, privileged client is subscribed to the session: one a person can answer through. The caller holds s.mu.
 func (s *session) watched() bool {
 	for sub := range s.subs {
-		if sub.conn.privileged {
+		if sub.conn.privileged && sub.conn.attended {
 			return true
 		}
 	}

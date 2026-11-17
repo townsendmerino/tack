@@ -319,13 +319,3 @@ func (f *fixture) unprivileged(t *testing.T) *Client {
 	}
 	return cl
 }
-
-// storeEvents are the session's persisted events, for a test that has no subscriber to read them from.
-func (f *fixture) storeEvents(t *testing.T, id proto.SessionID) []proto.Event {
-	t.Helper()
-	evs, err := f.core.opt.Store.Events(id, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return evs
-}

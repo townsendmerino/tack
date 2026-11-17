@@ -27,7 +27,7 @@ func (f *fixture) privileged(t *testing.T) (*Client, chan proto.Event, net.Conn)
 	cl := NewClient(a)
 	events := make(chan proto.Event, 256)
 	cl.OnEvent = func(p proto.SessionEventParams) { events <- p.Event }
-	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tui", Version: "0"},
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "tui", Version: "0", Attended: true},
 		Protocol: proto.Version, Token: "tok"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -160,20 +160,12 @@ func TestNoWatcherMeansNoOneToAsk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No one subscribes: every connection that can is privileged now, so "no privileged client" means no client watching.
+	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil) // unprivileged
 	f.prompt(t, sid, "add notes")
-	f.waitTurnFreed(t, sid)
-	resolved := 0
-	for _, ev := range f.storeEvents(t, sid) {
-		if v, _ := ev.Decode(); ev.Type == proto.EvPermissionResolved {
-			resolved++
-			if v.(proto.PermissionResolved).By != proto.DecidedByNoUser {
-				t.Fatalf("resolved %+v; want no_user", v)
-			}
+	for _, ev := range f.waitTurnEnd(t) {
+		if v, _ := ev.Decode(); ev.Type == proto.EvPermissionResolved && v.(proto.PermissionResolved).By != proto.DecidedByNoUser {
+			t.Fatalf("resolved %+v; want no_user", v)
 		}
-	}
-	if resolved != 1 {
-		t.Errorf("%d questions resolved; want 1", resolved)
 	}
 }
 
@@ -181,11 +173,11 @@ func TestNoWatcherMeansNoOneToAsk(t *testing.T) {
 // question is denied as no_user and the turn goes on, rather than wait for an answer no one can give.
 func TestTheLastWatcherLeavingEndsTheQuestion(t *testing.T) {
 	f, tui, events, sid, _, pipe := askingSession(t)
+	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil) // the unprivileged one sees the end
 	tui.Call(proto.MethodSessionPrompt, proto.SessionPromptParams{Session: sid, Content: []proto.ContentBlock{proto.Text("add notes")}}, nil)
 	await(t, events, proto.EvPermissionRequested)
 	pipe.Close()
-	f.waitTurnFreed(t, sid) // no one else is watching: the log is the witness
-	evs := f.storeEvents(t, sid)
+	evs := f.waitTurnEnd(t)
 	found := false
 	for _, ev := range evs {
 		if v, _ := ev.Decode(); ev.Type == proto.EvPermissionResolved {

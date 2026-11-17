@@ -83,7 +83,7 @@ func tuiCmd(flagMode string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitUsage
 	}
-	c, err := daemon.Dial(stateDir, cliClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
+	c, err := daemon.Dial(stateDir, tuiClient, spawner(path, stateDir), spawnWaitFor(stateDir, cfg.Daemon.ShutdownGrace.Duration))
 	if err != nil {
 		fmt.Fprintln(stderr, "tack:", err)
 		return exitError

@@ -12,6 +12,7 @@ import (
 	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/sandbox"
+	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
 	"github.com/townsendmerino/tack/internal/store"
 )
 
@@ -154,4 +155,41 @@ func errCode(err error) int {
 		return pe.Code
 	}
 	return 0
+}
+
+// TestOnlyAnAttendedPrivilegedClientIsAWatcher: a client that presents the token but does not say a person is at it (tack run, in
+// process or through the daemon) is not someone a question can wait for: it is denied at once as no_user, as it was when such a client
+// was unprivileged. Only a client that is both privileged and attended holds a question open. A connection with no token cannot claim
+// to be attended.
+func TestOnlyAnAttendedPrivilegedClientIsAWatcher(t *testing.T) {
+	f := newFixture(t, goinfertest.Calls("", "w1", "write", `{"path":"AGENTS.md","content":"x\n"}`), goinfertest.Says("done"))
+	f.core.opt.Edit = func(root string, _ sandbox.Target) (EditKit, error) {
+		return EditKit{Shell: noShell{}, Engine: &perms.Engine{Root: root, Sandboxed: true}}, nil
+	}
+	sid, err := f.sessionIn(t, gitWorkspace(t, ""), proto.ModeAuto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// f.client has the token and no attendant: subscribed, it is not a watcher, so the question ends at once.
+	f.client.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil)
+	f.prompt(t, sid, "add notes")
+	for _, ev := range f.waitTurnEnd(t) {
+		if v, _ := ev.Decode(); ev.Type == proto.EvPermissionResolved && v.(proto.PermissionResolved).By != proto.DecidedByNoUser {
+			t.Fatalf("resolved %+v; want no_user", v)
+		}
+	}
+	// A connection without the token claiming to be attended is neither.
+	a, b := net.Pipe()
+	t.Cleanup(func() { a.Close() })
+	go f.core.Serve(f.core.ctx, b)
+	cl := NewClient(a)
+	if err := cl.Call(proto.MethodInitialize, proto.InitializeParams{Client: proto.ClientInfo{Name: "x", Version: "0", Attended: true}, Protocol: proto.Version}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cn := &conn{}
+	p, _ := json.Marshal(proto.InitializeParams{Client: proto.ClientInfo{Name: "x", Version: "0", Attended: true}, Protocol: proto.Version})
+	f.core.dispatch(cn, proto.Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: proto.MethodInitialize, Params: p})
+	if cn.privileged || cn.attended {
+		t.Errorf("a connection with no token: privileged %v, attended %v", cn.privileged, cn.attended)
+	}
 }
