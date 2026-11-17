@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
@@ -44,7 +45,44 @@ type Rule struct {
 	Args    []string // the leading arguments, literal
 }
 
-func (r Rule) String() string { return strings.TrimSpace(r.Program + " " + strings.Join(r.Args, " ")) }
+// String writes the rule as a command that ParseRule reads back as the same rule: each word is quoted unless it is plainly safe, so an empty
+// argument, a space, a word with a space, a "#", a glob or a quote is not lost, merged or turned into a comment. Rules travel as text (to the
+// shell child, into permission.resolved), so a rule that read back as another would be another rule.
+func (r Rule) String() string {
+	words := make([]string, 0, 1+len(r.Args))
+	words = append(words, quoteWord(r.Program, true))
+	for _, a := range r.Args {
+		words = append(words, quoteWord(a, false))
+	}
+	return strings.Join(words, " ")
+}
+
+// quoteWord is w as one shell word that reads back, through ParseRule, as w and nothing else: unquoted only when every byte is plainly
+// safe, otherwise in single quotes, with each single quote inside as '"'"' (a double-quoted quote). A first word with "=" is quoted so
+// it is never an assignment.
+func quoteWord(w string, first bool) string {
+	safe := w != ""
+	for i := 0; i < len(w) && safe; i++ {
+		c := w[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-', c == '.', c == '/', c == ',', c == ':', c == '+', c == '@', c == '%':
+		case c == '=' && !first:
+		default:
+			safe = false
+		}
+	}
+	if safe {
+		return w
+	}
+	return "'" + strings.ReplaceAll(w, "'", `'"'"'`) + "'"
+}
+
+// readsBack reports whether r, written by String, is read back by ParseRule as r. Every rule String writes is meant to; this is the check
+// that a rule is only used if it does.
+func (r Rule) readsBack() bool {
+	got, err := ParseRule(r.String())
+	return err == nil && got.Program == r.Program && slices.Equal(got.Args, r.Args)
+}
 
 // ParseRule reads a rule written as a command: a program and its leading arguments, all literal.
 func ParseRule(s string) (Rule, error) {
@@ -56,7 +94,8 @@ func ParseRule(s string) (Rule, error) {
 		return Rule{}, fmt.Errorf("perms: rule %q must be one simple command", s)
 	}
 	call, ok := f.Stmts[0].Cmd.(*syntax.CallExpr)
-	if !ok || len(call.Args) == 0 || len(call.Assigns) > 0 || len(f.Stmts[0].Redirs) > 0 {
+	if !ok || len(call.Args) == 0 || len(call.Assigns) > 0 || len(f.Stmts[0].Redirs) > 0 ||
+		f.Stmts[0].Background || f.Stmts[0].Negated || f.Stmts[0].Coprocess {
 		return Rule{}, fmt.Errorf("perms: rule %q must be a program and its leading arguments", s)
 	}
 	var r Rule
@@ -191,7 +230,6 @@ func (e *Engine) Decide(mode proto.Mode, tool string, readOnly bool, input json.
 // permission.resolved. For bash, each simple command becomes a rule: its resolved program and, when literal, its first
 // argument (approving "go vet ./..." for the session allows "go vet"). For another tool, the tool itself is allowed.
 func (e *Engine) AllowForSession(tool string, parsed []Simple) []string {
-	var added []string
 	if tool != "bash" {
 		if e.tools == nil {
 			e.tools = map[string]bool{}
@@ -199,6 +237,23 @@ func (e *Engine) AllowForSession(tool string, parsed []Simple) []string {
 		e.tools[tool] = true
 		return []string{"tool " + tool}
 	}
+	var added []string
+	for _, r := range SessionRules(tool, parsed) {
+		e.Rules = append(e.Rules, r)
+		added = append(added, r.String())
+	}
+	return added
+}
+
+// SessionRules is the rules AllowForSession would add for a call, without adding any: for bash, each simple command's resolved
+// program and, when literal, its first argument; none for a builtin, and none for a tool other than bash, whose session allow
+// is the tool itself and has no rule to show or narrow. It is what the user is shown before he allows for the session, and what an
+// edited rule is held to (Narrowing).
+func SessionRules(tool string, parsed []Simple) []Rule {
+	if tool != "bash" {
+		return nil
+	}
+	var rules []Rule
 	for _, c := range parsed {
 		if c.Builtin != "" || c.Program == "" {
 			continue
@@ -210,8 +265,35 @@ func (e *Engine) AllowForSession(tool string, parsed []Simple) []string {
 			}
 			r.Args = []string{c.Args[0]}
 		}
-		e.Rules = append(e.Rules, r)
-		added = append(added, r.String())
+		if !r.readsBack() { // a rule that would be read as another is not offered or added: the command keeps asking
+			continue
+		}
+		rules = append(rules, r)
 	}
-	return added
+	return rules
+}
+
+// AddRule allows what r covers for the rest of the session. The caller has checked it (Narrowing): the engine adds what it is given.
+func (e *Engine) AddRule(r Rule) { e.Rules = append(e.Rules, r) }
+
+// Narrowing reads edited, a rule the user wrote in place of the shown ones, and returns it only when it is no wider than one of
+// them: the same program, written exactly as shown, and the shown arguments first, then any more. A rule matches a command that
+// starts with its program and arguments, so each argument added can only make it match fewer. Anything else is an error and nothing
+// is added: a different or differently written program, fewer arguments, a changed one, and anything that is not one literal simple
+// command (a list, a pipe, a substitution, a variable, a glob, an assignment, a redirect). shown must come from the daemon's own
+// parse of the call (SessionRules), never from a client.
+func Narrowing(shown []Rule, edited string) (Rule, error) {
+	e, err := ParseRule(strings.TrimSpace(edited))
+	if err != nil {
+		return Rule{}, err
+	}
+	if !e.readsBack() { // what is held and shown must be what was typed: a rule that reads back as another is refused
+		return Rule{}, fmt.Errorf("perms: rule %q does not read back as the rule it was written as", edited)
+	}
+	for _, s := range shown {
+		if e.Program == s.Program && len(e.Args) >= len(s.Args) && slices.Equal(e.Args[:len(s.Args)], s.Args) {
+			return e, nil
+		}
+	}
+	return Rule{}, fmt.Errorf("perms: rule %q is not a narrowing of what was shown: keep a shown program and its arguments, and add literal arguments after them", edited)
 }

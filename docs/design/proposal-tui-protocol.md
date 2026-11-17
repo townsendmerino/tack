@@ -34,8 +34,14 @@ one: p1s5 called the approval `session/approve`, and it is `permission/respond` 
     program and first argument (`perms.Engine.AllowForSession`), or over the tool itself for a tool other than bash.
   - `note` is optional. On a deny, it reaches the model inside the refused tool result ("not run: the user declined:
     <note>"), so the model can change course. It is content, so it grants nothing.
-  - `rule` is reserved for the TUI's "edit the rule" key (DESIGN §10). It is refused (invalid params) until it is
-    built, since an edited rule needs a check that it is no wider than what was shown.
+  - `rule` is the TUI's "edit the rule" key (DESIGN §10), **built 2026-11-17** (owner: narrowing only). The question lists
+    the rules allowing for the session would add (`permission.requested`'s `rules`, from the daemon's own parse of the call).
+    An edit keeps one of them (the same program, written as shown, and its arguments) and adds literal arguments after, which
+    can only make it match fewer commands. The daemon checks it twice, in `core.respond` against the rules it put in the question
+    and in `loop.permit` against its own parse again, never against anything the client says it was shown; one that is not a
+    narrowing is invalid params and leaves the question open. It goes with decision `allow` and scope `session`, adds that rule
+    alone (not the unedited ones), and is the resolution's `rule_added`. One rule per question; a tool other than bash has no rule
+    to edit.
 - **Response:** `{}`. The answer's truth is the `permission.resolved` event it causes.
   - A second answer, from another client or a late one, to an `id` already resolved gets a new error code,
     `not_pending` (-32006).
