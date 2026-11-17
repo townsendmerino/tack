@@ -654,6 +654,62 @@ tool-use smoke set compares this merged set against the split one before it is f
       recorded, and the ceiling is read each time.
 - **The sandbox is the boundary; rules only decide when to ask.** An allow rule skips the question, nothing more.
   Allowing `go test` allows whatever the tests and `-exec` run — inside the sandbox.
+  - **A rule is the same rule written down and read back** (security review, 2026-11-17). Rules travel as text (to the shell
+    child, into `permission.resolved`), so `Rule.String` quotes every word that is not plainly safe, and what it writes reads
+    back, through `ParseRule`, as the rule it wrote. Before, an argument that was empty, a space, a `#`, a word with a space or
+    a glob was lost or merged on the way, so allowing `go '' build` for the session gave the child a rule for `go` with any
+    arguments. A rule that would not read back is not added: the command keeps asking.
+  - **What a rule may cover: an allowlist of invocations** (owner, 2026-11-17, from a security review). A rule matches a program
+    and its leading arguments, so `go test` and `git status` matched anything after: `go test -ldflags='-extld=./evil'` made
+    the linker run a program, and `git grep -O id`, `git difftool -x id`, `git bisect run id` ran one. No list of dangerous
+    flags is ever complete, so for `go`, `git` and `find` a rule covers an invocation only if every subcommand and flag of it is
+    one known not to run a program or change configuration (`perms.UnsafeInvocation`, `internal/perms/safe.go`). Anything else
+    is not covered and asks; the user can still allow it once. The same function decides at approval and, after expansion, at
+    run time for a command a rule approved. What passes:
+    - **`go`:** `build`, `test`, `vet`, `run`, `list`, `version`, and `env` to read; their flags from a list of those that
+      neither run a program nor reach outside (not `-exec`, `-toolexec`, `-vettool`, `-overlay`, `-C`, `-modfile`, `-pkgdir`,
+      `-gccgoflags`). `-ldflags`, `-gcflags` and `-asmflags` are read word by word and pass only when every word is on a short
+      list (`-s`, `-w`, `-X name=value`, `-N`, `-l`, `-m`, `-D`, `-I` and the like); `-extld`, `-extldflags`, `-r`, `-toolexec`
+      and anything else ask. `go env -w` and `-u` ask under any rule, since they persist into later runs; `go generate`,
+      `install`, `get`, `mod`, `clean`, `fmt`, `work` and `tool` ask. After `-args` (test) or the first package (run) the
+      rest is the program's, not go's. `GOFLAGS` set in the command still asks, whatever it holds.
+    - **`git`:** the read-only commands (`status`, `diff`, `log`, `show`, `blame`, `grep`, `rev-parse`, `rev-list`, `ls-files`,
+      `describe` and their kind), `branch` and `tag` to list, `remote -v` and `show`, `stash list` and `show`, and `config`
+      only to read (`--get`, `--list`), each with its display and selection flags. Not `-c`, `-C`, `--exec-path`, `--ext-diff`,
+      `--textconv`, `grep -O`, `--output`, any `git config` write, `difftool`, `bisect`, `submodule`, `filter-branch`, or a
+      command that writes (`reset`, `commit`, `checkout`, `add`, `branch <name>`, `stash`, `tag <name>`). A write to config can
+      run a program later (`core.fsmonitor`, `alias.x '!…'`), so none is ever covered.
+    - **`find`:** the tests and the print actions; not `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fls`.
+    - **What `go` and `git` read besides their arguments** (security review of the allowlist). Arguments are not the only
+      input, so a rule for `go` or `git` also covers only a command that:
+      - sets no variable outside `GOOS`, `GOARCH`, `CGO_ENABLED` and `NO_COLOR` (`perms.RuleEnvOK`), by a prefix, `export`,
+        `declare`, `read`, `printf -v`, a `for` variable, `${V:=…}`, or an earlier command in the session. `GOROOT`,
+        `PKG_CONFIG`, `CGO_*FLAGS`, `HOME`, `XDG_CONFIG_HOME`, `GIT_DIR` and `GIT_WORK_TREE` ask. At run time a rule-approved
+        `go` or `git` is stopped if an exported variable outside that list differs from tack's own environment.
+      - runs `git` only where git finds the workspace's own repository. Discovery is not re-implemented: `perms.GitFindsOwnersRepo`
+        asks git (`rev-parse --absolute-git-dir`, with a minimal environment: no `GIT_*`, an empty `HOME`, no system or global
+        config, a ceiling above the root) from the command's directory and from the root, and the answers must be the same, with a
+        `.git` of the root's own that is not a symlink. A bare-shaped directory with a `config` (`HEAD`, `objects/`, `refs/`, which
+        the file tools do not refuse), a gitfile whose `gitdir:` names a directory a model wrote, a symlinked `.git`, a
+        `commondir`, or a `.git` git cannot read all make it differ or fail, and git is then not covered. Done at approval and at
+        run time. Chosen over `-c safe.bareRepository=explicit` (changes the approved argv) and a file-tool refusal (cannot
+        tell such a `config` from any other). A linked worktree works, since the root's own answer is the reference.
+      - makes no `.git` entry: `mkdir`, `mv`, `cp`, `ln`, `touch`, `tee`, `sed`, `rm` and the like naming a path with a `.git`
+        segment in any letter case, and any redirection to one, ask in every mode (`PathAsks`), so a covered writer cannot make
+        the gitfile or config the previous item is about.
+      - `env` in front of `go` or `git` is held to the same list: its flags and every variable it sets.
+      - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
+        `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment, and not through a symlink that leads out of the tree or into `.git`.
+      - names a git flag's value as git does: `--abbrev newname` is the flag and a name, so `branch` and `tag` read a bare
+        word after a value flag as a name to create.
+
+      Also not covered: `go run module@version` fetches and runs remote code, so a rule does not
+      cover it and it asks; `git ls-remote
+      evil::x` runs `git-remote-evil` from `PATH`, and `ls-remote`, `fetch`, `clone` and the other remote commands are not on
+      the list, so they ask.
+    - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
+      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
+      `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
   - Each sandbox capability is Deny, Ask or Allow. Ask is blocked by the kernel profile like Deny, until an approval
@@ -696,6 +752,13 @@ tool-use smoke set compares this merged set against the split one before it is f
   - **The rule (2026-11-02): when the parse cannot see exactly what will run, it asks, in every mode.** It does not read
     code inside text, or guess. These all ask:
     - `eval`, `trap`, `source` and `.`, and a program name that expands;
+    - **a word bash decodes before it runs** (security review, 2026-11-17): the analyzer reads each word as written, so a word
+      whose text bash changes is not a word it can match. A backslash escape (unquoted, or inside double quotes), a `$'…'` or
+      `$"…"` string, brace expansion (`-e{x,x}ec`), and a carriage return anywhere in the command (the parser drops or splits on
+      it, bash keeps it) are not literal: no rule covers them and no flag check trusts them, so `find . \-exec id ';'` and
+      `go test $'\x2dexec' id` ask even where `find .` or `go test` is allowed. Single-quoted text is raw in bash, backslashes
+      included, and stays literal. Allowing for the session a command whose first argument is such a word adds no rule, rather
+      than a rule for the whole program;
     - a shell handed code in any way, under any wrapper or flags, on a block or subshell around it too: `-c`, `-s`, a script that is stdin (`/dev/stdin`, `/dev/fd/N`,
       `/proc/…/fd/N`, or a symlink to one), and anything fed to it: a pipe (`curl … | sh` too), `<`, a here-document or a
       here-string, even with a named script;
@@ -1430,6 +1493,20 @@ is out: goinfer has no tool-calling template for it (E0 pre-registration, amendm
 - `initialize` — versions and capabilities, and the client token from `client.token` when the client has one. The token
   is checked once and marks the connection as privileged; it never travels in any other method's parameters, so a debug
   log or a fixture recorder cannot capture it.
+  - **Every other method needs a privileged connection** (owner, 2026-11-17, from a security review). The socket is 0600, so a
+    process running as the owner can reach it, a command the model ran among them if the sandbox let it; reaching it must
+    not be enough to open or read a session. The sandbox does not let it (§6.6: tack's socket and state are out of reach,
+    and the macOS escape tests, `TestDaemonSocketIsOutOfReach` and `TestClientTokenIsOutOfReach`, hold it); the daemon no
+    longer relies on that alone. A client that cannot read `client.token` can initialize and do nothing else. `tack run`
+    without the daemon makes a token for its own in-process Core and presents it on its own pipe.
+  - **Privileged is not attended.** A permission question waits only for a client that is privileged and says at `initialize`
+    (`client.attended`) that a person is at it: the TUI, the app. A privileged client that is not attended (`tack run`, in
+    process or through the daemon) is not someone to wait for, so its question is denied at once as `no_user`, as when such a
+    client had no token. Without this a headless `tack run --edit`, now privileged, would wait forever for an answer. Only a
+    privileged connection can claim it.
+  - **Auto needs the owner's confirmation.** `session/new` in `auto` is refused unless it says `confirmed: true`, which the
+    CLI sets only for a start in auto the owner chose (`-mode`, his own config, an edit task he started). This is a marker for
+    the daemon to hold a client to, not a defence against a client that holds the token: the token is the boundary.
 - `workspace/open {root}`, `workspace/trust {root}`, `workspace/list`, `workspace/status` (index warming or ready, file
   count, ken generation); notification `workspace/indexing`. (`workspace/trust` is built: it needs the client token, records
   the grant for the repo's `.tack/config.toml` as it is now, and refuses a file that does not parse; §6.6.)
@@ -1490,7 +1567,9 @@ and small, because tack's session model was drawn close to ACP's.
 
 **Commands**
 
-- `tack` — the TUI, in the current directory's workspace.
+- `tack [-mode plan|ask|edits|auto]` — the TUI, in the current directory's workspace. It starts in the `-mode` given, else
+  `[session] mode` in the owner's own `~/.config/tack/config.toml`, else `plan` (§6.6, "Which mode a session starts in"). A
+  value that is not a mode is a usage error before anything starts.
 - `tack run "<prompt>" [--mode] [--model] [--budget] [--json]` — headless; non-zero exit on failure or a budget trip;
   `--json` streams events.
 - `tack sessions list|show|attach|fork|export`, `tack ctx <session>` (the context ledger), `tack usage [--since]`.
@@ -1502,7 +1581,7 @@ and small, because tack's session model was drawn close to ACP's.
 
 **TUI** (Bubble Tea): the transcript; a multi-line composer where `@` completes files and symbols from ken and `/` runs
 commands; a status line (model and server, a model load in progress such as "loading model on nobara", mode, window fill and its reused share, ken state); toggled panes for the
-inspector, changes and todos. Approvals appear inline with one-key answers: allow, deny, always, edit rule.
+inspector, changes and todos. Approvals appear inline with one-key answers: allow, deny, always, edit rule. The e key opens a one-line editor holding the rule allowing for the session would add (more than one: Tab cycles); Enter sends it, and the daemon holds it to a narrowing of what it listed (§6.6; `permission/respond`'s `rule`).
 
 ---
 
@@ -1987,7 +2066,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
-| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d), Esc to cancel and `@` path completion | — | the TUI's choice of mode (it opens in plan mode), multi-line composer, `/` commands, inspector, changes and todo panes, "edit rule"; `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
+| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d, and e to edit the rule), Esc to cancel and `@` path completion | — | the TUI's choice of mode (it opens in plan mode), multi-line composer, `/` commands, inspector, changes and todo panes; `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
 | clients (§9.4, §11) | generated Swift protocol types | — | `internal/render`, `internal/acp`, the macOS app |
 | evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the full E1 run and the P1 rule |
 

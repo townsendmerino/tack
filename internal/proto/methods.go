@@ -30,6 +30,10 @@ type SessionID string
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// Attended says a person is at this client and can answer a permission question: the TUI, the app. Only a privileged connection
+	// may claim it. A question waits for an attended client that is subscribed and is otherwise denied at once as no_user, so a headless
+	// run (tack run, with a token of its own or the daemon's) never waits for an answer no one will give.
+	Attended bool `json:"attended,omitempty"`
 }
 
 // InitializeParams opens a connection. Token is the daemon's client token, read from client.token in its state directory
@@ -106,11 +110,15 @@ func Stricter(a, b Mode) Mode {
 	return a
 }
 
-// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id.
+// SessionNewParams creates a session. Workspace is a path; Model is a role ("main") or a model id. A session in auto mode is
+// refused unless Confirmed says the owner chose auto knowingly: by the -mode flag, his own config.toml, or an edit task he
+// started. A client sets it only on those paths, never because a repository, a file or a model said so. It is a marker for the
+// daemon to hold the client to, not a defence against one that holds the client token: that token is the boundary (DESIGN §6.6).
 type SessionNewParams struct {
 	Workspace string `json:"workspace"`
 	Model     string `json:"model"`
 	Mode      Mode   `json:"mode"`
+	Confirmed bool   `json:"confirmed,omitempty"`
 }
 
 // SessionNewResult names the new session.
@@ -256,8 +264,10 @@ type UsageSummaryResult struct {
 // Seq is the question's permission.requested event's seq and ID its PermissionRequested.ID (the tool call's id): the
 // seq names the question, since a call can be asked again under the same id. Decision is allow or deny; Scope is once (or
 // empty) or session, which extends an allow to the rest of the session as a rule. Note, on a deny, reaches the model
-// in the refused result; it is content and grants nothing. Rule is reserved for an edited rule and refused until it
-// is built. It needs a privileged connection; the first answer wins, and another gets CodeNotPending.
+// in the refused result; it is content and grants nothing. Rule is an edited rule: with allow and scope session it stands in
+// for the rules allowing for the session would add, and must be no wider than one of PermissionRequested.Rules (perms.Narrowing);
+// anything else is invalid params and leaves the question open. It needs a privileged connection; the first answer wins, and
+// another gets CodeNotPending.
 type PermissionRespondParams struct {
 	Session  SessionID `json:"session"`
 	ID       string    `json:"id"`

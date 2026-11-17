@@ -92,10 +92,12 @@ public struct Checkpoint: Codable, Equatable, Sendable {
 public struct ClientInfo: Codable, Equatable, Sendable {
     public var name: String
     public var version: String
+    public var attended: Bool?
 
     enum CodingKeys: String, CodingKey {
         case name = "name"
         case version = "version"
+        case attended = "attended"
     }
 }
 
@@ -356,6 +358,7 @@ public struct PermissionRequested: Codable, Equatable, Sendable {
     public var command: String?
     public var parsed: [String]?
     public var reasons: [String]
+    public var rules: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -364,6 +367,7 @@ public struct PermissionRequested: Codable, Equatable, Sendable {
         case command = "command"
         case parsed = "parsed"
         case reasons = "reasons"
+        case rules = "rules"
     }
 }
 
@@ -519,11 +523,13 @@ public struct SessionNewParams: Codable, Equatable, Sendable {
     public var workspace: String
     public var model: String
     public var mode: Mode
+    public var confirmed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case workspace = "workspace"
         case model = "model"
         case mode = "mode"
+        case confirmed = "confirmed"
     }
 }
 

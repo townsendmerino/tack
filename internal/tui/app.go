@@ -24,7 +24,7 @@ type SentMsg struct{ Err error }
 // session's events come back as EventMsg through the program's Send.
 type Backend interface {
 	Prompt(text string) error
-	Respond(id string, seq int64, decision, scope string) error
+	Respond(id string, seq int64, decision, scope, rule string) error
 	// Cancel ends the session's running turn (session/cancel); with none running it does nothing and succeeds.
 	Cancel() error
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
@@ -50,7 +50,8 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
-	confirmAuto   bool // the confirmation for moving to auto is open (mode.go)
+	confirmAuto   bool      // the confirmation for moving to auto is open (mode.go)
+	rule          *ruleEdit // the rule editor is open (rule.go)
 	input         []rune
 	width, height int
 	quit          bool
@@ -64,6 +65,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
 	case EventMsg:
 		a.Screen.Apply(proto.Event(m))
+		if _, open := a.Screen.Pending(); !open {
+			a.rule = nil // the question is gone, answered elsewhere or ended: a rule for it would go to nothing
+		}
 	case SentMsg:
 		if m.Err != nil {
 			a.Screen.note("! prompt: " + m.Err.Error())
@@ -113,8 +117,12 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			a.complete.sel = (a.complete.sel + len(a.complete.items) - 1) % len(a.complete.items)
 			return a, nil
-		case tea.KeyTab, tea.KeyEnter:
+		case tea.KeyTab:
 			return a, a.accept()
+		case tea.KeyEnter:
+			if !k.Alt { // Alt+Enter is a new line, whether or not paths are offered
+				return a, a.accept()
+			}
 		case tea.KeyEsc:
 			a.complete.reqID++ // an answer still on its way is for a popup that was closed
 			a.complete.items, a.complete.sel = nil, 0
@@ -129,9 +137,18 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// cancel asks the daemon to end the running turn.
+func (a *App) cancel() tea.Cmd {
+	b := a.Backend
+	return func() tea.Msg { return CancelledMsg{Err: b.Cancel()} }
+}
+
 func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.confirmAuto && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
 		return a, a.confirmKey(k) // the confirmation takes the next key, whatever it is
+	}
+	if a.rule != nil && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
+		return a, a.ruleKey(k) // the editor takes every other key
 	}
 	switch k.Type {
 	case tea.KeyShiftTab:
@@ -141,8 +158,7 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case tea.KeyEsc:
 		// Esc ends the turn, a pending question included (the daemon denies it); the composer keeps its text.
-		b := a.Backend
-		return a, func() tea.Msg { return CancelledMsg{Err: b.Cancel()} }
+		return a, a.cancel()
 	}
 	// While a question is open its keys answer it, and nothing else is typed: a letter the user meant for the composer must
 	// not be taken for an answer after the question has gone, nor one meant as an answer land in the composer.
@@ -156,19 +172,36 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				decision, scope = proto.DecisionAllow, "session"
 			case 'd':
 				decision = proto.DecisionDeny
+			case 'e':
+				a.openRuleEdit()
+				return a, nil
 			}
 		}
 		if decision == "" {
 			return a, nil
 		}
 		b := a.Backend
-		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope)} }
+		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope, "")} }
 	}
 	switch k.Type {
+	case tea.KeyCtrlJ:
+		a.input = append(a.input, '\n')
 	case tea.KeyEnter:
+		if k.Alt {
+			a.input = append(a.input, '\n')
+			break
+		}
 		text := strings.TrimSpace(string(a.input))
 		if text == "" {
 			return a, nil
+		}
+		if strings.HasPrefix(text, "//") {
+			text = text[1:] // a prompt that really starts with a slash
+		} else if cmd, handled, known := a.runSlash(text); handled {
+			if known {
+				a.input = nil
+			}
+			return a, cmd
 		}
 		a.input = nil
 		a.Screen.Scroll = 0
@@ -185,7 +218,15 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeySpace:
 		a.input = append(a.input, ' ')
 	case tea.KeyRunes:
-		for _, r := range k.Runes {
+		runes := k.Runes
+		if k.Paste { // a paste keeps its lines: CRLF and CR are one newline each, and every other control is still dropped
+			runes = []rune(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(runes)))
+		}
+		for _, r := range runes {
+			if k.Paste && r == '\n' {
+				a.input = append(a.input, r)
+				continue
+			}
 			if !hiddenRune(r) && r != utf8.RuneError && r >= 0x20 && r != 0x7f && (r < 0x80 || r > 0x9f) {
 				a.input = append(a.input, r)
 			}
@@ -203,20 +244,47 @@ func (a *App) Frame() string {
 	if a.height < 2 {
 		return a.Screen.Render(a.width, a.height)
 	}
-	line := "> " + string(a.input)
-	for runewidth.StringWidth(line) > a.width-1 {
-		_, n := utf8.DecodeRuneInString(line)
-		line = line[n:]
+	composer := a.composerRows()
+	rows := append(append(a.confirmRows(), a.ruleRows()...), a.popup()...)
+	avail := a.height - len(composer)
+	if len(rows) > avail-2 { // the popup never takes the screen: the transcript keeps at least two rows
+		rows = rows[:max(avail-2, 0)]
 	}
-	rows := append(a.confirmRows(), a.popup()...)
-	if len(rows) > a.height-3 { // the popup never takes the screen: the transcript keeps at least two rows
-		rows = rows[:max(a.height-3, 0)]
-	}
-	body := a.Screen.Render(a.width, a.height-1-len(rows))
+	body := a.Screen.Render(a.width, avail-len(rows))
 	for _, r := range rows {
 		body += "\n" + r
 	}
-	return body + "\n" + line + "▏"
+	return body + "\n" + strings.Join(composer, "\n")
+}
+
+// maxComposerRows is the most lines the composer shows; the last ones, when it holds more.
+const maxComposerRows = 5
+
+// composerRows draws the composer's last lines: "> " before the first line of the text and two spaces before the rest, each
+// cut from its left to fit the width, with the cursor mark after the last. It leaves the transcript at least one row.
+func (a *App) composerRows() []string {
+	lines := strings.Split(string(a.input), "\n")
+	n := min(len(lines), maxComposerRows, max(a.height-1, 1))
+	first := len(lines) - n
+	out := make([]string, 0, n)
+	for i := first; i < len(lines); i++ {
+		line, room := "  "+lines[i], a.width
+		if i == 0 {
+			line = "> " + lines[i]
+		}
+		if i == len(lines)-1 {
+			room-- // the cursor mark
+		}
+		for runewidth.StringWidth(line) > room {
+			_, w := utf8.DecodeRuneInString(line)
+			line = line[w:]
+		}
+		if i == len(lines)-1 {
+			line += "▏"
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // View renders Frame; it is the tea.Model method.

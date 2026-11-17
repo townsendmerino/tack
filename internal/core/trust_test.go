@@ -165,7 +165,7 @@ func TestWorkspaceTrust(t *testing.T) {
 	os.WriteFile(filepath.Join(ws, trust.ConfigPath), []byte(repoConfigWithEnv), 0o644)
 
 	var pe *proto.Error
-	if err := f.client.Call(proto.MethodWorkspaceTrust, proto.WorkspaceTrustParams{Root: ws}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+	if err := f.unprivileged(t).Call(proto.MethodWorkspaceTrust, proto.WorkspaceTrustParams{Root: ws}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Fatalf("without the token: %v; want unauthorized", err)
 	}
 	if _, ok, _ := st.Lookup(ws); ok {

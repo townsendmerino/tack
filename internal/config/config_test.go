@@ -351,3 +351,24 @@ func TestAnOpenAIServer(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionModeIsTheOwnersDefault: [session] mode is one of the four modes and is validated at load; an unset one is empty (the
+// caller's plan default), and a value that is not a mode, or a mistyped key, fails loudly.
+func TestSessionModeIsTheOwnersDefault(t *testing.T) {
+	const server = "main = \"m\"\n[servers.m]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nmodel = \"q\"\n"
+	c, err := load(t, server)
+	if err != nil || c.Session.Mode != "" {
+		t.Fatalf("unset: %q, %v", c.Session.Mode, err)
+	}
+	for _, m := range []string{"plan", "ask", "edits", "auto"} {
+		c, err := load(t, server+"[session]\nmode = \""+m+"\"\n")
+		if err != nil || c.Session.Mode != m {
+			t.Errorf("%s: %q, %v", m, c.Session.Mode, err)
+		}
+	}
+	for _, bad := range []string{"[session]\nmode = \"yolo\"\n", "[session]\nmode = \"\"\n", "[session]\nmod = \"auto\"\n", "[session]\nmax_mode = \"ask\"\n"} {
+		if _, err := load(t, server+bad); err == nil {
+			t.Errorf("%q loaded", bad)
+		}
+	}
+}

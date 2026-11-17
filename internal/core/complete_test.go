@@ -44,7 +44,7 @@ func TestCompleteThroughTheCore(t *testing.T) {
 		}
 	}
 	var pe *proto.Error
-	if err := f.client.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: sid, Query: "x"}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
+	if err := f.unprivileged(t).Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: sid, Query: "x"}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeUnauthorized {
 		t.Errorf("without the token: %v; want unauthorized", err)
 	}
 	if err := tui.Call(proto.MethodWorkspaceComplete, proto.WorkspaceCompleteParams{Session: "s_01JAMISSING000000000000000", Query: "x"}, nil); err == nil {
