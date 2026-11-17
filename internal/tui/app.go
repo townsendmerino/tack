@@ -107,8 +107,12 @@ func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			a.complete.sel = (a.complete.sel + len(a.complete.items) - 1) % len(a.complete.items)
 			return a, nil
-		case tea.KeyTab, tea.KeyEnter:
+		case tea.KeyTab:
 			return a, a.accept()
+		case tea.KeyEnter:
+			if !k.Alt { // Alt+Enter is a new line, whether or not paths are offered
+				return a, a.accept()
+			}
 		case tea.KeyEsc:
 			a.complete.reqID++ // an answer still on its way is for a popup that was closed
 			a.complete.items, a.complete.sel = nil, 0
@@ -154,7 +158,13 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, func() tea.Msg { return AnsweredMsg{Err: b.Respond(q.ID, q.Seq, decision, scope)} }
 	}
 	switch k.Type {
+	case tea.KeyCtrlJ:
+		a.input = append(a.input, '\n')
 	case tea.KeyEnter:
+		if k.Alt {
+			a.input = append(a.input, '\n')
+			break
+		}
 		text := strings.TrimSpace(string(a.input))
 		if text == "" {
 			return a, nil
@@ -174,7 +184,15 @@ func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeySpace:
 		a.input = append(a.input, ' ')
 	case tea.KeyRunes:
-		for _, r := range k.Runes {
+		runes := k.Runes
+		if k.Paste { // a paste keeps its lines: CRLF and CR are one newline each, and every other control is still dropped
+			runes = []rune(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(runes)))
+		}
+		for _, r := range runes {
+			if k.Paste && r == '\n' {
+				a.input = append(a.input, r)
+				continue
+			}
 			if !hiddenRune(r) && r != utf8.RuneError && r >= 0x20 && r != 0x7f && (r < 0x80 || r > 0x9f) {
 				a.input = append(a.input, r)
 			}
@@ -192,20 +210,47 @@ func (a *App) Frame() string {
 	if a.height < 2 {
 		return a.Screen.Render(a.width, a.height)
 	}
-	line := "> " + string(a.input)
-	for runewidth.StringWidth(line) > a.width-1 {
-		_, n := utf8.DecodeRuneInString(line)
-		line = line[n:]
-	}
+	composer := a.composerRows()
 	rows := a.popup()
-	if len(rows) > a.height-3 { // the popup never takes the screen: the transcript keeps at least two rows
-		rows = rows[:max(a.height-3, 0)]
+	avail := a.height - len(composer)
+	if len(rows) > avail-2 { // the popup never takes the screen: the transcript keeps at least two rows
+		rows = rows[:max(avail-2, 0)]
 	}
-	body := a.Screen.Render(a.width, a.height-1-len(rows))
+	body := a.Screen.Render(a.width, avail-len(rows))
 	for _, r := range rows {
 		body += "\n" + r
 	}
-	return body + "\n" + line + "▏"
+	return body + "\n" + strings.Join(composer, "\n")
+}
+
+// maxComposerRows is the most lines the composer shows; the last ones, when it holds more.
+const maxComposerRows = 5
+
+// composerRows draws the composer's last lines: "> " before the first line of the text and two spaces before the rest, each
+// cut from its left to fit the width, with the cursor mark after the last. It leaves the transcript at least one row.
+func (a *App) composerRows() []string {
+	lines := strings.Split(string(a.input), "\n")
+	n := min(len(lines), maxComposerRows, max(a.height-1, 1))
+	first := len(lines) - n
+	out := make([]string, 0, n)
+	for i := first; i < len(lines); i++ {
+		line, room := "  "+lines[i], a.width
+		if i == 0 {
+			line = "> " + lines[i]
+		}
+		if i == len(lines)-1 {
+			room-- // the cursor mark
+		}
+		for runewidth.StringWidth(line) > room {
+			_, w := utf8.DecodeRuneInString(line)
+			line = line[w:]
+		}
+		if i == len(lines)-1 {
+			line += "▏"
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // View renders Frame; it is the tea.Model method.
