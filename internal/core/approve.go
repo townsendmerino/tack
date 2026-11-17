@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/townsendmerino/tack/internal/loop"
+	"github.com/townsendmerino/tack/internal/perms"
 	"github.com/townsendmerino/tack/internal/proto"
 )
 
@@ -25,6 +26,9 @@ type question struct {
 	seq int64
 	id  string
 	ch  chan answer
+	// shown is the rules the question offered for editing (PermissionRequested.Rules), as the daemon computed them from its own parse of
+	// the call. An edited rule is held to these, never to anything the client says it was shown.
+	shown []string
 }
 
 // ask registers the question ev asks, as ev is emitted and before any subscriber can see it, so an answer can never
@@ -39,7 +43,8 @@ func (s *session) ask(ev proto.Event) {
 	if err != nil {
 		return
 	}
-	s.question = &question{seq: ev.Seq, id: v.(proto.PermissionRequested).ID, ch: make(chan answer, 1)}
+	req := v.(proto.PermissionRequested)
+	s.question = &question{seq: ev.Seq, id: req.ID, ch: make(chan answer, 1), shown: req.Rules}
 }
 
 // approver is a session's loop.Approver: the question its permission.requested event registered (session.ask) waits for
@@ -114,7 +119,10 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: `permission/respond: scope is "once" or "session", not "` + p.Scope + `"`}
 	}
 	if p.Rule != "" {
-		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: an edited rule is not built yet; answer with scope once or session"}
+		if !ap.Allow || !ap.Session {
+			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: an edited rule goes with decision allow and scope session"}
+		}
+		ap.Rule = p.Rule
 	}
 	if p.Seq <= 0 {
 		return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: seq is the permission.requested event's"}
@@ -131,8 +139,26 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 		return nil, &proto.Error{Code: proto.CodeNotPending, Message: "permission/respond: the question at seq " + strconv.FormatInt(p.Seq, 10) +
 			" is not waiting: it was answered, asked again, or never asked"}
 	}
+	if ap.Rule != "" { // checked before the question is settled, so a refused edit leaves it open for another answer
+		if _, err := perms.Narrowing(shownRules(q.shown), ap.Rule); err != nil {
+			s.mu.Unlock()
+			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: " + err.Error()}
+		}
+	}
 	s.question = nil
 	s.mu.Unlock()
 	q.ch <- answer{approval: ap}
 	return proto.PermissionRespondResult{}, nil
+}
+
+// shownRules reads the rules a question offered, as written, back into rules. One that does not read back (a program path with a
+// space in it) is left out, so it can be neither narrowed nor matched: an edit fails closed rather than guess.
+func shownRules(shown []string) []perms.Rule {
+	var out []perms.Rule
+	for _, s := range shown {
+		if r, err := perms.ParseRule(s); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out
 }

@@ -174,6 +174,9 @@ type PermissionRequested struct {
 	Command string   `json:"command,omitempty"`
 	Parsed  []string `json:"parsed,omitempty"`
 	Reasons []string `json:"reasons"`
+	// Rules is, for a shell command, what allowing for the session would add, one rule per line as the daemon wrote it (perms.SessionRules):
+	// the rules the user may edit, and the only ones an edited rule is held to. Absent for another tool, which has none.
+	Rules []string `json:"rules,omitempty"`
 }
 
 // Permission decisions, and who made them.

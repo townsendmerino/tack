@@ -345,6 +345,7 @@ public struct PermissionRequested: Codable, Equatable, Sendable {
     public var command: String?
     public var parsed: [String]?
     public var reasons: [String]
+    public var rules: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id = "id"
@@ -353,6 +354,7 @@ public struct PermissionRequested: Codable, Equatable, Sendable {
         case command = "command"
         case parsed = "parsed"
         case reasons = "reasons"
+        case rules = "rules"
     }
 }
 

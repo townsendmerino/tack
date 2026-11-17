@@ -235,8 +235,10 @@ type UsageSummaryResult struct {
 // Seq is the question's permission.requested event's seq and ID its PermissionRequested.ID (the tool call's id): the
 // seq names the question, since a call can be asked again under the same id. Decision is allow or deny; Scope is once (or
 // empty) or session, which extends an allow to the rest of the session as a rule. Note, on a deny, reaches the model
-// in the refused result; it is content and grants nothing. Rule is reserved for an edited rule and refused until it
-// is built. It needs a privileged connection; the first answer wins, and another gets CodeNotPending.
+// in the refused result; it is content and grants nothing. Rule is an edited rule: with allow and scope session it stands in
+// for the rules allowing for the session would add, and must be no wider than one of PermissionRequested.Rules (perms.Narrowing);
+// anything else is invalid params and leaves the question open. It needs a privileged connection; the first answer wins, and
+// another gets CodeNotPending.
 type PermissionRespondParams struct {
 	Session  SessionID `json:"session"`
 	ID       string    `json:"id"`
