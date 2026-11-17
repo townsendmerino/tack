@@ -204,7 +204,10 @@ func Profile(c Config) string {
 	}
 	ws := real(c.Workspace)
 	later := []string{
-		fmt.Sprintf("(subpath %q)", ws+"/.git/hooks"), fmt.Sprintf("(literal %q)", ws+"/.git/config"),
+		// All of .git, at any depth and in any letter case (the file system ignores it): a gitfile, a commondir, config.worktree, info/,
+		// objects/info/alternates, hooks and config each make git, run later by the owner outside this sandbox, use or run what a command
+		// wrote. A git that writes the repository (add, commit, checkout) is refused here; see DESIGN §6.6.
+		fmt.Sprintf("(regex #\"^%s/(.*/)?[.][gG][iI][tT](/.*)?$\")", regexQuote(ws)),
 		fmt.Sprintf("(literal %q)", ws+"/.mcp.json"), fmt.Sprintf("(subpath %q)", ws+"/.claude"),
 		fmt.Sprintf("(subpath %q)", ws+"/.tack"), fmt.Sprintf("(subpath %q)", ws+"/.vscode"),
 	}
@@ -280,4 +283,16 @@ func Wrap(c Config, cmd *exec.Cmd) *exec.Cmd {
 	cmd.Args = append([]string{Exe, "-p", Profile(c), cmd.Path}, cmd.Args[1:]...)
 	cmd.Path = Exe
 	return cmd
+}
+
+// regexQuote escapes the characters of p that a Seatbelt regular expression reads as syntax.
+func regexQuote(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		if strings.ContainsRune(`.^$*+?()[]{}|\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

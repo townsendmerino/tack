@@ -212,3 +212,61 @@ func TestGoWritesThroughASymlinkedDirectoryAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRepositoryProbeIsHeldToItsOwnConditions: each condition of GitFindsOwnersRepo is one that a revert would lose without another test
+// noticing: the root's .git must not be a symlink, the probe runs with none of tack's GIT_* variables, and git may not walk above the root.
+func TestTheRepositoryProbeIsHeldToItsOwnConditions(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git on PATH")
+	}
+	init := func(dir string) {
+		os.MkdirAll(dir, 0o755)
+		if out, err := exec.Command(git, "init", "-q", dir).CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v %s", err, out)
+		}
+	}
+	// A root whose .git is a symlink to a real repository: git uses it, but it is not the root's own.
+	base := t.TempDir()
+	init(filepath.Join(base, "real"))
+	root := filepath.Join(base, "ws")
+	os.MkdirAll(root, 0o755)
+	os.Symlink(filepath.Join(base, "real", ".git"), filepath.Join(root, ".git"))
+	if GitFindsOwnersRepo(git, root, root) {
+		t.Error("a root whose .git is a symlink")
+	}
+	// The environment: with GIT_DIR in tack's own, a look-alike would be the repository from both places, and the two answers agree.
+	base = t.TempDir()
+	root = filepath.Join(base, "ws")
+	init(root)
+	ev := filepath.Join(root, "ev")
+	os.MkdirAll(filepath.Join(ev, "objects"), 0o755)
+	os.MkdirAll(filepath.Join(ev, "refs"), 0o755)
+	os.WriteFile(filepath.Join(ev, "HEAD"), []byte("ref: refs/heads/x\n"), 0o644)
+	t.Setenv("GIT_DIR", ev)
+	if GitFindsOwnersRepo(git, ev, root) {
+		t.Error("tack's own GIT_DIR reached the probe")
+	}
+	t.Setenv("GIT_DIR", "")
+	os.Unsetenv("GIT_DIR")
+	// The ceiling: a root with an empty .git (not a repository) inside another repository would use that one from both places.
+	outer := t.TempDir()
+	init(outer)
+	inner := filepath.Join(outer, "ws")
+	os.MkdirAll(filepath.Join(inner, ".git"), 0o755)
+	if GitFindsOwnersRepo(git, inner, inner) {
+		t.Error("git walked above the root into another repository")
+	}
+}
+
+// TestAGoWriteThroughASymlinkAsksAtApproval: the approval-time call site of GoOutputEscapes (the run-time one is in internal/shell).
+func TestAGoWriteThroughASymlinkAsksAtApproval(t *testing.T) {
+	e := allowEngine(t)
+	os.Symlink(t.TempDir(), filepath.Join(e.Root, "out"))
+	if v := decide(e, `go build -o out/x .`); v.Action != Ask || !strings.Contains(strings.Join(v.Reasons, ";"), "symlink") {
+		t.Errorf("%s %v", v.Action, v.Reasons)
+	}
+	if v := decide(e, `go build -o bin/x .`); v.Action != Allow {
+		t.Errorf("a plain path: %s %v", v.Action, v.Reasons)
+	}
+}

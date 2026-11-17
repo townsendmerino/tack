@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,19 @@ func TestCheckRefusesOverlap(t *testing.T) {
 		if (err != nil) != c.bad {
 			t.Errorf("%s (%s): err %v, want refused=%v", c.name, c.tack, err, c.bad)
 		}
+	}
+}
+
+// TestTheProfileDeniesWritesToAllOfGit: the profile text denies file-write* under any .git of the workspace, at any depth and in any
+// letter case, and the workspace path is quoted so its dots and brackets match only themselves. (The escape tests show a write refused.)
+func TestTheProfileDeniesWritesToAllOfGit(t *testing.T) {
+	ws := t.TempDir()
+	p := Profile(Config{Workspace: ws, Temp: t.TempDir(), GoCache: t.TempDir(), Home: t.TempDir(), Tack: []string{t.TempDir()}})
+	want := `(regex #"^` + regexQuote(real(ws)) + `/(.*/)?[.][gG][iI][tT](/.*)?$")`
+	if !strings.Contains(p, want) {
+		t.Errorf("the profile lacks %s", want)
+	}
+	if got := regexQuote("/a.b[c]/d+e"); got != `/a\.b\[c\]/d\+e` {
+		t.Errorf("regexQuote = %q", got)
 	}
 }

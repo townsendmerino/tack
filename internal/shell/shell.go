@@ -486,6 +486,10 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 				}
 			}
 			if filepath.Base(path) == "git" {
+				// The probe runs this binary, so it runs only one approval saw (as the check below requires of any program).
+				if !ck.approved[path] && !ck.engine.Covers(expanded) {
+					return ck.stop("%s was not approved: it appeared only when the command ran (%s)", path, strings.Join(args, " "))
+				}
 				if !perms.GitFindsOwnersRepo(path, hc.Dir, ck.req.Root) {
 					return ck.stop("git would not use this workspace's own repository here, which a rule does not cover")
 				}

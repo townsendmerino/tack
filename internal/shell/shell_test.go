@@ -930,3 +930,40 @@ func TestARuleApprovedGitRunsOnlyInTheOwnersRepositoryAndEnvironment(t *testing.
 		}
 	}
 }
+
+// The probe that asks git which repository it would use runs a git binary, so it runs only one approval saw: a git that a command writes
+// into PATH and then runs under a rule for git is stopped before the probe, and the probe never executes it.
+func TestTheRepositoryProbeNeverRunsAGitApprovalDidNotSee(t *testing.T) {
+	s := session(t, true, "git status")
+	root := s.Engine.Root
+	if out, err := exec.Command("git", "init", "-q", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	bin := filepath.Join(root, "wbin")
+	os.MkdirAll(bin, 0o755)
+	s.Engine.Path = os.Getenv("PATH") + string(os.PathListSeparator) + bin
+	marker := filepath.Join(root, "probed")
+	cmd := `printf '#!/bin/sh\ntouch ` + marker + `\n' > wbin/git; chmod +x wbin/git; ./wbin/git status`
+	r := runBy(t, s, perms.ByRule, cmd)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the probe ran the git approval did not see: %+v", r)
+	}
+	if r.Stopped == "" {
+		t.Errorf("not stopped: %+v", r)
+	}
+}
+
+// go -o through a symlink out of the tree is refused where a rule approved the command, as it runs (a variable chooses the path, so only the run-time check sees it).
+func TestARuleApprovedGoWriteThroughASymlinkIsRefusedAsItRuns(t *testing.T) {
+	s := session(t, true, "go build")
+	root := s.Engine.Root
+	outside := t.TempDir()
+	os.Symlink(outside, filepath.Join(root, "out"))
+	r := runBy(t, s, perms.ByRule, `p=out/x; go build -o $p .`)
+	if r.Stopped == "" || !strings.Contains(r.Stopped, "symlink") {
+		t.Errorf("run time: %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "x")); err == nil {
+		t.Error("the binary was written outside the tree")
+	}
+}
