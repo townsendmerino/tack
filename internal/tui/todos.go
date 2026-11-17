@@ -61,13 +61,18 @@ func (v *View) Todos() []Todo { return v.todos.list }
 // todoRows draws the list for a pane: one line per item, marked as the tool marks it, cut to rows lines with a count of what
 // was left out.
 func todoRows(list []Todo, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
 	if len(list) == 0 {
 		return []string{"no tasks yet"}
 	}
 	mark := map[string]string{"pending": "[ ]", "in_progress": "[>]", "done": "[x]"}
 	show := list
 	if len(show) > rows {
-		show = show[:max(rows-1, 0)]
+		// The count of what is left out takes a line of its own, except when there is only one line: then it is the first task
+		// that shows, since a count with no task above it says nothing.
+		show = show[:max(rows-1, 1)]
 	}
 	var out []string
 	for _, it := range show {
@@ -77,7 +82,7 @@ func todoRows(list []Todo, rows int) []string {
 		}
 		out = append(out, m+" "+it.Text)
 	}
-	if len(show) < len(list) {
+	if len(show) < len(list) && rows >= 2 {
 		out = append(out, fmt.Sprintf("… %d more", len(list)-len(show)))
 	}
 	return out
