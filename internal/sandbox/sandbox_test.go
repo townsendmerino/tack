@@ -124,6 +124,12 @@ func TestEscapes(t *testing.T) {
 		{"writing inside .git after a cd", secs(SecLater), `cd .git && echo x > description && echo ESCAPED-cd`, "ESCAPED-cd"},
 		{"making a gitfile", secs(SecLater), `mkdir -p sub && echo "gitdir: ../x" > sub/.git && echo ESCAPED-gitfile`, "ESCAPED-gitfile"},
 		{"making a .GIT directory", secs(SecLater), `mkdir -p sub/.GIT && echo ESCAPED-upper`, "ESCAPED-upper"},
+		{"writing .git/hooks", secs(SecLater), `mkdir -p .git/hooks && echo x > .git/hooks/pre-commit && echo ESCAPED-hooks`, "ESCAPED-hooks"},
+		{"writing .git/CONFIG in capitals", secs(SecLater), `printf '[user]\n\tname = t\n' > .git/CONFIG && echo ESCAPED-capconfig`, "ESCAPED-capconfig"},
+		{"writing objects/info/alternates", secs(SecLater), `mkdir -p .git/objects/info && echo > .git/objects/info/alternates && echo ESCAPED-alternates`, "ESCAPED-alternates"},
+		{"writing a submodule's config", secs(SecLater), `mkdir -p .git/modules/m && echo x > .git/modules/m/config && echo ESCAPED-modconfig`, "ESCAPED-modconfig"},
+		{"writing a worktree's commondir", secs(SecLater), `mkdir -p .git/worktrees/w && echo x > .git/worktrees/w/commondir && echo ESCAPED-wtcommondir`, "ESCAPED-wtcommondir"},
+		{"writing a worktree's gitdir", secs(SecLater), `mkdir -p .git/worktrees/v && echo x > .git/worktrees/v/gitdir && echo ESCAPED-wtgitdir`, "ESCAPED-wtgitdir"},
 		{"writing .claude settings", secs(SecLater), `mkdir -p .claude && echo x > .claude/settings.json && echo ESCAPED-claude`, "ESCAPED-claude"},
 		{"writing .vscode tasks", secs(SecLater), `mkdir -p .vscode && echo x > .vscode/tasks.json && echo ESCAPED-vscode`, "ESCAPED-vscode"},
 		{"writing .mcp.json", secs(SecLater), `echo x > .mcp.json && echo ESCAPED-mcp`, "ESCAPED-mcp"},
@@ -232,6 +238,7 @@ func TestWorkStillRuns(t *testing.T) {
 		`go version`,
 		`go test ./... && echo OK-gotest`,
 		`git status --short && git add x_test.go && echo OK-git`,
+		`echo y > c.txt && git add c.txt && git -c user.name=t -c user.email=t@example.com commit -q -m t && echo OK-commit`,
 		`echo hello > note.txt && cat note.txt`,
 		`echo t > "$TMPDIR/scratch" && cat "$TMPDIR/scratch"`,
 	} {
@@ -244,6 +251,10 @@ func TestWorkStillRuns(t *testing.T) {
 	}
 	if out := f.run(&f.cfg, `go test ./... && echo OK-gotest`); !strings.Contains(out, "OK-gotest") {
 		t.Errorf("go test did not pass inside the profile: %s", out)
+	}
+	// git add and git commit work in the sandbox: the parts of .git they write are not the ones that redirect git (gitRedirects).
+	if out := f.run(&f.cfg, `echo z > d.txt && git add d.txt && git -c user.name=t -c user.email=t@example.com commit -q -m u && echo OK-commit-2`); !strings.Contains(out, "OK-commit-2") {
+		t.Errorf("git add and git commit did not work inside the profile: %s", out)
 	}
 }
 

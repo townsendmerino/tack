@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Exe is sandbox-exec. Apple deprecated its public interface long ago; it works on macOS 26 (DESIGN §17, R6).
@@ -204,10 +205,7 @@ func Profile(c Config) string {
 	}
 	ws := real(c.Workspace)
 	later := []string{
-		// All of .git, at any depth and in any letter case (the file system ignores it): a gitfile, a commondir, config.worktree, info/,
-		// objects/info/alternates, hooks and config each make git, run later by the owner outside this sandbox, use or run what a command
-		// wrote. A git that writes the repository (add, commit, checkout) is refused here; see DESIGN §6.6.
-		fmt.Sprintf("(regex #\"^%s/(.*/)?[.][gG][iI][tT](/.*)?$\")", regexQuote(ws)),
+		// The parts of .git that redirect git or run programs, below.
 		fmt.Sprintf("(literal %q)", ws+"/.mcp.json"), fmt.Sprintf("(subpath %q)", ws+"/.claude"),
 		fmt.Sprintf("(subpath %q)", ws+"/.tack"), fmt.Sprintf("(subpath %q)", ws+"/.vscode"),
 	}
@@ -215,6 +213,7 @@ func Profile(c Config) string {
 	for _, f := range []string{".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile"} {
 		later = append(later, fmt.Sprintf("(literal %q)", filepath.Join(home, f)))
 	}
+	later = append(later, gitRedirects(ws)...)
 	sec(SecLater, fmt.Sprintf("(deny file-write* %s)", strings.Join(later, " ")))
 	var secrets []string
 	for _, p := range Secrets {
@@ -293,6 +292,51 @@ func regexQuote(p string) string {
 			b.WriteByte('\\')
 		}
 		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// gitRedirects are the Seatbelt rules denying writes to the parts of a .git that redirect git or make it run a program, under any
+// .git of the workspace (a nested repository too), in any letter case (the file system ignores it). The owner runs git outside this
+// sandbox later, so what a command writes here would run with the owner's rights. Everything else under .git stays writable, so git add
+// and git commit work in the sandbox: index, objects/ (but not objects/info/alternates), refs/, HEAD, logs/, packed-refs, ORIG_HEAD,
+// FETCH_HEAD, COMMIT_EDITMSG. DESIGN §6.6 lists the same entries.
+//
+// Not covered: the directory core.hooksPath names when it is under .git, since the profile does not read the config; the owner's own
+// setting is outside the model's reach (config is denied) and a path outside .git is the workspace's, whose hook files an approval sees.
+func gitRedirects(ws string) []string {
+	gitDir := fmt.Sprintf("^%s/(.*/)?[.][gG][iI][tT]", regexQuote(ws))
+	// re builds one rule from name segments, each matched in any letter case.
+	re := func(tail string) string { return fmt.Sprintf("(regex #\"%s%s\")", gitDir, tail) }
+	return []string{
+		// A gitfile: a .git that is a file naming a gitdir: a command wrote makes git use that directory's config. The entry itself,
+		// at any depth, so a gitfile cannot be made or a real .git swapped for one.
+		re("$"),
+		re("/" + ci("config") + "$"),          // core.fsmonitor, core.hooksPath, "!" aliases, diff.external, core.pager, textconv: all run programs
+		re("/" + ci("config.worktree") + "$"), // the same keys, read when extensions.worktreeConfig is set
+		re("/" + ci("commondir") + "$"),       // names the directory git reads its config and objects from
+		re("/" + ci("hooks") + "(/.*)?$"),     // run by git commit, push, checkout and the rest
+		re("/" + ci("info") + "(/.*)?$"),      // attributes (filter and diff drivers), exclude, sparse-checkout: they select drivers and paths
+		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("alternates") + "$"), // another object directory git trusts
+		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("http-alternates") + "$"),
+		re("/" + ci("modules") + "/.*/" + ci("config") + "$"), // a submodule's own config: the same keys
+		re("/" + ci("modules") + "/.*/" + ci("hooks") + "(/.*)?$"),
+		re("/" + ci("worktrees") + "/[^/]+/(" + ci("commondir") + "|" + ci("gitdir") + "|" + ci("config.worktree") + ")$"), // a linked worktree's redirects
+	}
+}
+
+// ci writes name as a regular expression matching it in any letter case, with a dot matching itself only.
+func ci(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '.':
+			b.WriteString(`[.]`)
+		case unicode.IsLetter(r):
+			b.WriteString("[" + string(unicode.ToLower(r)) + string(unicode.ToUpper(r)) + "]")
+		default:
+			b.WriteRune(r)
+		}
 	}
 	return b.String()
 }

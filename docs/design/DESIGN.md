@@ -693,10 +693,9 @@ tool-use smoke set compares this merged set against the split one before it is f
         segment in any letter case, and any redirection to one, ask in every mode (`PathAsks`), so a covered writer cannot make
         the gitfile or config the previous item is about.
         That list sees only literal, cwd-relative arguments (`cd .git && cp ../x commondir` passes it), so it is the backstop and the
-        sandbox is the rule: the profile denies every write under a `.git` in the workspace, for every program. A command that
-        writes the repository (`git add`, `commit`, `checkout`, `stash`) therefore fails inside the sandbox; tack has no git
-        write of its own yet, and until one is built (or a post-decision grant for an approved write is) the owner commits
-        outside tack. This is a decision for the owner.
+        sandbox is the rule: the profile denies, for every program, writes to the parts of a `.git` that redirect git or run
+        programs (the list under "Writes that would run later", below). Everything else under `.git` stays writable, so `git add`
+        and `git commit` work in the sandbox (owner, 2026-11-17).
       - `env` in front of `go` or `git` is held to the same list: its flags and every variable it sets.
       - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
         `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment, and not through a symlink that leads out of the tree or into `.git`.
@@ -708,7 +707,7 @@ tool-use smoke set compares this merged set against the split one before it is f
       evil::x` runs `git-remote-evil` from `PATH`, and `ls-remote`, `fetch`, `clone` and the other remote commands are not on
       the list, so they ask.
     - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
-      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to all of `.git`, in any workspace directory, and
+      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to the parts of `.git` that redirect git or run programs, in any workspace directory, and
       `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
 - **Approving something that leaves the sandbox widens one spawn, by exactly what was approved** (from looprig's
   sandbox, 2026-11-02; `github.com/looprig/sandbox`, "Post-decision grants").
@@ -822,7 +821,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     file asks too; another program writing one (`tee`, `sed -i`) is not visible to the parse.
   - **Never, from the file tools:** a write inside `.git/`. Git's own commands still write there.
   - **Already covered, by the sandbox profile:** secrets, shell history and logs outside the workspace, host-key
-    checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, `.git` (all of it, at any depth and letter case) and
+    checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, the git parts listed below, and
     shell startup files.
 - **Checked again as it runs.** Approval reads the parsed text, but `$GOBIN/tool` or `for f in …; do … > "$f"; done`
   only show their real program and paths after expansion. So `tackd shell` also checks every command and every file it
@@ -867,8 +866,17 @@ tool-use smoke set compares this merged set against the split one before it is f
     command cannot approve its own request, change the mode, lift a halt or read transcripts. Methods that change
     permissions, mode, trust or halt state also require the token in `client.token`, which only unsandboxed clients can
     read.
-  - **Writes that would run later outside the sandbox** are denied or asked about: all of `.git` (hooks, `config`, `commondir`, `config.worktree`, `info/`, `objects/info/alternates`, a gitfile; hooks
-    path, `core.fsmonitor`, aliases), `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
+  - **Writes that would run later outside the sandbox** are denied or asked about: the parts of every `.git` in the workspace (any depth, any letter case) that redirect git or run programs
+    (`sandbox.gitRedirects`): `config` and `config.worktree` (`core.fsmonitor`, `core.hooksPath`, `!` aliases, `diff.external`,
+    `core.pager`, textconv), `commondir`, `hooks/`, `info/` (attributes select filter and diff drivers; `exclude`,
+    `sparse-checkout`), `objects/info/alternates` and `http-alternates`, `modules/*/config` and `modules/*/hooks/`,
+    `worktrees/*/commondir`, `gitdir` and `config.worktree`, and the `.git` entry itself at any depth (so a gitfile naming a
+    `gitdir:` a command wrote cannot be made or swapped in). `index`, `objects/` (but not `objects/info/alternates`), `refs/`,
+    `HEAD`, `logs/`, `packed-refs`, `ORIG_HEAD`, `FETCH_HEAD` and `COMMIT_EDITMSG` stay writable. Not covered: the directory
+    `core.hooksPath` names when it is under `.git` (the profile does not read the config; the config is denied to commands, so
+    only the owner sets it), and an in-tree hooks directory (such as `.githooks`), whose hook files a command may write and the
+    owner's next commit would run: nothing denies or asks about such a write today (the tripwire does not count an in-tree
+    `core.hooksPath`), and protecting that directory is a decision not yet taken. `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.

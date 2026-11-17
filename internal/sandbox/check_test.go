@@ -5,7 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"testing"
 )
 
@@ -40,14 +40,45 @@ func TestCheckRefusesOverlap(t *testing.T) {
 	}
 }
 
-// TestTheProfileDeniesWritesToAllOfGit: the profile text denies file-write* under any .git of the workspace, at any depth and in any
-// letter case, and the workspace path is quoted so its dots and brackets match only themselves. (The escape tests show a write refused.)
-func TestTheProfileDeniesWritesToAllOfGit(t *testing.T) {
-	ws := t.TempDir()
-	p := Profile(Config{Workspace: ws, Temp: t.TempDir(), GoCache: t.TempDir(), Home: t.TempDir(), Tack: []string{t.TempDir()}})
-	want := `(regex #"^` + regexQuote(real(ws)) + `/(.*/)?[.][gG][iI][tT](/.*)?$")`
-	if !strings.Contains(p, want) {
-		t.Errorf("the profile lacks %s", want)
+// TestTheGitDenyListMatchesWhatItIsFor: the rules' regular expressions are matched here (Go's syntax reads these as Seatbelt does) against
+// paths that must be denied and paths that must stay writable, so that git add and git commit work and nothing that redirects git does.
+// The workspace path is quoted so its dots and brackets match only themselves. The escape tests (sandboxtest) show the kernel refusing.
+func TestTheGitDenyListMatchesWhatItIsFor(t *testing.T) {
+	ws := "/w.s/[x]"
+	var res []*regexp.Regexp
+	for _, rule := range gitRedirects(ws) {
+		m := regexp.MustCompile(`^\(regex #"(.*)"\)$`).FindStringSubmatch(rule)
+		if m == nil {
+			t.Fatalf("not a regex rule: %s", rule)
+		}
+		res = append(res, regexp.MustCompile(m[1]))
+	}
+	denied := func(p string) bool {
+		for _, r := range res {
+			if r.MatchString(p) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range []string{".git", "sub/.git", "sub/deep/.GIT", ".git/config", ".git/CONFIG", ".git/Config.Worktree", ".git/commondir", ".git/hooks", ".git/hooks/pre-commit",
+		".git/HOOKS/x", ".git/info/exclude", ".git/info/attributes", ".git/info/sparse-checkout", ".git/objects/info/alternates", ".git/objects/INFO/Alternates",
+		".git/objects/info/http-alternates", ".git/modules/m/config", ".git/modules/a/b/config", ".git/modules/m/hooks/post-commit", ".git/worktrees/w/commondir",
+		".git/worktrees/w/gitdir", ".git/worktrees/w/config.worktree", "sub/.git/config", "sub/.Git/hooks/x"} {
+		if !denied(ws + "/" + p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{".git/index", ".git/index.lock", ".git/HEAD", ".git/ORIG_HEAD", ".git/FETCH_HEAD", ".git/COMMIT_EDITMSG", ".git/packed-refs", ".git/refs/heads/main",
+		".git/logs/HEAD", ".git/objects/ab/cdef", ".git/objects/pack/pack-1.pack", ".git/objects/info/packs", ".git/worktrees/w/HEAD", ".git/modules/m/HEAD",
+		".gitignore", ".github/workflows/x", "a.git", "sub/.gitattributes", "config", "hooks/x", "info/x", "sub/config"} {
+		if denied(ws + "/" + p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
+	// A different workspace's .git is not this one's, and the quoted dots match only dots.
+	if denied("/wXs/[x]/.git/config") || denied("/w.s/x/.git/config") {
+		t.Error("the workspace path is not quoted")
 	}
 	if got := regexQuote("/a.b[c]/d+e"); got != `/a\.b\[c\]/d\+e` {
 		t.Errorf("regexQuote = %q", got)
