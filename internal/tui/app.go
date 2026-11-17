@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -26,6 +27,8 @@ type Backend interface {
 	Respond(id string, seq int64, decision, scope string) error
 	// Cancel ends the session's running turn (session/cancel); with none running it does nothing and succeeds.
 	Cancel() error
+	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
+	Complete(query string) ([]proto.CompletionItem, error)
 }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
@@ -40,7 +43,10 @@ type AnsweredMsg struct{ Err error }
 type App struct {
 	Screen  View
 	Backend Backend
+	// Debounce is how long @ completion waits after a key before asking; zero means 50 ms.
+	Debounce time.Duration
 
+	complete      completion
 	input         []rune
 	width, height int
 	quit          bool
@@ -78,6 +84,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			a.Screen.note("! cancel: " + m.Err.Error())
 		}
+	case debounceMsg:
+		return a, a.debounced(m)
+	case completedMsg:
+		a.completed(m)
 	case tea.WindowSizeMsg:
 		a.width, a.height = m.Width, m.Height
 	case tea.KeyMsg:
@@ -86,7 +96,34 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// key handles the popup's keys when paths are offered, and otherwise the composer's; a key that changes the composer starts a
+// new completion request.
 func (a *App) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if len(a.complete.items) > 0 {
+		switch k.Type {
+		case tea.KeyDown:
+			a.complete.sel = (a.complete.sel + 1) % len(a.complete.items)
+			return a, nil
+		case tea.KeyUp:
+			a.complete.sel = (a.complete.sel + len(a.complete.items) - 1) % len(a.complete.items)
+			return a, nil
+		case tea.KeyTab, tea.KeyEnter:
+			return a, a.accept()
+		case tea.KeyEsc:
+			a.complete.reqID++ // an answer still on its way is for a popup that was closed
+			a.complete.items, a.complete.sel = nil, 0
+			return a, nil
+		}
+	}
+	before := string(a.input)
+	m, cmd := a.typing(k)
+	if string(a.input) != before {
+		cmd = tea.Batch(cmd, a.refresh())
+	}
+	return m, cmd
+}
+
+func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
@@ -160,7 +197,15 @@ func (a *App) Frame() string {
 		_, n := utf8.DecodeRuneInString(line)
 		line = line[n:]
 	}
-	return a.Screen.Render(a.width, a.height-1) + "\n" + line + "▏"
+	rows := a.popup()
+	if len(rows) > a.height-3 { // the popup never takes the screen: the transcript keeps at least two rows
+		rows = rows[:max(a.height-3, 0)]
+	}
+	body := a.Screen.Render(a.width, a.height-1-len(rows))
+	for _, r := range rows {
+		body += "\n" + r
+	}
+	return body + "\n" + line + "▏"
 }
 
 // View renders Frame; it is the tea.Model method.
