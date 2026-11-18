@@ -27,6 +27,7 @@ const (
 	classPack                       // git-upload-pack and git-receive-pack
 	classBang                       // honest unless it starts with "!" (submodule.<n>.update)
 	classPath                       // honest unless it names a path (sendemail.smtpServer)
+	classNever                      // honest only as "never" (protocol.ext.allow)
 )
 
 // programKeyClass reports whether a lower-cased git config key names a program git runs (through a shell where git runs a command line), and
@@ -46,8 +47,11 @@ func programKeyClass(key string) (valueClass, bool) {
 		return classGpg, true
 	case "credential.helper":
 		return classCredHelp, true
-	case "diff.external", "core.gitproxy", "core.alternaterefscommand", "uploadpack.packobjectshook", "sendemail.sendmailcmd":
+	case "diff.external", "core.gitproxy", "core.alternaterefscommand", "uploadpack.packobjectshook", "sendemail.sendmailcmd", "init.templatedir",
+		"instaweb.modulepath", "instaweb.httpd", "gitcvs.dbdriver":
 		return classNone, true
+	case "protocol.ext.allow":
+		return classNever, true
 	case "sendemail.smtpserver":
 		return classPath, true
 	}
@@ -71,6 +75,7 @@ func programKeyClass(key string) (valueClass, bool) {
 		return classBang, true
 	case has("merge.", ".driver"), has("diff.", ".command"), has("tar.", ".command"), has("trailer.", ".cmd"), has("trailer.", ".command"),
 		has("difftool.", ".cmd"), has("difftool.", ".path"), has("mergetool.", ".cmd"), has("mergetool.", ".path"),
+		has("lfs.customtransfer.", ".path"), has("lfs.extension.", ".clean"), has("lfs.extension.", ".smudge"), has("gitcvs.", ".dbdriver"),
 		has("browser.", ".cmd"), has("browser.", ".path"), has("man.", ".cmd"), has("man.", ".path"), has("guitool.", ".cmd"), has("remote.", ".vcs"):
 		return classNone, true
 	case has("sendemail.", ".smtpserver"):
@@ -116,6 +121,8 @@ func runsProgramFor(key, val string) bool {
 		return strings.Contains(v, "/")
 	case classNone:
 		return true
+	case classNever:
+		return !strings.EqualFold(v, "never")
 	}
 	if class == classPager && boolWord(v) {
 		return false
@@ -136,6 +143,9 @@ func boolWord(v string) bool {
 func extURL(key, val string) bool {
 	if strings.HasPrefix(key, "url.ext::") {
 		return true
+	}
+	if strings.HasPrefix(key, "submodule.") && strings.HasSuffix(key, ".url") {
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(val)), "ext::")
 	}
 	return strings.HasPrefix(key, "remote.") && (strings.HasSuffix(key, ".url") || strings.HasSuffix(key, ".pushurl")) &&
 		strings.HasPrefix(strings.ToLower(strings.TrimSpace(val)), "ext::")
@@ -375,9 +385,15 @@ var (
 // -std, -m<arch>, plain -f flags, -I and -L under the system's include and lib directories, a few link modes. Everything else counts:
 // -B (where the compiler finds its programs), -wrapper, -specs=, -fplugin=, -fuse-ld=, --ld-path=, --prefix=, -Xlinker, -Wl, options that
 // load a plugin or name a linker, and any path outside the system directories (-I. included).
+//
+// -Bstatic and -Bdynamic are not honest bare: gcc reads them as -B with the relative prefix "static" or "dynamic" and runs ./static/as; only
+// -Wl,-Bstatic and -Wl,-Bdynamic choose how to link. -mllvm hands flags to LLVM. A ".." in a path leaves the directory it names.
 func cgoFlagHonest(w string) bool {
+	if w == "-mllvm" || slices.Contains(strings.Split(w, "/"), "..") {
+		return false
+	}
 	switch w {
-	case "-static", "-pthread", "-Bstatic", "-Bdynamic", "-shared", "-pie", "-Wl,--as-needed", "-Wl,--gc-sections", "-Wl,-s", "-Wl,-O1", "-Wl,-z,relro", "-Wl,-z,now":
+	case "-static", "-pthread", "-Wl,-Bstatic", "-Wl,-Bdynamic", "-shared", "-pie", "-Wl,--as-needed", "-Wl,--gc-sections", "-Wl,-s", "-Wl,-O1", "-Wl,-z,relro", "-Wl,-z,now":
 		return true
 	}
 	for _, re := range []*regexp.Regexp{cgoOptRE, cgoWarnRE, cgoDefineRE, cgoLibRE, cgoStdRE, cgoMachineRE, cgoFlagRE, cgoSysDirRE, cgoRpathRE} {

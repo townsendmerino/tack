@@ -266,7 +266,7 @@ func TestTheFailClosedPathCoversTheProgramKeys(t *testing.T) {
 		`git config --frobnicate difftool.x.cmd d`, `git config --frobnicate mergetool.x.cmd m`, `git config --frobnicate uploadpack.packObjectsHook h`,
 		`git config --frobnicate submodule.x.update rebase`, `git config --frobnicate tar.x.command c`, `git config --frobnicate trailer.t.cmd c`, `git config --frobnicate trailer.t.command c`,
 		`git config --frobnicate sendemail.sendmailCmd c`, `git config --frobnicate sendemail.smtpServer host`, `git config --frobnicate browser.x.cmd c`, `git config --frobnicate man.x.path p`,
-		`git config --frobnicate guitool.x.cmd c`, `git config --frobnicate gc.recentObjectsHook h`, `git config --frobnicate delta.pager p`, `git config --frobnicate imap.tunnel t`, `git config --frobnicate mergetool.x.path p`, `git config --frobnicate difftool.x.path p`, `git config --frobnicate remote.x.vcs v`,
+		`git config --frobnicate guitool.x.cmd c`, `git config --frobnicate gc.recentObjectsHook h`, `git config --frobnicate init.templateDir t`, `git config --frobnicate protocol.ext.allow always`, `git config --frobnicate lfs.customtransfer.x.path p`, `git config --frobnicate submodule.x.url ext::x`, `git config --frobnicate delta.pager p`, `git config --frobnicate imap.tunnel t`, `git config --frobnicate mergetool.x.path p`, `git config --frobnicate difftool.x.path p`, `git config --frobnicate remote.x.vcs v`,
 		`git config --frobnicate include.path x`, `git config --frobnicate includeIf.gitdir:/x/.path y`, `git config --frobnicate url.'ext::sh -c id'.insteadOf https://x/`,
 		`git config --frobnicate remote.origin.url 'ext::sh -c id'`, `git --future-opt x config core.editor vim`, `git cfg core.editor vim`, `git -c alias.x=y x credential.helper store`,
 	}, []string{
@@ -557,7 +557,7 @@ func TestTheTripwireCountsCgoFlagsThatNameProgramsOrPlugins(t *testing.T) {
 		`go env -w CGO_LDFLAGS=-fuse-ld=../ld`,
 	}, []string{
 		`go env -w CGO_LDFLAGS=-O2`, `go env -w CGO_LDFLAGS='-L/usr/lib -lm'`,
-		`go env -w CGO_LDFLAGS=-Bstatic`, `go env -w CGO_CFLAGS=-O2`, `go env -w CGO_CFLAGS='-I/usr/include -Wall'`, `CGO_LDFLAGS=-O2 go build .`, `CGO_CFLAGS=-g go build .`,
+		`go env -w CGO_LDFLAGS=-Wl,-Bstatic`, `go env -w CGO_CFLAGS=-O2`, `go env -w CGO_CFLAGS='-I/usr/include -Wall'`, `CGO_LDFLAGS=-O2 go build .`, `CGO_CFLAGS=-g go build .`,
 		`go env CGO_LDFLAGS`, `go env -u CGO_LDFLAGS`,
 	})
 }
@@ -617,7 +617,7 @@ func TestTheTripwireCountsCgoFlagsUnlessEveryWordIsHonest(t *testing.T) {
 			honest = append(honest, "go env -w "+name+"="+v)
 		}
 	}
-	honest = append(honest, `go env -w CGO_LDFLAGS=-Wl,-rpath,/usr/lib`, `go env -w CGO_LDFLAGS=-Bstatic`, `go env -w CGO_LDFLAGS='-Wl,--as-needed -Wl,-O1'`, `go env -w CGO_CFLAGS=""`,
+	honest = append(honest, `go env -w CGO_LDFLAGS=-Wl,-rpath,/usr/lib`, `go env -w CGO_LDFLAGS=-Wl,-Bstatic`, `go env -w CGO_LDFLAGS=-Wl,-Bdynamic`, `go env -w CGO_LDFLAGS='-Wl,--as-needed -Wl,-O1'`, `go env -w CGO_CFLAGS=""`,
 		`CGO_LDFLAGS=-O2 go build .`, `CGO_CFLAGS=-g go build .`, `go env CGO_LDFLAGS`, `go env -u CGO_LDFLAGS`)
 	counts(t, counted, honest)
 }
@@ -654,5 +654,48 @@ func TestTheTripwireDoesNotCountTheCommonHelperPaths(t *testing.T) {
 	}, []string{
 		`git config credential.helper '!/opt/homebrew/bin/gh auth git-credential'`, `git config credential.helper '!/usr/local/bin/gh auth git-credential'`,
 		`git config credential.helper /usr/local/bin/git-credential-manager`, `git config core.editor 'emacsclient -c -a ""'`, `git config core.editor "emacsclient -c -a ''"`,
+	})
+}
+
+// Fourth read. gcc reads -Bstatic as -B with the prefix "static" (go build ran ./static/as), so it is only honest as -Wl,-Bstatic; -mllvm hands
+// flags to LLVM; and a ".." in a path of -I, -L or -rpath leaves the system directory.
+func TestTheTripwireCountsBstaticMllvmAndDotDotInCgoFlags(t *testing.T) {
+	var counted, honest []string
+	for _, name := range []string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"} {
+		for _, v := range []string{
+			"-Bstatic", "-Bdynamic", "'-O2 -Bstatic'", "-mllvm", "'-mllvm -x'", "-I/usr/../tmp/x", "-L/usr/lib/../../tmp", "-I/usr/include/..", "-L/opt/homebrew/lib/../x",
+			"-Wl,-rpath,/usr/lib/../../tmp", "-Wl,-rpath,/usr/..", "-Wl,-Bstatic,-x",
+		} {
+			counted = append(counted, "go env -w "+name+"="+v)
+		}
+		honest = append(honest, "go env -w "+name+"=-march=native", "go env -w "+name+"=-mtune=generic", "go env -w "+name+"=-I/usr/include/x86_64-linux-gnu")
+	}
+	counted = append(counted, `CGO_CFLAGS=-Bstatic go build .`, `env CGO_LDFLAGS=-mllvm go build .`)
+	honest = append(honest, `go env -w CGO_LDFLAGS=-Wl,-Bdynamic`, `go env -w CGO_LDFLAGS='-Wl,-Bstatic -lm -Wl,-Bdynamic'`)
+	counts(t, counted, honest)
+}
+
+// init.templateDir: a template's hooks run on every later clone and init.
+func TestTheTripwireCountsInitTemplateDir(t *testing.T) {
+	counts(t, []string{
+		`git config --global init.templateDir ~/t`, `git config init.templateDir ./tpl`, `git config init.templateDir /tmp/t`, `git config init.templatedir /usr/share/git-core/templates`,
+		`git config --system init.templateDir x`, `git config --file x.cfg init.TemplateDir x`,
+	}, []string{
+		`git config init.templateDir ""`, `git config --unset init.templateDir`, `git config --get init.templateDir`, `git config init.defaultBranch main`,
+	})
+}
+
+// More keys that run a program or load code, each with no honest value; protocol.ext.allow is honest only as never; submodule urls can be ext::.
+func TestTheTripwireCountsTheLfsInstawebCvsKeysAndExtProtocol(t *testing.T) {
+	counts(t, []string{
+		`git config lfs.customtransfer.x.path ./t`, `git config lfs.customtransfer.x.path git-lfs-x`, `git config lfs.extension.x.clean ./c`, `git config lfs.extension.x.smudge 'sh -c id'`,
+		`git config instaweb.modulePath /tmp/m`, `git config gitcvs.dbDriver ./x`, `git config gitcvs.ext.dbDriver SQLite`,
+		`git config protocol.ext.allow always`, `git config protocol.ext.allow user`, `git config protocol.ext.allow true`,
+		`git config submodule.x.url 'ext::sh -c id'`, `git config submodule.x.url 'EXT::./x'`, `git config url.'ext::sh -c id'.insteadOf https://x/`,
+	}, []string{
+		`git config protocol.ext.allow never`, `git config protocol.ext.allow NEVER`, `git config protocol.file.allow user`, `git config protocol.allow never`,
+		`git config submodule.x.url https://example.com/x.git`, `git config submodule.x.url ../x.git`, `git config lfs.url https://x/y`, `git config lfs.extension.x.priority 0`,
+		`git config lfs.customtransfer.x.concurrent true`, `git config gitcvs.enabled false`, `git config instaweb.port 1234`,
+		`git config lfs.customtransfer.x.path ""`, `git config --unset gitcvs.dbDriver`,
 	})
 }
