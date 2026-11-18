@@ -29,6 +29,9 @@ type Backend interface {
 	Cancel() error
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
 	Complete(query string) ([]proto.CompletionItem, error)
+	// SetMode moves the session to a mode (session/setMode) and returns the mode it has now, which a repository's ceiling can
+	// make lower than the one asked for. confirmed says the user confirmed a move to auto: only the y key sets it.
+	SetMode(m proto.Mode, confirmed bool) (proto.Mode, error)
 }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
@@ -47,6 +50,7 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
+	confirmAuto   bool      // the confirmation for moving to auto is open (mode.go)
 	pane          string    // the pane shown above the composer: "", or a name from panes (panes.go)
 	rule          *ruleEdit // the rule editor is open (rule.go)
 	input         []rune
@@ -80,6 +84,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			a.Screen.note("! answer: " + m.Err.Error())
 		}
+	case ModeSetMsg:
+		a.modeSet(m)
 	case CancelledMsg:
 		var pe *proto.Error
 		switch {
@@ -139,10 +145,15 @@ func (a *App) cancel() tea.Cmd {
 }
 
 func (a *App) typing(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.confirmAuto && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
+		return a, a.confirmKey(k) // the confirmation takes the next key, whatever it is
+	}
 	if a.rule != nil && k.Type != tea.KeyCtrlC && k.Type != tea.KeyCtrlD {
 		return a, a.ruleKey(k) // the editor takes every other key
 	}
 	switch k.Type {
+	case tea.KeyShiftTab:
+		return a, a.cycleMode()
 	case tea.KeyCtrlC, tea.KeyCtrlD:
 		a.quit = true
 		return a, tea.Quit
@@ -235,7 +246,7 @@ func (a *App) Frame() string {
 		return a.Screen.Render(a.width, a.height)
 	}
 	composer := a.composerRows()
-	rows := append(a.ruleRows(), a.popup()...)
+	rows := append(append(a.confirmRows(), a.ruleRows()...), a.popup()...)
 	avail := a.height - len(composer)
 	if len(rows) > avail-2 { // the popup never takes the screen: the transcript keeps at least two rows
 		rows = rows[:max(avail-2, 0)]
