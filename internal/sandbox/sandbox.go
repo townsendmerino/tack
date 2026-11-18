@@ -329,6 +329,12 @@ func gitRedirects(ws string) []string {
 		re("/" + ci("rebase-merge") + "(/.*)?$"), // git-rebase-todo: its exec lines run on the owner's rebase --continue
 		re("/" + ci("rebase-apply") + "(/.*)?$"),
 		re("/" + ci("sequencer") + "(/.*)?$"), // cherry-pick and revert todo: the same
+		// The parents of the narrow entries below: a rename of a parent gets past a rule that names only a file in it (mv objects/info away,
+		// plant alternates, mv it back). git writes objects/<xx>/ and never renames these.
+		re("/" + ci("objects") + "$"),
+		re("/" + ci("objects") + "/" + ci("info") + "$"),
+		re("/" + ci("worktrees") + "$"),
+		re("/" + ci("worktrees") + "/[^/]+$"),
 		re("/" + ci("worktrees") + "/[^/]+/(" + ci("commondir") + "|" + ci("gitdir") + "|" + ci("config.worktree") + ")$"), // a linked worktree's redirects
 	}
 }
@@ -366,5 +372,8 @@ func gitOutside(dirs ...string) []string {
 		}
 		out = append(out, fmt.Sprintf("(regex #\"^%s/(.*/)?[.][gG][iI][tT](/.*)?$\")", regexQuote(d)))
 	}
+	// The base section lets xcrun keep a cache file in the per-user temp directory by a prefix, xcrun_db, so a directory of that prefix is
+	// writable too: no .git under it either.
+	out = append(out, `(regex #"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db.*/[.][gG][iI][tT](/.*)?$")`)
 	return out
 }

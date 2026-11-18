@@ -66,6 +66,7 @@ func TestTheGitDenyListMatchesWhatItIsFor(t *testing.T) {
 		".git/objects/info/http-alternates", ".git/modules/m/config", ".git/modules/a/b/config", ".git/modules/m/hooks/post-commit", ".git/worktrees/w/commondir",
 		".git/rebase-merge/git-rebase-todo", ".git/rebase-apply/patch", ".git/sequencer/todo", ".git/REBASE-MERGE/x", ".git/remotes/origin", ".git/branches/b",
 		".git/modules/m/commondir", ".git/modules/m/config.worktree", ".git/modules/m/info/exclude", ".git/modules/m/objects/info/alternates", ".git/modules/m/HEAD",
+		".git/objects", ".git/OBJECTS/info", ".git/worktrees", ".git/worktrees/w", ".git/worktrees/Wx",
 		".git/worktrees/w/gitdir", ".git/worktrees/w/config.worktree", "sub/.git/config", "sub/.Git/hooks/x"} {
 		if !denied(ws + "/" + p) {
 			t.Errorf("%s is writable", p)
@@ -128,6 +129,17 @@ func TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace(t *testing.T) {
 		}
 		return false
 	}
+	x := "/private/var/folders/ab/cd/T"
+	for _, p := range []string{x + "/xcrun_dbX/r/.git/hooks/pre-commit", x + "/xcrun_db/.GIT", x + "/xcrun_db.d/a/b/.git"} {
+		if !denied(p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{x + "/xcrun_db", x + "/xcrun_db-journal", x + "/xcrun_dbX/r/a.git"} {
+		if denied(p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
 	for _, p := range []string{tmp + "/a/.git", tmp + "/a/.git/hooks/pre-commit", tmp + "/.GIT", tmp + "/x/y/.Git/config", cache + "/vcs/.git/HEAD"} {
 		if !denied(p) {
 			t.Errorf("%s is writable", p)
@@ -138,7 +150,7 @@ func TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace(t *testing.T) {
 			t.Errorf("%s is denied", p)
 		}
 	}
-	if len(gitOutside("", "")) != 0 {
+	if len(gitOutside("", "")) != 1 { // only the fixed xcrun rule
 		t.Error("empty directories produced rules")
 	}
 }

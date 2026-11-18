@@ -871,7 +871,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     `core.pager`, textconv), `commondir`, `hooks/`, `info/` (attributes select filter and diff drivers; `exclude`,
     `sparse-checkout`), `objects/info/alternates` and `http-alternates`, all of `modules/` (a submodule's config, `commondir`,
     `info/`, hooks and alternates redirect too), `remotes/` and `branches/` (where the owner's later push goes), `rebase-merge/`,
-    `rebase-apply/` and `sequencer/` (a todo's `exec` lines run on the owner's `rebase --continue`), `worktrees/*/commondir`,
+    `rebase-apply/` and `sequencer/` (a todo's `exec` lines run on the owner's `rebase --continue`), the parents `objects/`, `objects/info/`, `worktrees/` and `worktrees/<n>/` themselves (a rename of a parent gets past a rule that names only a file in it: move `objects/info` away, plant `alternates`, move it back; git writes `objects/<xx>/` and never renames these), `worktrees/*/commondir`,
     `gitdir` and `config.worktree`, and the `.git` entry itself at any depth (so a gitfile naming a
     `gitdir:` a command wrote cannot be made or swapped in). `index`, `objects/` (but not `objects/info/alternates`), `refs/`,
     `HEAD`, `logs/`, `packed-refs`, `ORIG_HEAD`, `FETCH_HEAD` and `COMMIT_EDITMSG` stay writable. Not covered: the directory
@@ -885,7 +885,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     the profile cannot see by path: renaming into the workspace a directory that holds a ready-made `.git` (a rename is checked
     by its destination only, never by what the moved directory holds), or a symlink to one (a link is checked by its own name,
     not its target). macOS CI showed both get through, so the profile denies the source instead: no `.git` (any letter case,
-    any depth) can be created under the temp directory or the Go cache, the only places outside the workspace a command may write
+    any depth) can be created under the temp directory or the Go cache, nor under the `xcrun_db` prefix the base section allows in the per-user temp directory, the only places outside the workspace a command may write
     (`sandbox.gitOutside`), so there is none to bring in. Cost: `git init`, `git clone` and `git worktree add` there fail under the
     sandbox, and so does any test that makes a repository in its temp directory. Left open: a symlink in the workspace to a `.git`
     that already exists outside (the owner's own repository, which is the owner's), and a directory with the shape of a bare
