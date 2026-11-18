@@ -415,3 +415,41 @@ func TestRuleParkedLow(t *testing.T) {
 		}
 	}
 }
+
+// Per arm, the share of passing runs that finished within 4, 5, 6, 8 and 10 minutes, which is what a run cap has to keep (the P1 screen's
+// cap, docs/measurements/e1-full-run-p1-rule-registration-2026-11-16.md): only passing runs count, a bound is inclusive, a void run is in
+// no count, and an arm with no passing run says so.
+func TestReport_PassingRunsWithinACap(t *testing.T) {
+	timed := func(arm string, task int, pass bool, secs float64) pilot.Record {
+		r := rec(task, arm, pass, "done")
+		r.Run.WallSecs = secs
+		return r
+	}
+	var recs []pilot.Record
+	for i, secs := range []float64{100, 200, 250, 290, 310, 350, 470, 590, 700, 900} {
+		recs = append(recs, timed("A1", i+1, true, secs))
+	}
+	recs = append(recs, timed("A1", 11, false, 30)) // a failing run is not counted, fast or slow
+	recs = append(recs, timed("A1", 12, false, 700))
+	void := timed("A1", 13, true, 50)
+	void.Run.Void = "this Mac is on battery"
+	recs = append(recs, void)
+	recs = append(recs, timed("A0", 1, true, 240), timed("A0", 2, true, 600), timed("A0", 3, false, 100))
+	recs = append(recs, timed("B", 1, false, 100))
+	p := writeResults(t, recs)
+	var out strings.Builder
+	if code := run([]string{p}, &out); code != 0 {
+		t.Fatalf("exit %d, want 0:\n%s", code, out.String())
+	}
+	s := out.String()
+	for _, want := range []string{
+		"## Passing runs finished within a cap",
+		"| A1 | 10 | 2 (20%) | 4 (40%) | 6 (60%) | 7 (70%) | 8 (80%) | 900 |", // 100, 200 | +250, 290 | +310, 350 | +470 | +590; longest 900 s
+		"| A0 | 2 | 1 (50%) | 1 (50%) | 1 (50%) | 1 (50%) | 2 (100%) | 600 |", // 240 s is within 4 minutes (inclusive); 600 s within 10
+		"| B | 0 | — | — | — | — | — | — |",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("output lacks %q:\n%s", want, s)
+		}
+	}
+}
