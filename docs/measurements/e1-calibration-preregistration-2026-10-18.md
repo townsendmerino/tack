@@ -2879,7 +2879,7 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
 ## 19. Amendment C13: Qwen3-Coder-30B-A3B on the calibration set — Francis, 2026-11-18, registered before its runs
 
 - **The question.** On the loop as adopted, does Qwen3-Coder-30B-A3B, a coding-tuned MoE in the 35B's class (about 3B
-  active), pass the calibration tasks at least as often as the 35B does at 16k? Francis asked on 2026-11-18 (about 15:22)
+  active), pass the calibration tasks at least as often as the 35B does at 16k? Francis asked on the afternoon of 2026-11-18
   for the model to be set up and the calibration's first steps run, by day.
 - **Step 1, E0 on nobara at 16,384,** with `-moe-cache-experts`, as §14.1, and E0's rule unchanged
   (`e0-preregistration-2026-10-16.md`, amendments 4 and 11): admitted at the window, `check` ok, smoke at least 17 of 20
@@ -2911,5 +2911,17 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
   Qwen XML).
 - **Predictions (tack's session, before any run):** E0 eligible; the first set 6 to 9 of 9 (task 11 3/3, task 1 0 to 2,
   task 10 2 to 3); the median run 2 to 5 minutes; if all 12 run, 9 to 15 of 36.
-- **Pinned before E0:** goinfer's commit, the serve binary and its sha256, the model file, the server flags, the decode
-  path the banner must name and the tool-call format, from nobara's model setup, in a line here before the run.
+- **Pinned (2026-11-18, before E0; from nobara's model setup):**
+  - **goinfer `9de08125c`** (main), built `CGO_ENABLED=0 go build -tags cuda ./backend/cuda/cmd/serve` from a clean
+    worktree. Binary `~/tack-runs/bin/goinfer-serve-cuda-9de08125c` on nobara, sha256 `4af7bda99cb76e3a…`.
+  - **The model:** `~/models/qwen3-coder-30b-a3b-gguf/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`, unsloth's GGUF at
+    `b17cb02` (18,556,689,568 B, sha256 `fadc3e5f8d42bf7e…`), served from its v17 int4 `.giw` sidecar.
+  - **Server flags:** `-backend cuda -moe-cache-experts -thinking off -ctx 16384`; the pilot adds `-kv-sessions 1
+    -log-requests`. The decode path the banner must name is `cuda-resident (int4)`.
+  - **Tool calls:** goinfer renders the tools with its own Hermes prompt (`<tool_call>{json}</tool_call>`), not the
+    template's XML form, and also reads XML calls if the model writes them. `forced_tool_call` is `grammar`.
+  - **What the setup measured** (15:17–15:20, nobara's timing lock held): at 16,384, `cuda-resident (int4)`, decode
+    30.0–30.1 tok/s on a short prompt (the 35B's E0: 51.5), VmHWM 32.2 GB, VmSwap 0, the expert cache at 32 slots a
+    layer. Decode is about 1.7 times slower than the 35B's; the 30-minute cap stays, and cap hits are reported.
+  - **tack `08c7d30`,** the commit that adds this section, built clean on both machines (Linux binary sha256
+    `93e8069bd9b4a908…`).
