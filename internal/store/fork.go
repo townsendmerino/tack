@@ -205,6 +205,9 @@ func sweepForkTemps(sessions string, now time.Time) {
 			continue
 		}
 		dir := filepath.Join(sessions, e.Name())
+		if afterSweepStat != nil {
+			afterSweepStat(dir)
+		}
 		// A fork that is still running holds its lock; one that died does not, or never made the file.
 		if lock, err := os.OpenFile(filepath.Join(dir, forkLockName), os.O_RDWR, 0); err == nil {
 			busy := lockLog(lock) != nil
@@ -212,6 +215,10 @@ func sweepForkTemps(sessions string, now time.Time) {
 			if busy {
 				continue
 			}
+		} else if again, err := os.Stat(dir); err != nil || now.Sub(again.ModTime()) <= staleForkTemp {
+			// No lock file: the fork died, or it is finishing, since it removes the file just before it renames the directory, and that
+			// changes the directory's mtime. Look at the mtime again, so a fork stalled for hours that finishes now is not swept.
+			continue
 		}
 		_ = removeAll(dir)
 	}
@@ -223,3 +230,7 @@ var removeAll = os.RemoveAll
 // forkWriteHook, when set by a test, is called after each of a fork's lines is written, with how many have been, and may fail the
 // fork there: the same as a crash at that point, except that the process goes on.
 var forkWriteHook func(written int) error
+
+// afterSweepStat, when set by a test, is called with a temp directory between the sweep's look at its age and its attempt to open the
+// lock, where a fork that is finishing removes its lock file.
+var afterSweepStat func(dir string)
