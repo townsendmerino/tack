@@ -175,10 +175,15 @@ func configWriteRuns(prog string, c Simple) bool {
 			return false
 		}
 		var pos []string
-		for _, a := range args[i+1:] {
+		rest := args[i+1:]
+		for j := 0; j < len(rest); j++ {
+			a := rest[j]
 			switch a {
 			case "--get", "--get-all", "--get-regexp", "--list", "-l", "--unset", "--unset-all", "get", "list", "unset":
 				return false // reading, or removing, is not planting
+			case "-f", "--file", "--blob", "--default", "--type", "--comment":
+				j++ // the option's value is the next word, and is not the key: --file x.cfg core.fsmonitor id writes core.fsmonitor to x.cfg
+				continue
 			}
 			if !strings.HasPrefix(a, "-") {
 				pos = append(pos, a)

@@ -92,3 +92,33 @@ func TestDecodeCandidatesIsWhatBashGives(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTripwireCountsAConfigWriteToAnyFileOrScope: git config --file, -f (also attached), --global, --system, --worktree and an option
+// with a value before the key are the same write as a plain git config; the file's name is not the key.
+func TestTheTripwireCountsAConfigWriteToAnyFileOrScope(t *testing.T) {
+	e := allowEngine(t)
+	for _, cmd := range []string{
+		`git config --file x.cfg core.fsmonitor id`, `git config -f x.cfg core.fsmonitor id`, `git config --file=x.cfg core.fsmonitor id`,
+		`git config -fx.cfg core.fsmonitor id`, `git config --file /tmp/c core.hooksPath /tmp/h`, `git config --file ~/.gitconfig core.pager 'sh -c id'`,
+		`git config --file x.cfg alias.x '!id'`, `git config --file x.cfg diff.external id`, `git config --file x.cfg diff.x.textconv id`,
+		`git config --file x.cfg set core.fsmonitor id`, `git -C . config --file x.cfg core.fsmonitor id`,
+		`git config --system core.fsmonitor id`, `git config --worktree core.hooksPath ../h`, `git config --global core.pager 'sh -c id'`,
+		`git config --local --replace-all core.fsmonitor id`, `git config --add core.pager id`,
+		`git config --comment hi core.fsmonitor id`, `git config --type=bool core.fsmonitor id`, `git config --type bool core.fsmonitor id`,
+		`git config --file x.cfg --comment hi core.fsmonitor id`,
+	} {
+		if got := e.Tripwire(cmd); len(got) == 0 {
+			t.Errorf("%q does not count", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`git config --file x.cfg user.name x`, `git config --file .gitmodules submodule.a.url https://x/y`, `git config -f x.cfg --get core.fsmonitor`,
+		`git config --file x.cfg --unset core.fsmonitor`, `git config --file x.cfg core.fsmonitor true`, `git config --global core.fsmonitor false`,
+		`git config --file x.cfg core.hooksPath .githooks`, `git config --system user.email a@b`, `git config --worktree core.sparseCheckout true`,
+		`git config --file x.cfg --list`, `git config --file x.cfg alias.co checkout`, `git config --file x.cfg core.fsmonitor`,
+	} {
+		if got := e.Tripwire(cmd); len(got) != 0 {
+			t.Errorf("%q counts as %v; it is honest, a read or a removal", cmd, got)
+		}
+	}
+}
