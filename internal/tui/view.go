@@ -31,6 +31,8 @@ type View struct {
 	streamIdx map[int]int
 	unread    map[proto.EventType]bool // the event types already noted as unreadable
 	pending   *Question                // the open permission question, if any
+	todos     todoState                // the session's task list, from the model's todo calls (todos.go)
+	changes   changeState              // the files its edits and writes changed (changes.go)
 }
 
 // Question is an open permission question: the tool call's id and the seq of the permission.requested event, which
@@ -117,6 +119,8 @@ func (v *View) Apply(ev proto.Event) {
 			}
 		}
 	case proto.ToolCall:
+		v.todos.call(e)
+		v.changes.call(e)
 		v.calls[e.ID] = len(v.entries)
 		v.entries = append(v.entries, entry{kind: "tool", head: "● " + e.Name + callArg(e.Input)})
 	case proto.PermissionRequested:
@@ -153,10 +157,13 @@ func (v *View) Apply(ev proto.Event) {
 			t.started = true
 		}
 	case proto.ToolFinished:
+		v.todos.finished(e)
+		v.changes.finished(e)
 		if t := v.call(e.ID); t != nil {
 			t.result = resultLine(e)
 		}
 	case proto.Checkpoint:
+		v.changes.checkpoint(e)
 		if t := v.call(e.ID); t != nil && e.Unavailable != "" {
 			t.lines = append(t.lines, "! can't be rewound: "+e.Unavailable)
 		}

@@ -16,7 +16,7 @@ type command struct {
 // commands are the screen's own commands, in the order /help lists them. They act on the screen and the session through the
 // Backend; user-defined prompt templates (DESIGN §6.7) are not here.
 func (a *App) commands() []command {
-	return []command{
+	return append([]command{
 		{"help", "list these commands", func(a *App, _ string) tea.Cmd {
 			for _, c := range a.commands() {
 				a.Screen.note("/" + c.name + "  " + c.help)
@@ -28,7 +28,7 @@ func (a *App) commands() []command {
 			a.quit = true
 			return tea.Quit
 		}},
-	}
+	}, paneCommands()...)
 }
 
 // slashCommand reads text as a command: a "/" and a name of lowercase letters, digits and hyphens, then nothing or a space or
