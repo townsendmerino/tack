@@ -166,33 +166,16 @@ func configWriteRuns(prog string, c Simple) bool {
 		i := 0
 		for i < len(args) && strings.HasPrefix(args[i], "-") {
 			switch args[i] {
-			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path":
-				i++ // the option's value is the next word
+			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source":
+				i++ // the option's value is the next word (--exec-path takes one only attached, as --git-dir=x also may)
 			}
 			i++
 		}
 		if i >= len(args) || args[i] != "config" {
 			return false
 		}
-		var pos []string
-		rest := args[i+1:]
-		for j := 0; j < len(rest); j++ {
-			a := rest[j]
-			switch a {
-			case "--get", "--get-all", "--get-regexp", "--list", "-l", "--unset", "--unset-all", "get", "list", "unset":
-				return false // reading, or removing, is not planting
-			case "-f", "--file", "--blob", "--default", "--type", "--comment":
-				j++ // the option's value is the next word, and is not the key: --file x.cfg core.fsmonitor id writes core.fsmonitor to x.cfg
-				continue
-			}
-			if !strings.HasPrefix(a, "-") {
-				pos = append(pos, a)
-			}
-		}
-		if len(pos) > 0 && pos[0] == "set" {
-			pos = pos[1:]
-		}
-		if len(pos) < 2 {
+		pos, ok := gitConfigPositionals(args[i+1:])
+		if !ok || len(pos) < 2 {
 			return false
 		}
 		key, val := strings.ToLower(pos[0]), pos[1]

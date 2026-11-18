@@ -719,7 +719,7 @@ tool-use smoke set compares this merged set against the split one before it is f
   found by decoding the word as bash does); `-extld`, `-toolexec` or `-exec` hidden in `-ldflags`, `-gcflags`, `-asmflags`,
   `-gccgoflags` or `GOFLAGS` (also through `env`, and written with `$'…'`); a config write that makes something run
   later, and only those (`git config` of `core.fsmonitor` to a program, `core.hooksPath` outside the repository, `core.pager`,
-  `diff.external`, a `diff.<driver>.textconv`, or an `alias.x '!…'`, with `-C`, `-c` and `config set` read, and the same write to any file or scope: `--file`, `-f`, `--global`, `--system`, `--worktree`, whose value or flag is not taken for the key; `go env -w` of a
+  `diff.external`, a `diff.<driver>.textconv`, or an `alias.x '!…'`, with `-C`, `-c` and `config set` read, and the same write to any file or scope: `--file`, `-f`, `--global`, `--system`, `--worktree`, whose value or flag is not taken for the key (long options by unique prefix, bundled short options, `--value`, git's global options that take a separate value, and `get`, `list`, `unset` and the like only as the subcommand, first after `config`); `go env -w` of a
   `GOFLAGS` holding a run word); other config writes (`core.hooksPath .githooks`, `CC=clang`, `GOFLAGS=-mod=mod`) just ask; and an
   edited rule that parses and reads back but widens what was shown (core's `permission/respond`; one that does not parse is as
   likely the owner's typo, and only fails). A plain
