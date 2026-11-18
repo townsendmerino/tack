@@ -73,6 +73,24 @@ func programKeyClass(key string) (valueClass, bool) {
 		has("difftool.", ".cmd"), has("difftool.", ".path"), has("mergetool.", ".cmd"), has("mergetool.", ".path"),
 		has("browser.", ".cmd"), has("browser.", ".path"), has("man.", ".cmd"), has("man.", ".path"), has("guitool.", ".cmd"), has("remote.", ".vcs"):
 		return classNone, true
+	case has("sendemail.", ".smtpserver"):
+		return classPath, true
+	}
+	// A key this code has not been told about is counted by the end of its name: a command, a hook, a program, a tunnel, a helper or a
+	// pager (delta.pager, delta.<feature>.pager, bat.pager) names something git or a tool runs. Aliases are read in configWriteRuns: an
+	// alias named hook or cmd is not one of these.
+	if strings.HasPrefix(key, "alias.") {
+		return 0, false
+	}
+	last := key[strings.LastIndexByte(key, '.')+1:]
+	switch {
+	case key == "instaweb.httpd":
+		return classNone, true
+	case last == "pager":
+		return classPager, true
+	case strings.HasSuffix(last, "cmd"), strings.HasSuffix(last, "command"), strings.HasSuffix(last, "hook"), strings.HasSuffix(last, "program"),
+		strings.HasSuffix(last, "tunnel"), strings.HasSuffix(last, "helper"):
+		return classNone, true
 	}
 	return 0, false
 }
@@ -127,7 +145,6 @@ var (
 	pathRE      = regexp.MustCompile(`^/[A-Za-z0-9._+/-]+$`)
 	sshOptionRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)=[A-Za-z0-9._,:@+/-]*$`)
 	timeoutRE   = regexp.MustCompile(`^--timeout=[0-9]+$`)
-	pagerFlagRE = regexp.MustCompile(`^-{1,2}[A-Za-z][A-Za-z0-9-]*$`)
 	sshHomeRE   = regexp.MustCompile(`^~/\.ssh/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
 	portRE      = regexp.MustCompile(`^[0-9]{1,5}$`)
 	userRE      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -159,6 +176,30 @@ var editorFlags = map[string][]string{
 	"code": {"--wait", "-w", "-n", "--new-window", "-r", "--reuse-window"}, "subl": {"--wait", "-w", "-n", "--new-window"}, "mate": {"--wait", "-w"},
 }
 
+// pagerFlags are the flags, by pager, that only change how it draws. less -k reads a lesskey file (whose LESSOPEN runs a program) and -o,
+// -O and -T write files, so they are not here; any flag not listed counts. less also takes bundles of its one-letter flags (-FRX) and
+// -j<n>.
+var pagerFlags = map[string][]string{
+	"less": {"--RAW-CONTROL-CHARS", "--raw-control-chars", "--quit-if-one-screen", "--no-init", "--chop-long-lines", "--quit-at-eof", "--LONG-PROMPT",
+		"--LINE-NUMBERS", "--ignore-case", "--IGNORE-CASE", "--clear-screen"},
+	"more": {}, "cat": {}, "diff-so-fancy": {},
+	"delta": {"--dark", "--light", "--color-only", "--side-by-side", "-s", "--line-numbers", "-n", "--navigate", "--raw", "--keep-plus-minus-markers", "--hyperlinks"},
+	"bat":   {"--plain", "-p", "-pp", "-P", "--number", "-n"},
+}
+
+var (
+	lessShortRE = regexp.MustCompile(`^-[RFXSKMNiIr]+$`)
+	lessJumpRE  = regexp.MustCompile(`^-j[0-9]+$`)
+)
+
+// pagerFlagOK reports whether f is one of pager's known plain flags.
+func pagerFlagOK(pager, f string) bool {
+	if slices.Contains(pagerFlags[pager], f) {
+		return true
+	}
+	return pager == "less" && (lessShortRE.MatchString(f) || lessJumpRE.MatchString(f))
+}
+
 // sshOptionsThatRun are ssh -o options that run a program, load a library or read another file of options.
 var sshOptionsThatRun = []string{"proxycommand", "localcommand", "knownhostscommand", "permitlocalcommand", "include", "proxyjump", "pkcs11provider", "securitykeyprovider"}
 
@@ -175,18 +216,28 @@ func honestValue(class valueClass, v string) bool {
 		if !known || !program(toks[0], base) { // a bare name, or a path under a system bin directory
 			return false
 		}
-		for _, f := range toks[1:] {
+		for i := 1; i < len(toks); i++ {
+			f := toks[i]
+			// emacsclient -a "" starts a server when there is none: an empty alternate editor, the one form of -a that is honest
+			if base == "emacsclient" && f == "-a" && i+1 < len(toks) && (toks[i+1] == `""` || toks[i+1] == `''`) {
+				i++
+				continue
+			}
 			if !slices.Contains(flags, f) {
 				return false
 			}
 		}
 		return true
 	case classPager:
-		if len(toks) == 0 || !program(toks[0], "less", "more", "cat", "delta", "diff-so-fancy", "bat") {
+		if len(toks) == 0 {
+			return false
+		}
+		base := filepath.Base(toks[0])
+		if _, known := pagerFlags[base]; !known || !program(toks[0], base) {
 			return false
 		}
 		for _, f := range toks[1:] {
-			if !pagerFlagRE.MatchString(f) {
+			if !pagerFlagOK(base, f) {
 				return false
 			}
 		}
@@ -211,7 +262,7 @@ func honestValue(class valueClass, v string) bool {
 		case "store", "osxkeychain", "manager", "manager-core", "libsecret", "cache", "!gh auth git-credential", "!/usr/bin/gh auth git-credential",
 			"/usr/lib/git-core/git-credential-libsecret", "/usr/lib/git-core/git-credential-store", "/usr/lib/git-core/git-credential-cache",
 			"/usr/lib/git-core/git-credential-osxkeychain", "/usr/local/share/gcm-core/git-credential-manager", "/usr/share/gcm-core/git-credential-manager",
-			"/usr/local/share/gcm-core/git-credential-manager-core":
+			"/usr/local/share/gcm-core/git-credential-manager-core", "/usr/local/bin/git-credential-manager", "!/opt/homebrew/bin/gh auth git-credential", "!/usr/local/bin/gh auth git-credential":
 			return true
 		}
 		return len(toks) == 2 && toks[0] == "cache" && timeoutRE.MatchString(toks[1])
@@ -293,10 +344,8 @@ func programVarRuns(name, value string) bool {
 		return !(len(strings.Fields(v)) == 1 && program(v, "ar", "llvm-ar", "gcc-ar"))
 	case "GOCACHEPROG":
 		return true
-	case "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS":
-		return hasBWord(v)
-	case "CGO_LDFLAGS":
-		return hasBWord(v) || ldflagsRun(v)
+	case "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS":
+		return slices.ContainsFunc(strings.Fields(v), func(w string) bool { return !cgoFlagHonest(w) }) // counted unless every word is honest
 	}
 	return false
 }
@@ -310,27 +359,29 @@ func compilerWord(w string) bool {
 		compilerRE.MatchString(filepath.Base(w))
 }
 
-// hasBWord reports whether a flags string has a word -B or -B<dir>, which names where gcc and ld look for their programs (-Bstatic and
-// -Bdynamic, which choose how to link, do not).
-func hasBWord(v string) bool {
-	for _, w := range strings.Fields(v) {
-		if strings.HasPrefix(w, "-B") && !slices.Contains([]string{"-Bstatic", "-Bdynamic", "-Bsymbolic", "-Bsymbolic-functions"}, w) {
-			return true
-		}
-	}
-	return false
-}
+var (
+	cgoOptRE     = regexp.MustCompile(`^-(O[0-3sg]|g[0-3]?|ggdb)$`)
+	cgoWarnRE    = regexp.MustCompile(`^-W[a-z][a-z0-9-]*$`) // -Wall, -Wextra, -Wno-x: no comma, so -Wl, -Wp, and -Wa, are not here
+	cgoDefineRE  = regexp.MustCompile(`^-D[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_.+-]*)?$`)
+	cgoLibRE     = regexp.MustCompile(`^-l[A-Za-z0-9_.+-]+$`)
+	cgoStdRE     = regexp.MustCompile(`^-std=[A-Za-z0-9+:.]+$`)
+	cgoMachineRE = regexp.MustCompile(`^-m[a-z0-9_-]+(=[A-Za-z0-9_.+-]+)?$`)
+	cgoFlagRE    = regexp.MustCompile(`^-f(no-)?[A-Za-z][A-Za-z0-9-]*$`) // -fPIC, -fno-omit-frame-pointer: no "=", so -fplugin=, -fuse-ld= and -fsanitize= are not
+	cgoSysDirRE  = regexp.MustCompile(`^-[IL](/usr/(include|lib|lib64|libexec|local/(include|lib))|/opt/homebrew/(include|lib))(/[A-Za-z0-9._+-]+)*$`)
+	cgoRpathRE   = regexp.MustCompile(`^-Wl,-rpath,(/usr/(lib|lib64|local/lib)|/opt/homebrew/lib)(/[A-Za-z0-9._+-]+)*$`)
+)
 
-// ldflagsRun: -Wl,-plugin=<x> and -Wl,-plugin,<x> (a linker plugin is code the linker loads), -fuse-ld= with a path (a linker program;
-// -fuse-ld=lld and gold name one the compiler finds itself), and -wrapper (gcc runs the program that follows).
-func ldflagsRun(v string) bool {
-	for _, w := range strings.Fields(v) {
-		switch {
-		case strings.HasPrefix(w, "-Wl,") && (strings.Contains(w, ",-plugin=") || strings.Contains(w, ",-plugin,") || strings.HasPrefix(w, "-Wl,-plugin")):
-			return true
-		case strings.HasPrefix(w, "-fuse-ld=") && strings.Contains(w, "/"):
-			return true
-		case w == "-wrapper":
+// cgoFlagHonest reports whether one word of a CGO_*FLAGS value is on the short honest list: optimization, debug and warning flags, -D, -l,
+// -std, -m<arch>, plain -f flags, -I and -L under the system's include and lib directories, a few link modes. Everything else counts:
+// -B (where the compiler finds its programs), -wrapper, -specs=, -fplugin=, -fuse-ld=, --ld-path=, --prefix=, -Xlinker, -Wl, options that
+// load a plugin or name a linker, and any path outside the system directories (-I. included).
+func cgoFlagHonest(w string) bool {
+	switch w {
+	case "-static", "-pthread", "-Bstatic", "-Bdynamic", "-shared", "-pie", "-Wl,--as-needed", "-Wl,--gc-sections", "-Wl,-s", "-Wl,-O1", "-Wl,-z,relro", "-Wl,-z,now":
+		return true
+	}
+	for _, re := range []*regexp.Regexp{cgoOptRE, cgoWarnRE, cgoDefineRE, cgoLibRE, cgoStdRE, cgoMachineRE, cgoFlagRE, cgoSysDirRE, cgoRpathRE} {
+		if re.MatchString(w) {
 			return true
 		}
 	}
