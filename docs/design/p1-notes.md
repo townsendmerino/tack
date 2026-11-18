@@ -53,7 +53,7 @@ The order the owner approved, each step with its exit check:
        (`request.sent` and `usage`), and their tokens count toward the budgets and the usage table. Re-retrieval behind
        `[run] summary_retrieve` (share `summary_retrieve_share`, default 10% of the window; coordinator, 2026-11-09,
        logged for the owner): the summary's open threads are searched through ken and the hits end the summary message.
-       The E1 screen of summarize and re-retrieval is registered (`docs/measurements/e1-summarize-screen-registration-2026-11-16.md`); the full E1 run and the P1 rule are registered in `docs/measurements/e1-full-run-p1-rule-registration-2026-11-16.md`. No run is queued.
+       The E1 screen of summarize and re-retrieval is registered (`docs/measurements/e1-summarize-screen-registration-2026-11-16.md`); the P1 screen (the full E1 run and the P1 rule, cut to 20 tasks and about two hours on 2026-11-18, Amendment 1) is registered in `docs/measurements/e1-full-run-p1-rule-registration-2026-11-16.md`. No run is queued.
    - **Subagents (2026-11-09):** the `task` tool behind `[run] subagents`, off by default (coordinator's decisions,
      logged for the owner): the child is its own stored session with `SessionCreated.Parent`, in plan mode, read-only,
      depth 1, under `[run] subagent_*` (half the per-turn budget); its tokens count toward the parent's budgets through
@@ -87,7 +87,7 @@ The order the owner approved, each step with its exit check:
      `Workspace.FindRelated`. It is listed only when ken runs in semantic or hybrid mode, since a bm25 index has no
      vectors (`internal/tools/related.go`, `kensearch.Searcher.Relates`). It adds 62 tokens to the largest fixed
      prompt: 1,316 of 3,276.
-8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 rule.
+8. **TUI**, then the full E1 run. P1's exit is the owner's week of real use and the P1 screen (which rules out a gap over about 29 points; not a competence claim at 14).
 
 **Decisions:**
 

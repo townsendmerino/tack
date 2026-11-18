@@ -95,7 +95,7 @@ and in how much memory, before the loop is built around them.
 | D10 | evaluation machine time | night hours per box for E0 and E1, set by the owner after the pilot | §15.2 | open |
 | D11 | TUI quality bar | product-quality basics: it is the daily driver until P4, and the only UI on nobara | §10 | **decided** 2026-10-16 |
 | D12 | model servers | local only: goinfer first-class; Ollama, LM Studio and llama.cpp's server through one OpenAI-compatible adapter | §6.4 | **decided** 2026-10-16 |
-| D13 | E1 size | 60 tasks with a pass-rate margin of about 14 points, or about 120 for about 10; decided after the pilot | §15.3 | open |
+| D13 | E1 size | 60 tasks with a pass-rate margin of about 14 points, or about 120 for about 10; decided after the pilot. **For P1, decided 2026-11-18 (owner): the 20-task screen, margin about 29, about two hours (the registration, Amendment 1).** D13 stays open for P2 | §15.3 | P1 closed, P2 open |
 
 ---
 
@@ -2066,9 +2066,13 @@ power the margin has to be about 2.5 standard errors: roughly 14 points at 60 ta
 is D13, decided from the pilot's variance. **Capped time carries the decisions; pass rate is the guardrail**,
 at that margin *m*. Each rule names one primary comparison, and the number of runs is fixed before it starts.
 
-- **P1 exit — is the loop competent?** A1 against A0 on the full task set (the pilot only sizes it): the lower bound of
-  the pass-rate interval ≥ −m. If not, the loop is fixed and the rule runs once more on the next full run; a second miss
-  stops P2 until the owner decides.
+- **P1 exit — the P1 screen, and the owner's week of real use.** The screen is A1 against A0 on the first 20 tasks, one run per arm
+  (`docs/measurements/e1-full-run-p1-rule-registration-2026-11-16.md`, amended 2026-11-18 at Francis's choice of two hours of machine time):
+  the lower bound of the pass-rate interval ≥ −m, with m about 29 points (2.5 standard errors at 20 tasks). **It rules out a gap over
+  about 29 points between A1 and A0. It does not establish competence at 14 points**, the margin this bullet named for 60 tasks with 2
+  runs; the owner's week of real use is what speaks to that. A miss fixes the loop and runs the screen once more; a second miss stops P2
+  until the owner decides. The 60-task continuation (m near 17) is a separate registration the owner may buy.
+
 - **P2 exit — the context bet.** Primary: A3 against A1, run in the same window (A2 is reported, not decided on). Pass
   rate non-inferior at −m, and a ratio of mean capped times with a point estimate ≤ 0.80 and an interval whose upper
   bound is ≤ 0.95 → ship as default. A point estimate ≤ 0.95 that misses that → parked: keep it opt-in and re-test after
@@ -2089,7 +2093,7 @@ run faster; the app's review loop is the part more agent throughput does not com
 | phase | scope | size | exit | droppable |
 |---|---|---|---|---|
 | **P0** foundations | repo, CI, protocol types and fixtures, Swift generator stub, store; the goinfer server adapter, supervisor and remote connection; cassettes; `tack run` for read-only questions on a local model; ken K1–K2 (in ken); **E0** at night; the A0-against-A0k pilot | 2–3 wk | E0 and the pilot recorded; `tack run` answers a question about ken from cassettes in CI | no |
-| **P1** daily-driver CLI | the tools except `symbol` and `web_fetch` (P5; the network stays fully denied in P1); permissions and sandbox; ken in-process; instruction files with the fixed-prompt budget and sections (K9); compaction; checkpoints; subagents; TUI; daemon with auto-spawn; budgets and halt; usage table; the OpenAI-compatible adapter; goinfer G2, G3, G6; E1 pilot, then the full A0-against-A1 run | 5–7 wk | the owner uses it for a week of real work; the P1 rule passes | no |
+| **P1** daily-driver CLI | the tools except `symbol` and `web_fetch` (P5; the network stays fully denied in P1); permissions and sandbox; ken in-process; instruction files with the fixed-prompt budget and sections (K9); compaction; checkpoints; subagents; TUI; daemon with auto-spawn; budgets and halt; usage table; the OpenAI-compatible adapter; goinfer G2, G3, G6; E1 pilot, then the A0-against-A1 P1 screen | 5–7 wk | the owner uses it for a week of real work; the P1 screen passes (§15.3: it rules out a gap over about 29 points, not a gap over 14) | no |
 | **P2** context engine | ken K3–K8 (in ken); the ledger; staleness; `symbol`; auto-context; prefix-aware assembly measured; TUI inspector; transcripts corpus | 4–6 wk | the P2 rule: ship, park or fail | a fail parks features, not the product |
 | **P3** fast turns, no swap | reuse tuning and residency; the small jobs with their gates; admission and the memory guard on the Mac; the nobara server hardened | 3–4 wk | the P3 rule plus E2 | yes |
 | **P4** macOS app | §11.1–§11.7, the notifications of §11.8, §11.9, §11.10; signed and notarized from the first build | 6–8 wk | the owner uses the app as primary for a week; §11.9 budgets met | — |
@@ -2118,7 +2122,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
 | CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d, and e to edit the rule), Esc to cancel and `@` path completion | — | the TUI's choice of mode (it opens in plan mode), multi-line composer, `/` commands, inspector, changes and todo panes; `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
 | clients (§9.4, §11) | generated Swift protocol types | — | `internal/render`, `internal/acp`, the macOS app |
-| evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the full E1 run and the P1 rule |
+| evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the P1 screen (registered, amended 2026-11-18) |
 
 **What the measurements have changed since the draft** (the records are in `docs/measurements/`; §0, §2.3 and §8.4 are
 not yet rewritten for them, and `proposal-design-review-2026-11-09.md` proposes how):
