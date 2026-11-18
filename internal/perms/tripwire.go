@@ -84,7 +84,7 @@ func (e *Engine) Tripwire(command string) []string {
 						add("goflags")
 					}
 				}
-				if a.Name != nil && programVar(a.Name.Value) && a.Value != nil && programRuns(a.Value) {
+				if a.Name != nil && a.Value != nil && programAssign(a.Name.Value, a.Value) {
 					add("program-var")
 				}
 			}
@@ -211,6 +211,8 @@ func configWriteRuns(prog string, c Simple) bool {
 			return val != ""
 		case strings.HasPrefix(key, "alias.") && strings.HasPrefix(val, "!"):
 			return true
+		case extURL(key, val):
+			return true // git runs the command after ext:: to reach the remote
 		case programKey(key):
 			return runsProgram(val)
 		case key == "include.path" || strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path"):
@@ -227,7 +229,7 @@ func configWriteRuns(prog string, c Simple) bool {
 				continue
 			}
 			if write {
-				if name, v, _ := strings.Cut(a, "="); name == "GOFLAGS" && hasRunWord(v) || programVar(name) && runsProgram(v) {
+				if name, v, _ := strings.Cut(a, "="); name == "GOFLAGS" && hasRunWord(v) || programVarRuns(name, v) {
 					return true
 				}
 			}

@@ -94,7 +94,7 @@ func TestDecodeCandidatesIsWhatBashGives(t *testing.T) {
 }
 
 // counts checks one group of settings that make git or the Go toolchain run a program: each counted form counts, and each honest form
-// (a bare program name, a read, a removal, a system path) does not.
+// (a short allowlist of known-honest values, a read, a removal) does not.
 func counts(t *testing.T, counted, honest []string) {
 	t.Helper()
 	e := allowEngine(t)
@@ -110,13 +110,23 @@ func counts(t *testing.T, counted, honest []string) {
 	}
 }
 
+// A write of these keys counts unless the whole value is on the allowlist: one bare word without metacharacters (and not an interpreter),
+// a program and --wait or -w, a git-lfs filter command, a credential cache with --timeout, ssh with plain -o options other than the ones
+// that run a program, or one path under /usr/bin, /bin, /sbin, /usr/sbin, /usr/libexec.
+
 func TestTheTripwireCountsSshCommandAskPassAndCredentialHelper(t *testing.T) {
 	counts(t, []string{
 		`git config core.sshCommand ./ssh-wrap`, `git config core.sshCommand 'sh -c id'`, `git config core.sshCommand '/tmp/x -i key'`, `git config core.sshCommand 'ssh; id'`,
-		`git config core.askPass ./askpass`, `git config core.askPass ~/x`, `git config --global core.askPass ../tools/ask`,
+		`git config core.sshCommand 'ssh -o ProxyCommand=./x'`, `git config core.sshCommand 'ssh -F ./cfg'`, `git config core.sshCommand 'ssh -oProxyCommand=./x host'`,
+		`git config core.sshCommand 'ssh -o LocalCommand=./x -o PermitLocalCommand=yes'`, `git config core.sshCommand 'ssh -o KnownHostsCommand=./x'`,
+		`git config core.sshCommand 'ssh -o proxycommand=./x'`, `git config core.sshCommand 'ssh -o PermitLocalCommand=yes'`, `git config core.sshCommand 'ssh -o Include=./c'`,
+		`git config core.sshCommand '"sh" x.sh'`, `git config core.sshCommand 'FOO=1 sh x.sh'`, `git config core.sshCommand 'timeout 9 sh x.sh'`,
+		`git config core.askPass ./askpass`, `git config core.askPass ~/x`, `git config --global core.askPass ../tools/ask`, `git config core.askPass /usr/local/bin/ask`,
 		`git config credential.helper '!f() { id; }; f'`, `git config credential.helper ./helper`, `git config credential.https://example.com.helper /tmp/h`,
+		`git config credential.helper 'cache --socket ./s'`, `git config credential.helper 'store --file ./f'`,
 	}, []string{
-		`git config core.sshCommand ssh`, `git config core.sshCommand 'ssh -o StrictHostKeyChecking=accept-new'`, `git config core.sshCommand /usr/bin/ssh`,
+		`git config core.sshCommand ssh`, `git config core.sshCommand 'ssh -o StrictHostKeyChecking=accept-new'`, `git config core.sshCommand '/usr/bin/ssh'`,
+		`git config core.sshCommand 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'`, `git config core.sshCommand 'ssh -oBatchMode=yes'`,
 		`git config core.askPass ssh-askpass`, `git config credential.helper store`, `git config credential.helper 'cache --timeout=3600'`,
 		`git config credential.helper osxkeychain`, `git config credential.https://example.com.helper manager`, `git config --get credential.helper`,
 		`git config --unset credential.helper`, `git config credential.helper ""`, `git config credential.username me`,
@@ -127,38 +137,43 @@ func TestTheTripwireCountsEditorsThatAreNotAName(t *testing.T) {
 	counts(t, []string{
 		`git config core.editor ./edit.sh`, `git config core.editor 'sh -c id'`, `git config core.editor '/tmp/ed'`, `git config sequence.editor ./seq`,
 		`git config --global sequence.editor 'bash -c id'`, `git config core.editor 'vim; id'`, `git config sequence.editor '!id'`, `git config core.editor 'python3 x.py'`,
+		`git config core.editor 'vim -c "!./x"'`, `git config core.editor 'vim -S x.vim'`, `git config core.editor 'make -f x.mk'`, `git config core.editor '. ./x'`,
+		`git config core.editor 'eval ./x'`, `git config core.editor 'exec ./x'`, `git config core.editor sh`, `git config core.editor '/opt/homebrew/bin/nvim'`,
+		`git config core.editor '/usr/local/bin/vim'`, `git config core.editor 'code --wait --extra'`,
 	}, []string{
 		`git config core.editor vim`, `git config core.editor 'code --wait'`, `git config sequence.editor nano`, `git config core.editor /usr/bin/vim`,
-		`git config core.editor /opt/homebrew/bin/nvim`, `git config --get sequence.editor`, `git config --unset core.editor`,
+		`git config core.editor 'code -w'`, `git config --get sequence.editor`, `git config --unset core.editor`,
 	})
 }
 
 func TestTheTripwireCountsGpgProgram(t *testing.T) {
 	counts(t, []string{
 		`git config gpg.program ./gpg-wrap`, `git config gpg.ssh.program /tmp/sign`, `git config gpg.x509.program ~/s`, `git config gpg.openpgp.program 'sh -c id'`,
-		`git config --system gpg.program ../x`,
+		`git config --system gpg.program ../x`, `git config gpg.program /usr/local/bin/gpg`, `git config gpg.program 'gpg --homedir ./h'`,
 	}, []string{
 		`git config gpg.program gpg`, `git config gpg.program gpg2`, `git config gpg.ssh.program ssh-keygen`, `git config gpg.format ssh`,
-		`git config gpg.program /usr/local/bin/gpg`, `git config --get gpg.program`,
+		`git config gpg.program /usr/bin/gpg`, `git config --get gpg.program`,
 	})
 }
 
 func TestTheTripwireCountsFilterDrivers(t *testing.T) {
 	counts(t, []string{
 		`git config filter.x.clean ./clean.sh`, `git config filter.x.smudge './smudge %f'`, `git config filter.x.process /tmp/p`, `git config filter.lfs.clean 'sh -c id'`,
-		`git config --local filter.x.clean 'cat; id'`,
+		`git config --local filter.x.clean 'cat; id'`, `git config filter.x.clean 'go run ./tools/c'`, `git config filter.x.clean 'git -c alias.y=!./e y'`,
+		`git config filter.x.smudge 'git-lfs smudge -- %f; id'`, `git config filter.x.clean 'git-lfs clean -- ./x'`,
 	}, []string{
 		`git config filter.lfs.clean 'git-lfs clean -- %f'`, `git config filter.lfs.smudge 'git-lfs smudge -- %f'`, `git config filter.lfs.process 'git-lfs filter-process'`,
-		`git config filter.lfs.required true`, `git config --unset filter.x.clean`, `git config --get filter.x.smudge`,
+		`git config filter.lfs.process 'git-lfs filter-process --skip'`, `git config filter.lfs.required true`, `git config --unset filter.x.clean`,
+		`git config --get filter.x.smudge`,
 	})
 }
 
 func TestTheTripwireCountsMergeDrivers(t *testing.T) {
 	counts(t, []string{
 		`git config merge.x.driver './merge.sh %O %A %B'`, `git config merge.x.driver 'sh -c id'`, `git config merge.ours.driver /tmp/m`, `git config --global merge.x.driver ../m`,
+		`git config merge.x.driver 'git merge-file %A %O %B'`,
 	}, []string{
-		`git config merge.ours.driver true`, `git config merge.x.name 'a driver'`, `git config merge.x.driver 'git merge-file %A %O %B'`,
-		`git config --unset merge.x.driver`, `git config merge.tool vimdiff`,
+		`git config merge.ours.driver true`, `git config merge.x.name 'a driver'`, `git config --unset merge.x.driver`, `git config merge.tool vimdiff`,
 	})
 }
 
@@ -179,13 +194,43 @@ func TestTheTripwireCountsIncludesThatPullInAFile(t *testing.T) {
 	})
 }
 
+// The same class as diff.external: settings git runs a program for.
+func TestTheTripwireCountsTheOtherSettingsGitRunsAProgramFor(t *testing.T) {
+	counts(t, []string{
+		`git config pager.log ./p`, `git config pager.diff 'sh -c id'`, `git config pager.status /tmp/p`,
+		`git config diff.x.command ./d`, `git config diff.x.command 'sh -c id'`, `git config interactive.diffFilter ./f`, `git config interactive.diffFilter 'diff-highlight; id'`,
+		`git config core.gitProxy ./proxy`, `git config core.gitProxy './p for example.com'`,
+		`git config remote.origin.uploadpack ./up`, `git config remote.origin.receivepack /tmp/rp`, `git config remote.x.uploadpack 'sh -c id'`,
+		`git config remote.origin.url 'ext::sh -c id'`, `git config remote.origin.url 'EXT::./x'`, `git config remote.origin.pushurl 'ext::./x'`,
+		`git config url.'ext::sh -c id'.insteadOf https://x/`,
+		`git config core.alternateRefsCommand ./refs`, `git config gpg.ssh.defaultKeyCommand ./key`, `git config difftool.x.cmd ./d`, `git config mergetool.x.cmd 'sh -c id'`,
+		`git config uploadpack.packObjectsHook ./hook`, `git config uploadpack.packObjectsHook 'sh -c id'`,
+	}, []string{
+		`git config pager.log false`, `git config pager.diff true`, `git config remote.origin.url https://example.com/x.git`, `git config remote.origin.url git@example.com:x/y.git`,
+		`git config remote.origin.url /srv/git/x.git`, `git config remote.origin.uploadpack git-upload-pack`, `git config core.gitProxy ""`,
+		`git config uploadpack.allowFilter true`, `git config difftool.x.path vimdiff`, `git config --unset pager.log`, `git config --get core.gitProxy`,
+	})
+}
+
 func TestTheTripwireCountsCCGOCACHEPROGAndCXXSetToAPath(t *testing.T) {
 	counts(t, []string{
 		`go env -w GOCACHEPROG=./cacheprog`, `go env -w GOCACHEPROG=/tmp/cp`, `go env -w CC=./cc`, `go env -w CC=/tmp/cc`, `go env -w CXX=~/cxx`, `go env -w CC=../x/cc`,
 		`go env -w CC='sh -c id'`, `CC=./cc go build .`, `env CC=./cc go build .`, `GOCACHEPROG=./p go build .`, `env GOCACHEPROG=/tmp/p go test .`, `export CC=./cc; go build .`,
-		`CXX=/tmp/c++ go build .`,
+		`CXX=/tmp/c++ go build .`, `go env -w CC=/opt/homebrew/bin/gcc-14`, `go env -w CC=/usr/local/bin/clang`, `go env -w CC='clang -B./x'`,
 	}, []string{
-		`go env -w CC=clang`, `go env -w CC=gcc`, `go env -w GOCACHEPROG=x`, `go env -w CC=/usr/bin/clang`, `go env -w CC=/opt/homebrew/bin/gcc-14`, `go env -w CXX=clang++`,
+		`go env -w CC=clang`, `go env -w CC=gcc`, `go env -w GOCACHEPROG=x`, `go env -w CC=/usr/bin/clang`, `go env -w CXX=clang++`,
 		`CC=clang go build .`, `env CC=gcc go build .`, `CC=/usr/bin/cc go build .`, `go env CC`, `go env -u CC`, `go env -w GOPRIVATE=example.com`,
+	})
+}
+
+// go env -w accepts these (checked with go env -w): the programs the toolchain runs, and linker flags that name where to find them.
+func TestTheTripwireCountsPkgConfigArAndCgoLdflagsWithB(t *testing.T) {
+	counts(t, []string{
+		`go env -w PKG_CONFIG=./pc`, `go env -w PKG_CONFIG=/tmp/pc`, `go env -w AR=./ar`, `go env -w AR='sh -c id'`,
+		`go env -w CGO_LDFLAGS=-B./x`, `go env -w CGO_LDFLAGS='-O2 -B /tmp/x'`, `go env -w CGO_LDFLAGS=-B../x`, `PKG_CONFIG=./pc go build .`, `env AR=./ar go build .`,
+		`CGO_LDFLAGS=-B./x go build .`, `env CGO_LDFLAGS='-g -B.' go build .`,
+	}, []string{
+		`go env -w PKG_CONFIG=pkg-config`, `go env -w AR=ar`, `go env -w CGO_LDFLAGS=-O2`, `go env -w CGO_LDFLAGS='-L/usr/lib -lm'`, `go env -w CGO_LDFLAGS=-Wl,-rpath,/x`,
+		`CGO_LDFLAGS=-O2 go build .`, `go env PKG_CONFIG`, `go env -u CGO_LDFLAGS`,
 	})
 }
