@@ -33,6 +33,7 @@ type View struct {
 	pending   *Question                // the open permission question, if any
 	todos     todoState                // the session's task list, from the model's todo calls (todos.go)
 	changes   changeState              // the files its edits and writes changed (changes.go)
+	inspect   inspectState             // requests, window fill and composition (inspector.go)
 }
 
 // Question is an open permission question: the tool call's id and the seq of the permission.requested event, which
@@ -83,6 +84,7 @@ func (v *View) Apply(ev proto.Event) {
 	if v.calls == nil {
 		v.calls = map[string]int{}
 	}
+	v.inspect.apply(p)
 	switch e := p.(type) {
 	case proto.SessionCreated:
 		if e.Parent != "" {
