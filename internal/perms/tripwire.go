@@ -163,29 +163,12 @@ func configWriteRuns(prog string, c Simple) bool {
 	args := c.Args
 	switch prog {
 	case "git":
-		i := 0
-		for i < len(args) && strings.HasPrefix(args[i], "-") {
-			switch args[i] {
-			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path":
-				i++ // the option's value is the next word
-			}
-			i++
-		}
-		if i >= len(args) || args[i] != "config" {
+		pos, words, isConfig, closed := gitConfigArgs(args)
+		if !isConfig {
 			return false
 		}
-		var pos []string
-		for _, a := range args[i+1:] {
-			switch a {
-			case "--get", "--get-all", "--get-regexp", "--list", "-l", "--unset", "--unset-all", "get", "list", "unset":
-				return false // reading, or removing, is not planting
-			}
-			if !strings.HasPrefix(a, "-") {
-				pos = append(pos, a)
-			}
-		}
-		if len(pos) > 0 && pos[0] == "set" {
-			pos = pos[1:]
+		if closed {
+			return namesCountedKey(words) // a spelling it does not know: count when any word names a counted key, whatever the value
 		}
 		if len(pos) < 2 {
 			return false
@@ -200,8 +183,8 @@ func configWriteRuns(prog string, c Simple) bool {
 			return val != ""
 		case strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv"):
 			return val != ""
-		case strings.HasPrefix(key, "alias.") && strings.HasPrefix(val, "!"):
-			return true
+		case strings.HasPrefix(key, "alias.") && (strings.HasPrefix(val, "!") || aliasIsConfig(val)):
+			return true // a shell alias, or one that makes a later `git <alias> core.pager sh` a config write
 		}
 	case "go":
 		if len(args) == 0 || args[0] != "env" {
