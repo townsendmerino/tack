@@ -19,7 +19,7 @@ numbers of 2026-11-16 (60 tasks, 2 runs, *m* = 14, about 14 hours) are not in fo
   overflow is recorded as what happened (§15.1).
 - **Runs.** **One per task per arm**, 40 in all. The order alternates across tasks: A0 then A1 on the odd tasks, A1 then A0 on the even
   tasks, so a drift in the box falls evenly on both arms. Each run follows the cell check recording load and free memory (heavy-load cells
-  void and re-run in place). No runs are added after seeing results. **Cap 6 minutes per run, provisional** (below); a failed run counts
+  void and re-run in place). No runs are added after seeing results. **Cap 6 minutes per run** (checked; below); a failed run counts
   as the cap in capped time (PAR-1). The same cap holds for both arms.
 - **Metric and analysis.** Per task, the run's pass (oracle: named tests all `pass` in `go test -json`; a skip fails), as 1 or 0. *d* =
   A1 − A0 per task, averaged over tasks; one-sided 95% lower bound by bootstrap over tasks (10,000 resamples, fixed seed). Capped-time
@@ -50,14 +50,13 @@ numbers of 2026-11-16 (60 tasks, 2 runs, *m* = 14, about 14 hours) are not in fo
     competence at the margin the screen cannot reach.
 - **Floor.** If A0's pass rate over the 20 tasks is under 15% (fewer than 3 passes), there is no power to see A1 trail it and the run reads
   INCONCLUSIVE, never pass. The pilot's 20–80% band was the design; this floor guards the case where it was missed.
-- **Cap: 6 minutes, provisional.** It is final only when two checks are committed before the first run:
-  1. **At least 95% of the passing A-arm runs of C8's 16k set, C9 §15.3 and C10 finished inside it.** The 16k bundle runs on the page records
-     do not contradict it (C8's passes took 54 to 231 s, the A arms' mean run 175 to 212 s) but those give totals and medians, not each
-     passing run's time, so this is **not yet checked**. The result files are `~/tack-runs/e1/c8-qwen36-2026-10-30/`, `…/c9-screens-2026-10-31/` and
-     `…/c10-lean-2026-11-01/` on the Mac or nobara; they were not reachable from mbp2 on 2026-11-18. `go run ./tools/calreport` over them prints
-     wall time per arm as a total, a median and a maximum, **not the passing runs' percentiles**, so the check needs one added line
-     (the passing runs' wall: median, p90, p95, max) or an equivalent read, with a tier-0 test. If 6 minutes keeps fewer than 95%, the cap is the
-     smallest of 8 and 10 minutes that does.
+- **Cap: 6 minutes, checked 2026-11-18 with calreport at f2d0e61: 64 of 67 passing bundle-arm runs (95.5%); 5 minutes keeps 63 (94.0%); 8 keeps all 67.**
+  Six minutes is the smallest of 4, 5, 6, 8 and 10 that keeps at least 95% of the passing runs of C9 §15.3's A arm, C10's lean and cliff A arms and C8's 16k
+  bundle arm. **The margin is one run:** the A arms alone, without C8's 12, would pick 8 minutes. The record is on the Mac,
+  `~/tack-runs/e1/c13-qwen3coder-2026-11-18/cap-check-f2d0e61.md`. Two more things hold it before the first run:
+  1. **The check is re-run on the chosen model's own records once the model is fixed.** Qwen3-Coder decodes at 30 tok/s against the 35B's 51.5, so
+     its runs are longer, and a cap checked on the 35B does not carry over. If 6 minutes keeps fewer than 95% there, the cap is the smallest of 8 and 10
+     minutes that does.
   2. **The cap is at least 1.5 times the tier-1 A0 smoke's time to pass**, since opencode may be slower and a short cap would fail runs A0
      would have passed, which flatters A1.
   The worst case is then 40 runs × the cap: 4.0 hours at 6 minutes, 6.7 at 10.
@@ -90,7 +89,7 @@ numbers of 2026-11-16 (60 tasks, 2 runs, *m* = 14, about 14 hours) are not in fo
 | margin *m* | 14 (10 at 120) | 29 | 2.5 SE at 20 tasks, 1 run per arm: SE 11.7 |
 | parked band | 4 points | 8 points | 0.7 SE |
 | floor | A0 under 15% | A0 under 15%: fewer than 3 of 20 passes | unchanged in rate |
-| cap | 10 minutes | 6 minutes, provisional | worst case 4.0 hours; the 95% check decides |
+| cap | 10 minutes | 6 minutes, checked 2026-11-18 | worst case 4.0 hours; the 95% check kept 64 of 67 passing runs |
 | machine time | about 14 h, worst 40 h | about 2.3 h, worst 4.0 h | the above |
 | name | the P1 rule | the P1 screen | the screen does not establish competence at 14 points |
 | model | Qwen3.6-35B-A3B | a parameter, fixed before the run | Qwen3-Coder-30B-A3B's C9 |

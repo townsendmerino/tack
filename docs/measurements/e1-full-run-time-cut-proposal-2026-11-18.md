@@ -92,10 +92,11 @@ and a truly worse-by-*m* arm 5% of the time), and the parked band of 0.7 SE.
   repeat loop or a full window at about 14.7 to 15k tokens (164 to 167 s in C8's 16k set), and the passes in that set took 54 to 231 s. A
   6-minute cap would not have cut any of them. It would have cut the occasional 8 to 16-minute run in the lean and cliff arms (988 s
   for the longest pass), which are not the shipped loop. The worst case falls from 10 to 6 minutes a run, 40% (6.7 h to 4.0 h at Option S).
-  **The rule that picks the cap,** to be checked on records before registering and not assumed: the smallest of 4, 5, 6, 8 and 10 minutes
-  that keeps at least 95% of the passing A-arm runs of C9 §15.3, C10 and C8's 16k set (`go run ./tools/calreport` over their
-  `results.jsonl`, a read, no run). I could not make that check from the page records, which give totals and medians, so **6 minutes is a
-  provisional number.** Two cautions: a cap is the same for A0, and opencode may be slower, so a short cap may fail A0 runs that would
+  **The rule that picks the cap** is the smallest of 4, 5, 6, 8 and 10 minutes that keeps at least 95% of the passing A-arm runs of C9 §15.3,
+  C10 and C8's 16k set (`go run ./tools/calreport` over their `results.jsonl`, a read, no run). **It was checked 2026-11-18 with calreport at f2d0e61: 6
+  minutes keeps 64 of 67 passing bundle-arm runs (95.5%); 5 minutes keeps 63 (94.0%); 8 keeps all 67.** The margin is one run: the A arms alone, without
+  C8's 12, would pick 8. The check is to be re-run on the chosen model's own records once the model is fixed: Qwen3-Coder decodes at 30 tok/s against the
+  35B's 51.5, so its runs are longer. (The record is `~/tack-runs/e1/c13-qwen3coder-2026-11-18/cap-check-f2d0e61.md` on the Mac.) Two cautions: a cap is the same for A0, and opencode may be slower, so a short cap may fail A0 runs that would
   have passed, which would flatter A1. The tier-1 A0 smoke's time to pass is the check: the cap should be at least 1.5 times it. The
   per-arm cap-hit counts are reported either way. The pass rate then means "passes within the cap".
 - **(e) warm prefix and smaller prompts.** Small. Decode is the cost: about 190 s over 20 requests is about 9.5 s a request, and at 51.5
@@ -196,4 +197,4 @@ C9 records before registering:
   recomputed before they are registered.
 - ρ, and A0's *w* and *b*, are assumptions until A0 has run on this model. The rule's margin should be re-derived from the pilot's variance
   before the run.
-- The 6-minute cap is provisional until the 95% check is made on the C8, C9 and C10 result files.
+- The 6-minute cap was checked on the 35B's bundle-arm records, with a margin of one run (see the cap paragraph above); it must be checked again on the chosen model's own.
