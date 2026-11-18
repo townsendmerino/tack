@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -31,7 +32,10 @@ func forkBoundary(events []proto.Event, seq int64) int64 {
 func forkAfterRewind(st *store.Store, session proto.SessionID, events []proto.Event, seq int64, stdout, stderr io.Writer) int {
 	at := forkBoundary(events, seq)
 	child := store.NewSessionID(time.Now())
-	if err := loop.Fork(st, session, child, at); err != nil {
+	if err := loop.Fork(st, session, child, at); errors.Is(err, store.ErrForkNotDurable) {
+		// The fork is complete and findable; only its directory entry is not known to be on disk.
+		fmt.Fprintf(stderr, "tack rewind: warning: %v\n", err)
+	} else if err != nil {
 		fmt.Fprintf(stderr, "tack rewind: the files are rewound, but the conversation could not be forked at seq %d: %v\n", at, err)
 		return exitError
 	}

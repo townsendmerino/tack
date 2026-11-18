@@ -17,7 +17,14 @@ var (
 	ErrForkSeq = errors.New("store: no such seq in the session's log")
 	// ErrForkInTurn is a fork cut inside a turn, where the history would end on a user message or a tool call with no result.
 	ErrForkInTurn = errors.New("store: the cut falls inside a turn")
+	// ErrForkNotDurable is a fork that was made whole and is findable, but whose directory entry could not be fsynced after retries: the
+	// child exists and is complete, and may be gone after a power loss. A caller treats it as made, with a warning.
+	ErrForkNotDurable = errors.New("store: the fork was made but its directory entry is not known to be durable")
 )
+
+// forkLockName is the file a fork holds a lock on in its temporary directory while it runs, so a sweep can tell a fork that is alive,
+// even a stalled one, from one that died (a lock dies with its process).
+const forkLockName = ".lock"
 
 // Fork makes the session child from the first atSeq events of parent (DESIGN §6.2). The child's log holds those events
 // byte for byte, with the same seqs and times, except that its session.created also names the fork (ForkOf, ForkAt), so a
@@ -39,8 +46,9 @@ type ForkEvent struct {
 // it, and logPath refuses it, so no reader can open, read or reopen it by name.
 const forkTempPrefix = ".fork-"
 
-// staleForkTemp is how old a fork's temporary directory must be before the next fork removes it: far longer than a fork takes, so a
-// fork running in another process is never swept from under itself.
+// staleForkTemp is how old a fork's temporary directory must be before the next fork may remove it, which it does only if no fork holds
+// the directory's lock (forkLockName): the age keeps a sweep off a directory made a moment ago and not yet locked, and the lock keeps it
+// off one whose fork is alive, however long it stalls.
 const staleForkTemp = time.Hour
 
 // ForkCarrying is Fork that also writes the events carry returns, given the parent's whole log and the copied prefix, after the
@@ -116,13 +124,41 @@ func (s *Store) ForkCarrying(parent, child proto.SessionID, atSeq int64, carry f
 	if err != nil {
 		return err
 	}
-	if err := writeForkLog(tmp, lines); err != nil {
+	// The fork holds a lock in its temp for as long as it runs, so a sweep never takes a live fork's directory, however long it stalls.
+	lockPath := filepath.Join(tmp, forkLockName)
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err == nil {
+		err = lockLog(lock)
+	}
+	if err != nil {
+		if lock != nil {
+			lock.Close()
+		}
 		return errors.Join(err, removeAll(tmp))
 	}
+	if err := writeForkLog(tmp, lines); err != nil {
+		lock.Close()
+		return errors.Join(err, removeAll(tmp))
+	}
+	// The lock file goes before the rename, so the child's directory holds only its log.
+	if err := os.Remove(lockPath); err != nil {
+		lock.Close()
+		return errors.Join(err, removeAll(tmp))
+	}
+	lock.Close()
 	if err := os.Rename(tmp, filepath.Dir(final)); err != nil {
 		return errors.Join(err, removeAll(tmp))
 	}
-	return syncDir(sessions) // the child's directory entry (ADR-004); its log is already durable
+	// The child's directory entry (ADR-004); its log is already durable. The child is complete and findable from the rename on, so a
+	// failure here is retried, and one that lasts is reported as ErrForkNotDurable, not as a fork that was not made.
+	var serr error
+	for i := 0; i < 3; i++ {
+		if serr = syncDir(sessions); serr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(i+1) * 20 * time.Millisecond)
+	}
+	return fmt.Errorf("%w: %v", ErrForkNotDurable, serr)
 }
 
 // writeForkLog writes lines as events.jsonl in dir, fsyncs the file and then the directory.
@@ -164,9 +200,20 @@ func sweepForkTemps(sessions string, now time.Time) {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), forkTempPrefix) {
 			continue
 		}
-		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > staleForkTemp {
-			_ = removeAll(filepath.Join(sessions, e.Name()))
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= staleForkTemp {
+			continue
 		}
+		dir := filepath.Join(sessions, e.Name())
+		// A fork that is still running holds its lock; one that died does not, or never made the file.
+		if lock, err := os.OpenFile(filepath.Join(dir, forkLockName), os.O_RDWR, 0); err == nil {
+			busy := lockLog(lock) != nil
+			lock.Close()
+			if busy {
+				continue
+			}
+		}
+		_ = removeAll(dir)
 	}
 }
 
