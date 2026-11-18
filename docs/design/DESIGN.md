@@ -881,10 +881,15 @@ tool-use smoke set compares this merged set against the split one before it is f
     `core.hooksPath`), and protecting that directory is a decision not yet taken.
     Also writable by design: the index, whose assume-unchanged and skip-worktree bits can hide an edit from the owner's
     `git diff`, and gitlink (160000) entries, which make the owner's `git status` recurse into a directory. A linked worktree
-    whose gitdir is outside the workspace cannot add or commit in the sandbox, since that directory is not writable. Two routes
-    the profile cannot see by path are covered by escape tests that run on a Mac, and their result decides whether more is
-    needed: renaming into the workspace a directory that holds a `.git` (a rename is checked by the moved directory's own
-    path), a symlink to one, and a hard link to a listed file written through its other name. `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
+    whose gitdir is outside the workspace cannot add or commit in the sandbox, since that directory is not writable. A route
+    the profile cannot see by path: renaming into the workspace a directory that holds a ready-made `.git` (a rename is checked
+    by the moved directory's own path), or a symlink to one. macOS CI showed both get through. They are closed by the shell, not
+    the profile: after every command it scans the workspace for `.git` entries that were not there before (and symlinks that lead
+    outside to a `.git`), removes them and says so in the command's output (`internal/shell/gitwatch.go`); the workspace's own
+    `.git` and earlier nested ones are left alone, and a tree over 400000 entries is not scanned and says so. Chosen over denying
+    writes to `.git` parts everywhere (it would break `git init` in a test's temp directory) and over denying renames in from
+    outside (the profile cannot see a rename's source). A hard link to a listed file written through its other name is denied
+    (macOS CI). `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.

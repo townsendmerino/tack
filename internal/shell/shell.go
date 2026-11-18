@@ -123,6 +123,18 @@ type Session struct {
 func (s *Session) Run(ctx context.Context, command string, timeout time.Duration) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	before, scanned := nestedGits(s.Engine.Root)
+	res, err := s.run(ctx, command, timeout)
+	// Whatever ended the command, a repository it made inside the workspace goes (gitwatch.go).
+	if !scanned {
+		res.Output += "\n[tack did not check this command for a repository it made inside the workspace: the tree is too large]\n"
+	} else if removed := removeNewGits(s.Engine.Root, before); len(removed) > 0 {
+		res.Output += "\n[tack removed " + strings.Join(removed, ", ") + ": a command may not make a .git inside the workspace, or link one in]\n"
+	}
+	return res, err
+}
+
+func (s *Session) run(ctx context.Context, command string, timeout time.Duration) (Result, error) {
 	if s.Engine.Sandboxed != (s.Wrap != nil) { // the engine's rules trust the sandbox: never without one
 		return Result{}, fmt.Errorf("shell: the engine says sandboxed=%v, but the shell %s sandbox", s.Engine.Sandboxed,
 			map[bool]string{true: "has a", false: "has no"}[s.Wrap != nil])
