@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-// A command may not leave a repository of its own making inside the workspace. The sandbox denies the parts of a .git that redirect git,
-// but it sees only the path being written: a directory holding a ready-made .git, built where the command may write (its temp
-// directory) and renamed or linked in, arrives whole (DESIGN §6.6). The owner's editor or git, run later in that directory, would use
-// its config. So after every command the workspace is scanned for .git entries that were not there before it, and each is removed and
-// reported. The workspace's own .git, and any that existed before the command, are left alone.
+// A command should not leave a repository of its own making inside the workspace. The sandbox profile closes the routes (it denies building
+// a .git where the command may write, so none can be renamed or linked in, and the parts of a .git in the workspace that redirect git;
+// DESIGN §6.6). This is a belt, a detector and nothing more: after every command the workspace is scanned for .git entries that were not
+// there before, and they are reported in the command's output. Nothing is removed. The workspace's own .git, and any that existed
+// before the command, are not reported.
 
 // maxScan bounds the entries one scan visits; a larger tree is not scanned, and says so.
 const maxScan = 400000
@@ -59,18 +59,15 @@ func within(root, p string) bool {
 	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
 }
 
-// removeNewGits removes what a command added to the workspace's set of nested git entries, and returns the paths it removed, sorted.
-func removeNewGits(root string, before map[string]bool) []string {
+// newGits returns, sorted, what a command added to the workspace's set of nested git entries.
+func newGits(root string, before map[string]bool) []string {
 	after, _ := nestedGits(root)
-	var removed []string
+	var added []string
 	for p := range after {
-		if before[p] {
-			continue
-		}
-		if err := os.RemoveAll(p); err == nil {
-			removed = append(removed, p)
+		if !before[p] {
+			added = append(added, p)
 		}
 	}
-	sort.Strings(removed)
-	return removed
+	sort.Strings(added)
+	return added
 }

@@ -107,3 +107,38 @@ func TestCheckRefusesAWorkspacePathTheProfileCannotQuote(t *testing.T) {
 		t.Errorf("brackets and dots: %v", err)
 	}
 }
+
+// TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace: the rules from gitOutside match a .git, in any case and at any depth, under
+// the temp directory and the Go cache, and nothing else there (a name that only starts or ends with .git is writable).
+func TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace(t *testing.T) {
+	tmp, cache := "/private/var/f.lders/T", "/Users/o/Library/Caches/go-build"
+	var res []*regexp.Regexp
+	for _, rule := range gitOutside(tmp, cache) {
+		m := regexp.MustCompile(`^\(regex #"(.*)"\)$`).FindStringSubmatch(rule)
+		if m == nil {
+			t.Fatalf("not a regex rule: %s", rule)
+		}
+		res = append(res, regexp.MustCompile(m[1]))
+	}
+	denied := func(p string) bool {
+		for _, r := range res {
+			if r.MatchString(p) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range []string{tmp + "/a/.git", tmp + "/a/.git/hooks/pre-commit", tmp + "/.GIT", tmp + "/x/y/.Git/config", cache + "/vcs/.git/HEAD"} {
+		if !denied(p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{tmp + "/a/.gitignore", tmp + "/a/x.git", tmp + "/a/git", tmp + "/a/.github/x", tmp + "/gitx/.git2", "/private/var/fXlders/T/a/.git/config"} {
+		if denied(p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
+	if len(gitOutside("", "")) != 0 {
+		t.Error("empty directories produced rules")
+	}
+}

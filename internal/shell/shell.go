@@ -125,11 +125,11 @@ func (s *Session) Run(ctx context.Context, command string, timeout time.Duration
 	defer s.mu.Unlock()
 	before, scanned := nestedGits(s.Engine.Root)
 	res, err := s.run(ctx, command, timeout)
-	// Whatever ended the command, a repository it made inside the workspace goes (gitwatch.go).
+	// Whatever ended the command, a repository it made inside the workspace is reported (gitwatch.go); nothing is removed.
 	if !scanned {
 		res.Output += "\n[tack did not check this command for a repository it made inside the workspace: the tree is too large]\n"
-	} else if removed := removeNewGits(s.Engine.Root, before); len(removed) > 0 {
-		res.Output += "\n[tack removed " + strings.Join(removed, ", ") + ": a command may not make a .git inside the workspace, or link one in]\n"
+	} else if added := newGits(s.Engine.Root, before); len(added) > 0 {
+		res.Output += "\n[tack found a .git this command added inside the workspace, which the sandbox should have refused: " + strings.Join(added, ", ") + "]\n"
 	}
 	return res, err
 }

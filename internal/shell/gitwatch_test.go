@@ -11,7 +11,7 @@ import (
 
 // A directory holding a ready-made .git, renamed or linked into the workspace, arrives past a profile that sees only the path written. The
 // shell removes what a command added and says so, and leaves alone the workspace's own .git and any nested one that was there before.
-func TestACommandCannotLeaveARepositoryInsideTheWorkspace(t *testing.T) {
+func TestACommandThatLeavesARepositoryInsideTheWorkspaceIsReported(t *testing.T) {
 	s := session(t, true)
 	root := s.Engine.Root
 	outside := t.TempDir()
@@ -26,25 +26,25 @@ func TestACommandCannotLeaveARepositoryInsideTheWorkspace(t *testing.T) {
 		"linked in":               `mkdir -p ` + outside + `/c/.git && ln -s ` + outside + `/c sub6`,
 	} {
 		r := runBy(t, s, perms.ByMode, cmd)
-		if !strings.Contains(r.Output, "tack removed") {
+		if !strings.Contains(r.Output, "tack found") {
 			t.Errorf("%s: not reported: %+v", name, r)
 		}
 	}
 	for _, p := range []string{"sub1/.git", "sub2/.GIT", "sub3/.git", "sub4/.git", "sub5/.git", "sub6"} {
-		if _, err := os.Lstat(filepath.Join(root, p)); err == nil {
-			t.Errorf("%s is still there", p)
+		if _, err := os.Lstat(filepath.Join(root, p)); err != nil {
+			t.Errorf("%s was removed, and the detector removes nothing", p)
 		}
 	}
 	for _, p := range []string{".git", "vendor/old/.git"} {
 		if _, err := os.Lstat(filepath.Join(root, p)); err != nil {
-			t.Errorf("%s was removed", p)
+			t.Errorf("%s is gone", p)
 		}
 	}
 	// What a command did not make is left, and nothing is reported.
-	if r := runBy(t, s, perms.ByMode, `echo hi > note.txt && mkdir -p plain/dir`); strings.Contains(r.Output, "tack removed") {
+	if r := runBy(t, s, perms.ByMode, `echo hi > note.txt && mkdir -p plain/dir`); strings.Contains(r.Output, "tack found") {
 		t.Errorf("an ordinary command: %+v", r)
 	}
-	if r := runBy(t, s, perms.ByMode, `echo more >> vendor/old/x`); strings.Contains(r.Output, "tack removed") {
+	if r := runBy(t, s, perms.ByMode, `echo more >> vendor/old/x`); strings.Contains(r.Output, "tack found") {
 		t.Errorf("a command beside an existing nested repository: %+v", r)
 	}
 }

@@ -214,6 +214,7 @@ func Profile(c Config) string {
 		later = append(later, fmt.Sprintf("(literal %q)", filepath.Join(home, f)))
 	}
 	later = append(later, gitRedirects(ws)...)
+	later = append(later, gitOutside(real(c.Temp), real(c.GoCache))...)
 	sec(SecLater, fmt.Sprintf("(deny file-write* %s)", strings.Join(later, " ")))
 	var secrets []string
 	for _, p := range Secrets {
@@ -346,4 +347,24 @@ func ci(name string) string {
 		}
 	}
 	return b.String()
+}
+
+// gitOutside denies writes to any .git (any letter case, any depth, and everything under it) in the writable directories outside the
+// workspace, so a repository cannot be built where the command may write and then renamed or linked into the workspace: Seatbelt checks
+// only the path of a rename's destination or a link's name, never what the moved directory holds or where a link points, so a ready-made
+// .git arrives whole. Without one to bring, those routes have nothing to carry.
+//
+// What it costs: `git init`, `git clone` and `git worktree add` into the temp directory or the Go cache fail under the sandbox, and so does
+// a test that makes a repository there. What it leaves: a symlink in the workspace to a .git that already exists outside (the owner's own
+// repository, which is the owner's), and a directory with the shape of a bare repository (HEAD, objects/, refs/, a config) built under any
+// name, which git run inside it would use (perms.GitFindsOwnersRepo covers a rule-approved git; the owner's own git is the owner's care).
+func gitOutside(dirs ...string) []string {
+	var out []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("(regex #\"^%s/(.*/)?[.][gG][iI][tT](/.*)?$\")", regexQuote(d)))
+	}
+	return out
 }

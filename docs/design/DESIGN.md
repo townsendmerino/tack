@@ -883,13 +883,16 @@ tool-use smoke set compares this merged set against the split one before it is f
     `git diff`, and gitlink (160000) entries, which make the owner's `git status` recurse into a directory. A linked worktree
     whose gitdir is outside the workspace cannot add or commit in the sandbox, since that directory is not writable. A route
     the profile cannot see by path: renaming into the workspace a directory that holds a ready-made `.git` (a rename is checked
-    by the moved directory's own path), or a symlink to one. macOS CI showed both get through. They are closed by the shell, not
-    the profile: after every command it scans the workspace for `.git` entries that were not there before (and symlinks that lead
-    outside to a `.git`), removes them and says so in the command's output (`internal/shell/gitwatch.go`); the workspace's own
-    `.git` and earlier nested ones are left alone, and a tree over 400000 entries is not scanned and says so. Chosen over denying
-    writes to `.git` parts everywhere (it would break `git init` in a test's temp directory) and over denying renames in from
-    outside (the profile cannot see a rename's source). A hard link to a listed file written through its other name is denied
-    (macOS CI). `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
+    by its destination only, never by what the moved directory holds), or a symlink to one (a link is checked by its own name,
+    not its target). macOS CI showed both get through, so the profile denies the source instead: no `.git` (any letter case,
+    any depth) can be created under the temp directory or the Go cache, the only places outside the workspace a command may write
+    (`sandbox.gitOutside`), so there is none to bring in. Cost: `git init`, `git clone` and `git worktree add` there fail under the
+    sandbox, and so does any test that makes a repository in its temp directory. Left open: a symlink in the workspace to a `.git`
+    that already exists outside (the owner's own repository, which is the owner's), and a directory with the shape of a bare
+    repository built under any name (git run inside it would use its config; `perms.GitFindsOwnersRepo` covers a rule-approved
+    git, not the owner's own). As a belt, after every command the shell scans the workspace for a `.git` the command added and
+    reports it in the output (`internal/shell/gitwatch.go`); it removes nothing, and it is not the fix. A hard link to a listed
+    file written through its other name is denied (macOS CI). `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.
