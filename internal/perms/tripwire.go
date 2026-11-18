@@ -163,19 +163,14 @@ func configWriteRuns(prog string, c Simple) bool {
 	args := c.Args
 	switch prog {
 	case "git":
-		i := 0
-		for i < len(args) && strings.HasPrefix(args[i], "-") {
-			switch args[i] {
-			case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source":
-				i++ // the option's value is the next word (--exec-path takes one only attached, as --git-dir=x also may)
-			}
-			i++
-		}
-		if i >= len(args) || args[i] != "config" {
+		pos, words, isConfig, closed := gitConfigArgs(args)
+		if !isConfig {
 			return false
 		}
-		pos, ok := gitConfigPositionals(args[i+1:])
-		if !ok || len(pos) < 2 {
+		if closed {
+			return namesCountedKey(words) // a spelling it does not know: count when any word names a counted key, whatever the value
+		}
+		if len(pos) < 2 {
 			return false
 		}
 		key, val := strings.ToLower(pos[0]), pos[1]

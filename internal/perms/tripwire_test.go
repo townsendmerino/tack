@@ -134,8 +134,8 @@ func TestTheTripwireReadsUniquePrefixesOfLongOptions(t *testing.T) {
 		`git config --typ bool core.fsmonitor id`, `git config --def x core.fsmonitor id`, `git config --glob core.fsmonitor id`,
 		`git config --repl core.fsmonitor id`, `git config --file=x.cfg core.fsmonitor id`,
 	}, []string{
-		`git config --fil x.cfg --unse core.fsmonitor`, `git config --f x.cfg core.fsmonitor id`, `git config --fi x.cfg core.fsmonitor id`, `git config --g core.fsmonitor id`,
-		`git config --lis`, `git config --get-a core.fsmonitor`,
+		`git config --fil x.cfg --unset core.fsmonitor`, `git config --lis`, `git config --get-a core.fsmonitor`,
+		// an ambiguous prefix is an error in git; it is counted now (TestTheTripwireCountsAPrefixItCannotResolve), as a prefix it cannot resolve fails closed
 	})
 }
 
@@ -193,4 +193,79 @@ func configForms(t *testing.T, counted, others []string) {
 			t.Errorf("%q counts as %v; it is a read, a removal, an honest value or an error in git", cmd, got)
 		}
 	}
+}
+
+// Second read of the parser (checked against git 2.53): four spellings that were missed.
+
+// -t is --type and takes a value, alone, in a bundle and in set mode.
+func TestTheTripwireTakesTheValueOfShortT(t *testing.T) {
+	configForms(t, []string{
+		`git config -t path core.fsmonitor /bin/id`, `git config -zt path core.fsmonitor /bin/id`, `git config set -t path core.fsmonitor /bin/id`,
+		`git config -tpath core.fsmonitor id`,
+	}, []string{
+		`git config -t bool --get core.fsmonitor`, `git config -t path core.fsmonitor true`,
+	})
+}
+
+// --no-<flag> negations, and their prefixes, are flags with no value.
+func TestTheTripwireReadsNegatedOptions(t *testing.T) {
+	configForms(t, []string{
+		`git config --no-global core.fsmonitor id`, `git config --no-file core.fsmonitor id`, `git config --no-g core.fsmonitor id`,
+		`git config set --no-value core.fsmonitor id`, `git config --no-type core.fsmonitor id`, `git config --no-comment core.fsmonitor id`,
+		`git config --no-includes core.fsmonitor id`,
+	}, []string{
+		`git config --no-global core.fsmonitor true`, `git config --no-file --get core.fsmonitor`,
+	})
+}
+
+// Set mode has fewer options than the legacy mode, so a prefix that is unique to git there (set --e, set --l) is ambiguous in the table.
+// A prefix the table cannot resolve is counted when a later word names a counted key, never passed.
+func TestTheTripwireCountsAPrefixItCannotResolve(t *testing.T) {
+	configForms(t, []string{
+		`git config set --e core.fsmonitor id`, `git config set --l core.fsmonitor id`, `git config --f x.cfg core.fsmonitor id`,
+		`git config --fi x.cfg core.fsmonitor id`, `git config --g core.fsmonitor id`,
+	}, []string{
+		`git config --g core.sparseCheckout true`, `git config set --l user.name x`,
+	})
+}
+
+// git's global --shallow-file takes a separate value, which is not the subcommand.
+func TestTheTripwireSkipsTheValueOfShallowFile(t *testing.T) {
+	configForms(t, []string{
+		`git --shallow-file x config core.fsmonitor id`, `git -C . --shallow-file x config --global core.pager id`,
+	}, []string{
+		`git --shallow-file x status`, `git --shallow-file x config --get core.fsmonitor`,
+	})
+}
+
+// An option the table does not know, or a short letter it does not know, fails closed: the command counts if any later word names a
+// counted key, whatever the value, and does not count if none does.
+func TestTheTripwireFailsClosedOnAnUnknownOption(t *testing.T) {
+	configForms(t, []string{
+		`git config --frobnicate core.fsmonitor true`, `git config --frobnicate x core.fsmonitor id`, `git config -q core.hooksPath ~/h`,
+		`git config --future-flag=1 core.pager id`, `git config --future-flag diff.x.textconv id`, `git config --future-flag alias.x '!id'`,
+		`git config --future-flag CORE.FSMONITOR id`, `git config set --future-flag core.fsmonitor id`,
+	}, []string{
+		`git config --frobnicate user.name x`, `git config --frobnicate core.editor vim`, `git config --future-flag alias.x checkout`,
+	})
+}
+
+// An option git does not know before the subcommand may take a value; the config command behind it is found and checked closed.
+func TestTheTripwireFailsClosedOnAnUnknownGlobalOption(t *testing.T) {
+	configForms(t, []string{
+		`git --future-opt x config core.fsmonitor id`, `git --future-opt config core.fsmonitor id`,
+	}, []string{
+		`git --future-opt x config user.name y`, `git --future-opt x status`, `git --no-pager log`, `git -p diff`, `git --bare config --get core.fsmonitor`,
+	})
+}
+
+// git -c alias.x=config … x …: the alias is a config command, with the alias's own words in front of the rest.
+func TestTheTripwireFollowsAnAliasToConfig(t *testing.T) {
+	configForms(t, []string{
+		`git -c alias.x=config x core.pager sh`, `git -c alias.cfg='config --global' cfg core.fsmonitor id`, `git -c alias.x=config x --file y core.fsmonitor id`,
+		`git -c user.name=a -c alias.x=config x core.hooksPath /tmp/h`,
+	}, []string{
+		`git -c alias.x=config x user.name y`, `git -c alias.x=config x --get core.pager`, `git -c alias.x=status x`, `git -c alias.y=config x core.pager sh`,
+		`git -c alias.x=config status`,
+	})
 }
