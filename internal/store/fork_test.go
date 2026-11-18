@@ -333,3 +333,31 @@ func TestASweepLeavesATempWhoseForkHoldsItsLock(t *testing.T) {
 		t.Error("the lock file was left in the child's directory")
 	}
 }
+
+// A fork removes its lock file just before the rename, which changes the temp directory's mtime. A sweep that decided the directory was
+// stale from an earlier look, and then found no lock file, must look at the mtime again: it was a fork finishing, not one that died.
+func TestASweepLooksAtTheMtimeAgainWhenTheLockIsGone(t *testing.T) {
+	s := newStore(t)
+	forkParent(t, s)
+	tmp := filepath.Join(s.Root(), "sessions", ".fork-s_finishing-1")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(tmp, "events.jsonl"), []byte(`{"seq":1}`+"\n"), 0o600)
+	old := time.Now().Add(-3 * time.Hour)
+	os.Chtimes(tmp, old, old)
+	// Between the sweep's first look and its attempt to open the lock, the fork deletes the lock file and is about to rename.
+	afterSweepStat = func(dir string) {
+		if dir == tmp {
+			now := time.Now()
+			os.Chtimes(dir, now, now)
+		}
+	}
+	t.Cleanup(func() { afterSweepStat = nil })
+	if err := s.Fork("s_parent", "s_child", 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "events.jsonl")); err != nil {
+		t.Error("a fork that was finishing had its temp swept")
+	}
+}
