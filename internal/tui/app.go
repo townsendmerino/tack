@@ -47,6 +47,7 @@ type App struct {
 	Debounce time.Duration
 
 	complete      completion
+	pane          string    // the pane shown above the composer: "", or a name from panes (panes.go)
 	rule          *ruleEdit // the rule editor is open (rule.go)
 	input         []rune
 	width, height int
@@ -239,7 +240,11 @@ func (a *App) Frame() string {
 	if len(rows) > avail-2 { // the popup never takes the screen: the transcript keeps at least two rows
 		rows = rows[:max(avail-2, 0)]
 	}
-	body := a.Screen.Render(a.width, avail-len(rows))
+	paneRows := a.paneRows(avail - 2 - len(rows)) // what the popup left, less the transcript's two rows
+	body := a.Screen.Render(a.width, avail-len(rows)-len(paneRows))
+	for _, r := range paneRows {
+		body += "\n" + r
+	}
 	for _, r := range rows {
 		body += "\n" + r
 	}
