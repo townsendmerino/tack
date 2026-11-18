@@ -188,8 +188,6 @@ func configWriteRuns(prog string, c Simple) bool {
 			return val != "" && val != "true" && val != "false"
 		case key == "core.hookspath":
 			return filepath.IsAbs(val) || strings.HasPrefix(val, "~") || slices.Contains(strings.Split(filepath.ToSlash(val), "/"), "..")
-		case key == "core.pager", key == "diff.external":
-			return val != ""
 		case strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv"):
 			return val != ""
 		case strings.HasPrefix(key, "alias.") && (strings.HasPrefix(val, "!") || aliasIsConfig(val)):
@@ -197,7 +195,7 @@ func configWriteRuns(prog string, c Simple) bool {
 		case extURL(key, val):
 			return true // git runs the command after ext:: to reach the remote
 		case programKey(key):
-			return runsProgram(val)
+			return runsProgramFor(key, val) // by the key's own list of honest values
 		case key == "include.path" || strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path"):
 			return val != "" // the file it pulls in can set any of the keys above, and is read from the repository
 		}

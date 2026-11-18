@@ -9,26 +9,108 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// programKey reports whether a git config key names a program git runs, through a shell where git runs a command line: an ssh command, an
-// askpass or credential helper, an editor, a gpg program (gpg.program, gpg.<format>.program, gpg.ssh.defaultKeyCommand), a filter's clean,
-// smudge or process command, a merge driver, a pager for one command, a diff command, the interactive diff filter, a git proxy, a
-// remote's upload-pack and receive-pack, the alternate-refs command, a difftool or mergetool command, the pack-objects hook. A write of
-// one is counted unless its whole value is on the allowlist of honest forms (runsProgram). The keys counted whatever their value
-// (core.pager, diff.external, a textconv, an alias with a "!"), the includes and the ext:: URLs are decided in configWriteRuns.
-func programKey(key string) bool {
+// valueClass says which values of a setting that runs a program are honest. No bare word is honest in itself: python3.14, just, pytest, rbash,
+// gawk and busybox are bare words that run a file the repository holds. Each key has its own short list of known values, and every other
+// value counts.
+type valueClass int
+
+const (
+	classNone     valueClass = iota // nothing is honest but clearing the setting
+	classEditor                     // vim, nano, code and the like, with plain flags
+	classPager                      // less, delta, bat and the like, with plain flags; or a boolean (pager.<cmd>)
+	classFilter                     // git-lfs and its own words
+	classCredHelp                   // git's own credential helpers and the gh helper
+	classSSH                        // ssh with plain options
+	classGpg                        // gpg, gpgsm, ssh-keygen, 1Password's signer
+	classDefKey                     // ssh-add -L
+	classAskpass                    // the askpass programs
+	classPack                       // git-upload-pack and git-receive-pack
+	classBang                       // honest unless it starts with "!" (submodule.<n>.update)
+	classPath                       // honest unless it names a path (sendemail.smtpServer)
+)
+
+// programKeyClass reports whether a lower-cased git config key names a program git runs (through a shell where git runs a command line), and
+// which values of it are honest. A write of one is counted unless its value is (runsProgramFor). The keys counted whatever their value
+// (an alias with a "!"), the includes and the ext:: URLs are decided in configWriteRuns.
+func programKeyClass(key string) (valueClass, bool) {
 	switch key {
-	case "core.sshcommand", "core.askpass", "credential.helper", "core.editor", "sequence.editor", "gpg.program", "interactive.difffilter",
-		"core.gitproxy", "core.alternaterefscommand", "uploadpack.packobjectshook":
+	case "core.sshcommand":
+		return classSSH, true
+	case "core.askpass":
+		return classAskpass, true
+	case "core.editor", "sequence.editor":
+		return classEditor, true
+	case "core.pager", "interactive.difffilter":
+		return classPager, true
+	case "gpg.program":
+		return classGpg, true
+	case "credential.helper":
+		return classCredHelp, true
+	case "diff.external", "core.gitproxy", "core.alternaterefscommand", "uploadpack.packobjectshook", "sendemail.sendmailcmd":
+		return classNone, true
+	case "sendemail.smtpserver":
+		return classPath, true
+	}
+	has := func(prefix, suffix string) bool {
+		return strings.HasPrefix(key, prefix) && strings.HasSuffix(key, suffix)
+	}
+	switch {
+	case has("credential.", ".helper"):
+		return classCredHelp, true
+	case has("gpg.", ".program"):
+		return classGpg, true
+	case has("gpg.", ".defaultkeycommand"):
+		return classDefKey, true
+	case has("filter.", ".clean"), has("filter.", ".smudge"), has("filter.", ".process"):
+		return classFilter, true
+	case strings.HasPrefix(key, "pager."):
+		return classPager, true
+	case has("remote.", ".uploadpack"), has("remote.", ".receivepack"):
+		return classPack, true
+	case has("submodule.", ".update"):
+		return classBang, true
+	case has("merge.", ".driver"), has("diff.", ".command"), has("tar.", ".command"), has("trailer.", ".cmd"), has("trailer.", ".command"),
+		has("difftool.", ".cmd"), has("difftool.", ".path"), has("mergetool.", ".cmd"), has("mergetool.", ".path"),
+		has("browser.", ".cmd"), has("browser.", ".path"), has("man.", ".cmd"), has("man.", ".path"), has("guitool.", ".cmd"), has("remote.", ".vcs"):
+		return classNone, true
+	}
+	return 0, false
+}
+
+// programKey reports whether a lower-cased git config key names a program git runs.
+func programKey(key string) bool {
+	_, ok := programKeyClass(key)
+	return ok
+}
+
+// runsProgramFor reports whether writing val to the program key is counted: it is when val is not on that key's list of honest values.
+// Clearing the setting (an empty value) is honest for every key.
+func runsProgramFor(key, val string) bool {
+	class, ok := programKeyClass(key)
+	v := strings.TrimSpace(val)
+	if !ok || v == "" {
+		return false
+	}
+	switch class {
+	case classBang:
+		return strings.HasPrefix(v, "!")
+	case classPath:
+		return strings.Contains(v, "/")
+	case classNone:
 		return true
 	}
-	return strings.HasPrefix(key, "credential.") && strings.HasSuffix(key, ".helper") ||
-		strings.HasPrefix(key, "gpg.") && (strings.HasSuffix(key, ".program") || strings.HasSuffix(key, ".defaultkeycommand")) ||
-		strings.HasPrefix(key, "filter.") && (strings.HasSuffix(key, ".clean") || strings.HasSuffix(key, ".smudge") || strings.HasSuffix(key, ".process")) ||
-		strings.HasPrefix(key, "merge.") && strings.HasSuffix(key, ".driver") ||
-		strings.HasPrefix(key, "pager.") ||
-		strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".command") ||
-		strings.HasPrefix(key, "remote.") && (strings.HasSuffix(key, ".uploadpack") || strings.HasSuffix(key, ".receivepack")) ||
-		(strings.HasPrefix(key, "difftool.") || strings.HasPrefix(key, "mergetool.")) && strings.HasSuffix(key, ".cmd")
+	if class == classPager && boolWord(v) {
+		return false
+	}
+	return !honestValue(class, v)
+}
+
+func boolWord(v string) bool {
+	switch strings.ToLower(v) {
+	case "true", "false", "yes", "no", "on", "off", "1", "0":
+		return true
+	}
+	return false
 }
 
 // extURL reports whether a git config write makes a remote or a rewrite that runs a command: remote.<name>.url or .pushurl whose value
@@ -41,26 +123,191 @@ func extURL(key, val string) bool {
 		strings.HasPrefix(strings.ToLower(strings.TrimSpace(val)), "ext::")
 }
 
-// programVar reports whether a Go toolchain variable names a program it runs: the compiler drivers, the archiver, pkg-config and the
-// cache program.
-func programVar(name string) bool {
-	switch name {
-	case "GOCACHEPROG", "CC", "CXX", "PKG_CONFIG", "AR":
+var (
+	pathRE      = regexp.MustCompile(`^/[A-Za-z0-9._+/-]+$`)
+	sshOptionRE = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)=[A-Za-z0-9._,:@+/-]*$`)
+	timeoutRE   = regexp.MustCompile(`^--timeout=[0-9]+$`)
+	pagerFlagRE = regexp.MustCompile(`^-{1,2}[A-Za-z][A-Za-z0-9-]*$`)
+	sshHomeRE   = regexp.MustCompile(`^~/\.ssh/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+	portRE      = regexp.MustCompile(`^[0-9]{1,5}$`)
+	userRE      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	compilerRE  = regexp.MustCompile(`^(gcc|g\+\+|clang|clang\+\+|cc|c\+\+|gfortran|flang|ifx|ifort)(-[0-9]+(\.[0-9]+)*)?$`)
+)
+
+// systemBinDirs are where the system's own programs live. A path directly under one is an ordinary setting (core.editor /usr/bin/vim);
+// /usr/local and /opt/homebrew are not here, since a user can write to them.
+var systemBinDirs = []string{"/usr/bin/", "/bin/", "/sbin/", "/usr/sbin/", "/usr/libexec/"}
+
+// program reports whether w is one of names, as a bare name or as a path directly under a system bin directory.
+func program(w string, names ...string) bool {
+	if slices.Contains(names, w) {
 		return true
+	}
+	if !pathRE.MatchString(w) || slices.Contains(strings.Split(w, "/"), "..") {
+		return false
+	}
+	dir := filepath.ToSlash(filepath.Dir(w)) + "/"
+	return slices.Contains(systemBinDirs, dir) && slices.Contains(names, filepath.Base(w))
+}
+
+// editorFlags are the flags, by editor, that only change how it opens or waits. A flag that takes a command or a file (vim -c, -S, -u, +cmd,
+// emacs -f and --eval, emacsclient -e) is not here, so a value with one counts.
+var editorFlags = map[string][]string{
+	"vim": {"-f", "-p", "-o", "-O", "--nofork"}, "vi": {"-f", "-p", "-o", "-O"}, "nvim": {"-f", "-p", "-o", "-O", "--nofork"},
+	"nano":  {"-w"},
+	"emacs": {"-nw", "--no-window-system"}, "emacsclient": {"-t", "-nw", "-c", "-n", "--tty", "--no-wait", "--create-frame", "--reuse-frame", "--no-window-system"},
+	"code": {"--wait", "-w", "-n", "--new-window", "-r", "--reuse-window"}, "subl": {"--wait", "-w", "-n", "--new-window"}, "mate": {"--wait", "-w"},
+}
+
+// sshOptionsThatRun are ssh -o options that run a program, load a library or read another file of options.
+var sshOptionsThatRun = []string{"proxycommand", "localcommand", "knownhostscommand", "permitlocalcommand", "include", "proxyjump", "pkcs11provider", "securitykeyprovider"}
+
+// honestValue reports whether a non-empty value is one of the key class's known honest values.
+func honestValue(class valueClass, v string) bool {
+	toks := strings.Fields(v)
+	switch class {
+	case classEditor:
+		if len(toks) == 0 {
+			return false
+		}
+		base := filepath.Base(toks[0])
+		flags, known := editorFlags[base]
+		if !known || !program(toks[0], base) { // a bare name, or a path under a system bin directory
+			return false
+		}
+		for _, f := range toks[1:] {
+			if !slices.Contains(flags, f) {
+				return false
+			}
+		}
+		return true
+	case classPager:
+		if len(toks) == 0 || !program(toks[0], "less", "more", "cat", "delta", "diff-so-fancy", "bat") {
+			return false
+		}
+		for _, f := range toks[1:] {
+			if !pagerFlagRE.MatchString(f) {
+				return false
+			}
+		}
+		return true
+	case classFilter:
+		if len(toks) < 2 || toks[0] != "git-lfs" {
+			return false
+		}
+		ok := false
+		for _, t := range toks[1:] {
+			switch t {
+			case "clean", "smudge", "filter-process":
+				ok = true
+			case "--", "%f", "--skip":
+			default:
+				return false
+			}
+		}
+		return ok
+	case classCredHelp:
+		switch v {
+		case "store", "osxkeychain", "manager", "manager-core", "libsecret", "cache", "!gh auth git-credential", "!/usr/bin/gh auth git-credential",
+			"/usr/lib/git-core/git-credential-libsecret", "/usr/lib/git-core/git-credential-store", "/usr/lib/git-core/git-credential-cache",
+			"/usr/lib/git-core/git-credential-osxkeychain", "/usr/local/share/gcm-core/git-credential-manager", "/usr/share/gcm-core/git-credential-manager",
+			"/usr/local/share/gcm-core/git-credential-manager-core":
+			return true
+		}
+		return len(toks) == 2 && toks[0] == "cache" && timeoutRE.MatchString(toks[1])
+	case classSSH:
+		return len(toks) > 0 && program(toks[0], "ssh") && sshArgsHonest(toks[1:])
+	case classGpg:
+		if v == "/Applications/1Password.app/Contents/MacOS/op-ssh-sign" || v == "/opt/1Password/op-ssh-sign" {
+			return true
+		}
+		return len(toks) == 1 && program(toks[0], "gpg", "gpg2", "gpgsm", "ssh-keygen")
+	case classDefKey:
+		return v == "ssh-add -L"
+	case classAskpass:
+		return len(toks) == 1 && program(toks[0], "ssh-askpass", "ksshaskpass", "git-gui--askpass", "lxqt-openssh-askpass", "x11-ssh-askpass", "gnome-ssh-askpass")
+	case classPack:
+		return len(toks) == 1 && program(toks[0], "git-upload-pack", "git-receive-pack", "git-upload-archive")
 	}
 	return false
 }
 
-// programVarRuns reports whether setting name to value makes the Go toolchain run a program the repository, /tmp or the home directory may
-// hold: a program variable not on the allowlist, or CGO_LDFLAGS holding -B (the directory the linker driver finds its programs in).
+// sshArgsHonest: plain flags, -o Key=Value (or -oKey=Value) that does not run a program, -i and -F with a path under ~/.ssh, -p with a port,
+// -l with a user name. Anything else (-J, a host and a command, -F elsewhere) counts.
+func sshArgsHonest(toks []string) bool {
+	for i := 0; i < len(toks); i++ {
+		t := toks[i]
+		switch {
+		case slices.Contains([]string{"-q", "-v", "-4", "-6", "-T", "-a", "-x", "-A", "-X", "-Y", "-C"}, t):
+		case t == "-o" && i+1 < len(toks):
+			i++
+			if !sshOptionHonest(toks[i]) {
+				return false
+			}
+		case strings.HasPrefix(t, "-o") && len(t) > 2:
+			if !sshOptionHonest(t[2:]) {
+				return false
+			}
+		case (t == "-i" || t == "-F") && i+1 < len(toks):
+			i++
+			if !sshHomeRE.MatchString(toks[i]) || strings.Contains(toks[i], "..") {
+				return false
+			}
+		case t == "-p" && i+1 < len(toks):
+			i++
+			if !portRE.MatchString(toks[i]) {
+				return false
+			}
+		case t == "-l" && i+1 < len(toks):
+			i++
+			if !userRE.MatchString(toks[i]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func sshOptionHonest(opt string) bool {
+	m := sshOptionRE.FindStringSubmatch(opt)
+	return m != nil && !slices.Contains(sshOptionsThatRun, strings.ToLower(m[1]))
+}
+
+// programVarRuns reports whether setting a Go toolchain variable to value makes the toolchain run a program, or load code, that the
+// repository, /tmp or the home directory may hold: a compiler or tool variable that is not an ordinary compiler, archiver or pkg-config,
+// GOCACHEPROG whatever its value, or a CGO flags variable naming where the compiler finds its programs (-B) or a linker plugin or
+// linker program.
 func programVarRuns(name, value string) bool {
-	switch {
-	case programVar(name):
-		return runsProgram(value)
-	case name == "CGO_LDFLAGS":
-		return hasBWord(value)
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return false
+	}
+	switch name {
+	case "CC", "CXX", "FC":
+		return !(len(strings.Fields(v)) == 1 && compilerWord(v))
+	case "PKG_CONFIG":
+		return !(len(strings.Fields(v)) == 1 && program(v, "pkg-config", "pkgconf"))
+	case "AR":
+		return !(len(strings.Fields(v)) == 1 && program(v, "ar", "llvm-ar", "gcc-ar"))
+	case "GOCACHEPROG":
+		return true
+	case "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS":
+		return hasBWord(v)
+	case "CGO_LDFLAGS":
+		return hasBWord(v) || ldflagsRun(v)
 	}
 	return false
+}
+
+// compilerWord: an ordinary compiler name, with a version suffix, bare or directly under a system bin directory.
+func compilerWord(w string) bool {
+	if compilerRE.MatchString(w) {
+		return true
+	}
+	return pathRE.MatchString(w) && !slices.Contains(strings.Split(w, "/"), "..") && slices.Contains(systemBinDirs, filepath.ToSlash(filepath.Dir(w))+"/") &&
+		compilerRE.MatchString(filepath.Base(w))
 }
 
 // hasBWord reports whether a flags string has a word -B or -B<dir>, which names where gcc and ld look for their programs (-Bstatic and
@@ -74,7 +321,23 @@ func hasBWord(v string) bool {
 	return false
 }
 
-// envProgramVar: an argument of env that sets a program variable (or CGO_LDFLAGS) to something that runs a program.
+// ldflagsRun: -Wl,-plugin=<x> and -Wl,-plugin,<x> (a linker plugin is code the linker loads), -fuse-ld= with a path (a linker program;
+// -fuse-ld=lld and gold name one the compiler finds itself), and -wrapper (gcc runs the program that follows).
+func ldflagsRun(v string) bool {
+	for _, w := range strings.Fields(v) {
+		switch {
+		case strings.HasPrefix(w, "-Wl,") && (strings.Contains(w, ",-plugin=") || strings.Contains(w, ",-plugin,") || strings.HasPrefix(w, "-Wl,-plugin")):
+			return true
+		case strings.HasPrefix(w, "-fuse-ld=") && strings.Contains(w, "/"):
+			return true
+		case w == "-wrapper":
+			return true
+		}
+	}
+	return false
+}
+
+// envProgramVar: an argument of env that sets a toolchain variable to something that runs a program.
 func envProgramVar(prog, arg string) bool {
 	name, v, ok := strings.Cut(arg, "=")
 	return prog == "env" && ok && programVarRuns(name, v)
@@ -90,110 +353,4 @@ func programAssign(name string, w *syntax.Word) bool {
 		return false
 	}
 	return slices.ContainsFunc(cands, func(c string) bool { return programVarRuns(name, c) })
-}
-
-// interpreters are programs that run what they are handed as code, or another program: a setting that is only one of them, or starts
-// one, is a shell command in all but name. A bare word on this list is not honest.
-var interpreters = []string{
-	"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "env", "xargs", "nohup", "python", "python3", "perl", "ruby", "node", "php", "lua",
-	"osascript", "awk", "sed", "open", "sudo", "doas", "eval", "exec", "source", "time", "timeout", "command", "builtin", "nice", "make",
-	"go", "npx", "npm", "cargo", "java", "watch", "find", "script", "expect",
-}
-
-// systemBinDirs are where the system's own programs live. A path directly under one is an ordinary setting (core.editor /usr/bin/vim);
-// /usr/local and /opt/homebrew are not here, since a user can write to them.
-var systemBinDirs = []string{"/usr/bin/", "/bin/", "/sbin/", "/usr/sbin/", "/usr/libexec/"}
-
-// sshOptionsThatRun are ssh -o options that run a program, load a library or read another file of options.
-var sshOptionsThatRun = []string{"proxycommand", "localcommand", "knownhostscommand", "permitlocalcommand", "include", "proxyjump", "pkcs11provider", "securitykeyprovider"}
-
-var (
-	bareWordRE   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
-	pathWordRE   = regexp.MustCompile(`^/[A-Za-z0-9._+/-]+$`)
-	sshOptionRE  = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*)=[A-Za-z0-9._,:@+/-]*$`)
-	timeoutArgRE = regexp.MustCompile(`^--timeout=[0-9]+$`)
-	valueCharsRE = regexp.MustCompile(`^[A-Za-z0-9 _.,:@+=%/~-]*$`)
-)
-
-// runsProgram reports whether the value of a setting that names a program is not on the allowlist of honest forms. A value is honest
-// only when the whole of it is one of:
-//   - empty (the setting is being cleared);
-//   - one bare word with no metacharacter that is not an interpreter (vim, nano, code, ssh, store, osxkeychain, manager, gpg, clang);
-//   - one path directly under /usr/bin, /bin, /sbin, /usr/sbin or /usr/libexec, whose program is not an interpreter;
-//   - a bare word and --wait or -w (code --wait);
-//   - git-lfs and its own words (clean, smudge, filter-process, --, %f, --skip);
-//   - cache --timeout=N, a credential helper;
-//   - ssh and plain -o Key=Value options, none of which runs a program or reads another file (ProxyCommand, LocalCommand, KnownHostsCommand,
-//     PermitLocalCommand, Include, ProxyJump, PKCS11Provider, SecurityKeyProvider).
-//
-// Anything else counts: a quote, "=" in the first word, "!", ";", a path outside the system directories, a second word that is not one of
-// the above. git runs these values through /bin/sh, so the first word alone says too little.
-func runsProgram(val string) bool {
-	v := strings.TrimSpace(val)
-	return v != "" && !honestProgramValue(v)
-}
-
-func honestProgramValue(v string) bool {
-	if !valueCharsRE.MatchString(v) {
-		return false
-	}
-	toks := strings.Fields(v)
-	switch {
-	case len(toks) == 1:
-		return bareProgram(toks[0]) || systemProgram(toks[0])
-	case toks[0] == "git-lfs":
-		ok := false
-		for _, t := range toks[1:] {
-			switch t {
-			case "clean", "smudge", "filter-process":
-				ok = true
-			case "--", "%f", "--skip":
-			default:
-				return false
-			}
-		}
-		return ok
-	case toks[0] == "cache":
-		return len(toks) == 2 && timeoutArgRE.MatchString(toks[1])
-	case toks[0] == "ssh":
-		return sshOptionsHonest(toks[1:])
-	case len(toks) == 2 && (toks[1] == "--wait" || toks[1] == "-w"):
-		return bareProgram(toks[0])
-	}
-	return false
-}
-
-// bareProgram: one word with no path and no metacharacter, that is not an interpreter.
-func bareProgram(w string) bool {
-	return bareWordRE.MatchString(w) && !slices.Contains(interpreters, w)
-}
-
-// systemProgram: a path directly under a system bin directory whose program is not an interpreter.
-func systemProgram(w string) bool {
-	if !pathWordRE.MatchString(w) || slices.Contains(strings.Split(w, "/"), "..") {
-		return false
-	}
-	dir := filepath.ToSlash(filepath.Dir(w)) + "/"
-	return slices.Contains(systemBinDirs, dir) && !slices.Contains(interpreters, filepath.Base(w))
-}
-
-// sshOptionsHonest: only -o Key=Value (or -oKey=Value) words, and none of them one that runs a program.
-func sshOptionsHonest(toks []string) bool {
-	for i := 0; i < len(toks); i++ {
-		opt := ""
-		switch {
-		case toks[i] == "-o" && i+1 < len(toks):
-			i++
-			opt = toks[i]
-		case strings.HasPrefix(toks[i], "-o") && len(toks[i]) > 2:
-			opt = toks[i][2:]
-		default:
-			return false
-		}
-		m := sshOptionRE.FindStringSubmatch(opt)
-		if m == nil || slices.Contains(sshOptionsThatRun, strings.ToLower(m[1])) {
-			return false
-		}
-	}
-	return true
 }
