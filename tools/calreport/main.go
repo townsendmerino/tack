@@ -1,5 +1,6 @@
 // Command calreport prints a calibration job's "reported, not decided on" figures from its results.jsonl, per arm:
-// passes per task, stops by reason, window-full stops, cap hits, requests and wall time per run, the server's
+// passes per task, stops by reason, window-full stops, cap hits, requests and wall time per run, the share of passing runs within
+// 4, 5, 6, 8 and 10 minutes (what a run cap must keep), the server's
 // first-token times, done and verification refusals, each setting's firings and what followed them (§13.4), the cell
 // states, and §2's bar (e1-calibration-preregistration-2026-10-18.md §2, §12.2, §12.3). A job may span several
 // results files, comma-separated (§12.25's two nights); each record's run directory stays beside its own file. With
@@ -243,6 +244,7 @@ func report(w io.Writer, j *jobData, others []*jobData, gs goldSeer) {
 	perTask(w, j, others)
 	stops(w, j)
 	perRun(w, j)
+	passingWithinCap(w, j)
 	refusals(w, j)
 	guards(w, j, gs)
 	bar(w, j)
@@ -438,6 +440,45 @@ func perRun(w io.Writer, j *jobData) {
 			sum(reqs), mean(reqs), quantile(reqs, 0.5), minOf(reqs), maxOf(reqs),
 			sum(walls), quantile(walls, 0.5), maxOf(walls),
 			ttftString(ttft), orDash(prefill, func(v []float64) string { return fmt.Sprintf("%.0f", quantile(v, 0.5)) }))
+	}
+	fmt.Fprintln(w)
+}
+
+// capMinutes are the run caps passingWithinCap reports.
+var capMinutes = []float64{4, 5, 6, 8, 10}
+
+// passingWithinCap prints, per arm, how many of its passing runs finished within each cap, and the longest passing run. It is what a run cap
+// has to keep: a cap that cuts a run that would have passed lowers the arm's pass rate. A bound is inclusive; only counted passing runs are
+// in it (a void run, a failing run and a run that hit the cap are not).
+func passingWithinCap(w io.Writer, j *jobData) {
+	fmt.Fprintln(w, "## Passing runs finished within a cap")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "| arm | passing runs | within 4 min | within 5 min | within 6 min | within 8 min | within 10 min | longest passing run, s |")
+	fmt.Fprintln(w, "|---|---|---|---|---|---|---|---|")
+	for _, a := range j.armOrder {
+		var walls []float64
+		for _, r := range j.arms[a] {
+			if r.Pass {
+				walls = append(walls, r.Run.WallSecs)
+			}
+		}
+		if len(walls) == 0 {
+			fmt.Fprintf(w, "| %s | 0 | — | — | — | — | — | — |\n", a)
+			continue
+		}
+		var row strings.Builder
+		fmt.Fprintf(&row, "| %s | %d |", a, len(walls))
+		for _, m := range capMinutes {
+			within := 0
+			for _, s := range walls {
+				if s <= m*60 {
+					within++
+				}
+			}
+			fmt.Fprintf(&row, " %d (%.0f%%) |", within, 100*float64(within)/float64(len(walls)))
+		}
+		fmt.Fprintf(&row, " %.0f |", maxOf(walls))
+		fmt.Fprintln(w, row.String())
 	}
 	fmt.Fprintln(w)
 }
