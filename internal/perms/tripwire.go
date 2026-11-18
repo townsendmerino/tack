@@ -36,6 +36,9 @@ func (e *Engine) Tripwire(command string) []string {
 				if hiddenToolFlag(base, a) {
 					add("tool-flag")
 				}
+				if envProgramVar(base, a) {
+					add("program-var")
+				}
 				if envGoflags(base, a) {
 					add("goflags")
 				}
@@ -51,6 +54,9 @@ func (e *Engine) Tripwire(command string) []string {
 				continue
 			}
 			for _, cand := range cands {
+				if envProgramVar(base, cand) {
+					add("program-var")
+				}
 				if envGoflags(base, cand) {
 					add("goflags")
 				}
@@ -77,6 +83,9 @@ func (e *Engine) Tripwire(command string) []string {
 					if goflagsRuns(a.Value) {
 						add("goflags")
 					}
+				}
+				if a.Name != nil && programVar(a.Name.Value) && a.Value != nil && programRuns(a.Value) {
+					add("program-var")
 				}
 			}
 			return true
@@ -202,6 +211,10 @@ func configWriteRuns(prog string, c Simple) bool {
 			return val != ""
 		case strings.HasPrefix(key, "alias.") && strings.HasPrefix(val, "!"):
 			return true
+		case programKey(key):
+			return runsProgram(val)
+		case key == "include.path" || strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path"):
+			return val != "" // the file it pulls in can set any of the keys above, and is read from the repository
 		}
 	case "go":
 		if len(args) == 0 || args[0] != "env" {
@@ -214,7 +227,7 @@ func configWriteRuns(prog string, c Simple) bool {
 				continue
 			}
 			if write {
-				if name, v, _ := strings.Cut(a, "="); name == "GOFLAGS" && hasRunWord(v) {
+				if name, v, _ := strings.Cut(a, "="); name == "GOFLAGS" && hasRunWord(v) || programVar(name) && runsProgram(v) {
 					return true
 				}
 			}
