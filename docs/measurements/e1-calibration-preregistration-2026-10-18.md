@@ -2875,3 +2875,53 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
   a 4,000-token chunk) and cell checks: about 6 to 7 hours. Over two hours, so a night run (the run budget).
 - **The read:** `tools/calreport -rule sd=2.0,n=36` for each contrast. The summarizer's requests are request 0 and are not
   counted as the run's requests (calreport's readSteps skips them).
+
+## 19. Amendment C13: Qwen3-Coder-30B-A3B on the calibration set — Francis, 2026-11-18, registered before its runs
+
+- **The question.** On the loop as adopted, does Qwen3-Coder-30B-A3B, a coding-tuned MoE in the 35B's class (about 3B
+  active), pass the calibration tasks at least as often as the 35B does at 16k? Francis asked on the afternoon of 2026-11-18
+  for the model to be set up and the calibration's first steps run, by day.
+- **Step 1, E0 on nobara at 16,384,** with `-moe-cache-experts`, as §14.1, and E0's rule unchanged
+  (`e0-preregistration-2026-10-16.md`, amendments 4 and 11): admitted at the window, `check` ok, smoke at least 17 of 20
+  on both runs with 0 malformed. A swap-guard halt, an unanswered request or a decode on another path than the pinned
+  one is void. A job of nobara's `night.py`, holding its lock. Step 2 runs only if E0 is eligible.
+- **Step 2, the first set:** tasks 11, 1 and 10, 3 runs each, in that order (§14.2's reasons). The arm is §14.4's: the
+  bundle as adopted (§14.4's seven settings, masking off) and A1 otherwise unchanged, forced-call mode, sampling 0.7 /
+  0.8 / 20, `max_tokens` 2048, failure budget 8, `-ctx 16384`, the 30-minute cap, snapshots on (ADR-006). tack at the
+  commit that adds this section, built clean on both machines; goinfer as pinned below. Each block follows a clean cell
+  check at 16,384 on the pinned decode path, under §12.2's cell rule.
+- **Expansion:** only if a first-set run passes. Tasks 2, 12, 6, 5, 3, 4, 7, 9 and 8 (§14.2's order), one 3-run block
+  at a time. **No block starts after 20:00,** so the last ends by 21:30 at the cap and both machines' locks are free by
+  then. Tasks left continue on a later day, by day, on the same build and in the same order.
+- **The metric:** passes per task out of 3, beside C8's 16k row task by task (§14.2's first set and §14.4: task 11 3/3,
+  task 1 1/3, task 10 3/3; the full row 12 of 36 on 6 tasks), never pooled. C8 ran with snapshots off (the Note before
+  §17), so the comparison crosses periods, and the record says so.
+- **The bar,** read only when all 12 tasks have 3 runs: §2's, usable at 4 or more passes on 2 or more tasks.
+- **Stopping:** no pass in the first set stops the run after its 9. A void run stops the launcher; it is recorded and
+  re-run in its place on the next slot. The 20:00 cut stands.
+- **What each outcome means for E1's model choice** (the choice is Francis's):
+  - E0 not eligible, or void: no calibration run, and the 35B stays E1's model;
+  - first set 0 of 9, against the 35B's 7 of 9 on the same tasks: the 35B stays;
+  - first set passes, but fewer than 12 tasks by 21:30: a subset, reported task by task, with no bar; the rest by day;
+  - all 12 tasks, under the bar: the 35B stays;
+  - all 12 tasks, at the bar: a candidate. Its row beside the 35B's 12 of 36, task by task, with decode speed and host
+    memory, goes to Francis.
+- **Reported, not decided on:** stops by cause, tokens at stop, requests, first-token times, cap hits and the guard table
+  (`tools/calreport`); E0's decode rate and host RSS; the tool-call format goinfer uses for this model (Hermes JSON or
+  Qwen XML).
+- **Predictions (tack's session, before any run):** E0 eligible; the first set 6 to 9 of 9 (task 11 3/3, task 1 0 to 2,
+  task 10 2 to 3); the median run 2 to 5 minutes; if all 12 run, 9 to 15 of 36.
+- **Pinned (2026-11-18, before E0; from nobara's model setup):**
+  - **goinfer `9de08125c`** (main), built `CGO_ENABLED=0 go build -tags cuda ./backend/cuda/cmd/serve` from a clean
+    worktree. Binary `~/tack-runs/bin/goinfer-serve-cuda-9de08125c` on nobara, sha256 `4af7bda99cb76e3a…`.
+  - **The model:** `~/models/qwen3-coder-30b-a3b-gguf/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`, unsloth's GGUF at
+    `b17cb02` (18,556,689,568 B, sha256 `fadc3e5f8d42bf7e…`), served from its v17 int4 `.giw` sidecar.
+  - **Server flags:** `-backend cuda -moe-cache-experts -thinking off -ctx 16384`; the pilot adds `-kv-sessions 1
+    -log-requests`. The decode path the banner must name is `cuda-resident (int4)`.
+  - **Tool calls:** goinfer renders the tools with its own Hermes prompt (`<tool_call>{json}</tool_call>`), not the
+    template's XML form, and also reads XML calls if the model writes them. `forced_tool_call` is `grammar`.
+  - **What the setup measured** (15:17–15:20, nobara's timing lock held): at 16,384, `cuda-resident (int4)`, decode
+    30.0–30.1 tok/s on a short prompt (the 35B's E0: 51.5), VmHWM 32.2 GB, VmSwap 0, the expert cache at 32 slots a
+    layer. Decode is about 1.7 times slower than the 35B's; the 30-minute cap stays, and cap hits are reported.
+  - **tack `08c7d30`,** the commit that adds this section, built clean on both machines (Linux binary sha256
+    `93e8069bd9b4a908…`).
