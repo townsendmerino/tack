@@ -2,8 +2,8 @@
 
 <!-- citations-at: ffd8094 -->
 
-**Status: a proposal for Francis, not the rule.** It amends `e1-full-run-p1-rule-registration-2026-11-16.md` only if he approves
-it, and until then that page stands. Nothing here was run, and nothing is queued: every number is arithmetic over records already in
+**Status: Francis chose Option S on 2026-11-18, about 15:38.** The registration `e1-full-run-p1-rule-registration-2026-11-16.md` carries it as
+Amendment 1; this page is the costing behind it. Nothing here was run, and nothing is queued: every number is arithmetic over records already in
 `docs/measurements`. The model is a parameter (see "The model line").
 
 Francis, 2026-11-18: "let's try to get machine time down to a couple of hours, whatever that takes." The registered run is 60 tasks ×
