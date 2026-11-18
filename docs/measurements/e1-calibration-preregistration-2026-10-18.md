@@ -2925,3 +2925,9 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
     layer. Decode is about 1.7 times slower than the 35B's; the 30-minute cap stays, and cap hits are reported.
   - **tack `08c7d30`,** the commit that adds this section, built clean on both machines (Linux binary sha256
     `93e8069bd9b4a908…`).
+- **Outcome of step 1 (2026-11-18, 15:25–15:31 PST; record `e0-nobara-qwen3coder-30b-2026-11-18.md`): void, and parked
+  on smoke.**
+  - goinfer's swap guard halted the server after the third cold 8,192 cell, so the timed cells and decode got 503s.
+  - Smoke was 16/20 on both runs with 0 malformed, `check` ok, admitted at 16,384 on `cuda-resident (int4)`.
+  - Under this section, step 2 does not run, and the 35B stays E1's model. A first set on this model would need a clean
+    E0, and, while it grades parked, Francis's explicit choice in a new line here.
