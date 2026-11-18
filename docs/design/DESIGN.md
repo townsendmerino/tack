@@ -634,6 +634,11 @@ tool-use smoke set compares this merged set against the split one before it is f
     - **To or from `plan`** the loop session is rebuilt from its log with the other tool set, in place, with its subscribers,
       log and sweep target kept: the tool list changes once, so goinfer's cached prefix is lost once, and what the user
       allowed "for the session" and the shell's working directory are forgotten. A rebuild that fails leaves the old session.
+    - **The TUI's key** is Shift+Tab: plan, ask, edits, auto, and round again, each press a `session/setMode`; the screen's mode
+      changes only when the daemon's `mode.changed` says so. A move to `auto` is not asked for until the screen has said what
+      auto allows (approves file edits and sandboxed shell commands without asking; still asks for what leaves the sandbox,
+      destroys work, or changes a CI definition or an instruction file) and the user has pressed `y`; any other key declines.
+      A ceiling that lowered the mode, a turn running, and an older daemon each show as a note.
   - **Which mode a session starts in** (owner, 2026-11-17). With nothing set, the TUI starts in `plan`. Strictness runs
     `plan` < `ask` < `edits` < `auto`: how much a session may do without asking.
     - **A mode is only ever chosen by the owner:** by `tack -mode`, by the Shift+Tab key, or by `[session] mode` in
@@ -692,6 +697,10 @@ tool-use smoke set compares this merged set against the split one before it is f
       - makes no `.git` entry: `mkdir`, `mv`, `cp`, `ln`, `touch`, `tee`, `sed`, `rm` and the like naming a path with a `.git`
         segment in any letter case, and any redirection to one, ask in every mode (`PathAsks`), so a covered writer cannot make
         the gitfile or config the previous item is about.
+        That list sees only literal, cwd-relative arguments (`cd .git && cp ../x commondir` passes it), so it is the backstop and the
+        sandbox is the rule: the profile denies, for every program, writes to the parts of a `.git` that redirect git or run
+        programs (the list under "Writes that would run later", below). Everything else under `.git` stays writable, so `git add`
+        and `git commit` work in the sandbox (owner, 2026-11-17).
       - `env` in front of `go` or `git` is held to the same list: its flags and every variable it sets.
       - writes with `-o` or a profile flag (`-coverprofile`, `-cpuprofile`, `-memprofile`, `-blockprofile`,
         `-mutexprofile`, `-trace`, `-outputdir`) only to a relative path with no `..` and no `.git` segment, and not through a symlink that leads out of the tree or into `.git`.
@@ -703,7 +712,7 @@ tool-use smoke set compares this merged set against the split one before it is f
       evil::x` runs `git-remote-evil` from `PATH`, and `ls-remote`, `fetch`, `clone` and the other remote commands are not on
       the list, so they ask.
     - A program with no list (`make`, `ls`, `cat`) is covered as before. Auto mode is not narrowed: there the sandbox, not a
-      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to `.git/config` and
+      rule, is the boundary. The sandbox still bounds what any of this can do on macOS (it denies writes to the parts of `.git` that redirect git or run programs, in any workspace directory, and
       `~/.gitconfig`); the allowlist is about covering what the user approved and nothing near it.
 - **The tripwire: a counted shape holds the session** (owner, 2026-11-17). The allowlist prevents; this detects. `perms.Engine.Tripwire`
   counts only shapes with no honest use: a run-a-program flag written behind an escape (`\-exec`, `$'\x2dexec'`, `-e{x,x}ec`,
@@ -837,7 +846,7 @@ tool-use smoke set compares this merged set against the split one before it is f
     file asks too; another program writing one (`tee`, `sed -i`) is not visible to the parse.
   - **Never, from the file tools:** a write inside `.git/`. Git's own commands still write there.
   - **Already covered, by the sandbox profile:** secrets, shell history and logs outside the workspace, host-key
-    checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, `.git/hooks`, `.git/config` and
+    checks and every other network path, `.mcp.json`, `.claude/`, `.tack/`, `.vscode/`, the git parts listed below, and
     shell startup files.
 - **Checked again as it runs.** Approval reads the parsed text, but `$GOBIN/tool` or `for f in …; do … > "$f"; done`
   only show their real program and paths after expansion. So `tackd shell` also checks every command and every file it
@@ -882,8 +891,33 @@ tool-use smoke set compares this merged set against the split one before it is f
     command cannot approve its own request, change the mode, lift a halt or read transcripts. Methods that change
     permissions, mode, trust or halt state also require the token in `client.token`, which only unsandboxed clients can
     read.
-  - **Writes that would run later outside the sandbox** are denied or asked about: `.git/hooks`, `.git/config` (hooks
-    path, `core.fsmonitor`, aliases), `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
+  - **Writes that would run later outside the sandbox** are denied or asked about: the parts of every `.git` in the workspace (any depth, any letter case) that redirect git or run programs
+    (`sandbox.gitRedirects`): `config` and `config.worktree` (`core.fsmonitor`, `core.hooksPath`, `!` aliases, `diff.external`,
+    `core.pager`, textconv), `commondir`, `hooks/`, `info/` (attributes select filter and diff drivers; `exclude`,
+    `sparse-checkout`), `objects/info/alternates` and `http-alternates`, all of `modules/` (a submodule's config, `commondir`,
+    `info/`, hooks and alternates redirect too), `remotes/` and `branches/` (where the owner's later push goes), `rebase-merge/`,
+    `rebase-apply/` and `sequencer/` (a todo's `exec` lines run on the owner's `rebase --continue`), the parents `objects/`, `objects/info/`, `worktrees/` and `worktrees/<n>/` themselves (a rename of a parent gets past a rule that names only a file in it: move `objects/info` away, plant `alternates`, move it back; git writes `objects/<xx>/` and never renames these), `worktrees/*/commondir`,
+    `gitdir` and `config.worktree`, and the `.git` entry itself at any depth (so a gitfile naming a
+    `gitdir:` a command wrote cannot be made or swapped in). `index`, `objects/` (but not `objects/info/alternates`), `refs/`,
+    `HEAD`, `logs/`, `packed-refs`, `ORIG_HEAD`, `FETCH_HEAD` and `COMMIT_EDITMSG` stay writable. Not covered: the directory
+    `core.hooksPath` names when it is under `.git` (the profile does not read the config; the config is denied to commands, so
+    only the owner sets it), and an in-tree hooks directory (such as `.githooks`), whose hook files a command may write and the
+    owner's next commit would run: nothing denies or asks about such a write today (the tripwire does not count an in-tree
+    `core.hooksPath`), and protecting that directory is a decision not yet taken.
+    Also writable by design: the index, whose assume-unchanged and skip-worktree bits can hide an edit from the owner's
+    `git diff`, and gitlink (160000) entries, which make the owner's `git status` recurse into a directory. A linked worktree
+    whose gitdir is outside the workspace cannot add or commit in the sandbox, since that directory is not writable. A route
+    the profile cannot see by path: renaming into the workspace a directory that holds a ready-made `.git` (a rename is checked
+    by its destination only, never by what the moved directory holds), or a symlink to one (a link is checked by its own name,
+    not its target). macOS CI showed both get through, so the profile denies the source instead: no `.git` (any letter case,
+    any depth) can be created under the temp directory or the Go cache, nor under the `xcrun_db` prefix the base section allows in the per-user temp directory, the only places outside the workspace a command may write
+    (`sandbox.gitOutside`), so there is none to bring in. Cost: `git init`, `git clone` and `git worktree add` there fail under the
+    sandbox, and so does any test that makes a repository in its temp directory. Left open: a symlink in the workspace to a `.git`
+    that already exists outside (the owner's own repository, which is the owner's), and a directory with the shape of a bare
+    repository built under any name (git run inside it would use its config; `perms.GitFindsOwnersRepo` covers a rule-approved
+    git, not the owner's own). As a belt, after every command the shell scans the workspace for a `.git` the command added and
+    reports it in the output (`internal/shell/gitwatch.go`); it removes nothing, and it is not the fix. A hard link to a listed
+    file written through its other name is denied (macOS CI). `.mcp.json`, `.claude/`, `.tack/`, `.vscode/` tasks and settings, and shell
     startup files.
   - **Go caches.** Sandboxed commands get tack's own `GOCACHE`, separate from the owner's, and a read-only `GOMODCACHE`,
     so a command cannot plant a build artifact that the owner's next build would pick up.

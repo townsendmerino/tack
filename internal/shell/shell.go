@@ -123,6 +123,18 @@ type Session struct {
 func (s *Session) Run(ctx context.Context, command string, timeout time.Duration) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	before, scanned := nestedGits(s.Engine.Root)
+	res, err := s.run(ctx, command, timeout)
+	// Whatever ended the command, a repository it made inside the workspace is reported (gitwatch.go); nothing is removed.
+	if !scanned {
+		res.Output += "\n[tack did not check this command for a repository it made inside the workspace: the tree is too large]\n"
+	} else if added := newGits(s.Engine.Root, before); len(added) > 0 {
+		res.Output += "\n[tack found a .git this command added inside the workspace, which the sandbox should have refused: " + strings.Join(added, ", ") + "]\n"
+	}
+	return res, err
+}
+
+func (s *Session) run(ctx context.Context, command string, timeout time.Duration) (Result, error) {
 	if s.Engine.Sandboxed != (s.Wrap != nil) { // the engine's rules trust the sandbox: never without one
 		return Result{}, fmt.Errorf("shell: the engine says sandboxed=%v, but the shell %s sandbox", s.Engine.Sandboxed,
 			map[bool]string{true: "has a", false: "has no"}[s.Wrap != nil])
@@ -486,6 +498,10 @@ func (ck *checker) exec(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 				}
 			}
 			if filepath.Base(path) == "git" {
+				// The probe runs this binary, so it runs only one approval saw (as the check below requires of any program).
+				if !ck.approved[path] && !ck.engine.Covers(expanded) {
+					return ck.stop("%s was not approved: it appeared only when the command ran (%s)", path, strings.Join(args, " "))
+				}
 				if !perms.GitFindsOwnersRepo(path, hc.Dir, ck.req.Root) {
 					return ck.stop("git would not use this workspace's own repository here, which a rule does not cover")
 				}

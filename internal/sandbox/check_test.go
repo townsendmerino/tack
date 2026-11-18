@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -36,5 +37,120 @@ func TestCheckRefusesOverlap(t *testing.T) {
 		if (err != nil) != c.bad {
 			t.Errorf("%s (%s): err %v, want refused=%v", c.name, c.tack, err, c.bad)
 		}
+	}
+}
+
+// TestTheGitDenyListMatchesWhatItIsFor: the rules' regular expressions are matched here (Go's syntax reads these as Seatbelt does) against
+// paths that must be denied and paths that must stay writable, so that git add and git commit work and nothing that redirects git does.
+// The workspace path is quoted so its dots and brackets match only themselves. The escape tests (sandboxtest) show the kernel refusing.
+func TestTheGitDenyListMatchesWhatItIsFor(t *testing.T) {
+	ws := "/w.s/[x]"
+	var res []*regexp.Regexp
+	for _, rule := range gitRedirects(ws) {
+		m := regexp.MustCompile(`^\(regex #"(.*)"\)$`).FindStringSubmatch(rule)
+		if m == nil {
+			t.Fatalf("not a regex rule: %s", rule)
+		}
+		res = append(res, regexp.MustCompile(m[1]))
+	}
+	denied := func(p string) bool {
+		for _, r := range res {
+			if r.MatchString(p) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, p := range []string{".git", "sub/.git", "sub/deep/.GIT", ".git/config", ".git/CONFIG", ".git/Config.Worktree", ".git/commondir", ".git/hooks", ".git/hooks/pre-commit",
+		".git/HOOKS/x", ".git/info/exclude", ".git/info/attributes", ".git/info/sparse-checkout", ".git/objects/info/alternates", ".git/objects/INFO/Alternates",
+		".git/objects/info/http-alternates", ".git/modules/m/config", ".git/modules/a/b/config", ".git/modules/m/hooks/post-commit", ".git/worktrees/w/commondir",
+		".git/rebase-merge/git-rebase-todo", ".git/rebase-apply/patch", ".git/sequencer/todo", ".git/REBASE-MERGE/x", ".git/remotes/origin", ".git/branches/b",
+		".git/modules/m/commondir", ".git/modules/m/config.worktree", ".git/modules/m/info/exclude", ".git/modules/m/objects/info/alternates", ".git/modules/m/HEAD",
+		".git/objects", ".git/OBJECTS/info", ".git/worktrees", ".git/worktrees/w", ".git/worktrees/Wx",
+		".git/worktrees/w/gitdir", ".git/worktrees/w/config.worktree", "sub/.git/config", "sub/.Git/hooks/x"} {
+		if !denied(ws + "/" + p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{".git/index", ".git/index.lock", ".git/HEAD", ".git/ORIG_HEAD", ".git/FETCH_HEAD", ".git/COMMIT_EDITMSG", ".git/packed-refs", ".git/refs/heads/main",
+		".git/logs/HEAD", ".git/objects/ab/cdef", ".git/objects/pack/pack-1.pack", ".git/objects/info/packs", ".git/worktrees/w/HEAD",
+		".gitignore", ".github/workflows/x", "a.git", "sub/.gitattributes", "config", "hooks/x", "info/x", "sub/config"} {
+		if denied(ws + "/" + p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
+	// A different workspace's .git is not this one's, and the quoted dots match only dots.
+	if denied("/wXs/[x]/.git/config") || denied("/w.s/x/.git/config") {
+		t.Error("the workspace path is not quoted")
+	}
+	if got := regexQuote("/a.b[c]/d+e"); got != `/a\.b\[c\]/d\+e` {
+		t.Errorf("regexQuote = %q", got)
+	}
+	if got := regexQuote(`/a"b\c`); got != `/a\"b\\c` {
+		t.Errorf("regexQuote of a quote and a backslash = %q", got)
+	}
+}
+
+// TestCheckRefusesAWorkspacePathTheProfileCannotQuote: a double quote or a control character in the workspace path is refused, so the path
+// written into the profile's regular expressions never needs more than regexQuote.
+func TestCheckRefusesAWorkspacePathTheProfileCannotQuote(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	for _, name := range []string{`a"b`, "a\nb", "a\rb"} {
+		ws := filepath.Join(root, name)
+		os.MkdirAll(ws, 0o755)
+		if err := (Config{Workspace: ws, Tack: []string{filepath.Join(root, "elsewhere")}}).Check(); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+	}
+	ws := filepath.Join(root, "fine [x].y")
+	os.MkdirAll(ws, 0o755)
+	if err := (Config{Workspace: ws, Tack: []string{filepath.Join(root, "elsewhere")}}).Check(); err != nil {
+		t.Errorf("brackets and dots: %v", err)
+	}
+}
+
+// TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace: the rules from gitOutside match a .git, in any case and at any depth, under
+// the temp directory and the Go cache, and nothing else there (a name that only starts or ends with .git is writable).
+func TestNoGitCanBeBuiltWhereACommandMayWriteOutsideTheWorkspace(t *testing.T) {
+	tmp, cache := "/private/var/f.lders/T", "/Users/o/Library/Caches/go-build"
+	var res []*regexp.Regexp
+	for _, rule := range gitOutside(tmp, cache) {
+		m := regexp.MustCompile(`^\(regex #"(.*)"\)$`).FindStringSubmatch(rule)
+		if m == nil {
+			t.Fatalf("not a regex rule: %s", rule)
+		}
+		res = append(res, regexp.MustCompile(m[1]))
+	}
+	denied := func(p string) bool {
+		for _, r := range res {
+			if r.MatchString(p) {
+				return true
+			}
+		}
+		return false
+	}
+	x := "/private/var/folders/ab/cd/T"
+	for _, p := range []string{x + "/xcrun_dbX/r/.git/hooks/pre-commit", x + "/xcrun_db/.GIT", x + "/xcrun_db.d/a/b/.git"} {
+		if !denied(p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{x + "/xcrun_db", x + "/xcrun_db-journal", x + "/xcrun_dbX/r/a.git"} {
+		if denied(p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
+	for _, p := range []string{tmp + "/a/.git", tmp + "/a/.git/hooks/pre-commit", tmp + "/.GIT", tmp + "/x/y/.Git/config", cache + "/vcs/.git/HEAD"} {
+		if !denied(p) {
+			t.Errorf("%s is writable", p)
+		}
+	}
+	for _, p := range []string{tmp + "/a/.gitignore", tmp + "/a/x.git", tmp + "/a/git", tmp + "/a/.github/x", tmp + "/gitx/.git2", "/private/var/fXlders/T/a/.git/config"} {
+		if denied(p) {
+			t.Errorf("%s is denied", p)
+		}
+	}
+	if len(gitOutside("", "")) != 1 { // only the fixed xcrun rule
+		t.Error("empty directories produced rules")
 	}
 }

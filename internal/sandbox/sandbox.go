@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Exe is sandbox-exec. Apple deprecated its public interface long ago; it works on macOS 26 (DESIGN §17, R6).
@@ -204,7 +205,7 @@ func Profile(c Config) string {
 	}
 	ws := real(c.Workspace)
 	later := []string{
-		fmt.Sprintf("(subpath %q)", ws+"/.git/hooks"), fmt.Sprintf("(literal %q)", ws+"/.git/config"),
+		// The parts of .git that redirect git or run programs, below.
 		fmt.Sprintf("(literal %q)", ws+"/.mcp.json"), fmt.Sprintf("(subpath %q)", ws+"/.claude"),
 		fmt.Sprintf("(subpath %q)", ws+"/.tack"), fmt.Sprintf("(subpath %q)", ws+"/.vscode"),
 	}
@@ -212,6 +213,8 @@ func Profile(c Config) string {
 	for _, f := range []string{".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile"} {
 		later = append(later, fmt.Sprintf("(literal %q)", filepath.Join(home, f)))
 	}
+	later = append(later, gitRedirects(ws)...)
+	later = append(later, gitOutside(real(c.Temp), real(c.GoCache))...)
 	sec(SecLater, fmt.Sprintf("(deny file-write* %s)", strings.Join(later, " ")))
 	var secrets []string
 	for _, p := range Secrets {
@@ -232,6 +235,9 @@ func Profile(c Config) string {
 // ancestor, so a state directory not yet created still compares correctly.
 func (c Config) Check() error {
 	ws := resolve(c.Workspace)
+	if strings.ContainsAny(ws, "\"\n\r\x00") { // the profile writes the path into a regular expression; a path that needs more than quoting is refused
+		return fmt.Errorf("the workspace path %q holds a double quote or a control character, which the profile does not accept", ws)
+	}
 	for _, p := range c.Tack {
 		t := resolve(p)
 		if within(ws, t) || within(t, ws) {
@@ -280,4 +286,94 @@ func Wrap(c Config, cmd *exec.Cmd) *exec.Cmd {
 	cmd.Args = append([]string{Exe, "-p", Profile(c), cmd.Path}, cmd.Args[1:]...)
 	cmd.Path = Exe
 	return cmd
+}
+
+// regexQuote escapes the characters of p that a Seatbelt regular expression reads as syntax.
+func regexQuote(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		if strings.ContainsRune(`.^$*+?()[]{}|\"`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// gitRedirects are the Seatbelt rules denying writes to the parts of a .git that redirect git or make it run a program, under any
+// .git of the workspace (a nested repository too), in any letter case (the file system ignores it). The owner runs git outside this
+// sandbox later, so what a command writes here would run with the owner's rights. Everything else under .git stays writable, so git add
+// and git commit work in the sandbox: index, objects/ (but not objects/info/alternates), refs/, HEAD, logs/, packed-refs, ORIG_HEAD,
+// FETCH_HEAD, COMMIT_EDITMSG. DESIGN §6.6 lists the same entries.
+//
+// Not covered: the directory core.hooksPath names when it is under .git, since the profile does not read the config; the owner's own
+// setting is outside the model's reach (config is denied) and a path outside .git is the workspace's, whose hook files an approval sees.
+func gitRedirects(ws string) []string {
+	gitDir := fmt.Sprintf("^%s/(.*/)?[.][gG][iI][tT]", regexQuote(ws))
+	// re builds one rule from name segments, each matched in any letter case.
+	re := func(tail string) string { return fmt.Sprintf("(regex #\"%s%s\")", gitDir, tail) }
+	return []string{
+		// A gitfile: a .git that is a file naming a gitdir: a command wrote makes git use that directory's config. The entry itself,
+		// at any depth, so a gitfile cannot be made or a real .git swapped for one.
+		re("$"),
+		re("/" + ci("config") + "$"),          // core.fsmonitor, core.hooksPath, "!" aliases, diff.external, core.pager, textconv: all run programs
+		re("/" + ci("config.worktree") + "$"), // the same keys, read when extensions.worktreeConfig is set
+		re("/" + ci("commondir") + "$"),       // names the directory git reads its config and objects from
+		re("/" + ci("hooks") + "(/.*)?$"),     // run by git commit, push, checkout and the rest
+		re("/" + ci("info") + "(/.*)?$"),      // attributes (filter and diff drivers), exclude, sparse-checkout: they select drivers and paths
+		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("alternates") + "$"), // another object directory git trusts
+		re("/" + ci("objects") + "/" + ci("info") + "/" + ci("http-alternates") + "$"),
+		re("/" + ci("modules") + "(/.*)?$"),      // every submodule repository: its config, config.worktree, commondir, info/, hooks/ and alternates redirect git too
+		re("/" + ci("remotes") + "(/.*)?$"),      // legacy remote definitions: change where the owner's later push goes
+		re("/" + ci("branches") + "(/.*)?$"),     // the same
+		re("/" + ci("rebase-merge") + "(/.*)?$"), // git-rebase-todo: its exec lines run on the owner's rebase --continue
+		re("/" + ci("rebase-apply") + "(/.*)?$"),
+		re("/" + ci("sequencer") + "(/.*)?$"), // cherry-pick and revert todo: the same
+		// The parents of the narrow entries below: a rename of a parent gets past a rule that names only a file in it (mv objects/info away,
+		// plant alternates, mv it back). git writes objects/<xx>/ and never renames these.
+		re("/" + ci("objects") + "$"),
+		re("/" + ci("objects") + "/" + ci("info") + "$"),
+		re("/" + ci("worktrees") + "$"),
+		re("/" + ci("worktrees") + "/[^/]+$"),
+		re("/" + ci("worktrees") + "/[^/]+/(" + ci("commondir") + "|" + ci("gitdir") + "|" + ci("config.worktree") + ")$"), // a linked worktree's redirects
+	}
+}
+
+// ci writes name as a regular expression matching it in any letter case, with a dot matching itself only.
+func ci(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r == '.':
+			b.WriteString(`[.]`)
+		case unicode.IsLetter(r):
+			b.WriteString("[" + string(unicode.ToLower(r)) + string(unicode.ToUpper(r)) + "]")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// gitOutside denies writes to any .git (any letter case, any depth, and everything under it) in the writable directories outside the
+// workspace, so a repository cannot be built where the command may write and then renamed or linked into the workspace: Seatbelt checks
+// only the path of a rename's destination or a link's name, never what the moved directory holds or where a link points, so a ready-made
+// .git arrives whole. Without one to bring, those routes have nothing to carry.
+//
+// What it costs: `git init`, `git clone` and `git worktree add` into the temp directory or the Go cache fail under the sandbox, and so does
+// a test that makes a repository there. What it leaves: a symlink in the workspace to a .git that already exists outside (the owner's own
+// repository, which is the owner's), and a directory with the shape of a bare repository (HEAD, objects/, refs/, a config) built under any
+// name, which git run inside it would use (perms.GitFindsOwnersRepo covers a rule-approved git; the owner's own git is the owner's care).
+func gitOutside(dirs ...string) []string {
+	var out []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("(regex #\"^%s/(.*/)?[.][gG][iI][tT](/.*)?$\")", regexQuote(d)))
+	}
+	// The base section lets xcrun keep a cache file in the per-user temp directory by a prefix, xcrun_db, so a directory of that prefix is
+	// writable too: no .git under it either.
+	out = append(out, `(regex #"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db.*/[.][gG][iI][tT](/.*)?$")`)
+	return out
 }
