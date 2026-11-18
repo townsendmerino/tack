@@ -256,3 +256,80 @@ func TestAStaleForkTempIsInvisibleAndSwept(t *testing.T) {
 		t.Error("a recent temp was swept")
 	}
 }
+
+// If the final fsync of the sessions directory fails after the rename, the child is complete and findable, so the fork is not reported as
+// a failure: a transient failure is retried, and one that persists is ErrForkNotDurable, which a caller treats as made, with a warning.
+func TestAForkWhoseDirectorySyncFailsIsStillMade(t *testing.T) {
+	s := newStore(t)
+	forkParent(t, s)
+	sessions := filepath.Join(s.Root(), "sessions")
+	orig := syncDir
+	t.Cleanup(func() { syncDir = orig })
+	failed := 0
+	syncDir = func(dir string) error {
+		if dir == sessions && failed < 2 {
+			failed++
+			return errors.New("EIO")
+		}
+		return orig(dir)
+	}
+	if err := s.ForkCarrying("s_parent", "s_a", 3, carryTwo); err != nil {
+		t.Fatalf("a transient failure was not retried: %v", err)
+	}
+	syncDir = func(dir string) error {
+		if dir == sessions {
+			return errors.New("EIO")
+		}
+		return orig(dir)
+	}
+	err := s.ForkCarrying("s_parent", "s_b", 3, carryTwo)
+	if !errors.Is(err, ErrForkNotDurable) {
+		t.Fatalf("persistent failure: %v, want ErrForkNotDurable", err)
+	}
+	for _, id := range []proto.SessionID{"s_a", "s_b"} {
+		if evs, err := s.Events(id, 0); err != nil || len(evs) != 5 {
+			t.Errorf("%s: %d events, %v: the fork is complete and must be findable", id, len(evs), err)
+		}
+	}
+}
+
+// A temp whose fork is still running, even a stalled one, is not swept: the fork holds a lock on it, which dies with the process.
+func TestASweepLeavesATempWhoseForkHoldsItsLock(t *testing.T) {
+	s := newStore(t)
+	forkParent(t, s)
+	live := filepath.Join(s.Root(), "sessions", ".fork-s_live-1")
+	dead := filepath.Join(s.Root(), "sessions", ".fork-s_dead-2")
+	for _, d := range []string{live, dead} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	holder, err := os.OpenFile(filepath.Join(live, forkLockName), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := lockLog(holder); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dead, forkLockName), nil, 0o600) // a lock file nobody holds: its fork died
+	old := time.Now().Add(-3 * time.Hour)
+	for _, d := range []string{live, dead} { // after the files are made: making one changes the directory's time
+		os.Chtimes(d, old, old)
+	}
+	if err := s.Fork("s_parent", "s_child", 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Error("a temp whose fork holds its lock was swept")
+	}
+	if _, err := os.Stat(dead); err == nil {
+		t.Error("a dead fork's temp was not swept")
+	}
+	if evs, err := s.Events("s_child", 0); err != nil || len(evs) != 3 {
+		t.Errorf("the fork itself: %d events, %v", len(evs), err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Root(), "sessions", "s_child", forkLockName)); err == nil {
+		t.Error("the lock file was left in the child's directory")
+	}
+}
