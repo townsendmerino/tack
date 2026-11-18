@@ -152,7 +152,7 @@ func (s *Store) Discard(l *Log) error {
 	if err != nil {
 		return err
 	}
-	err = os.RemoveAll(filepath.Dir(p))
+	err = removeAll(filepath.Dir(p))
 	return errors.Join(err, l.Close())
 }
 
