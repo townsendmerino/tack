@@ -10,6 +10,7 @@ import (
 
 	"github.com/townsendmerino/tack/internal/proto"
 	"github.com/townsendmerino/tack/internal/server/goinfer/goinfertest"
+	"github.com/townsendmerino/tack/internal/store"
 )
 
 // guardHarness is a bash session in auto mode outside the sandbox's concern (the commands asked for are refused or harmless), with the
@@ -275,5 +276,33 @@ func TestAForkCarriesTheParentsWholeCount(t *testing.T) {
 	}
 	if hits, held := GuardState(evs); held || len(hits) != 1 || hits[0] != "z" {
 		t.Errorf("after a release in the parent: hits %v held %v", hits, held)
+	}
+}
+
+// loop.Fork is the one way a session is forked: a parent that was held after its cut leaves a held child with the whole count, in
+// the same write as the fork, and an event the carry cannot write fails the fork with no child left behind.
+func TestForkCarriesTheCountAndHoldInTheForkItself(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.Create("s_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Append(proto.EvSessionCreated, 0, proto.SessionCreated{Workspace: "/w", Model: "m", Mode: proto.ModeAsk})
+	end, _ := l.Append(proto.EvTurnEnd, 0, proto.TurnEnd{StopReason: "end_turn"})
+	for i, c := range []string{"git config core.fsmonitor a", "git config core.fsmonitor b", "git config core.fsmonitor c"} {
+		l.Append(proto.EvTripwireHit, 0, proto.TripwireHit{ID: "h", Command: c, Count: i + 1})
+	}
+	l.Append(proto.EvSessionHeld, 0, proto.SessionHeld{Commands: []string{"a", "b", "c"}})
+	l.Close()
+	if err := Fork(st, "s_parent", "s_child", end.Seq); err != nil {
+		t.Fatal(err)
+	}
+	ce, _ := st.Events("s_child", 0)
+	hits, held := GuardState(ce)
+	if len(hits) != 3 || !held {
+		t.Errorf("the child has %d hits, held %v", len(hits), held)
 	}
 }

@@ -18,11 +18,9 @@ func (c *Core) fork(p proto.SessionForkParams) (any, *proto.Error) {
 		return nil, &proto.Error{Code: proto.CodeUnknownSession, Message: "no session " + string(p.Session)}
 	}
 	child := store.NewSessionID(time.Now())
-	switch err := c.opt.Store.Fork(p.Session, child, p.AtSeq); {
-	case err == nil:
-		if err := loop.CarryGuardTo(c.opt.Store, p.Session, child); err != nil {
-			return nil, &proto.Error{Code: proto.CodeInternalError, Message: "fork: " + err.Error()}
-		}
+	switch err := loop.Fork(c.opt.Store, p.Session, child, p.AtSeq); {
+	case err == nil, errors.Is(err, store.ErrForkNotDurable):
+		// The child is complete and findable; a directory fsync that failed after retries is no reason to tell the client no session was made.
 		return proto.SessionForkResult{Session: child}, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, &proto.Error{Code: proto.CodeUnknownSession, Message: "no session " + string(p.Session)}

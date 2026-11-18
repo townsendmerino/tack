@@ -1,6 +1,10 @@
 package perms
 
-import "testing"
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
 
 // TestTheTripwireCountsOnlyShapesWithNoHonestUse: a run-a-program flag written so the analysis cannot see it, a toolchain flag value that
 // names the program to run, and a configuration write that plants one. Each counts.
@@ -91,6 +95,264 @@ func TestDecodeCandidatesIsWhatBashGives(t *testing.T) {
 			t.Errorf("%s decoded", src)
 		}
 	}
+}
+
+// TestTheTripwireCountsAConfigWriteToAnyFileOrScope: git config --file, -f (also attached), --global, --system, --worktree and an option
+// with a value before the key are the same write as a plain git config; the file's name is not the key.
+func TestTheTripwireCountsAConfigWriteToAnyFileOrScope(t *testing.T) {
+	e := allowEngine(t)
+	for _, cmd := range []string{
+		`git config --file x.cfg core.fsmonitor id`, `git config -f x.cfg core.fsmonitor id`, `git config --file=x.cfg core.fsmonitor id`,
+		`git config -fx.cfg core.fsmonitor id`, `git config --file /tmp/c core.hooksPath /tmp/h`, `git config --file ~/.gitconfig core.pager 'sh -c id'`,
+		`git config --file x.cfg alias.x '!id'`, `git config --file x.cfg diff.external id`, `git config --file x.cfg diff.x.textconv id`,
+		`git -C . config --file x.cfg core.fsmonitor id`,
+		`git config --system core.fsmonitor id`, `git config --worktree core.hooksPath ../h`, `git config --global core.pager 'sh -c id'`,
+		`git config --local --replace-all core.fsmonitor id`, `git config --add core.pager id`,
+		`git config --comment hi core.fsmonitor id`, `git config --type=bool core.fsmonitor id`, `git config --type bool core.fsmonitor id`,
+		`git config --file x.cfg --comment hi core.fsmonitor id`,
+	} {
+		if got := e.Tripwire(cmd); len(got) == 0 {
+			t.Errorf("%q does not count", cmd)
+		}
+	}
+	for _, cmd := range []string{
+		`git config --file x.cfg user.name x`, `git config --file .gitmodules submodule.a.url https://x/y`, `git config -f x.cfg --get core.fsmonitor`,
+		`git config --file x.cfg --unset core.fsmonitor`, `git config --file x.cfg core.fsmonitor true`, `git config --global core.fsmonitor false`,
+		`git config --file x.cfg core.hooksPath .githooks`, `git config --system user.email a@b`, `git config --worktree core.sparseCheckout true`,
+		`git config --file x.cfg --list`, `git config --file x.cfg alias.co checkout`, `git config --file x.cfg core.fsmonitor`,
+		`git config --file x.cfg set core.fsmonitor id`, // git refuses it: "set" is taken for the key, which has no section
+	} {
+		if got := e.Tripwire(cmd); len(got) != 0 {
+			t.Errorf("%q counts as %v; it is honest, a read or a removal", cmd, got)
+		}
+	}
+}
+
+// Each form below was checked by hand against git (git writes the key) and was missed by the first version: one test per form.
+
+// git accepts any unique prefix of a long option, so --fil is --file and --comm is --comment; an ambiguous prefix is an error in git
+// and writes nothing.
+func TestTheTripwireReadsUniquePrefixesOfLongOptions(t *testing.T) {
+	configForms(t, []string{
+		`git config --fil x.cfg core.fsmonitor id`, `git config --comm hi core.fsmonitor id`,
+		`git config --typ bool core.fsmonitor id`, `git config --def x core.fsmonitor id`, `git config --glob core.fsmonitor id`,
+		`git config --repl core.fsmonitor id`, `git config --file=x.cfg core.fsmonitor id`,
+	}, []string{
+		`git config --fil x.cfg --unset core.fsmonitor`, `git config --lis`, `git config --get-a core.fsmonitor`,
+		// an ambiguous prefix is an error in git; it is counted now (TestTheTripwireCountsAPrefixItCannotResolve), as a prefix it cannot resolve fails closed
+	})
+}
+
+// A bundle of short options: -z is a flag, -f takes the next word unless the value is stuck to it.
+func TestTheTripwireSplitsBundledShortOptions(t *testing.T) {
+	configForms(t, []string{
+		`git config -zf x.cfg core.fsmonitor id`, `git config -zfx.cfg core.fsmonitor id`, `git config -z core.fsmonitor id`,
+	}, []string{
+		`git config -zl`, `git config -zf x.cfg --get core.fsmonitor`, `git config -zf x.cfg core.fsmonitor true`,
+	})
+}
+
+// --value takes the next word, in git config and in git config set.
+func TestTheTripwireSkipsTheValueOfValueOption(t *testing.T) {
+	configForms(t, []string{
+		`git config set --value foo core.fsmonitor id`, `git config --value foo core.fsmonitor id`, `git config --value=foo core.fsmonitor id`,
+		`git config set --value foo --append core.pager id`,
+	}, []string{
+		`git config set --value foo core.fsmonitor true`, `git config --value foo --unset core.fsmonitor`,
+	})
+}
+
+// get, list and unset are subcommands only first: after the key they are words, and `git config core.pager sh get` writes the pager.
+func TestTheTripwireTakesSubcommandWordsOnlyFirst(t *testing.T) {
+	configForms(t, []string{
+		`git config core.pager sh get`, `git config core.pager list`, `git config core.fsmonitor unset`, `git config alias.x '!get'`,
+		`git config --global core.pager get`,
+	}, []string{
+		`git config get core.pager`, `git config list`, `git config unset core.fsmonitor`, `git config get --all core.fsmonitor`, `git config set core.fsmonitor true`,
+	})
+}
+
+// git's global options that take a separate value: it is not the subcommand. --exec-path takes a value only attached.
+func TestTheTripwireSkipsTheValueOfGlobalGitOptions(t *testing.T) {
+	configForms(t, []string{
+		`git --config-env core.x=HOME config core.fsmonitor id`, `git --attr-source HEAD config core.fsmonitor id`,
+		`git --exec-path config core.fsmonitor id`, `git --exec-path=/x config core.fsmonitor id`, `git -C . -c a=b --git-dir .git config core.fsmonitor id`,
+		`git --namespace n --work-tree . config core.fsmonitor id`, `git --config-env=core.x=HOME config core.fsmonitor id`,
+	}, []string{
+		`git --config-env core.x=HOME config --get core.fsmonitor`, `git --attr-source HEAD status`, `git --exec-path`, `git --attr-source HEAD config core.fsmonitor true`,
+	})
+}
+
+// configForms checks one group of git config forms: each counted form counts, and each of the others does not.
+func configForms(t *testing.T, counted, others []string) {
+	t.Helper()
+	e := allowEngine(t)
+	for _, cmd := range counted {
+		if got := e.Tripwire(cmd); len(got) == 0 {
+			t.Errorf("%q does not count", cmd)
+		}
+	}
+	for _, cmd := range others {
+		if got := e.Tripwire(cmd); len(got) != 0 {
+			t.Errorf("%q counts as %v; it is a read, a removal, an honest value or an error in git", cmd, got)
+		}
+	}
+}
+
+// Second read of the parser (checked against git 2.53): four spellings that were missed.
+
+// -t is --type and takes a value, alone, in a bundle and in set mode.
+func TestTheTripwireTakesTheValueOfShortT(t *testing.T) {
+	configForms(t, []string{
+		`git config -t path core.fsmonitor /bin/id`, `git config -zt path core.fsmonitor /bin/id`, `git config set -t path core.fsmonitor /bin/id`,
+		`git config -tpath core.fsmonitor id`,
+	}, []string{
+		`git config -t bool --get core.fsmonitor`, `git config -t path core.fsmonitor true`,
+	})
+}
+
+// --no-<flag> negations, and their prefixes, are flags with no value.
+func TestTheTripwireReadsNegatedOptions(t *testing.T) {
+	configForms(t, []string{
+		`git config --no-global core.fsmonitor id`, `git config --no-file core.fsmonitor id`, `git config --no-g core.fsmonitor id`,
+		`git config set --no-value core.fsmonitor id`, `git config --no-type core.fsmonitor id`, `git config --no-comment core.fsmonitor id`,
+		`git config --no-includes core.fsmonitor id`,
+	}, []string{
+		`git config --no-global core.fsmonitor true`, `git config --no-file --get core.fsmonitor`,
+	})
+}
+
+// Set mode has fewer options than the legacy mode, so a prefix that is unique to git there (set --e, set --l) is ambiguous in the table.
+// A prefix the table cannot resolve is counted when a later word names a counted key, never passed.
+func TestTheTripwireCountsAPrefixItCannotResolve(t *testing.T) {
+	configForms(t, []string{
+		`git config set --e core.fsmonitor id`, `git config set --l core.fsmonitor id`, `git config --f x.cfg core.fsmonitor id`,
+		`git config --fi x.cfg core.fsmonitor id`, `git config --g core.fsmonitor id`,
+	}, []string{
+		`git config --g core.sparseCheckout true`, `git config set --l user.name x`,
+	})
+}
+
+// git's global --shallow-file takes a separate value, which is not the subcommand.
+func TestTheTripwireSkipsTheValueOfShallowFile(t *testing.T) {
+	configForms(t, []string{
+		`git --shallow-file x config core.fsmonitor id`, `git -C . --shallow-file x config --global core.pager id`,
+	}, []string{
+		`git --shallow-file x status`, `git --shallow-file x config --get core.fsmonitor`,
+	})
+}
+
+// An option the table does not know, or a short letter it does not know, fails closed: the command counts if any later word names a
+// counted key, whatever the value, and does not count if none does.
+func TestTheTripwireFailsClosedOnAnUnknownOption(t *testing.T) {
+	configForms(t, []string{
+		`git config --frobnicate core.fsmonitor true`, `git config --frobnicate x core.fsmonitor id`, `git config -q core.hooksPath ~/h`,
+		`git config --future-flag=1 core.pager id`, `git config --future-flag diff.x.textconv id`, `git config --future-flag alias.x '!id'`,
+		`git config --future-flag CORE.FSMONITOR id`, `git config set --future-flag core.fsmonitor id`,
+	}, []string{
+		`git config --frobnicate user.name x`, `git config --future-flag alias.x checkout`, `git config --frobnicate core.sparseCheckout true`,
+	})
+}
+
+// The fail-closed path covers every key that is counted, the program-running ones included (a value on the allowlist, such as
+// `core.editor vim`, does not matter when the command cannot be read): the first form was a pass before the program keys were counted.
+func TestTheFailClosedPathCoversTheProgramKeys(t *testing.T) {
+	counts(t, []string{
+		`git config --frobnicate core.editor vim`, `git config --frobnicate core.sshCommand ssh`, `git config --frobnicate credential.helper store`,
+		`git config --frobnicate sequence.editor nano`, `git config --frobnicate gpg.program gpg`, `git config --frobnicate gpg.ssh.defaultKeyCommand k`,
+		`git config --frobnicate filter.lfs.clean 'git-lfs clean -- %f'`, `git config --frobnicate merge.x.driver true`, `git config --future-flag pager.log false`,
+		`git config --frobnicate diff.x.command d`, `git config --frobnicate interactive.diffFilter f`, `git config --frobnicate core.gitProxy p`,
+		`git config --frobnicate remote.origin.uploadpack u`, `git config --frobnicate remote.origin.receivepack r`, `git config --frobnicate core.alternateRefsCommand c`,
+		`git config --frobnicate difftool.x.cmd d`, `git config --frobnicate mergetool.x.cmd m`, `git config --frobnicate uploadpack.packObjectsHook h`,
+		`git config --frobnicate include.path x`, `git config --frobnicate includeIf.gitdir:/x/.path y`, `git config --frobnicate url.'ext::sh -c id'.insteadOf https://x/`,
+		`git config --frobnicate remote.origin.url 'ext::sh -c id'`, `git --future-opt x config core.editor vim`, `git cfg core.editor vim`, `git -c alias.x=y x credential.helper store`,
+	}, []string{
+		`git config --frobnicate user.name x`, `git config --frobnicate remote.origin.url https://example.com/x.git`, `git config --frobnicate credential.username me`,
+		`git config --frobnicate uploadpack.allowFilter true`,
+	})
+}
+
+// An option git does not know before the subcommand may take a value; the config command behind it is found and checked closed.
+func TestTheTripwireFailsClosedOnAnUnknownGlobalOption(t *testing.T) {
+	configForms(t, []string{
+		`git --future-opt x config core.fsmonitor id`, `git --future-opt config core.fsmonitor id`,
+	}, []string{
+		`git --future-opt x config user.name y`, `git --future-opt x status`, `git --no-pager log`, `git -p diff`, `git --bare config --get core.fsmonitor`,
+	})
+}
+
+// git -c alias.x=config … x …: the alias is a config command, with the alias's own words in front of the rest.
+func TestTheTripwireFollowsAnAliasToConfig(t *testing.T) {
+	configForms(t, []string{
+		`git -c alias.x=config x core.pager sh`, `git -c alias.cfg='config --global' cfg core.fsmonitor id`, `git -c alias.x=config x --file y core.fsmonitor id`,
+		`git -c user.name=a -c alias.x=config x core.hooksPath /tmp/h`,
+	}, []string{
+		`git -c alias.x=config x user.name y`, `git -c alias.x=config x --get core.pager`, `git -c alias.x=status x`,
+		`git -c alias.x=config status`,
+	})
+}
+
+// Third read: each of these writes core.pager in real git and was not counted. When the subcommand is not config, and either an alias was
+// seen on the command line or the subcommand is not a git builtin (so it may be a stored alias or an external command), the later words
+// are checked for a counted key, whatever they are.
+func TestTheTripwireFollowsAliasesThatCanBeConfig(t *testing.T) {
+	configForms(t, []string{
+		`git -c alias.X=config x core.pager sh`,                                                       // git matches alias names case-insensitively
+		`git -c alias.x=y -c alias.y=config x core.pager sh`, `git -c alias.y=config x core.pager sh`, // a chain, and an alias for another name (x may be stored)
+		`git --config-env=alias.x=FOO x core.pager sh`, // an alias from the environment, attached
+		`git --config-env alias.x=FOO x core.pager sh`, // and as two words
+		`git -c "alias.x='config'" x core.pager sh`,    // a quoted value
+		`git cfg core.pager less`,                      // a stored alias: not a builtin
+		`git cfg --global core.fsmonitor id`, `git frob core.hooksPath /tmp/h`, `git -c alias.x=whatever x diff.y.textconv id`,
+	}, []string{
+		`git status`, `git log core.pager`, `git cfg user.name x`, `git -c alias.x=status x`, `git -c alias.x=status x -s`, `git commit -m 'core.pager'`,
+		`git --config-env alias.x=FOO x`, `git frob --flag value`, `git checkout main`,
+	})
+}
+
+// Writing an alias whose expansion is config is itself counted: it is how a later `git cfg core.pager sh` becomes a write.
+func TestTheTripwireCountsWritingAnAliasToConfig(t *testing.T) {
+	configForms(t, []string{
+		`git config alias.cfg config`, `git config alias.cfg 'config --global'`, `git config alias.cfg CONFIG`, `git config --global alias.Cfg 'config'`,
+		`git config --file x.cfg alias.cfg config`, `git config alias.x '!id'`,
+	}, []string{
+		`git config alias.co checkout`, `git config alias.st 'status -s'`, `git config alias.conf 'configure'`, `git config --get alias.cfg`,
+		`git config --unset alias.cfg`,
+	})
+}
+
+// gitBuiltins holds git's own commands and nothing else: a name on it that is not built in can be an alias a config file defines, and a
+// write through it would pass. Checked against the git that is installed, when one is.
+func TestTheBuiltinListHoldsOnlyBuiltins(t *testing.T) {
+	out, err := exec.Command("git", "--list-cmds=builtins").Output()
+	if err != nil {
+		t.Skip("no git to ask:", err)
+	}
+	real := map[string]bool{}
+	for _, c := range strings.Fields(string(out)) {
+		real[c] = true
+	}
+	for c := range gitBuiltins {
+		if !real[c] {
+			t.Errorf("%q is on gitBuiltins and is not a built-in command of this git (%d are)", c, len(real))
+		}
+	}
+	if len(gitBuiltins) < 100 {
+		t.Errorf("gitBuiltins has %d entries", len(gitBuiltins))
+	}
+}
+
+// A name that is not a built-in command is an alias when no program of that name is installed: `git gui`, `git citool`, `git send-email`
+// and `git scalar` are programs git ships and not builtins, so an alias of that name wins, and the alias may be config anywhere in its value.
+func TestTheTripwireCountsAnAliasThatShadowsAShippedProgramAndAnAliasWithConfigAnywhere(t *testing.T) {
+	configForms(t, []string{
+		`git gui core.pager sh`, `git citool core.pager sh`, `git send-email core.pager sh`, `git scalar core.pager sh`, `git mergetool core.fsmonitor id`,
+		`git config alias.gui '-c a=b config'`, `git config alias.x 'config'`, `git config alias.x '-c a=b config --global'`, `git config alias.x 'foo config'`,
+		`git config alias.x '--no-pager config'`, `git config alias.x '-C . CONFIG'`,
+	}, []string{
+		`git gui`, `git send-email --to a@b`, `git config alias.x 'status -s'`, `git config alias.x 'configure'`, `git config alias.x 'log --format=config-x'`,
+		`git config alias.x 'reconfig'`,
+	})
 }
 
 // counts checks one group of settings that make git or the Go toolchain run a program: each counted form counts, and each honest form
@@ -232,5 +494,17 @@ func TestTheTripwireCountsPkgConfigArAndCgoLdflagsWithB(t *testing.T) {
 	}, []string{
 		`go env -w PKG_CONFIG=pkg-config`, `go env -w AR=ar`, `go env -w CGO_LDFLAGS=-O2`, `go env -w CGO_LDFLAGS='-L/usr/lib -lm'`, `go env -w CGO_LDFLAGS=-Wl,-rpath,/x`,
 		`CGO_LDFLAGS=-O2 go build .`, `go env PKG_CONFIG`, `go env -u CGO_LDFLAGS`,
+	})
+}
+
+// The program keys sit on top of the git config reader: any file or scope, a prefix, a bundle, an alias.
+func TestTheProgramKeysAreReadThroughTheConfigParser(t *testing.T) {
+	counts(t, []string{
+		`git config --file x.cfg credential.helper 'sh -c id'`, `git config -f x.cfg core.editor ./e`, `git config --global --type=path core.sshCommand ./s`,
+		`git config -zf x.cfg gpg.program ./g`, `git config --fil x.cfg include.path y`, `git config set --value v filter.x.clean ./c`,
+		`git -c alias.x=config x pager.log ./p`, `git --config-env=alias.x=A x core.gitProxy ./p`,
+	}, []string{
+		`git config --file x.cfg credential.helper store`, `git config -f x.cfg core.editor vim`, `git config --global --type=path core.sshCommand ssh`,
+		`git config --file x.cfg --get core.editor`, `git config --file x.cfg --unset credential.helper`,
 	})
 }
