@@ -265,7 +265,36 @@ func TestTheTripwireFollowsAnAliasToConfig(t *testing.T) {
 		`git -c alias.x=config x core.pager sh`, `git -c alias.cfg='config --global' cfg core.fsmonitor id`, `git -c alias.x=config x --file y core.fsmonitor id`,
 		`git -c user.name=a -c alias.x=config x core.hooksPath /tmp/h`,
 	}, []string{
-		`git -c alias.x=config x user.name y`, `git -c alias.x=config x --get core.pager`, `git -c alias.x=status x`, `git -c alias.y=config x core.pager sh`,
+		`git -c alias.x=config x user.name y`, `git -c alias.x=config x --get core.pager`, `git -c alias.x=status x`,
 		`git -c alias.x=config status`,
+	})
+}
+
+// Third read: each of these writes core.pager in real git and was not counted. When the subcommand is not config, and either an alias was
+// seen on the command line or the subcommand is not a git builtin (so it may be a stored alias or an external command), the later words
+// are checked for a counted key, whatever they are.
+func TestTheTripwireFollowsAliasesThatCanBeConfig(t *testing.T) {
+	configForms(t, []string{
+		`git -c alias.X=config x core.pager sh`,                                                       // git matches alias names case-insensitively
+		`git -c alias.x=y -c alias.y=config x core.pager sh`, `git -c alias.y=config x core.pager sh`, // a chain, and an alias for another name (x may be stored)
+		`git --config-env=alias.x=FOO x core.pager sh`, // an alias from the environment, attached
+		`git --config-env alias.x=FOO x core.pager sh`, // and as two words
+		`git -c "alias.x='config'" x core.pager sh`,    // a quoted value
+		`git cfg core.pager less`,                      // a stored alias: not a builtin
+		`git cfg --global core.fsmonitor id`, `git frob core.hooksPath /tmp/h`, `git -c alias.x=whatever x diff.y.textconv id`,
+	}, []string{
+		`git status`, `git log core.pager`, `git cfg user.name x`, `git -c alias.x=status x`, `git -c alias.x=status x -s`, `git commit -m 'core.pager'`,
+		`git --config-env alias.x=FOO x`, `git frob --flag value`, `git checkout main`,
+	})
+}
+
+// Writing an alias whose expansion is config is itself counted: it is how a later `git cfg core.pager sh` becomes a write.
+func TestTheTripwireCountsWritingAnAliasToConfig(t *testing.T) {
+	configForms(t, []string{
+		`git config alias.cfg config`, `git config alias.cfg 'config --global'`, `git config alias.cfg CONFIG`, `git config --global alias.Cfg 'config'`,
+		`git config --file x.cfg alias.cfg config`, `git config alias.x '!id'`,
+	}, []string{
+		`git config alias.co checkout`, `git config alias.st 'status -s'`, `git config alias.conf 'configure'`, `git config --get alias.cfg`,
+		`git config --unset alias.cfg`,
 	})
 }

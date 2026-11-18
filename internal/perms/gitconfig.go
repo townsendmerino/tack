@@ -1,6 +1,9 @@
 package perms
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // git config's long options, by what they do to the check: a flag takes no value, a value option takes the next word unless it is
 // attached (--file=x), and a read or removal option means the command plants nothing. git accepts any unique prefix of a long option
@@ -83,16 +86,24 @@ func gitConfigArgs(args []string) (pos, words []string, isConfig, closed bool) {
 	aliases := map[string][]string{} // alias name -> its words, from -c alias.<name>=<value>
 	i := 0
 	unknownGlobal := false
+	aliasSeen := false // an alias.* was set in -c or --config-env on this command line
 	for i < len(args) && strings.HasPrefix(args[i], "-") {
 		a := args[i]
 		switch {
-		case a == "-c":
+		case a == "-c" || a == "--config-env":
 			if i+1 < len(args) {
 				if k, v, ok := strings.Cut(args[i+1], "="); ok && strings.HasPrefix(strings.ToLower(k), "alias.") {
-					aliases[k[len("alias."):]] = strings.Fields(v)
+					aliasSeen = true
+					if a == "-c" {
+						aliases[strings.ToLower(k[len("alias."):])] = strings.Fields(v)
+					}
 				}
 			}
 			i++
+		case strings.HasPrefix(a, "--config-env="):
+			if k, _, ok := strings.Cut(a[len("--config-env="):], "="); ok && strings.HasPrefix(strings.ToLower(k), "alias.") {
+				aliasSeen = true // its value is an environment variable's, which is not read here
+			}
 		case containsString(gitGlobalValueOptions, a):
 			i++ // the option's value is the next word
 		case containsString(gitGlobalFlags, a), strings.Contains(a, "="):
@@ -105,10 +116,20 @@ func gitConfigArgs(args []string) (pos, words []string, isConfig, closed bool) {
 		return nil, nil, false, false
 	}
 	sub, rest := args[i], args[i+1:]
-	if exp, ok := aliases[sub]; ok && len(exp) > 0 && exp[0] == "config" {
+	if exp, ok := aliases[strings.ToLower(sub)]; ok && len(exp) > 0 && exp[0] == "config" {
 		sub, rest = "config", append(append([]string(nil), exp[1:]...), rest...)
 	}
 	if sub != "config" {
+		// An alias this code cannot follow (a chain, a quoted value, one from the environment or from the owner's own config file) or a
+		// command that is not a git builtin (a stored alias, an external git-foo) may be config: the words after it are checked for a
+		// counted key, whatever they are.
+		if aliasSeen || !gitBuiltins[sub] {
+			words := rest
+			if unknownGlobal {
+				words = args[i:] // the subcommand itself may be an option's value
+			}
+			return nil, words, true, true
+		}
 		if !unknownGlobal {
 			return nil, nil, false, false
 		}
@@ -202,6 +223,8 @@ func namesCountedKey(words []string) bool {
 			return true
 		case shell && strings.HasPrefix(k, "alias."):
 			return true
+		case strings.HasPrefix(k, "alias.") && slices.ContainsFunc(words, aliasIsConfig):
+			return true
 		}
 	}
 	return false
@@ -214,4 +237,31 @@ func countedKey(key string) bool {
 		return true
 	}
 	return strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv")
+}
+
+// gitBuiltins are the git commands that are built in or shipped with it: a subcommand on this list is that command and not an alias a
+// config file defines (git does not let an alias shadow one). Any other word may be a stored alias, or an external git-<name> program.
+var gitBuiltins = func() map[string]bool {
+	m := map[string]bool{}
+	for _, c := range strings.Fields(`add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr check-ignore check-mailmap
+		check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit commit-graph commit-tree count-objects credential
+		daemon describe diagnose diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg
+		for-each-ref for-each-repo format-patch fsck fsmonitor--daemon gc get-tar-commit-id grep gui hash-object help hook http-fetch http-push
+		imap-send index-pack init instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base
+		merge-file merge-index merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id
+		prune prune-packed pull push range-diff read-tree rebase receive-pack reflog refs remote repack replace replay request-pull rerere reset
+		restore rev-list rev-parse revert rm scalar send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout stage stash
+		status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive
+		upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree`) {
+		m[c] = true
+	}
+	return m
+}()
+
+// aliasIsConfig reports whether an alias's value expands to git config: its first word is config, in any letter case git would take
+// as the alias's own (git compares alias names case-insensitively, and the command word exactly, so CONFIG is no command; it is counted
+// anyway, since over-counting costs a release).
+func aliasIsConfig(val string) bool {
+	f := strings.Fields(val)
+	return len(f) > 0 && strings.EqualFold(f[0], "config")
 }

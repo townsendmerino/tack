@@ -183,8 +183,8 @@ func configWriteRuns(prog string, c Simple) bool {
 			return val != ""
 		case strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv"):
 			return val != ""
-		case strings.HasPrefix(key, "alias.") && strings.HasPrefix(val, "!"):
-			return true
+		case strings.HasPrefix(key, "alias.") && (strings.HasPrefix(val, "!") || aliasIsConfig(val)):
+			return true // a shell alias, or one that makes a later `git <alias> core.pager sh` a config write
 		}
 	case "go":
 		if len(args) == 0 || args[0] != "env" {
