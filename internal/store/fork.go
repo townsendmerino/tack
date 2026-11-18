@@ -21,6 +21,21 @@ var (
 // child then opens and appends like any session. The cut must leave the history whole: not inside a turn (Inspect). The
 // parent's log is only read, and a failed fork leaves no child.
 func (s *Store) Fork(parent, child proto.SessionID, atSeq int64) error {
+	return s.ForkCarrying(parent, child, atSeq, nil)
+}
+
+// ForkEvent is an event a fork writes after the copied prefix, from the parent's whole log and not its cut: state that must not
+// be shed by cutting early, such as the tripwire's count and hold (loop.CarryGuard).
+type ForkEvent struct {
+	Type    proto.EventType
+	Payload any
+}
+
+// ForkCarrying is Fork that also writes the events carry returns, given the parent's whole log and the copied prefix, after the
+// prefix with the next seqs. They are built, and so checked, before the child's log is made, and written in the same fork, so a
+// child exists with them or not at all: there is no moment at which a fork is findable without what it must carry. A nil carry
+// carries nothing.
+func (s *Store) ForkCarrying(parent, child proto.SessionID, atSeq int64, carry func(parent, prefix []proto.Event) []ForkEvent) error {
 	evs, err := s.Events(parent, 0)
 	if err != nil {
 		return err
@@ -45,14 +60,22 @@ func (s *Store) Fork(parent, child proto.SessionID, atSeq int64) error {
 	if err != nil {
 		return err
 	}
+	all := append([]proto.Event(nil), prefix...)
+	all[0] = first
+	if carry != nil {
+		for _, x := range carry(evs, prefix) {
+			ev, err := proto.NewEvent(int64(len(all))+1, s.now(), x.Type, 0, x.Payload)
+			if err != nil {
+				return fmt.Errorf("store: fork of %s: carried %s: %w", parent, x.Type, err)
+			}
+			all = append(all, ev)
+		}
+	}
 	l, err := s.Create(child)
 	if err != nil {
 		return err
 	}
-	for i, ev := range prefix {
-		if i == 0 {
-			ev = first
-		}
+	for _, ev := range all {
 		if err := l.appendVerbatim(ev); err != nil {
 			return errors.Join(err, s.Discard(l))
 		}

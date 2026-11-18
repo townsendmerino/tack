@@ -119,10 +119,7 @@ func GuardState(evs []proto.Event) (hits []string, held bool) {
 }
 
 // GuardEvent is one event a fork records in its child to carry the parent's tripwire state.
-type GuardEvent struct {
-	Type    proto.EventType
-	Payload any
-}
+type GuardEvent = store.ForkEvent
 
 // CarryGuard returns the events that make a fork's tripwire state the parent's whole current state, whatever seq the fork was cut at: a
 // fork cut before the parent's first hit would otherwise start with no count, and an unheld child of a held session is a way out of the
@@ -134,42 +131,21 @@ func CarryGuard(parent, child []proto.Event) []GuardEvent {
 	var out []GuardEvent
 	have := ch
 	if len(ch) > len(ph) || !slices.Equal(ch, ph[:min(len(ch), len(ph))]) {
-		out = append(out, GuardEvent{proto.EvSessionReleased, proto.SessionReleased{By: "fork"}})
+		out = append(out, GuardEvent{Type: proto.EvSessionReleased, Payload: proto.SessionReleased{By: "fork"}})
 		have, cheld = nil, false
 	}
 	for i := len(have); i < len(ph); i++ {
-		out = append(out, GuardEvent{proto.EvTripwireHit, proto.TripwireHit{ID: "fork", Command: ph[i], Count: i + 1}})
+		out = append(out, GuardEvent{Type: proto.EvTripwireHit, Payload: proto.TripwireHit{ID: "fork", Command: ph[i], Count: i + 1}})
 	}
 	if pheld && !cheld {
-		out = append(out, GuardEvent{proto.EvSessionHeld, proto.SessionHeld{Commands: ph}})
+		out = append(out, GuardEvent{Type: proto.EvSessionHeld, Payload: proto.SessionHeld{Commands: ph}})
 	}
 	return out
 }
 
-// CarryGuardTo records, in a fork just made, the events CarryGuard says: every way a session is forked (session/fork, tack rewind's
-// fork) calls it, so none sheds the parent's count or hold.
-func CarryGuardTo(st *store.Store, parent, child proto.SessionID) error {
-	pe, err := st.Events(parent, 0)
-	if err != nil {
-		return err
-	}
-	ce, err := st.Events(child, 0)
-	if err != nil {
-		return err
-	}
-	add := CarryGuard(pe, ce)
-	if len(add) == 0 {
-		return nil
-	}
-	l, err := st.OpenLog(child)
-	if err != nil {
-		return err
-	}
-	defer l.Close()
-	for _, e := range add {
-		if _, err := l.Append(e.Type, 0, e.Payload); err != nil {
-			return err
-		}
-	}
-	return nil
+// Fork is store.Fork with the parent's tripwire count and hold written into the child inside the same fork (CarryGuard through
+// store.ForkCarrying): every way a session is forked (session/fork, tack rewind's fork) calls it, so none sheds them, and no fork
+// is ever findable without them.
+func Fork(st *store.Store, parent, child proto.SessionID, atSeq int64) error {
+	return st.ForkCarrying(parent, child, atSeq, CarryGuard)
 }

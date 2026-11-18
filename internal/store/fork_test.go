@@ -108,3 +108,47 @@ func TestForkRefusals(t *testing.T) {
 		t.Errorf("a fork of just the start: %v", err)
 	}
 }
+
+// ForkCarrying writes the carried events inside the fork, after the copied prefix and with the next seqs, so the child exists
+// with them or not at all.
+func TestForkCarryingWritesTheExtraEventsInTheSameFork(t *testing.T) {
+	s := newStore(t)
+	forkParent(t, s)
+	var sawParent, sawChild int
+	err := s.ForkCarrying("s_parent", "s_child", 3, func(parent, child []proto.Event) []ForkEvent {
+		sawParent, sawChild = len(parent), len(child)
+		return []ForkEvent{
+			{Type: proto.EvTripwireHit, Payload: proto.TripwireHit{ID: "fork", Command: "git config core.fsmonitor x", Count: 1}},
+			{Type: proto.EvSessionHeld, Payload: proto.SessionHeld{Commands: []string{"git config core.fsmonitor x"}}},
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawParent != 6 || sawChild != 3 {
+		t.Errorf("carry saw %d parent and %d child events, want 6 and 3", sawParent, sawChild)
+	}
+	child, _ := s.Events("s_child", 0)
+	if len(child) != 5 || child[3].Type != proto.EvTripwireHit || child[4].Type != proto.EvSessionHeld || child[3].Seq != 4 || child[4].Seq != 5 {
+		t.Fatalf("child %+v", child)
+	}
+}
+
+// A carry that cannot be written (a payload of the wrong type for its event) fails the whole fork, and no child is left: this
+// is the step between copying the prefix and carrying, which used to be two calls.
+func TestAForkWhoseCarryFailsLeavesNoChild(t *testing.T) {
+	s := newStore(t)
+	forkParent(t, s)
+	err := s.ForkCarrying("s_parent", "s_child", 3, func(_, _ []proto.Event) []ForkEvent {
+		return []ForkEvent{{Type: proto.EvTripwireHit, Payload: "not a TripwireHit"}}
+	})
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if ids, _ := s.Sessions(); len(ids) != 1 {
+		t.Errorf("a failed fork left a session: %v", ids)
+	}
+	if _, err := s.Events("s_child", 0); err == nil {
+		t.Error("the child's log exists")
+	}
+}
