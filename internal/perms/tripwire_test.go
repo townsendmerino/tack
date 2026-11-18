@@ -1,6 +1,10 @@
 package perms
 
-import "testing"
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
 
 // TestTheTripwireCountsOnlyShapesWithNoHonestUse: a run-a-program flag written so the analysis cannot see it, a toolchain flag value that
 // names the program to run, and a configuration write that plants one. Each counts.
@@ -296,5 +300,39 @@ func TestTheTripwireCountsWritingAnAliasToConfig(t *testing.T) {
 	}, []string{
 		`git config alias.co checkout`, `git config alias.st 'status -s'`, `git config alias.conf 'configure'`, `git config --get alias.cfg`,
 		`git config --unset alias.cfg`,
+	})
+}
+
+// gitBuiltins holds git's own commands and nothing else: a name on it that is not built in can be an alias a config file defines, and a
+// write through it would pass. Checked against the git that is installed, when one is.
+func TestTheBuiltinListHoldsOnlyBuiltins(t *testing.T) {
+	out, err := exec.Command("git", "--list-cmds=builtins").Output()
+	if err != nil {
+		t.Skip("no git to ask:", err)
+	}
+	real := map[string]bool{}
+	for _, c := range strings.Fields(string(out)) {
+		real[c] = true
+	}
+	for c := range gitBuiltins {
+		if !real[c] {
+			t.Errorf("%q is on gitBuiltins and is not a built-in command of this git (%d are)", c, len(real))
+		}
+	}
+	if len(gitBuiltins) < 100 {
+		t.Errorf("gitBuiltins has %d entries", len(gitBuiltins))
+	}
+}
+
+// A name that is not a built-in command is an alias when no program of that name is installed: `git gui`, `git citool`, `git send-email`
+// and `git scalar` are programs git ships and not builtins, so an alias of that name wins, and the alias may be config anywhere in its value.
+func TestTheTripwireCountsAnAliasThatShadowsAShippedProgramAndAnAliasWithConfigAnywhere(t *testing.T) {
+	configForms(t, []string{
+		`git gui core.pager sh`, `git citool core.pager sh`, `git send-email core.pager sh`, `git scalar core.pager sh`, `git mergetool core.fsmonitor id`,
+		`git config alias.gui '-c a=b config'`, `git config alias.x 'config'`, `git config alias.x '-c a=b config --global'`, `git config alias.x 'foo config'`,
+		`git config alias.x '--no-pager config'`, `git config alias.x '-C . CONFIG'`,
+	}, []string{
+		`git gui`, `git send-email --to a@b`, `git config alias.x 'status -s'`, `git config alias.x 'configure'`, `git config alias.x 'log --format=config-x'`,
+		`git config alias.x 'reconfig'`,
 	})
 }

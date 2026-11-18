@@ -239,29 +239,36 @@ func countedKey(key string) bool {
 	return strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv")
 }
 
-// gitBuiltins are the git commands that are built in or shipped with it: a subcommand on this list is that command and not an alias a
-// config file defines (git does not let an alias shadow one). Any other word may be a stored alias, or an external git-<name> program.
+// aliasIsConfig reports whether an alias's value can expand to git config: the word config appears anywhere in it, in any letter case,
+// since git's own options come before the command (`-c a=b config`, `--no-pager config`) and the command word is not always the first.
+// An alias that is only config's neighbour (configure, reconfig) is not.
+func aliasIsConfig(val string) bool {
+	return slices.ContainsFunc(strings.Fields(val), func(w string) bool { return strings.EqualFold(w, "config") })
+}
+
+// gitBuiltins is git's list of built-in commands, from `git --list-cmds=builtins` of git 2.53.0 and nothing else: a subcommand on it is that
+// command and git does not let an alias shadow it. Any other word may be an alias a config file defines (also one named like a program git
+// ships and does not build in: gui, citool, send-email, scalar, submodule, mergetool, filter-branch, request-pull, daemon, instaweb,
+// imap-send, http-fetch, http-push, which an alias beats when the program is not installed) or an external git-<name>. A built-in
+// command a newer git adds is missing from the list, and only over-counts. TestTheBuiltinListHoldsOnlyBuiltins checks the list against the
+// installed git.
 var gitBuiltins = func() map[string]bool {
 	m := map[string]bool{}
-	for _, c := range strings.Fields(`add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr check-ignore check-mailmap
-		check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit commit-graph commit-tree count-objects credential
-		daemon describe diagnose diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg
-		for-each-ref for-each-repo format-patch fsck fsmonitor--daemon gc get-tar-commit-id grep gui hash-object help hook http-fetch http-push
-		imap-send index-pack init instaweb interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base
-		merge-file merge-index merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id
-		prune prune-packed pull push range-diff read-tree rebase receive-pack reflog refs remote repack replace replay request-pull rerere reset
-		restore rev-list rev-parse revert rm scalar send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout stage stash
-		status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive
-		upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree`) {
+	for _, c := range strings.Fields(`
+		add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr check-ignore check-mailmap
+		check-ref-format checkout checkout--worker checkout-index cherry cherry-pick clean clone column commit commit-graph
+		commit-tree config count-objects credential credential-cache credential-cache--daemon credential-store describe diagnose
+		diff diff-files diff-index diff-pairs diff-tree difftool fast-export fast-import fetch fetch-pack fmt-merge-msg for-each-ref
+		for-each-repo format-patch fsck fsck-objects fsmonitor--daemon gc get-tar-commit-id grep hash-object help hook index-pack
+		init init-db interpret-trailers last-modified log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base
+		merge-file merge-index merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-subtree merge-tree mktag
+		mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id pickaxe prune prune-packed pull
+		push range-diff read-tree rebase receive-pack reflog refs remote remote-ext remote-fd repack replace replay repo rerere
+		reset restore rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref sparse-checkout stage
+		stash status stripspace submodule--helper switch symbolic-ref tag unpack-file unpack-objects update-index update-ref
+		update-server-info upload-archive upload-archive--writer upload-pack var verify-commit verify-pack verify-tag version
+		whatchanged worktree write-tree`) {
 		m[c] = true
 	}
 	return m
 }()
-
-// aliasIsConfig reports whether an alias's value expands to git config: its first word is config, in any letter case git would take
-// as the alias's own (git compares alias names case-insensitively, and the command word exactly, so CONFIG is no command; it is counted
-// anyway, since over-counting costs a release).
-func aliasIsConfig(val string) bool {
-	f := strings.Fields(val)
-	return len(f) > 0 && strings.EqualFold(f[0], "config")
-}
