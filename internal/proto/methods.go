@@ -14,6 +14,7 @@ const (
 	MethodSessionCancel     = "session/cancel"
 	MethodSessionFork       = "session/fork"
 	MethodSessionSetMode    = "session/setMode"
+	MethodSessionRelease    = "session/release"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -183,6 +184,15 @@ type SessionSetModeParams struct {
 	Confirmed bool      `json:"confirmed,omitempty"`
 }
 
+// SessionReleaseParams lifts a session's hold (the guard's tripwire, proto.SessionHeld). It needs the client token and a client a person
+// is at (ClientInfo.Attended): only the owner lifts it, from the TUI, and nothing a model, a file or a headless client says can.
+type SessionReleaseParams struct {
+	Session SessionID `json:"session"`
+}
+
+// SessionReleaseResult acknowledges a release; session.released is its record. A session that is not held answers the same.
+type SessionReleaseResult struct{}
+
 // SessionSetModeResult gives the mode the session now has, which is the one asked for unless a ceiling lowered it; it is the
 // session's current mode, with no event, when that is what was asked for.
 type SessionSetModeResult struct {
@@ -331,6 +341,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
 	MethodSessionFork:       {reflect.TypeFor[SessionForkParams](), reflect.TypeFor[SessionForkResult]()},
 	MethodSessionSetMode:    {reflect.TypeFor[SessionSetModeParams](), reflect.TypeFor[SessionSetModeResult]()},
+	MethodSessionRelease:    {reflect.TypeFor[SessionReleaseParams](), reflect.TypeFor[SessionReleaseResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},
 	MethodDaemonShutdown:    {reflect.TypeFor[DaemonShutdownParams](), reflect.TypeFor[DaemonShutdownResult]()},

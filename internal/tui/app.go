@@ -29,10 +29,15 @@ type Backend interface {
 	Cancel() error
 	// Complete lists the workspace paths a query after an @ matches (workspace/complete), best first.
 	Complete(query string) ([]proto.CompletionItem, error)
+	// Release lifts the session's hold (session/release): the guard held it for the owner's review, and only a person at this screen can.
+	Release() error
 	// SetMode moves the session to a mode (session/setMode) and returns the mode it has now, which a repository's ceiling can
 	// make lower than the one asked for. confirmed says the user confirmed a move to auto: only the y key sets it.
 	SetMode(m proto.Mode, confirmed bool) (proto.Mode, error)
 }
+
+// ReleasedMsg is the answer to a Backend.Release: the session.released event that follows is what ends the hold on screen.
+type ReleasedMsg struct{ Err error }
 
 // CancelledMsg is the answer to a Backend.Cancel: the turn's end arrives as events.
 type CancelledMsg struct{ Err error }

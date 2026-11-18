@@ -63,6 +63,9 @@ type Options struct {
 	// between that root's sessions, and closes it in Close when it is an io.Closer.
 	OpenSearcher func(ctx context.Context, root string) (tools.Searcher, error)
 	Budget       loop.Budget
+	// TripwireThreshold is how many counted shell calls hold a session (loop.Config.TripwireLimit): the owner's config.toml [guard], never a
+	// repository's. 0 turns the guard off.
+	TripwireThreshold int
 	// Sampling is every session's sampling (the configured server's).
 	Sampling server.Sampling
 	// Each session gets its own sweep target, a random sandbox mark and its start time. Halt sweeps every session's
@@ -710,6 +713,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, unprivileged(req.Method)
 		}
 		return c.fork(p)
+	case proto.MethodSessionRelease:
+		p, perr := params[proto.SessionReleaseParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged || !cn.attended { // only the owner lifts a hold: a person at a client, not a headless one
+			return nil, unprivileged(req.Method)
+		}
+		return c.release(p)
 	case proto.MethodSessionSetMode:
 		p, perr := params[proto.SessionSetModeParams](req)
 		if perr != nil {
@@ -946,7 +958,7 @@ func (c *Core) build(id proto.SessionID, log *store.Log, ws *tools.Workspace, cr
 	to := ro // the session's tools; auto mode widens them
 	cfg := loop.Config{Source: src, Tools: tools.New(ro), ReadLines: ro.WholeReadLines(), WS: ws, Log: log,
 		Blobs: c.opt.Store.Blobs, Budget: c.opt.Budget, Sampling: c.opt.Sampling, Emit: bind.emitTurn, Record: bind.recordTurn, FitWindow: c.opt.FitWindow, StopRepeats: c.opt.StopRepeats, MaskObservations: c.opt.MaskObservations, Summarize: c.opt.Summarize, SummaryRetrieve: c.opt.SummaryRetrieve, Searcher: retrieve, CompactAtCliff: c.opt.CompactAtCliff, WidenRepeats: c.opt.WidenRepeats, ResultNotes: c.opt.ResultNotes,
-		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask}
+		VerifyDone: c.opt.VerifyDone, RestateTask: c.opt.RestateTask, TripwireLimit: c.opt.TripwireThreshold}
 	cfg.Approve = approver{bind} // questions wait for permission/respond while a privileged client watches
 	// Every mode but plan gets the edit tools, the shell and the permission engine; the engine decides per mode what asks
 	// (perms.Engine.Decide). Plan is read-only, with neither.
@@ -1370,6 +1382,9 @@ func (c *Core) prompt(p proto.SessionPromptParams) (any, *proto.Error) {
 	s.wmu.Unlock()
 	if err != nil {
 		cancel(nil)
+		if errors.Is(err, loop.ErrHeld) {
+			return nil, &proto.Error{Code: proto.CodeHeld, Message: "the session is held for the owner's review; the owner releases it from the TUI (/release)"}
+		}
 		if errors.Is(err, store.ErrLogBusy) { // tack rewind, or another tack process, is writing it between turns
 			return nil, &proto.Error{Code: proto.CodeBusy, Message: fmt.Sprintf("session %s's log is open in another tack process; prompt again when it is done", s.id)}
 		}

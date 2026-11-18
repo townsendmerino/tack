@@ -1,0 +1,12 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-tui","version":"0.2.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":1,"time":"2026-11-17T12:00:00Z","type":"tripwire.hit","payload":{"id":"b1","command":"go test \\-exec id","count":1}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":2,"time":"2026-11-17T12:00:00Z","type":"tripwire.hit","cause":1,"payload":{"id":"b2","command":"go build -ldflags=-extld=./x","count":2}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":3,"time":"2026-11-17T12:00:01Z","type":"tripwire.hit","cause":2,"payload":{"id":"b3","command":"git config core.fsmonitor id","count":3}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":4,"time":"2026-11-17T12:00:01Z","type":"session.held","cause":3,"payload":{"commands":["go test \\-exec id","go build -ldflags=-extld=./x","git config core.fsmonitor id"]}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":5,"time":"2026-11-17T12:00:01Z","type":"turn.end","payload":{"stop_reason":"held"}}}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"session":"s_01JAFIXTURE0000000000000016","content":[{"type":"text","text":"go on"}]}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"error":{"code":-32007,"message":"the session is held for the owner's review; the owner releases it from the TUI"}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/release","params":{"session":"s_01JAFIXTURE0000000000000016"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","method":"session/event","params":{"session":"s_01JAFIXTURE0000000000000016","event":{"seq":6,"time":"2026-11-17T12:00:02Z","type":"session.released","payload":{"by":"user"}}}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{}}}

@@ -2,6 +2,7 @@ package perms
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -276,6 +277,10 @@ func SessionRules(tool string, parsed []Simple) []Rule {
 // AddRule allows what r covers for the rest of the session. The caller has checked it (Narrowing): the engine adds what it is given.
 func (e *Engine) AddRule(r Rule) { e.Rules = append(e.Rules, r) }
 
+// ErrWidens is what Narrowing returns for a rule that parses and reads back but is wider than, or other than, what was shown. The guard
+// counts only that (core): a rule that does not parse, or does not read back, is as likely a typo.
+var ErrWidens = errors.New("perms: not a narrowing")
+
 // Narrowing reads edited, a rule the user wrote in place of the shown ones, and returns it only when it is no wider than one of
 // them: the same program, written exactly as shown, and the shown arguments first, then any more. A rule matches a command that
 // starts with its program and arguments, so each argument added can only make it match fewer. Anything else is an error and nothing
@@ -295,5 +300,5 @@ func Narrowing(shown []Rule, edited string) (Rule, error) {
 			return e, nil
 		}
 	}
-	return Rule{}, fmt.Errorf("perms: rule %q is not a narrowing of what was shown: keep a shown program and its arguments, and add literal arguments after them", edited)
+	return Rule{}, fmt.Errorf("%w: rule %q is not a narrowing of what was shown: keep a shown program and its arguments, and add literal arguments after them", ErrWidens, edited)
 }

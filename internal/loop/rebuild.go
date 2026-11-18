@@ -154,6 +154,7 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resume: seq %d: %w", ev.Seq, err)
 		}
+		s.guard.restore(v) // the tripwire's count and hold are in the log
 		switch p := v.(type) {
 		case proto.UserMessage:
 			s.turns++

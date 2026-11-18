@@ -1,0 +1,11 @@
+— this session is held for the owner's
+review: the guard counted these commands
+—
+    "go test \\-exec id"
+    "go build -ldflags=-extld=./x"
+    "git config core.fsmonitor id"
+— nothing more runs until you type
+/release —
+· the turn ended: held
+· hold lifted
+────────────────────────────────────────

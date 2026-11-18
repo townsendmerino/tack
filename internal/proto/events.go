@@ -46,6 +46,9 @@ const (
 	EvRewind              EventType = "rewind"
 	EvRepoTrusted         EventType = "repo.trusted"
 	EvModeChanged         EventType = "mode.changed"
+	EvTripwireHit         EventType = "tripwire.hit"
+	EvSessionHeld         EventType = "session.held"
+	EvSessionReleased     EventType = "session.released"
 	EvModelStatus         EventType = "model.status"
 )
 
@@ -84,6 +87,9 @@ var EventTypes = map[EventType]EventSpec{
 	EvRewind:              {reflect.TypeFor[Rewind](), true, false},
 	EvRepoTrusted:         {reflect.TypeFor[RepoTrusted](), true, false},
 	EvModeChanged:         {reflect.TypeFor[ModeChanged](), true, true},
+	EvTripwireHit:         {reflect.TypeFor[TripwireHit](), true, true},
+	EvSessionHeld:         {reflect.TypeFor[SessionHeld](), true, true},
+	EvSessionReleased:     {reflect.TypeFor[SessionReleased](), true, true},
 }
 
 // ModelStatus is how a session's model server stands while a turn waits on it (DESIGN §8.2, §10), live only, for the
@@ -191,6 +197,7 @@ const (
 	DecidedByUser   = "user"    // the user answered
 	DecidedByNoUser = "no_user" // it needed the user, and no one was attached
 	DecidedByHalted = "halted"  // a halt or a shutdown ended the question before it was answered
+	DecidedByGuard  = "guard"   // the guard's tripwire refused it (it needs the owner's review)
 )
 
 // PermissionResolved records the decision on a tool call that changes something: every such call gets one, whether a
@@ -280,6 +287,7 @@ const (
 	StopBudget    = "budget"     // a budget tripped
 	StopCancelled = "cancelled"
 	StopHalted    = "halted" // tack was halted (daemon.halted precedes it)
+	StopHeld      = "held"   // the guard held the session for the owner's review (session.held precedes it)
 	StopDone      = "done"   // an edit task called the done tool (loop.Config.EditTask)
 	// StopWindowFull: the prompt filled the context window, so the reply was cut off short of its own token limit.
 	StopWindowFull = "window_full"
@@ -406,6 +414,27 @@ type Rewind struct {
 type ModeChanged struct {
 	Mode Mode   `json:"mode"`
 	By   string `json:"by"`
+}
+
+// TripwireHit records a shell call the guard counted (DESIGN §6.6, "The tripwire"): a command with a shape that has no honest use. ID is the
+// tool call and Command the line as the model wrote it; Count is how many such calls the session has had since it was last released,
+// this one included. The call is refused with a plain message that does not say what was caught, and the shape is not recorded here either.
+type TripwireHit struct {
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Count   int    `json:"count"`
+}
+
+// SessionHeld records the session held for the owner's review: the count reached the owner's threshold. Commands are the calls counted
+// since the last release, which the TUI shows. The turn ends with StopHeld; a prompt is refused (CodeHeld) until the owner releases the
+// session (session/release, from a client a person is at). It survives a reopen and a fork, since it is in the log.
+type SessionHeld struct {
+	Commands []string `json:"commands"`
+}
+
+// SessionReleased records the owner lifting a hold. The count starts again from none.
+type SessionReleased struct {
+	By string `json:"by"`
 }
 
 // RepoTrusted records, right after session.created, that the owner's trust in the workspace's own configuration is in

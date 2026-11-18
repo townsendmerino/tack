@@ -372,3 +372,21 @@ func TestSessionModeIsTheOwnersDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTripwireThresholdIsTheOwnersAndDefaultsToThree: [guard] tripwire_threshold in the owner's file; unset is 3; out of range or a typo
+// fails at load.
+func TestTheTripwireThresholdIsTheOwnersAndDefaultsToThree(t *testing.T) {
+	const server = "main = \"m\"\n[servers.m]\nkind = \"goinfer-remote\"\nurl = \"http://x\"\nmodel = \"q\"\n"
+	c, err := load(t, server)
+	if err != nil || c.Guard.TripwireThreshold != 3 {
+		t.Fatalf("unset: %d, %v", c.Guard.TripwireThreshold, err)
+	}
+	if c, err := load(t, server+"[guard]\ntripwire_threshold = 5\n"); err != nil || c.Guard.TripwireThreshold != 5 {
+		t.Errorf("5: %v, %v", c, err)
+	}
+	for _, bad := range []string{"[guard]\ntripwire_threshold = 0\n", "[guard]\ntripwire_threshold = -1\n", "[guard]\ntripwire_threshold = 101\n", "[guard]\ntripwire_threshold = \"3\"\n", "[guard]\ntripwire_treshold = 3\n"} {
+		if _, err := load(t, server+bad); err == nil {
+			t.Errorf("%q loaded", bad)
+		}
+	}
+}

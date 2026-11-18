@@ -149,6 +149,11 @@ func (b tuiBackend) Cancel() error {
 	return b.c.Call(proto.MethodSessionCancel, proto.SessionCancelParams{Session: b.sess}, nil)
 }
 
+// Release lifts the session's hold.
+func (b tuiBackend) Release() error {
+	return b.c.Call(proto.MethodSessionRelease, proto.SessionReleaseParams{Session: b.sess}, nil)
+}
+
 // Complete lists the session's workspace paths that query, the text after an @, matches.
 func (b tuiBackend) Complete(query string) ([]proto.CompletionItem, error) {
 	var r proto.WorkspaceCompleteResult

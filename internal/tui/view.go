@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -20,6 +21,8 @@ import (
 // Widths are counted in terminal cells (go-runewidth).
 type View struct {
 	Status Status
+	// held is true from session.held until session.released: the guard has the session for the owner's review (/release).
+	held bool
 	// Scroll is how many lines the frame sits above the transcript's bottom; Render clamps it at the top.
 	Scroll int
 
@@ -171,6 +174,16 @@ func (v *View) Apply(ev proto.Event) {
 		}
 	case proto.Rewind:
 		v.note(fmt.Sprintf("↺ rewound %d paths to the checkpoint at %d", e.Changed, e.To))
+	case proto.SessionHeld:
+		v.held = true
+		v.note("— this session is held for the owner's review: the guard counted these commands —")
+		for _, c := range e.Commands {
+			v.note("    " + strconv.QuoteToASCII(c)) // every control, escape, bidi and non-ASCII rune is spelled out, so nothing hides or spoofs what the owner reviews
+		}
+		v.note("— nothing more runs until you type /release —")
+	case proto.SessionReleased:
+		v.held = false
+		v.note("· hold lifted")
 	case proto.ModeChanged:
 		s := "· mode is now " + string(e.Mode)
 		if e.By == "system" {

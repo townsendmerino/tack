@@ -147,6 +147,18 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 	if ap.Rule != "" { // checked before the question is settled, so a refused edit leaves it open for another answer
 		if _, err := perms.Narrowing(q.shown, ap.Rule); err != nil {
 			s.mu.Unlock()
+			// An edited rule that parses and reads back but widens what was shown (or names another program) counts toward the session's
+			// hold; one that does not parse is as likely the owner's typo and only fails. The question stays open, and at the threshold the turn ends.
+			if errors.Is(err, perms.ErrWidens) {
+				if held, herr := s.loop.Hit(q.id, q.seq, "an edited rule: "+ap.Rule); herr == nil && held {
+					s.mu.Lock()
+					cancel := s.cancel
+					s.mu.Unlock()
+					if cancel != nil {
+						cancel(loop.ErrHeld)
+					}
+				}
+			}
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: " + err.Error()}
 		}
 	}
