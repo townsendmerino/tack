@@ -221,6 +221,8 @@ func namesCountedKey(words []string) bool {
 		switch {
 		case countedKey(k):
 			return true
+		case strings.HasPrefix(k, "ext::"):
+			return true // a remote url that runs a command, whichever key it was written to
 		case shell && strings.HasPrefix(k, "alias."):
 			return true
 		case strings.HasPrefix(k, "alias.") && slices.ContainsFunc(words, aliasIsConfig):
@@ -230,13 +232,19 @@ func namesCountedKey(words []string) bool {
 	return false
 }
 
-// countedKey reports whether a lower-cased git config key is one whose write is counted whatever the value's shape needs further reading.
+// countedKey reports whether a lower-cased git config key is one whose write can be counted: the keys whose value decides it too, when
+// the command's words cannot be told apart (a closed command), count whatever the value, since over-counting costs a release. It is
+// every key configWriteRuns reads: fsmonitor, the hooks path, the pagers, a textconv, the keys that name a program (programKey), the
+// includes, and a url rewrite to ext::.
 func countedKey(key string) bool {
 	switch key {
-	case "core.fsmonitor", "core.hookspath", "core.pager", "diff.external":
+	case "core.fsmonitor", "core.hookspath", "core.pager", "diff.external", "include.path":
 		return true
 	}
-	return strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv")
+	return strings.HasPrefix(key, "diff.") && strings.HasSuffix(key, ".textconv") ||
+		strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path") ||
+		strings.HasPrefix(key, "url.ext::") ||
+		programKey(key)
 }
 
 // aliasIsConfig reports whether an alias's value can expand to git config: the word config appears anywhere in it, in any letter case,

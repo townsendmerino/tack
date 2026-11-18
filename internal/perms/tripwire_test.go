@@ -39,7 +39,7 @@ func TestTheTripwireDoesNotCountAnHonestCommand(t *testing.T) {
 		`find . -exec id ';'`, `find . -delete`, `go test -exec id`, `go test -exec=id .`, `go build -toolexec=id .`, `go vet -vettool=/x .`, `git -c core.pager=id log`,
 		`go build -ldflags '-extldflags=-static' .`, `go build -ldflags='-s -w -X main.v=1' .`, `go build -ldflags "-extldflags '-static'" .`, `go build -gcflags=all=-N .`,
 		`GOFLAGS=-mod=mod go test ./...`, `GOFLAGS=-race go build .`, `export GOFLAGS=-count=1`, `go env -w GOTOOLCHAIN=local`, `go env -w GOPRIVATE=example.com`, `go env GOFLAGS`,
-		`git config core.hooksPath .githooks`, `git config core.fsmonitor true`, `git config core.sshCommand ssh`, `go env -w CC=clang`, `go env -w GOCACHEPROG=x`, `go env -w GOFLAGS=-mod=mod`, `env GOFLAGS=-mod=mod go build .`, `git -C sub config user.name x`, `git config user.name x`, `git config core.editor vim`, `git config alias.co checkout`, `git config --get alias.x`, `git config --list`, `git config --unset core.fsmonitor`,
+		`git config core.hooksPath .githooks`, `git config core.fsmonitor true`, `git config core.sshCommand ssh`, `go env -w CC=clang`, `go env -w GOFLAGS=-mod=mod`, `env GOFLAGS=-mod=mod go build .`, `git -C sub config user.name x`, `git config user.name x`, `git config core.editor vim`, `git config alias.co checkout`, `git config --get alias.x`, `git config --list`, `git config --unset core.fsmonitor`,
 		`git config core.fsmonitor`, `git log --oneline`, `git status`,
 		`echo \-exec`, `echo $'\x2dexec'`, `ls \-la`, `ls $'a\nb'`, `go test -run 'a\nb' .`, `go test "a b" .`, `printf '%s' "\$HOME"`, `grep \-n x file`, `ls -e{x,y}ec`,
 		`go test -ldflags=-extldflag .`, `go build -ldflags '-extld' `,
@@ -250,7 +250,28 @@ func TestTheTripwireFailsClosedOnAnUnknownOption(t *testing.T) {
 		`git config --future-flag=1 core.pager id`, `git config --future-flag diff.x.textconv id`, `git config --future-flag alias.x '!id'`,
 		`git config --future-flag CORE.FSMONITOR id`, `git config set --future-flag core.fsmonitor id`,
 	}, []string{
-		`git config --frobnicate user.name x`, `git config --frobnicate core.editor vim`, `git config --future-flag alias.x checkout`,
+		`git config --frobnicate user.name x`, `git config --future-flag alias.x checkout`, `git config --frobnicate core.sparseCheckout true`,
+	})
+}
+
+// The fail-closed path covers every key that is counted, the program-running ones included (a value on the allowlist, such as
+// `core.editor vim`, does not matter when the command cannot be read): the first form was a pass before the program keys were counted.
+func TestTheFailClosedPathCoversTheProgramKeys(t *testing.T) {
+	counts(t, []string{
+		`git config --frobnicate core.editor vim`, `git config --frobnicate core.sshCommand ssh`, `git config --frobnicate credential.helper store`,
+		`git config --frobnicate sequence.editor nano`, `git config --frobnicate gpg.program gpg`, `git config --frobnicate gpg.ssh.defaultKeyCommand k`,
+		`git config --frobnicate filter.lfs.clean 'git-lfs clean -- %f'`, `git config --frobnicate merge.x.driver true`, `git config --future-flag pager.log false`,
+		`git config --frobnicate diff.x.command d`, `git config --frobnicate interactive.diffFilter f`, `git config --frobnicate core.gitProxy p`,
+		`git config --frobnicate remote.origin.uploadpack u`, `git config --frobnicate remote.origin.receivepack r`, `git config --frobnicate core.alternateRefsCommand c`,
+		`git config --frobnicate difftool.x.cmd d`, `git config --frobnicate mergetool.x.cmd m`, `git config --frobnicate uploadpack.packObjectsHook h`,
+		`git config --frobnicate submodule.x.update rebase`, `git config --frobnicate tar.x.command c`, `git config --frobnicate trailer.t.cmd c`, `git config --frobnicate trailer.t.command c`,
+		`git config --frobnicate sendemail.sendmailCmd c`, `git config --frobnicate sendemail.smtpServer host`, `git config --frobnicate browser.x.cmd c`, `git config --frobnicate man.x.path p`,
+		`git config --frobnicate guitool.x.cmd c`, `git config --frobnicate gc.recentObjectsHook h`, `git config --frobnicate init.templateDir t`, `git config --frobnicate protocol.ext.allow always`, `git config --frobnicate lfs.customtransfer.x.path p`, `git config --frobnicate submodule.x.url ext::x`, `git config --frobnicate delta.pager p`, `git config --frobnicate imap.tunnel t`, `git config --frobnicate mergetool.x.path p`, `git config --frobnicate difftool.x.path p`, `git config --frobnicate remote.x.vcs v`,
+		`git config --frobnicate include.path x`, `git config --frobnicate includeIf.gitdir:/x/.path y`, `git config --frobnicate url.'ext::sh -c id'.insteadOf https://x/`,
+		`git config --frobnicate remote.origin.url 'ext::sh -c id'`, `git --future-opt x config core.editor vim`, `git cfg core.editor vim`, `git -c alias.x=y x credential.helper store`,
+	}, []string{
+		`git config --frobnicate user.name x`, `git config --frobnicate remote.origin.url https://example.com/x.git`, `git config --frobnicate credential.username me`,
+		`git config --frobnicate uploadpack.allowFilter true`,
 	})
 }
 
@@ -334,5 +355,347 @@ func TestTheTripwireCountsAnAliasThatShadowsAShippedProgramAndAnAliasWithConfigA
 	}, []string{
 		`git gui`, `git send-email --to a@b`, `git config alias.x 'status -s'`, `git config alias.x 'configure'`, `git config alias.x 'log --format=config-x'`,
 		`git config alias.x 'reconfig'`,
+	})
+}
+
+// counts checks one group of settings that make git or the Go toolchain run a program: each counted form counts, and each honest form
+// (a value on that key's own list of known values, a read, a removal) does not.
+func counts(t *testing.T, counted, honest []string) {
+	t.Helper()
+	e := allowEngine(t)
+	for _, cmd := range counted {
+		if got := e.Tripwire(cmd); len(got) == 0 {
+			t.Errorf("%q does not count", cmd)
+		}
+	}
+	for _, cmd := range honest {
+		if got := e.Tripwire(cmd); len(got) != 0 {
+			t.Errorf("%q counts as %v; it is honest, a read or a removal", cmd, got)
+		}
+	}
+}
+
+// For each key that names a program, a write counts unless the value is one that key's own list names: no bare word is honest in itself
+// (python3.14, just, pytest and rbash are bare words that run a repository's file).
+
+func TestTheTripwireCountsEditorsNotOnTheEditorList(t *testing.T) {
+	counts(t, []string{
+		`git config core.editor ./edit.sh`, `git config core.editor 'sh -c id'`, `git config core.editor '/tmp/ed'`, `git config sequence.editor ./seq`,
+		`git config --global sequence.editor 'bash -c id'`, `git config core.editor 'vim; id'`, `git config sequence.editor '!id'`, `git config core.editor 'python3 x.py'`,
+		`git config core.editor 'vim -c "!./x"'`, `git config core.editor 'vim -S x.vim'`, `git config core.editor 'make -f x.mk'`, `git config core.editor '. ./x'`,
+		`git config core.editor 'eval ./x'`, `git config core.editor 'exec ./x'`, `git config core.editor sh`, `git config core.editor '/opt/homebrew/bin/nvim'`,
+		`git config core.editor '/usr/local/bin/vim'`, `git config core.editor 'code --wait --extra'`,
+		`git config core.editor python3.14`, `git config core.editor /usr/bin/python3.12`, `git config core.editor perl5.40`, `git config core.editor gawk`,
+		`git config core.editor rbash`, `git config core.editor tclsh`, `git config core.editor busybox`, `git config core.editor just`, `git config core.editor pytest`,
+		`git config core.editor tox`, `git config core.editor rake`, `git config core.editor ninja`, `git config core.editor yarn`, `git config core.editor task`,
+		`git config core.editor gradle`, `git config core.editor 'vim +"!./x"'`, `git config core.editor 'vim -u ./vimrc'`, `git config core.editor 'vim --cmd x'`,
+		`git config core.editor 'emacs --eval x'`, `git config core.editor 'emacs -f x'`, `git config core.editor 'emacsclient -e x'`, `git config core.editor 'busybox vi'`,
+	}, []string{
+		`git config core.editor vim`, `git config core.editor vi`, `git config core.editor nvim`, `git config sequence.editor nano`, `git config core.editor emacs`,
+		`git config core.editor emacsclient`, `git config core.editor code`, `git config core.editor subl`, `git config core.editor mate`, `git config core.editor 'code --wait'`,
+		`git config core.editor 'code -w'`, `git config core.editor 'subl -n -w'`, `git config core.editor 'emacsclient -t'`, `git config core.editor 'emacs -nw'`,
+		`git config core.editor /usr/bin/vim`, `git config core.editor 'vim -f'`, `git config core.editor 'mate -w'`, `git config --get sequence.editor`,
+		`git config --unset core.editor`, `git config core.editor ""`,
+	})
+}
+
+func TestTheTripwireCountsPagersNotOnThePagerList(t *testing.T) {
+	counts(t, []string{
+		`git config core.pager 'less; id'`, `git config core.pager ./p`, `git config core.pager python3.14`, `git config core.pager 'sh -c id'`, `git config core.pager just`,
+		`git config core.pager 'delta --pager "sh -c id"'`, `git config core.pager 'delta --pager sh'`, `git config core.pager 'less -k ./x'`, `git config core.pager id`,
+		`git config pager.log ./p`, `git config pager.diff 'sh -c id'`, `git config pager.status /tmp/p`, `git config pager.log python3.14`,
+		`git config interactive.diffFilter ./f`, `git config interactive.diffFilter 'diff-highlight; id'`, `git config interactive.diffFilter 'delta --pager sh'`,
+		`git config interactive.diffFilter python3`, `git config pager.log 'bat --paging=never'`,
+	}, []string{
+		`git config core.pager less`, `git config core.pager 'less -FRX'`, `git config core.pager more`, `git config core.pager cat`, `git config core.pager delta`,
+		`git config core.pager 'delta --dark'`, `git config core.pager diff-so-fancy`, `git config core.pager bat`, `git config core.pager 'bat --plain'`,
+		`git config pager.log false`, `git config pager.diff true`, `git config pager.log less`, `git config interactive.diffFilter 'delta --color-only'`,
+		`git config interactive.diffFilter diff-so-fancy`, `git config --unset core.pager`, `git config --get pager.log`, `git config core.pager ""`,
+	})
+}
+
+func TestTheTripwireCountsFilterDriversThatAreNotGitLfs(t *testing.T) {
+	counts(t, []string{
+		`git config filter.x.clean ./clean.sh`, `git config filter.x.smudge './smudge %f'`, `git config filter.x.process /tmp/p`, `git config filter.lfs.clean 'sh -c id'`,
+		`git config --local filter.x.clean 'cat; id'`, `git config filter.x.clean 'go run ./tools/c'`, `git config filter.x.clean 'git -c alias.y=!./e y'`,
+		`git config filter.x.smudge 'git-lfs smudge -- %f; id'`, `git config filter.x.clean 'git-lfs clean -- ./x'`, `git config filter.x.clean python3.14`,
+		`git config filter.x.clean cat`, `git config filter.x.clean true`, `git config filter.x.clean just`, `git config filter.x.smudge pytest`, `git config filter.x.process rbash`,
+		`git config filter.x.clean /usr/bin/python3.12`, `git config filter.lfs.clean 'git-lfs clean -- %f extra'`,
+	}, []string{
+		`git config filter.lfs.clean 'git-lfs clean -- %f'`, `git config filter.lfs.smudge 'git-lfs smudge -- %f'`, `git config filter.lfs.process 'git-lfs filter-process'`,
+		`git config filter.lfs.process 'git-lfs filter-process --skip'`, `git config filter.lfs.required true`, `git config --unset filter.x.clean`,
+		`git config --get filter.x.smudge`, `git config filter.x.clean ""`,
+	})
+}
+
+// These take no program from a repository's own configuration and have no honest value: any non-empty value counts, `true` too.
+func TestTheTripwireCountsTheKeysWithNoHonestValue(t *testing.T) {
+	var counted []string
+	for _, key := range []string{
+		"merge.x.driver", "diff.x.command", "diff.external", "diff.x.textconv", "difftool.x.cmd", "mergetool.x.cmd", "difftool.x.path", "mergetool.x.path",
+		"core.gitProxy", "core.alternateRefsCommand", "uploadpack.packObjectsHook", "tar.x.command", "trailer.t.cmd", "trailer.t.command", "sendemail.sendmailCmd",
+		"browser.x.cmd", "browser.x.path", "man.x.cmd", "man.x.path", "guitool.x.cmd",
+	} {
+		for _, v := range []string{"true", "vim", "./x", "'sh -c id'", "git-upload-pack"} {
+			counted = append(counted, "git config "+key+" "+v)
+		}
+	}
+	counts(t, counted, []string{
+		`git config merge.x.driver ""`, `git config diff.x.command ""`, `git config --unset merge.x.driver`, `git config --get diff.x.command`, `git config merge.x.name 'a driver'`,
+		`git config merge.tool vimdiff`, `git config diff.algorithm patience`, `git config diff.x.binary true`, `git config trailer.t.key 'Reviewed-by: '`,
+		`git config mergetool.keepBackup false`, `git config man.viewer man`, `git config browser.x.foo bar`,
+	})
+}
+
+func TestTheTripwireCountsSubmoduleUpdateCommandsSmtpPathsAndRemoteVcs(t *testing.T) {
+	counts(t, []string{
+		`git config submodule.x.update '!./x'`, `git config submodule.x.update '!sh -c id'`, `git config submodule.x.update '!true'`,
+		`git config sendemail.smtpServer /usr/sbin/sendmail`, `git config sendemail.smtpServer ./x`, `git config sendemail.smtpServer ~/x`,
+		`git config remote.origin.vcs hg`, `git config remote.origin.vcs evil`,
+	}, []string{
+		`git config submodule.x.update rebase`, `git config submodule.x.update merge`, `git config submodule.x.update checkout`, `git config submodule.x.update none`,
+		`git config sendemail.smtpServer smtp.example.com`, `git config remote.origin.vcs ""`, `git config submodule.x.url https://x/y`, `git config sendemail.smtpPort 587`,
+	})
+}
+
+// credential.helper takes only its known values: a word that is not one runs git-credential-<word> from PATH.
+func TestTheTripwireCountsCredentialHelpersNotOnTheList(t *testing.T) {
+	counts(t, []string{
+		`git config credential.helper python3.14`, `git config credential.helper foo`, `git config credential.helper ./helper`, `git config credential.helper '!./h'`,
+		`git config credential.helper '!gh auth git-credential --evil'`, `git config credential.helper 'cache --socket ./s'`, `git config credential.helper 'store --file ./f'`,
+		`git config credential.helper 'libsecret; id'`, `git config credential.helper /tmp/git-credential-store`, `git config credential.helper '!id'`,
+		`git config credential.helper '!/tmp/gh auth git-credential'`, `git config credential.helper just`, `git config credential.helper pytest`,
+		`git config credential.https://example.com.helper foo`, `git config credential.helper '/usr/lib/git-core/git-credential-evil'`,
+		`git config credential.helper '!f() { id; }; f'`, `git config credential.helper /usr/bin/python3.12`,
+	}, []string{
+		`git config credential.helper cache`, `git config credential.helper 'cache --timeout=3600'`, `git config credential.helper store`, `git config credential.helper osxkeychain`,
+		`git config credential.helper manager`, `git config credential.helper manager-core`, `git config credential.helper libsecret`,
+		`git config credential.helper /usr/lib/git-core/git-credential-libsecret`, `git config credential.helper /usr/local/share/gcm-core/git-credential-manager`,
+		`git config credential.helper '!gh auth git-credential'`, `git config credential.helper '!/usr/bin/gh auth git-credential'`,
+		`git config credential.https://github.com.helper '!gh auth git-credential'`, `git config credential.https://example.com.helper manager`,
+		`git config --get credential.helper`, `git config --unset credential.helper`, `git config credential.helper ""`, `git config credential.username me`,
+	})
+}
+
+func TestTheTripwireCountsSshCommandsThatRunOrReadARepositoryFile(t *testing.T) {
+	counts(t, []string{
+		`git config core.sshCommand ./ssh-wrap`, `git config core.sshCommand 'sh -c id'`, `git config core.sshCommand '/tmp/x -i key'`, `git config core.sshCommand 'ssh; id'`,
+		`git config core.sshCommand 'ssh -o ProxyCommand=./x'`, `git config core.sshCommand 'ssh -F ./cfg'`, `git config core.sshCommand 'ssh -oProxyCommand=./x host'`,
+		`git config core.sshCommand 'ssh -o LocalCommand=./x -o PermitLocalCommand=yes'`, `git config core.sshCommand 'ssh -o KnownHostsCommand=./x'`,
+		`git config core.sshCommand 'ssh -o proxycommand=./x'`, `git config core.sshCommand 'ssh -o PermitLocalCommand=yes'`, `git config core.sshCommand 'ssh -o Include=./c'`,
+		`git config core.sshCommand '"sh" x.sh'`, `git config core.sshCommand 'FOO=1 sh x.sh'`, `git config core.sshCommand 'timeout 9 sh x.sh'`,
+		`git config core.sshCommand 'ssh -i ./key'`, `git config core.sshCommand 'ssh -i /tmp/key'`, `git config core.sshCommand 'ssh -F /tmp/cfg'`,
+		`git config core.sshCommand 'ssh -F ~/.ssh/../x'`, `git config core.sshCommand 'ssh -i ~/other/key'`, `git config core.sshCommand 'ssh -p 22; id'`,
+		`git config core.sshCommand 'ssh -p x'`, `git config core.sshCommand 'ssh -l'`, `git config core.sshCommand 'ssh -J host'`, `git config core.sshCommand 'ssh host id'`,
+		`git config core.sshCommand python3.14`, `git config core.sshCommand rbash`,
+	}, []string{
+		`git config core.sshCommand ssh`, `git config core.sshCommand 'ssh -o StrictHostKeyChecking=accept-new'`, `git config core.sshCommand '/usr/bin/ssh'`,
+		`git config core.sshCommand 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'`, `git config core.sshCommand 'ssh -oBatchMode=yes'`,
+		`git config core.sshCommand 'ssh -i ~/.ssh/id_ed25519'`, `git config core.sshCommand 'ssh -F ~/.ssh/config_work'`, `git config core.sshCommand 'ssh -p 2222'`,
+		`git config core.sshCommand 'ssh -l git'`, `git config core.sshCommand 'ssh -i ~/.ssh/key -o IdentitiesOnly=yes'`, `git config core.sshCommand 'ssh -q -4'`,
+		`git config --get core.sshCommand`, `git config --unset core.sshCommand`, `git config core.sshCommand ""`,
+	})
+}
+
+func TestTheTripwireCountsGpgAndAskpassProgramsNotOnTheirLists(t *testing.T) {
+	counts(t, []string{
+		`git config gpg.program ./gpg-wrap`, `git config gpg.ssh.program /tmp/sign`, `git config gpg.x509.program ~/s`, `git config gpg.openpgp.program 'sh -c id'`,
+		`git config --system gpg.program ../x`, `git config gpg.program /usr/local/bin/gpg`, `git config gpg.program 'gpg --homedir ./h'`, `git config gpg.program python3.14`,
+		`git config gpg.ssh.program /Applications/1Password.app/Contents/MacOS/evil`, `git config gpg.ssh.program just`,
+		`git config gpg.ssh.defaultKeyCommand ./key`, `git config gpg.ssh.defaultKeyCommand 'ssh-add -L; id'`, `git config gpg.ssh.defaultKeyCommand 'ssh-add ./k'`,
+		`git config core.askPass ./askpass`, `git config core.askPass ~/x`, `git config --global core.askPass ../tools/ask`, `git config core.askPass /usr/local/bin/ask`,
+		`git config core.askPass 'ssh-askpass; id'`, `git config core.askPass python3`, `git config core.askPass just`,
+		`git config remote.origin.uploadpack ./up`, `git config remote.origin.receivepack /tmp/rp`, `git config remote.x.uploadpack 'sh -c id'`, `git config remote.x.uploadpack python3.14`,
+	}, []string{
+		`git config gpg.program gpg`, `git config gpg.program gpg2`, `git config gpg.program gpgsm`, `git config gpg.ssh.program ssh-keygen`, `git config gpg.format ssh`,
+		`git config gpg.program /usr/bin/gpg`, `git config gpg.ssh.program /Applications/1Password.app/Contents/MacOS/op-ssh-sign`, `git config --get gpg.program`,
+		`git config gpg.ssh.defaultKeyCommand 'ssh-add -L'`, `git config core.askPass ssh-askpass`, `git config core.askPass /usr/bin/ssh-askpass`, `git config core.askPass ksshaskpass`,
+		`git config remote.origin.uploadpack git-upload-pack`, `git config remote.origin.receivepack git-receive-pack`, `git config core.gitProxy ""`,
+	})
+}
+
+func TestTheTripwireCountsIncludesThatPullInAFile(t *testing.T) {
+	counts(t, []string{
+		`git config include.path ../.gitconfig`, `git config include.path ./extra`, `git config include.path /tmp/c`, `git config include.path ~/c`,
+		`git config includeIf.gitdir:/x/.path ../c`, `git config includeIf.onbranch:main.path ./c`, `git config --local include.path extra.cfg`,
+	}, []string{
+		`git config --get include.path`, `git config --unset include.path`, `git config include.path ""`, `git config user.name x`, `git config includeIf.gitdir:/x/.foo bar`,
+	})
+}
+
+// The same class as diff.external: ext:: URLs.
+func TestTheTripwireCountsExtUrls(t *testing.T) {
+	counts(t, []string{
+		`git config remote.origin.url 'ext::sh -c id'`, `git config remote.origin.url 'EXT::./x'`, `git config remote.origin.pushurl 'ext::./x'`,
+		`git config url.'ext::sh -c id'.insteadOf https://x/`,
+	}, []string{
+		`git config remote.origin.url https://example.com/x.git`, `git config remote.origin.url git@example.com:x/y.git`, `git config remote.origin.url /srv/git/x.git`,
+	})
+}
+
+func TestTheTripwireCountsCompilerVariablesThatAreNotCompilers(t *testing.T) {
+	counts(t, []string{
+		`go env -w GOCACHEPROG=./cacheprog`, `go env -w GOCACHEPROG=/tmp/cp`, `go env -w GOCACHEPROG=x`, `go env -w GOCACHEPROG=cacheprog`,
+		`go env -w CC=./cc`, `go env -w CC=/tmp/cc`, `go env -w CXX=~/cxx`, `go env -w CC=../x/cc`, `go env -w CC='sh -c id'`, `go env -w CC=python3.14`, `go env -w CC=just`,
+		`CC=./cc go build .`, `env CC=./cc go build .`, `GOCACHEPROG=./p go build .`, `env GOCACHEPROG=/tmp/p go test .`, `export CC=./cc; go build .`, `CXX=/tmp/c++ go build .`,
+		`go env -w CC=/opt/homebrew/bin/gcc-14`, `go env -w CC=/usr/local/bin/clang`, `go env -w CC='clang -B./x'`, `go env -w CC='gcc -m32'`,
+		`go env -w FC=./fc`, `go env -w FC=/tmp/fc`, `go env -w PKG_CONFIG=./pc`, `go env -w PKG_CONFIG=/tmp/pc`, `go env -w PKG_CONFIG=just`, `go env -w AR=./ar`,
+		`go env -w AR='sh -c id'`, `go env -w AR=python3`, `PKG_CONFIG=./pc go build .`, `env AR=./ar go build .`,
+	}, []string{
+		`go env -w CC=clang`, `go env -w CC=gcc`, `go env -w CC=gcc-14`, `go env -w CC=cc`, `go env -w CC=/usr/bin/clang`, `go env -w CXX=clang++`, `go env -w CXX=g++-13`,
+		`go env -w FC=gfortran`, `go env -w PKG_CONFIG=pkg-config`, `go env -w PKG_CONFIG=pkgconf`, `go env -w AR=ar`, `go env -w AR=llvm-ar`,
+		`CC=clang go build .`, `env CC=gcc go build .`, `CC=/usr/bin/cc go build .`, `go env CC`, `go env -u CC`, `go env -w GOPRIVATE=example.com`, `go env -w CC=""`,
+	})
+}
+
+// go env -w accepts these (checked with go env -w): the flags that name where the compiler and linker find their programs or load code.
+func TestTheTripwireCountsCgoFlagsThatNameProgramsOrPlugins(t *testing.T) {
+	counts(t, []string{
+		`go env -w CGO_LDFLAGS=-B./x`, `go env -w CGO_LDFLAGS='-O2 -B /tmp/x'`, `go env -w CGO_LDFLAGS=-B../x`, `CGO_LDFLAGS=-B./x go build .`, `env CGO_LDFLAGS='-g -B.' go build .`,
+		`go env -w CGO_CFLAGS=-B./x`, `go env -w CGO_CPPFLAGS=-B/tmp/x`, `go env -w CGO_CXXFLAGS='-O2 -B ./x'`, `go env -w CGO_FFLAGS=-B.`, `CGO_CFLAGS=-B./x go build .`,
+		`go env -w CGO_LDFLAGS=-Wl,-plugin=./p.so`, `go env -w CGO_LDFLAGS='-Wl,-plugin,./p.so'`, `go env -w CGO_LDFLAGS=-fuse-ld=./ld`, `go env -w CGO_LDFLAGS=-fuse-ld=/tmp/ld`,
+		`go env -w CGO_LDFLAGS=-fuse-ld=../ld`,
+	}, []string{
+		`go env -w CGO_LDFLAGS=-O2`, `go env -w CGO_LDFLAGS='-L/usr/lib -lm'`,
+		`go env -w CGO_LDFLAGS=-Wl,-Bstatic`, `go env -w CGO_CFLAGS=-O2`, `go env -w CGO_CFLAGS='-I/usr/include -Wall'`, `CGO_LDFLAGS=-O2 go build .`, `CGO_CFLAGS=-g go build .`,
+		`go env CGO_LDFLAGS`, `go env -u CGO_LDFLAGS`,
+	})
+}
+
+// The program keys sit on top of the git config reader: any file or scope, a prefix, a bundle, an alias.
+func TestTheProgramKeysAreReadThroughTheConfigParser(t *testing.T) {
+	counts(t, []string{
+		`git config --file x.cfg credential.helper 'sh -c id'`, `git config -f x.cfg core.editor ./e`, `git config --global --type=path core.sshCommand ./s`,
+		`git config -zf x.cfg gpg.program ./g`, `git config --fil x.cfg include.path y`, `git config set --value v filter.x.clean ./c`,
+		`git -c alias.x=config x pager.log ./p`, `git --config-env=alias.x=A x core.gitProxy ./p`,
+	}, []string{
+		`git config --file x.cfg credential.helper store`, `git config -f x.cfg core.editor vim`, `git config --global --type=path core.sshCommand ssh`,
+		`git config --file x.cfg --get core.editor`, `git config --file x.cfg --unset credential.helper`,
+	})
+}
+
+// Third round of the program-key review: lists that fail closed, not denylists that grow.
+
+// A pager's flags are per pager and on a list: less -k reads a lesskey file, -o, -O and -T write a log or tag file, and a value that is
+// not a known flag counts.
+func TestTheTripwireTakesOnlyTheKnownFlagsOfEachPager(t *testing.T) {
+	counts(t, []string{
+		`git config core.pager 'less -kx'`, `git config core.pager 'less -k'`, `git config core.pager 'less -o x'`, `git config core.pager 'less -O x'`, `git config core.pager 'less -T x'`,
+		`git config core.pager 'less --lesskey-file x'`, `git config core.pager 'less -RFXk'`, `git config core.pager 'less -+F'`, `git config core.pager 'less -e'`,
+		`git config core.pager 'delta --config x'`, `git config core.pager 'delta --pager x'`, `git config core.pager 'delta --features x'`, `git config core.pager 'bat --config-file x'`,
+		`git config core.pager 'more -x'`, `git config core.pager 'cat -v'`, `git config core.pager 'diff-so-fancy --x'`, `git config pager.log 'less -kx'`,
+		`git config interactive.diffFilter 'delta --pager x'`,
+	}, []string{
+		`git config core.pager 'less -R'`, `git config core.pager 'less -FRX'`, `git config core.pager 'less -F -R -X -S'`, `git config core.pager 'less -K -M -N -i -I -r'`,
+		`git config core.pager 'less -j5'`, `git config core.pager 'less --RAW-CONTROL-CHARS --quit-if-one-screen --no-init'`, `git config core.pager 'delta --dark'`,
+		`git config core.pager 'delta --side-by-side --line-numbers'`, `git config core.pager 'bat --plain'`, `git config core.pager 'bat -p'`, `git config pager.log 'less -R'`,
+		`git config interactive.diffFilter 'delta --color-only'`,
+	})
+}
+
+// A CGO flags variable counts unless every word is on a short honest list: optimization, debug and warning flags, -D, -l, -std, -m, plain
+// -f flags, -I and -L under the system's include and lib directories, a few link modes.
+func TestTheTripwireCountsCgoFlagsUnlessEveryWordIsHonest(t *testing.T) {
+	var counted []string
+	for _, name := range []string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"} {
+		for _, v := range []string{
+			"-Wl,--plugin=./p.so", "'-Xlinker -plugin'", "--ld-path=./ld", "-fplugin=./p.so", "-specs=./s", "--prefix=./x", "-wrapper", "'-wrapper ./x'", "-fuse-ld=lld",
+			"-fuse-ld=./ld", "-B./x", "'-O2 -B /tmp/x'", "-I.", "-I./include", "-L../x", "'-O2 -Xlinker x'", "-Wl,-plugin,./p.so", "-Wl,-rpath,/x", "-Wp,-x", "-Wa,-x",
+			"-isystem/tmp/x", "'-framework X'", "-Tfoo.ld", "-nostdlib -Wl,-T,./x",
+		} {
+			counted = append(counted, "go env -w "+name+"="+v)
+		}
+	}
+	counted = append(counted, `CGO_CFLAGS=-wrapper go build .`, `env CGO_LDFLAGS='-Xlinker -plugin' go build .`, `CGO_CXXFLAGS=-specs=./s go build .`)
+	var honest []string
+	for _, name := range []string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"} {
+		for _, v := range []string{
+			"-O2", "'-O0 -g -Wall -Wextra'", "-Os", "-O3", "-g", "-g3", "-DFOO", "-DFOO=1", "-DVERSION=1.2.3", "'-I/usr/include -L/usr/lib'", "'-I/opt/homebrew/include -L/opt/homebrew/lib'",
+			"'-I/usr/local/include -L/usr/local/lib'", "'-lm -lpthread'", "-std=c11", "'-march=native -m64'", "'-fno-omit-frame-pointer -fPIC'", "-Wno-unused-result", "-Wformat-security",
+			"-static", "-pthread",
+		} {
+			honest = append(honest, "go env -w "+name+"="+v)
+		}
+	}
+	honest = append(honest, `go env -w CGO_LDFLAGS=-Wl,-rpath,/usr/lib`, `go env -w CGO_LDFLAGS=-Wl,-Bstatic`, `go env -w CGO_LDFLAGS=-Wl,-Bdynamic`, `go env -w CGO_LDFLAGS='-Wl,--as-needed -Wl,-O1'`, `go env -w CGO_CFLAGS=""`,
+		`CGO_LDFLAGS=-O2 go build .`, `CGO_CFLAGS=-g go build .`, `go env CGO_LDFLAGS`, `go env -u CGO_LDFLAGS`)
+	counts(t, counted, honest)
+}
+
+// A key that names a command, a hook, a program, a tunnel or a helper at its end is counted by its name unless it has its own list, so a key
+// this code has not seen is caught; an alias named like one is not that key.
+func TestTheTripwireCountsAKeyByTheEndOfItsName(t *testing.T) {
+	counts(t, []string{
+		`git config gc.recentObjectsHook ./h`, `git config imap.tunnel ./t`, `git config instaweb.httpd ./httpd`, `git config sendemail.toCmd ./c`, `git config sendemail.ccCmd ./c`,
+		`git config sendemail.headerCmd ./c`, `git config sendemail.work.sendmailCmd ./c`, `git config sendemail.work.smtpServer ./s`,
+		`git config foo.bar.myhook ./x`, `git config foo.COMMAND ./x`, `git config foo.bar.Program ./x`, `git config foo.bar.TUNNEL ./x`, `git config foo.helper ./x`, `git config hook.pre.command ./x`,
+		`git config foo.bar.cmd true`, `git config gc.recentObjectsHook true`,
+	}, []string{
+		`git config gc.recentObjectsHook ""`, `git config alias.hook status`, `git config alias.cmd 'log --oneline'`, `git config alias.helper status`, `git config user.name helper`,
+		`git config --get gc.recentObjectsHook`, `git config --unset imap.tunnel`, `git config foo.bar.url https://x/y`, `git config core.hookspath .githooks`,
+	})
+}
+
+// delta and bat name a pager in their own sections of the git configuration.
+func TestTheTripwireCountsTheDeltaAndBatPagerKeys(t *testing.T) {
+	counts(t, []string{
+		`git config delta.pager ./p`, `git config delta.pager 'sh -c id'`, `git config delta.pager 'less -k'`, `git config delta.mydark.pager ./p`, `git config bat.pager ./p`,
+		`git config delta.pager python3.14`,
+	}, []string{
+		`git config delta.pager less`, `git config delta.pager 'less -R'`, `git config delta.dark true`, `git config delta.syntax-theme Dracula`, `git config delta.pager ""`,
+	})
+}
+
+// Honest setups that were counted.
+func TestTheTripwireDoesNotCountTheCommonHelperPaths(t *testing.T) {
+	counts(t, []string{
+		`git config credential.helper '!/tmp/gh auth git-credential'`, `git config credential.helper '!/usr/local/bin/gh auth git-credential --x'`,
+		`git config credential.helper /usr/local/bin/git-credential-evil`, `git config core.editor 'emacsclient -c -a "x"'`, `git config core.editor 'emacsclient -a ./x'`,
+	}, []string{
+		`git config credential.helper '!/opt/homebrew/bin/gh auth git-credential'`, `git config credential.helper '!/usr/local/bin/gh auth git-credential'`,
+		`git config credential.helper /usr/local/bin/git-credential-manager`, `git config core.editor 'emacsclient -c -a ""'`, `git config core.editor "emacsclient -c -a ''"`,
+	})
+}
+
+// Fourth read. gcc reads -Bstatic as -B with the prefix "static" (go build ran ./static/as), so it is only honest as -Wl,-Bstatic; -mllvm hands
+// flags to LLVM; and a ".." in a path of -I, -L or -rpath leaves the system directory.
+func TestTheTripwireCountsBstaticMllvmAndDotDotInCgoFlags(t *testing.T) {
+	var counted, honest []string
+	for _, name := range []string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"} {
+		for _, v := range []string{
+			"-Bstatic", "-Bdynamic", "'-O2 -Bstatic'", "-mllvm", "'-mllvm -x'", "-I/usr/../tmp/x", "-L/usr/lib/../../tmp", "-I/usr/include/..", "-L/opt/homebrew/lib/../x",
+			"-Wl,-rpath,/usr/lib/../../tmp", "-Wl,-rpath,/usr/..", "-Wl,-Bstatic,-x",
+		} {
+			counted = append(counted, "go env -w "+name+"="+v)
+		}
+		honest = append(honest, "go env -w "+name+"=-march=native", "go env -w "+name+"=-mtune=generic", "go env -w "+name+"=-I/usr/include/x86_64-linux-gnu")
+	}
+	counted = append(counted, `CGO_CFLAGS=-Bstatic go build .`, `env CGO_LDFLAGS=-mllvm go build .`)
+	honest = append(honest, `go env -w CGO_LDFLAGS=-Wl,-Bdynamic`, `go env -w CGO_LDFLAGS='-Wl,-Bstatic -lm -Wl,-Bdynamic'`)
+	counts(t, counted, honest)
+}
+
+// init.templateDir: a template's hooks run on every later clone and init.
+func TestTheTripwireCountsInitTemplateDir(t *testing.T) {
+	counts(t, []string{
+		`git config --global init.templateDir ~/t`, `git config init.templateDir ./tpl`, `git config init.templateDir /tmp/t`, `git config init.templatedir /usr/share/git-core/templates`,
+		`git config --system init.templateDir x`, `git config --file x.cfg init.TemplateDir x`,
+	}, []string{
+		`git config init.templateDir ""`, `git config --unset init.templateDir`, `git config --get init.templateDir`, `git config init.defaultBranch main`,
+	})
+}
+
+// More keys that run a program or load code, each with no honest value; protocol.ext.allow is honest only as never; submodule urls can be ext::.
+func TestTheTripwireCountsTheLfsInstawebCvsKeysAndExtProtocol(t *testing.T) {
+	counts(t, []string{
+		`git config lfs.customtransfer.x.path ./t`, `git config lfs.customtransfer.x.path git-lfs-x`, `git config lfs.extension.x.clean ./c`, `git config lfs.extension.x.smudge 'sh -c id'`,
+		`git config instaweb.modulePath /tmp/m`, `git config gitcvs.dbDriver ./x`, `git config gitcvs.ext.dbDriver SQLite`,
+		`git config protocol.ext.allow always`, `git config protocol.ext.allow user`, `git config protocol.ext.allow true`,
+		`git config submodule.x.url 'ext::sh -c id'`, `git config submodule.x.url 'EXT::./x'`, `git config url.'ext::sh -c id'.insteadOf https://x/`,
+	}, []string{
+		`git config protocol.ext.allow never`, `git config protocol.ext.allow NEVER`, `git config protocol.file.allow user`, `git config protocol.allow never`,
+		`git config submodule.x.url https://example.com/x.git`, `git config submodule.x.url ../x.git`, `git config lfs.url https://x/y`, `git config lfs.extension.x.priority 0`,
+		`git config lfs.customtransfer.x.concurrent true`, `git config gitcvs.enabled false`, `git config instaweb.port 1234`,
+		`git config lfs.customtransfer.x.path ""`, `git config --unset gitcvs.dbDriver`,
 	})
 }
