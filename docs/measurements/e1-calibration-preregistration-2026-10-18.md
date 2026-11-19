@@ -2931,3 +2931,6 @@ section; the coordinator then gets the run as a recipe.** It screens two setting
   - Smoke was 16/20 on both runs with 0 malformed, `check` ok, admitted at 16,384 on `cuda-resident (int4)`.
   - Under this section, step 2 does not run, and the 35B stays E1's model. A first set on this model would need a clean
     E0, and, while it grades parked, Francis's explicit choice in a new line here.
+  - **Decided (Francis, 2026-11-18): C13 stops here.** No E0 re-run and no first set; the 35B stays E1's model. goinfer's
+    session on nobara is investigating the swap-guard trip (an 8k cold prefill on this model, with the serve log kept).
+    No guard is changed.

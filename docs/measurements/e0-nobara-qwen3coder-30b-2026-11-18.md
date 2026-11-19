@@ -84,3 +84,6 @@ E1's model. §19's step 2 did not run.
   model is used only by explicit choice, and §19 registered step 2 for an eligible E0 only. Running the first set on a parked
   E0 would be Francis's choice and a new line in §19 before any run.
 - **Against the predictions:** §19 predicted E0 eligible. It was void, and parked on smoke.
+- **Decided (Francis, 2026-11-18, after this record): C13 stops here.** No E0 re-run and no first set, and the 35B stays
+  E1's model. The swap-guard trip is under investigation by goinfer's session on nobara: an 8k cold prefill on this model,
+  with the serve log kept. No guard is changed.
