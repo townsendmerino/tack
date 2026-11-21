@@ -848,3 +848,113 @@ func TestCompactAtCliffAloneDoesNotWiden(t *testing.T) {
 		t.Fatalf("shown %v, want [200 200 200]", got)
 	}
 }
+
+// TestARequestPastTheWindowIsNotSent: a request the server counts as over its window ends the turn as window_full
+// before it goes out, instead of meeting the server's prompt-too-long refusal, and the log still rebuilds the session.
+// The scripted server reports a 100-token prompt, and the second request adds about 16 KB of JSON, which overWindow
+// takes at fitMinRate: an estimate of about 8,300 tokens. It is counted only past nearWindowShare of the window, and
+// only the count decides. FitWindow is off: the check holds without it.
+func TestARequestPastTheWindowIsNotSent(t *testing.T) {
+	for _, c := range []struct {
+		window, count, requests, counted int
+		stop                             string
+	}{
+		{2000, 2500, 1, 1, proto.StopWindowFull}, // counted, and over
+		{2600, 2500, 2, 1, proto.StopEndTurn},    // counted, and it fits
+		{2000, 0, 2, 1, proto.StopEndTurn},       // the estimate is over, the count is not: an estimate never ends a turn
+		// Dense output: at the last request's own rate (fitMaxRate here) the estimate would be about 2,800, under 90%
+		// of 4,000, and the request would go out to be refused; at fitMinRate it is counted.
+		{4000, 4100, 1, 1, proto.StopWindowFull},
+		{20000, 99999, 2, 0, proto.StopEndTurn}, // under nearWindowShare: not counted at all
+	} {
+		h := fitHarness(t, c.window, goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Says("ok"))
+		h.sess.cfg.FitWindow = false
+		h.script.Tokens = c.count
+		stop, err := h.sess.Turn(context.Background(), "go")
+		if err != nil || stop != c.stop || len(h.script.Requests) != c.requests || len(h.payloads(proto.EvRequestSent)) != c.requests ||
+			h.script.Counted != c.counted {
+			t.Fatalf("window %d, count %d: stop %q, %v, after %d requests and %d counts", c.window, c.count, stop, err,
+				len(h.script.Requests), h.script.Counted)
+		}
+		if len(h.payloads(proto.EvError)) != 0 {
+			t.Fatalf("window %d: errors %+v", c.window, h.payloads(proto.EvError))
+		}
+		h.checkRebuild(t)
+	}
+}
+
+// TestAResponseWithNoPromptCountIsNotEstimatedFrom: a response that reports no prompt tokens leaves nothing to estimate
+// the next request from, so that request goes out uncounted, as before the check.
+func TestAResponseWithNoPromptCountIsNotEstimatedFrom(t *testing.T) {
+	read := proto.ModelBlock{Type: "tool_use", ID: "t1", Name: "read", Input: json.RawMessage(bigRead)}
+	h := fitHarness(t, 2000, goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", 0, 0, 20, read)}, goinfertest.Says("ok"))
+	h.sess.cfg.FitWindow = false
+	h.script.Tokens = 2500
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopEndTurn || len(h.script.Requests) != 2 ||
+		h.script.Counted != 0 {
+		t.Fatalf("stop %q, %v, after %d requests and %d counts", stop, err, len(h.script.Requests), h.script.Counted)
+	}
+	if u := h.payloads(proto.EvUsage)[0].(proto.Usage); u.Prompt != 0 {
+		t.Fatalf("the first response reported a prompt of %d; the test needs none", u.Prompt)
+	}
+}
+
+// TestAResumedSessionChecksItsFirstRequest: Resume restores what overWindow estimates from, rebuilt from the log, so a
+// reopened session's first request is checked as the live session's next would be. The window is 100 tokens, so every request past the
+// first is counted: the live turn's second (count 0, sent) and the resumed turn's first (count 2,500, not sent).
+func TestAResumedSessionChecksItsFirstRequest(t *testing.T) {
+	h := fitHarness(t, 100, goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Says("ok"))
+	h.sess.cfg.FitWindow = false
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopEndTurn {
+		t.Fatalf("first turn: %q, %v", stop, err)
+	}
+	evs, err := h.st.Events("s_test", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Resume(h.sess.cfg, evs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.winPrompt != h.sess.winPrompt || r.winBytes != h.sess.winBytes || r.winBytes == 0 {
+		t.Fatalf("resumed %d tokens of %d bytes; live %d of %d", r.winPrompt, r.winBytes, h.sess.winPrompt, h.sess.winBytes)
+	}
+	h.script.Tokens, h.script.Counted = 2500, 0
+	if stop, err := r.Turn(context.Background(), "again"); err != nil || stop != proto.StopWindowFull || h.script.Counted != 1 {
+		t.Fatalf("the resumed turn: %q, %v after %d counts; want its first request counted and not sent", stop, err, h.script.Counted)
+	}
+}
+
+// TestAResponseWithNoPromptCountKeepsTheLastMark: a later response that reports no prompt tokens leaves the last
+// reported prompt and its request's bytes together, so the next request is still estimated from a matching pair.
+// Request 2 adds one read (about 8,300 tokens at fitMinRate, under 90% of 10,000: not counted) and its response reports
+// no prompt; request 3 adds a second read and is estimated from request 1's pair at about 16,500, so it is counted, and
+// the count (12,000) keeps it from going out.
+func TestAResponseWithNoPromptCountKeepsTheLastMark(t *testing.T) {
+	read := proto.ModelBlock{Type: "tool_use", ID: "t2", Name: "read", Input: json.RawMessage(bigRead)}
+	h := fitHarness(t, 10000, goinfertest.Calls("", "t1", "read", bigRead),
+		goinfertest.Reply{Body: goinfertest.SSEWithReuse("tool_use", 0, 0, 20, read)}, goinfertest.Says("ok"))
+	h.sess.cfg.FitWindow = false
+	h.script.Tokens = 12000
+	if stop, err := h.sess.Turn(context.Background(), "go"); err != nil || stop != proto.StopWindowFull || len(h.script.Requests) != 2 ||
+		h.script.Counted != 1 {
+		t.Fatalf("stop %q, %v, after %d requests and %d counts", stop, err, len(h.script.Requests), h.script.Counted)
+	}
+	h.checkRebuild(t)
+}
+
+// TestACancelDuringTheCountSendsNothing: a turn cancelled while its request is being counted ends cancelled, and the
+// request is neither sent nor logged as sent.
+func TestACancelDuringTheCountSendsNothing(t *testing.T) {
+	h := fitHarness(t, 2000, goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Says("ok"))
+	h.sess.cfg.FitWindow = false
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.script.OnCount = cancel
+	if stop, _ := h.sess.Turn(ctx, "go"); stop != proto.StopCancelled || len(h.script.Requests) != 1 ||
+		len(h.payloads(proto.EvRequestSent)) != 1 || h.script.Counted != 1 {
+		t.Fatalf("stop %q after %d requests (%d logged) and %d counts", stop, len(h.script.Requests),
+			len(h.payloads(proto.EvRequestSent)), h.script.Counted)
+	}
+	h.checkRebuild(t)
+}

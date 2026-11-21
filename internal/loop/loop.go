@@ -178,12 +178,15 @@ type Session struct {
 	obs        []observation
 	vers       fileVersions
 	lastPrompt int
-	compacted  bool       // a compaction has run
-	maskFloor  int        // the prompt of the first response after the last compaction; 0 until it arrives
-	cliffNote  bool       // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
-	cliffDone  bool       // a cliff compaction masked something this turn
-	stuckDone  int        // stuck compactions this turn (stuckMax)
-	shown      shownChain // this turn's progressive widening (Config.CompactAtCliff)
+	// winPrompt is the last response's prompt tokens that the server reported (over 0), and winBytes its request's JSON
+	// bytes: what overWindow estimates the next request from. Unlike lastPrompt, Resume restores them from the log.
+	winPrompt, winBytes int
+	compacted           bool       // a compaction has run
+	maskFloor           int        // the prompt of the first response after the last compaction; 0 until it arrives
+	cliffNote           bool       // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
+	cliffDone           bool       // a cliff compaction masked something this turn
+	stuckDone           int        // stuck compactions this turn (stuckMax)
+	shown               shownChain // this turn's progressive widening (Config.CompactAtCliff)
 	// What summarizing reads (Config.Summarize, summarize_live.go): where the assistant messages are, the last seq a
 	// summary covered and that summary's body; freed is what this request's masking freed, in bytes; sumFloor is the
 	// prompt at the last summary attempt that changed nothing, 0 if none (summarizeDue backs off from it). It is not
@@ -409,15 +412,23 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return stopped()
 			}
 		}
-		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
-		if err != nil {
-			return proto.StopError, err
-		}
-		reqBytes := 0 // the request's size, for the window's bytes-per-token rate (fitRoom)
-		if s.cfg.FitWindow {
+		reqBytes := 0 // the request's size, for the window's bytes-per-token rate (fitRoom, overWindow)
+		if w := s.cfg.Source.Window(); w > 0 {
 			if b, err := json.Marshal(s.conv.Request()); err == nil {
 				reqBytes = len(b)
 			}
+			over := s.overWindow(ctx, srv, w, reqBytes)
+			if over || ctx.Err() != nil { // not sent: the session does not count the request
+				s.requests--
+				if !over { // halted or cancelled during the count
+					return stopped()
+				}
+				return end(proto.StopWindowFull) // the server would refuse it as too long
+			}
+		}
+		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
+		if err != nil {
+			return proto.StopError, err
 		}
 		resp, err := s.stream(ctx, srv, reqEv.Seq)
 		if err != nil {
@@ -444,6 +455,9 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		u := usageOf(n, srv.Name(), resp)
 		s.noteUsage(u.Prompt)
+		if u.Prompt > 0 && reqBytes > 0 {
+			s.winPrompt, s.winBytes = u.Prompt, reqBytes
+		}
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}

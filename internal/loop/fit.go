@@ -1,10 +1,12 @@
 package loop
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
 	"unicode/utf8"
 )
@@ -100,4 +102,28 @@ func lineCount(s string) int {
 		n++
 	}
 	return n
+}
+
+// nearWindowShare is the share of the window, in percent, past which a request's estimated prompt is counted exactly
+// before it is sent (overWindow).
+const nearWindowShare = 90
+
+// overWindow says whether a request of reqBytes JSON bytes is over window w, so the server would refuse it as too long
+// (design review §5.3). Its prompt is first estimated as the last reported prompt (winPrompt) plus the bytes the request
+// has grown by since (winBytes), taken at fitMinRate: dense output, code or numbers, runs well under the average rate
+// of a request that is mostly prose and schemas, and the low rate makes the estimate high, so the trigger errs early.
+// A request smaller than the last (after a compaction) is estimated at the last prompt. Only an estimate past
+// nearWindowShare of w is asked of the server's count_tokens, and only that count decides: an estimate never ends a
+// turn, and erring early costs a count, not a request. With no reported prompt yet, or when the count fails, the
+// request goes out as it always has; the caller checks ctx after.
+func (s *Session) overWindow(ctx context.Context, srv server.Server, w, reqBytes int) bool {
+	if s.winPrompt <= 0 || s.winBytes <= 0 || reqBytes <= 0 {
+		return false
+	}
+	est := float64(s.winPrompt) + float64(max(0, reqBytes-s.winBytes))/fitMinRate
+	if est*100 < float64(nearWindowShare*w) {
+		return false
+	}
+	n, err := srv.CountTokens(ctx, s.conv.Request())
+	return err == nil && n > w
 }
