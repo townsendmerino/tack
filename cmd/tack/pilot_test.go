@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -189,5 +193,28 @@ func TestA1Arms(t *testing.T) {
 		if _, _, _, err := r.arms(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// TestServeOptionsReachTheOpencodeServer: -serve-option reaches the goinfer-serve that the opencode arms (the smoke, and
+// A0 with A0k) run against, as it does pilot-serve's for -a1, so A0 is measured on the server the screen registers
+// (thinking off, -moe-cache-experts) and not on goinfer's defaults.
+func TestServeOptionsReachTheOpencodeServer(t *testing.T) {
+	var got []string
+	rev, start := pilotRevision, startServer
+	t.Cleanup(func() { pilotRevision, startServer = rev, start })
+	pilotRevision = func(string) (string, error) { return "test", nil }
+	startServer = func(_ context.Context, _, _ string, _ int, _ string, opts serveOptionList, _ io.Writer) (*pilotServer, error) {
+		got = opts.args()
+		return nil, errors.New("stopped by the test")
+	}
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	dispatch([]string{"eval", "pilot", "-smoke", "-mirrors", dir, "-opencode", "x", "-ken-mcp", "x", "-ken-model", "x",
+		"-goinfer-serve", "x", "-model-path", "x", "-out", filepath.Join(dir, "out"),
+		"-serve-option", "thinking-off", "-serve-option", "moe-cache-experts"}, &stdout, &stderr)
+	want := (serveOptionList{"thinking-off", "moe-cache-experts"}).args()
+	if !slices.Equal(got, want) {
+		t.Fatalf("the smoke's server got options %q; want %q\nstderr: %s", got, want, stderr.String())
 	}
 }
