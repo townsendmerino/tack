@@ -36,14 +36,14 @@ type ToleranceMatch struct {
 
 // MatchTolerances tries the whitespace tolerance and then each of kinds for old in content, after an exact match failed.
 func MatchTolerances(content, old string, kinds []byte) ToleranceMatch {
-	file := goTokens(content)
-	if s, e, n := matchTokens(file, goTokens(old)); n == 1 {
+	file, toks := goTokens(content), goTokens(old)
+	if s, e, n := matchTokens(file, toks); n == 1 {
 		return ToleranceMatch{Name: TolNoSpace, Start: s, End: e}
 	} else if n > 1 {
 		return ToleranceMatch{AmbiguousIn: TolNoSpace}
 	}
 	for _, k := range kinds {
-		dropped, ok := dropLineEnd(old, k)
+		dropped, ok := dropLineEnd(old, toks, k)
 		if !ok {
 			continue
 		}
@@ -121,10 +121,9 @@ func matchTokens(file, old []goTok) (int, int, int) {
 	return file[at].start, file[at+len(old)-1].end, 1
 }
 
-// dropLineEnd is old's tokens with each k token that ends a line removed, and whether there was one. Only an operator
-// token is dropped: a literal's or comment's text holds more than k.
-func dropLineEnd(old string, k byte) ([]goTok, bool) {
-	toks := goTokens(old)
+// dropLineEnd is toks, the tokens of old, with each k token that ends a line removed, and whether there was one. Only
+// an operator token is dropped: a literal's or comment's text holds more than k.
+func dropLineEnd(old string, toks []goTok, k byte) ([]goTok, bool) {
 	out := toks[:0:0]
 	dropped := false
 	for i, t := range toks {

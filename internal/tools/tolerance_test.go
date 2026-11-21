@@ -136,7 +136,7 @@ func TestTolerancesKeepLiterals(t *testing.T) {
 		`var r = ''`,         // a rune literal's space
 		"var q = `a b`",      // a raw string's run of spaces
 		`var n = a b + c`,    // one identifier split in two
-		`var n = abc`,        // two tokens joined
+		`vars = "foo bar"`,   // two tokens joined: the keyword and the name
 		"var s = \"foo bar\";",
 	} {
 		if m := MatchTolerances(src, old, nil); m.Name != "" || m.AmbiguousIn != "" {
@@ -148,10 +148,11 @@ func TestTolerancesKeepLiterals(t *testing.T) {
 		src[m.Start:m.End] != "var s = \"foo bar\"\nvar r = ' '" {
 		t.Errorf("between tokens: %+v", m)
 	}
-	// A trailing ; is dropped only where it ends a line, never inside a literal.
-	const semi = "package a\n\nvar s = \"x;\"\n"
-	if m := MatchTolerances(semi, "var s = \"x\"", TolerancePunct); m.Name != "" {
-		t.Errorf("a ; in a literal was dropped: %+v", m)
+	// A trailing ; is dropped only where it ends a line as a token, never where a literal holds one: here old's raw
+	// string ends a line with ; and the file's does not.
+	const raw = "package a\n\nvar q = `x\ny`\n"
+	if m := MatchTolerances(raw, "var q = `x;\ny`", TolerancePunct); m.Name != "" {
+		t.Errorf("a ; in a literal was dropped: %+v %q", m, raw[m.Start:m.End])
 	}
 }
 
