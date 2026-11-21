@@ -1,0 +1,6 @@
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":{"name":"tack-tui","version":"0.2.0"},"protocol":1,"token":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":1,"result":{"daemon":{"version":"0.2.0"},"protocol":1,"capabilities":{"ken":"engine","servers":["goinfer@local"]},"privileged":true}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":2,"method":"session/list","params":{}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":2,"result":{"sessions":[{"id":"s_01JAFIXTURE0000000000000022","workspace":"/work/tack","created":"2026-11-21T12:05:00Z","model":"main","mode":"auto","parent":"s_01JAFIXTURE0000000000000021","last_turn_at":"2026-11-21T12:05:01Z","status":"running"},{"id":"s_01JAFIXTURE0000000000000021","workspace":"/work/tack","created":"2026-11-21T12:00:00Z","model":"main","mode":"ask","last_turn_at":"2026-11-21T12:04:00Z","status":"idle"}]}}}
+{"dir":"c2d","msg":{"jsonrpc":"2.0","id":3,"method":"session/list","params":{"workspace":"/work/empty"}}}
+{"dir":"d2c","msg":{"jsonrpc":"2.0","id":3,"result":{"sessions":[]}}}
