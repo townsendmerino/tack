@@ -1331,10 +1331,10 @@ Before a turn the daemon can run ken over the user's message (and the previous t
   - **What it is worth:** the replay rescued 4 runs in 551 (`e1-calibration-c6-tolerances-2026-10-27.md`). Most edits
     fail on text the model got wrong, not on whitespace. In markdown, the same tolerance would have rescued 1 edit in
     1,655 runs (15 failed edits replayed, 2026-11-08), so it stays limited to `.go`.
-  - **To fix: string literals.** Ignoring all whitespace also ignores it inside a string or rune literal. An
-    `old_string` with `"foobar"` matches a file's `"foo bar"`, and the edit then quietly changes the string. The parse
-    guard does not catch this. The fix: compare Go tokens with `go/scanner`, so whitespace is ignored only between
-    tokens and every literal must match byte for byte. Replay the kept rescues to confirm they all still apply.
+  - **Tokens, not bytes.** Both tolerances compare Go tokens (`go/scanner`), so whitespace is ignored only between
+    tokens: every literal, identifier and comment must match as written, and an `old_string` with `"foobar"` no longer
+    matches a file's `"foo bar"`. The kept rescues still apply (`TestTolerancesReplayKeptRescues`). Decided as the
+    design review's §5.2 (Francis, 2026-11-21).
   - **Proposed for P1, not C6: gofmt after an edit.** When a `.go` file was gofmt-clean before the edit, run
     `go/format` on the result. Then only the edited region changes, and the model's indentation slips are fixed.
     - Read state takes the formatted text, and the result says the file was formatted.
