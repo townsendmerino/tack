@@ -172,6 +172,9 @@ var tackLayers = map[string]allow{
 		Imports: []string{"tools/gate"},
 	},
 	"tools/lint/canary": {},
+	"tools/p1screen": {
+		Imports: []string{"internal/eval/pilot", "tools/gate"},
+	},
 	"tools/protogen": {
 		Imports: []string{"internal/proto/swiftgen"},
 	},

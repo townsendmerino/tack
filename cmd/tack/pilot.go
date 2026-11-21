@@ -61,7 +61,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	remoteTack := fs.String("remote-tack", "", "a1: tack's binary on the remote host, which runs pilot-serve")
 	remoteOut := fs.String("remote-out", "", "a1: where the remote host keeps its copy of the server's log")
 	var serveOpts serveOptionList
-	fs.Var(&serveOpts, "serve-option", "a1: "+serveOptionUsage)
+	fs.Var(&serveOpts, "serve-option", serveOptionUsage+"; for -a1 it reaches pilot-serve on the remote host")
 	var settings settingList
 	fs.Var(&settings, "setting", "a1: a [run] setting switched on in every arm; with no -compare-setting, one arm runs with these settings; repeatable; only: "+settingNames())
 	var compare settingList
@@ -130,7 +130,7 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 			"-ken-mcp BIN -ken-model DIR -goinfer-serve BIN -model-path FILE -out DIR [-cap 10m]")
 		return exitUsage
 	}
-	tackRev, err := eval.Revision(*rev)
+	tackRev, err := pilotRevision(*rev)
 	if err != nil {
 		fmt.Fprintln(stderr, "tack eval pilot:", err)
 		fmt.Fprintln(stdout, gate.Verdict(gate.Inconclusive, "eval pilot: not started: "+err.Error()))
@@ -140,13 +140,13 @@ func pilotCmd(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	a0, a0k := pilot.Arm{Name: "A0", NoTitle: !*title}, pilot.Arm{Name: "A0k", KenMCP: *kenMCP, KenModel: *kenModel, NoTitle: !*title}
 	if *smoke {
-		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
+		err = withServer(ctx, *serve, *modelPath, *ctxN, *out, serveOpts, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
 			return runSmoke(ctx, *mirrors, *opencode, a0, a0k, srv, serveLog, capture, *out, *capFlag, tackRev, stderr)
 		})
 	} else {
 		var ts []pilot.Task
 		if ts, err = pilot.LoadTasks(*tasks, *from, *to); err == nil {
-			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
+			err = withServer(ctx, *serve, *modelPath, *ctxN, *out, serveOpts, stderr, func(srv pilot.Server, serveLog string, capture *pilot.Capture) error {
 				return pilot.RunPilot(ctx, pilot.Options{Capture: capture, Tasks: ts, Mirrors: *mirrors, Opencode: *opencode, A0: a0, A0k: a0k,
 					Server: srv, ServeLog: serveLog, Out: *out, Cap: *capFlag, KenWarmup: 15 * time.Minute, Log: stderr,
 					CountTokens: counter(srv), TackRev: tackRev})
@@ -175,9 +175,9 @@ type voidError string
 func (e voidError) Error() string { return "void: " + string(e) }
 
 // withServer takes (or, under night.py, inherits) the timing lock, starts one supervised goinfer-serve with
-// -log-requests, runs fn against it, and saves the server's log into out.
-func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, log io.Writer, fn func(pilot.Server, string, *pilot.Capture) error) error {
-	ps, err := startPilotServer(ctx, serve, modelPath, ctxN, out, nil, log)
+// -log-requests and opts (-serve-option), runs fn against it, and saves the server's log into out.
+func withServer(ctx context.Context, serve, modelPath string, ctxN int, out string, opts serveOptionList, log io.Writer, fn func(pilot.Server, string, *pilot.Capture) error) error {
+	ps, err := startServer(ctx, serve, modelPath, ctxN, out, opts, log)
 	if err != nil {
 		return err
 	}
@@ -192,6 +192,13 @@ func withServer(ctx context.Context, serve, modelPath string, ctxN int, out stri
 	logf(log, "pilot: requests are recorded raw through %s; sampling %v", capture.URL, pilot.Sampling)
 	return fn(pilot.Server{BaseURL: capture.URL, APIKey: ps.key, Model: "qwen", Context: ctxN, Direct: ps.url}, ps.serveLog, capture)
 }
+
+// pilotRevision and startServer are eval.Revision and startPilotServer; tests replace them to reach the opencode arms'
+// server start without a VCS-stamped binary or a GPU.
+var (
+	pilotRevision = eval.Revision
+	startServer   = startPilotServer
+)
 
 // pilotServer is the pilot's goinfer-serve, up and on its registered decode path.
 type pilotServer struct {
