@@ -484,8 +484,9 @@ Around the turn:
   `budget.exceeded` and asks the user. Tokens are what the server computed (prefilled plus output). *Proposed*
   defaults, in `config.toml`'s `[run]`: per turn 40 requests, 100 tool calls, 30 minutes, 200,000 tokens, 8 failed
   calls in a row; per session 2,000,000 tokens and 1,000 tool calls.
-- **No request past the window.** Before each request, its prompt is estimated from the last response's prompt and
-  the bytes added since. Past 90% of the served window it is counted with the server's `count_tokens`, and a request
+- **No request past the window.** Before each request, its prompt is estimated from the last reported prompt and
+  the bytes added since, taken at 2 bytes a token so dense output errs toward counting; a resumed session restores
+  that mark from its log. Past 90% of the served window it is counted with the server's `count_tokens`, and a request
   the count puts over the window is not sent: the turn ends `window_full`, as the server would otherwise refuse it as
   too long (`internal/loop/fit.go:overWindow`; design review §5.3, Francis, 2026-11-21). An estimate alone never ends
   a turn.

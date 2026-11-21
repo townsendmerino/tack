@@ -109,16 +109,19 @@ func lineCount(s string) int {
 const nearWindowShare = 90
 
 // overWindow says whether a request of reqBytes JSON bytes is over window w, so the server would refuse it as too long
-// (design review §5.3). Its prompt is first estimated as the last response's prompt plus the bytes the request has
-// grown by since, at that request's own bytes per token, held to [fitMinRate, fitMaxRate]. Only an estimate past
+// (design review §5.3). Its prompt is first estimated as the last reported prompt (winPrompt) plus the bytes the request
+// has grown by since (winBytes), taken at fitMinRate: dense output, code or numbers, runs well under the average rate
+// of a request that is mostly prose and schemas, and the low rate makes the estimate high, so the trigger errs early.
+// A request smaller than the last (after a compaction) is estimated at the last prompt. Only an estimate past
 // nearWindowShare of w is asked of the server's count_tokens, and only that count decides: an estimate never ends a
-// turn. With no response yet to measure against, or when the count fails, the request goes out as it always has.
+// turn, and erring early costs a count, not a request. With no reported prompt yet, or when the count fails, the
+// request goes out as it always has; the caller checks ctx after.
 func (s *Session) overWindow(ctx context.Context, srv server.Server, w, reqBytes int) bool {
-	if s.lastPrompt <= 0 || s.lastBytes <= 0 || reqBytes <= 0 {
+	if s.winPrompt <= 0 || s.winBytes <= 0 || reqBytes <= 0 {
 		return false
 	}
-	rate := min(max(float64(s.lastBytes)/float64(s.lastPrompt), fitMinRate), fitMaxRate)
-	if est := float64(s.lastPrompt) + float64(reqBytes-s.lastBytes)/rate; est*100 < float64(nearWindowShare*w) {
+	est := float64(s.winPrompt) + float64(max(0, reqBytes-s.winBytes))/fitMinRate
+	if est*100 < float64(nearWindowShare*w) {
 		return false
 	}
 	n, err := srv.CountTokens(ctx, s.conv.Request())
