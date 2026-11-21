@@ -187,8 +187,10 @@ type Core struct {
 	opt Options
 	ctx context.Context // turns run under it; cancelling it cancels every running turn
 
-	reopenMu sync.Mutex // held while a session is reopened from the store
-	closed   bool       // under mu: Close has run; nothing is reopened or made
+	reopenMu sync.Mutex                  // held while a session is reopened from the store
+	listMu   sync.Mutex                  // held while session/list reads the logs
+	listed   map[proto.SessionID]*listed // under listMu: what session/list has read of each log
+	closed   bool                        // under mu: Close has run; nothing is reopened or made
 
 	mu         sync.Mutex
 	sessions   map[proto.SessionID]*session
@@ -740,6 +742,15 @@ func (c *Core) dispatch(cn *conn, req proto.Request) (any, *proto.Error) {
 			return nil, unprivileged(req.Method)
 		}
 		return c.trustWorkspace(p)
+	case proto.MethodSessionList:
+		p, perr := params[proto.SessionListParams](req)
+		if perr != nil {
+			return nil, perr
+		}
+		if !cn.privileged {
+			return nil, unprivileged(req.Method)
+		}
+		return c.listSessions(p)
 	case proto.MethodWorkspaceComplete:
 		p, perr := params[proto.WorkspaceCompleteParams](req)
 		if perr != nil {

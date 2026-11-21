@@ -15,6 +15,7 @@ const (
 	MethodSessionFork       = "session/fork"
 	MethodSessionSetMode    = "session/setMode"
 	MethodSessionRelease    = "session/release"
+	MethodSessionList       = "session/list"
 	MethodSessionEvent      = "session/event" // notification, daemon to client
 	MethodDaemonStatus      = "daemon/status"
 	MethodDaemonShutdown    = "daemon/shutdown"
@@ -199,6 +200,40 @@ type SessionSetModeResult struct {
 	Mode Mode `json:"mode"`
 }
 
+// SessionListParams asks for the sessions in the store, for a client's start picker and attach
+// (docs/design/proposal-tui-protocol.md §4). Workspace, when set, keeps the sessions made in that directory. It needs the
+// client token, since it lists every workspace.
+type SessionListParams struct {
+	Workspace string `json:"workspace,omitempty"`
+}
+
+// A session's status in session/list.
+const (
+	StatusRunning     = "running"     // a turn is running in this daemon
+	StatusInterrupted = "interrupted" // the log has a turn open that no turn in this daemon is running
+	StatusHeld        = "held"        // idle, and the guard holds it (session.held) until the owner releases it
+	StatusIdle        = "idle"
+)
+
+// SessionInfo is one session in session/list, read from its log: Workspace, Created (session.created's time), Model and
+// Parent as session.created has them, Mode the mode it has now (the last mode.changed's), LastTurnAt when its last turn
+// began (absent before its first), and Status one of the Status* values.
+type SessionInfo struct {
+	ID         SessionID  `json:"id"`
+	Workspace  string     `json:"workspace"`
+	Created    time.Time  `json:"created"`
+	Model      string     `json:"model"`
+	Mode       Mode       `json:"mode"`
+	Parent     SessionID  `json:"parent,omitempty"`
+	LastTurnAt *time.Time `json:"last_turn_at,omitempty"`
+	Status     string     `json:"status"`
+}
+
+// SessionListResult lists the sessions, newest first. A subagent's session is listed too, with its Parent.
+type SessionListResult struct {
+	Sessions []SessionInfo `json:"sessions"`
+}
+
 // SessionPromptResult acknowledges the prompt with the seq of its user.message event; the turn's progress arrives
 // as events.
 type SessionPromptResult struct {
@@ -341,6 +376,7 @@ var Methods = map[string]MethodSpec{
 	MethodSessionCancel:     {reflect.TypeFor[SessionCancelParams](), reflect.TypeFor[SessionCancelResult]()},
 	MethodSessionFork:       {reflect.TypeFor[SessionForkParams](), reflect.TypeFor[SessionForkResult]()},
 	MethodSessionSetMode:    {reflect.TypeFor[SessionSetModeParams](), reflect.TypeFor[SessionSetModeResult]()},
+	MethodSessionList:       {reflect.TypeFor[SessionListParams](), reflect.TypeFor[SessionListResult]()},
 	MethodSessionRelease:    {reflect.TypeFor[SessionReleaseParams](), reflect.TypeFor[SessionReleaseResult]()},
 	MethodSessionEvent:      {reflect.TypeFor[SessionEventParams](), nil},
 	MethodDaemonStatus:      {reflect.TypeFor[DaemonStatusParams](), reflect.TypeFor[DaemonStatusResult]()},

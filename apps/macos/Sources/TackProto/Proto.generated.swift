@@ -14,6 +14,7 @@ public enum Method {
     public static let sessionCancel = "session/cancel"
     public static let sessionEvent = "session/event"
     public static let sessionFork = "session/fork"
+    public static let sessionList = "session/list"
     public static let sessionNew = "session/new"
     public static let sessionPrompt = "session/prompt"
     public static let sessionRelease = "session/release"
@@ -525,6 +526,44 @@ public struct SessionHeld: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case commands = "commands"
+    }
+}
+
+public struct SessionInfo: Codable, Equatable, Sendable {
+    public var id: SessionID
+    public var workspace: String
+    public var created: String
+    public var model: String
+    public var mode: Mode
+    public var parent: SessionID?
+    public var lastTurnAt: String?
+    public var status: String
+
+    enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case workspace = "workspace"
+        case created = "created"
+        case model = "model"
+        case mode = "mode"
+        case parent = "parent"
+        case lastTurnAt = "last_turn_at"
+        case status = "status"
+    }
+}
+
+public struct SessionListParams: Codable, Equatable, Sendable {
+    public var workspace: String?
+
+    enum CodingKeys: String, CodingKey {
+        case workspace = "workspace"
+    }
+}
+
+public struct SessionListResult: Codable, Equatable, Sendable {
+    public var sessions: [SessionInfo]
+
+    enum CodingKeys: String, CodingKey {
+        case sessions = "sessions"
     }
 }
 
