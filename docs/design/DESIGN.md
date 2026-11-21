@@ -2112,12 +2112,13 @@ chafes. On one local model, parallel sessions share one decoder, so worktrees bu
 
 ### 16.1 Where the build stands (2026-11-09)
 
-Read from the tree at main after PR #138. "Behind a setting" means built, off by default in `config.toml`'s `[run]`,
+Read from the tree at main after PR #138; the protocol row and the CLI and TUI row were read again at `e0a7801` on
+2026-11-21. "Behind a setting" means built, off by default in `config.toml`'s `[run]`,
 and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` has each step's detail.
 
 | area | built | behind a setting | not built |
 |---|---|---|---|
-| protocol, store (§6.2, §9) | event log, blobs, JSON-RPC types, Swift generator, fixtures; `session/new`, `session/subscribe`, `session/prompt`, `daemon/status`, `daemon/shutdown`, `usage/summary` | — | the rest of §9.2's methods; the TUI's are accepted in `proposal-tui-protocol.md` and land next |
+| protocol, store (§6.2, §9) | event log, blobs, JSON-RPC types, Swift generator, fixtures; `session/new`, `session/subscribe`, `session/prompt`, `session/cancel`, `session/fork`, `session/setMode`, `session/release`, `permission/respond`, `workspace/complete`, `workspace/trust`, `daemon/status`, `daemon/shutdown`, `usage/summary` | — | `session/list` (the last of `proposal-tui-protocol.md`'s five, in review); the rest of §9.2's methods |
 | daemon (§6.1) | lock, socket, peer check, client token, auto-spawn, crash recovery, drain | — | LaunchAgent install; `tack doctor` |
 | model servers (§6.4, §8) | goinfer client and supervised child, admission by `fit` (G2) and a memory-pressure check before a load, the OpenAI-compatible adapter, nobara on demand (shape awaiting the owner) | — | the run-time memory guard (unload at *critical*); the model registry; roles beyond `main` and the summarizer's alias |
 | loop (§6.3) | turns, the four modes, budgets, halt, the `done` report on tests | the bundle (adopted, §12.25 of the calibration pre-registration): `fit_window`, `stop_repeats`, `result_notes`, `instructions_head`, `refuse_duplicate_edits`, `verify_done`, `edit_tolerances`; also `subagents`, `best_of`, `build_after_edit`, `restate_task` | steering; `session/cancel` |
@@ -2126,7 +2127,7 @@ and not adopted by a screen unless the row says so. `docs/design/p1-notes.md` ha
 | checkpoints (§6.8) | shadow-repository snapshots before `bash`, edit and write pre-images, `tack rewind` restoring files and forking the conversation | `snapshots` (on by default) | — |
 | instructions (§6.7) | head and sections of instruction files | `knowledge` (ADR-007), `section_search` | memory pins on code hashes; dreaming; skills, hooks, slash commands |
 | context (§7) | — | turn-1 injection (`inject_context`), the repo map (`repo_map`), masking (`mask_observations`, `compact_at_cliff`, `widen_repeats`), summarizing and re-retrieval (`summarize`, `summary_retrieve`) | the ledger and inspector; staleness (ken K3 is open); auto-context's modes; pinning what faults; the dead-weight trigger |
-| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d, and e to edit the rule), Esc to cancel and `@` path completion | — | the TUI's choice of mode (it opens in plan mode), multi-line composer, `/` commands, inspector, changes and todo panes; `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
+| CLI and TUI (§10) | `tack run`, `daemon`, `serve`, `halt`, `resume`, `rewind`, `usage`, `eval`; the TUI: screen model and terminal layer (`internal/tui`, `tack` on a terminal) with inline approvals (a, s, d, and e to edit the rule), Esc to cancel, `@` path completion, Shift+Tab to change mode (auto asks first), a multi-line composer, `/` commands (`/help`, `/cancel`, `/release`, `/quit`, and one per pane), and the todos, changes and inspector panes; `tack trust` | — | the TUI's start picker (it needs `session/list`); `sessions`, `ctx`, `models`, `servers`, `doctor`, `acp` |
 | clients (§9.4, §11) | generated Swift protocol types | — | `internal/render`, `internal/acp`, the macOS app |
 | evaluation (§15) | E0, the E1 pilot and calibration runners, the task miner, `calreport` and the replay tools | — | the P1 screen (registered, amended 2026-11-18) |
 

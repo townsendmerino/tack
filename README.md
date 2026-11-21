@@ -14,8 +14,9 @@ tack is pre-release. It is not yet usable as a daily tool, and nothing here shou
 well.
 
 **What works today.** `tack run` answers questions about a repository and makes edits with a local model, with shell
-commands under a macOS sandbox, through a per-user daemon. The terminal UI is in progress. The macOS app, the context
-inspector and editor integration are not built. [`DESIGN.md` §16.1](docs/design/DESIGN.md) has the full table.
+commands under a macOS sandbox, through a per-user daemon. The terminal UI (`tack` on a terminal) runs turns with
+inline approvals, mode changes, `/` commands and todos, changes and inspector panes; its session picker is not built
+yet. The macOS app, the context ledger and its inspector, and editor integration are not built. [`DESIGN.md` §16.1](docs/design/DESIGN.md) has the full table.
 
 **What has been measured.** The numbers below are from a 12-task calibration set mined from the author's own
 repositories (ken, goinfer, aikit). It is small, and it was built to tune the loop, not to compare tack with anything.
