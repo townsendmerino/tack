@@ -125,3 +125,52 @@ func TestEditTolerancesLeaveThePrompt(t *testing.T) {
 		t.Fatal("tool specs differ")
 	}
 }
+
+// TestTolerancesKeepLiterals: whitespace is ignored only between Go tokens. A string literal, a rune literal, a raw string
+// and an identifier must match as written, so no tolerance changes the text of a literal or joins two names into one.
+func TestTolerancesKeepLiterals(t *testing.T) {
+	const src = "package a\n\nvar s = \"foo bar\"\nvar r = ' '\nvar q = `a  b`\nvar n = ab + c\n"
+	for _, old := range []string{
+		`var s = "foobar"`,   // a space inside a string literal
+		`var s = "foo  bar"`, // a doubled space inside a string literal
+		`var r = ''`,         // a rune literal's space
+		"var q = `a b`",      // a raw string's run of spaces
+		`var n = a b + c`,    // one identifier split in two
+		`var n = abc`,        // two tokens joined
+		"var s = \"foo bar\";",
+	} {
+		if m := MatchTolerances(src, old, nil); m.Name != "" || m.AmbiguousIn != "" {
+			t.Errorf("%q matched %q (%+v)", old, src[m.Start:m.End], m)
+		}
+	}
+	// Whitespace between tokens is still ignored, line breaks included.
+	if m := MatchTolerances(src, "var  s=\"foo bar\"\n var r =' '", nil); m.Name != TolNoSpace ||
+		src[m.Start:m.End] != "var s = \"foo bar\"\nvar r = ' '" {
+		t.Errorf("between tokens: %+v", m)
+	}
+	// A trailing ; is dropped only where it ends a line, never inside a literal.
+	const semi = "package a\n\nvar s = \"x;\"\n"
+	if m := MatchTolerances(semi, "var s = \"x\"", TolerancePunct); m.Name != "" {
+		t.Errorf("a ; in a literal was dropped: %+v", m)
+	}
+}
+
+// TestTolerancesReplayKeptRescues replays the two distinct edits §12.22's replay kept
+// (e1-calibration-c6-tolerances-2026-10-27.md, "The cases"): each old_string, as the model wrote it, against the region it
+// rescued, must still be placed by the same tolerance on the whole region.
+func TestTolerancesReplayKeptRescues(t *testing.T) {
+	for _, c := range []struct{ tol, old, region string }{
+		{TolNoSpace,
+			"return \"\" , fmt.Errorf(\"No repo specified and no default index. Pass an https:// or http:// git URL or local directory path as `repo`.\")",
+			"return \"\", fmt.Errorf(\"No repo specified and no default index. Pass an https:// or http:// git URL or local directory path as `repo`.\")"},
+		{TolPunctName(';'),
+			"if f.residentDecline != \"\" {\n\t\t\t\tcpuNote += \"; a GPU-resident load caps it with --ctx, but this model declined one (see decode path)\";\n\t\t\t}",
+			"if f.residentDecline != \"\" {\n\t\t\tcpuNote += \"; a GPU-resident load caps it with --ctx, but this model declined one (see decode path)\"\n\t\t}"},
+	} {
+		src := "package a\n\nfunc f() {\n\t" + c.region + "\n}\n"
+		m := MatchTolerances(src, c.old, TolerancePunct)
+		if m.Name != c.tol || src[m.Start:m.End] != c.region {
+			t.Errorf("%s: %+v %q", c.tol, m, src[m.Start:m.End])
+		}
+	}
+}
