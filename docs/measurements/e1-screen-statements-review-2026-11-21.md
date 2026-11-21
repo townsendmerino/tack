@@ -1,7 +1,7 @@
 # The P1 screen's 20 task statements: drafts for the owner's leakage review, 2026-11-21
 
-**Status: drafted, not reviewed.** The statements for lines 1 to 20 of `eval/e1/e1-order.jsonl`, the P1 screen's tasks
-(`e1-full-run-p1-rule-registration-2026-11-16.md`, "Tasks"), are in that file's `statement` field. None has a
+**Status: drafted, not reviewed.** The statements for lines 2 to 21 of `eval/e1/e1-order.jsonl`, the P1 screen's tasks
+(`e1-full-run-p1-rule-registration-2026-11-16.md`, Amendment 2), are in that file's `statement` field. None has a
 `reviewed_by`, so `pilot.LoadTasks` refuses every one until the owner reviews it (`TestLoadTasksRefusesDrafts`).
 A statement the owner rejects is rewritten once, and a second rejection drops the task
 (`e1-task-selection-preregistration-2026-10-16.md`, "Statement and oracle").
@@ -9,19 +9,19 @@ A statement the owner rejects is rewritten once, and a second rejection drops th
 - **Who drafted them, and from what:** Claude Code drafted all 20, by the pre-registration's rule. Each was written
   from the named tests' bodies at the commit, the signatures those tests call at the base, and the commit message.
   No drafter opened the fix's non-test diff.
-- **One question for the owner before the review:** line 1 (goinfer `490f760b`) is calibration task 1.
-  - Its statement is the one already approved for calibration, copied word for word.
-  - tack's loop was tuned on the calibration set, so including it may favour A1 on one of the 20 tasks.
-  - The registration names `e1-order.jsonl`, and lines 2 to 20 hold no other calibration task. Calibration tasks next
-    appear at lines 22 and 24.
-  - Keeping line 1 follows the registration as written. Dropping it, so the screen's tasks become lines 2 to 21, is an
-    amendment.
-- **What to look at:** the drafter's notes for each line, below. They flag new identifiers a statement had to name
-  (the tests call them, so an agent cannot guess them), exact strings it states, and scope beyond what the tests check.
+- **Why lines 2 to 21:** Francis, 2026-11-21: line 1 (goinfer `490f760b`) is calibration task 1, and tack's loop was
+  tuned on it, so it is dropped from the screen (Amendment 2). No other line in 2 to 21 is a calibration task.
+- **What to look at:** the drafter's notes for each line, below. They flag:
+  - new identifiers a statement had to name (the tests call them, so an agent cannot guess them);
+  - exact strings or values it states;
+  - scope beyond what the tests check.
+
+  Read these first: 18 (new helpers, and a hint about where the image block sits), 3 (an untested read-timeout
+  requirement), 11 (asks for a drift check, which is the commit's own test), 8 and 10 (new helpers and constants,
+  with their values), 17 (a new 7-result signature), and 21 (both expected values are stated, close to the fix).
 
 ## The drafter's notes, by line
 
-- **1** (`490f760b`): Identical to approved Example A (same commit). Verified at base: flag registered with default false in internal/loadflags/loadflags.go:Register, Options() maps it to ResidentWindowedKV. The commit also edits the existing flag-table test row to probe the opt-out; no statement needed for that. The --windowed-kv help text says "Off by default"; agent may update it, not tested.
 - **2** (`af10059d`): Names unexported fields imgBlocks/mropePos/mropeDelta because the test asserts on them directly; all exist at base (decoder/kvcache.go). The point that the reset must happen even on a non-recurrent cache (outside the existing recurrent guard) is stated as a requirement from the commit message/test comment; it hints at where the fix goes. Did not name the fix helper resetMultimodal.
 - **3** (`1235c012`): limitInflight is new at base; its name and shape are inferred from how the test calls it (nil or chan struct{} sem, a func(w,r) handler, result called as a handler). The return type could equally be a plain func(http.ResponseWriter,*http.Request); I wrote http.HandlerFunc, and either satisfies the test. The flag name -max-inflight, default 128, the ReadTimeout part and the 503-vs-429 distinction come from the commit message; the test checks only the wrapper. The ReadTimeout requirement is untested scope; drop it if you want the statement to cover only what is gated.
 - **4** (`2390e5d0`): Repo is aikit (embed package). The test uses parseSafetensors on a heap blob, so I stated that the guard must cover heap-loaded files too (at base, Close returns early when nothing is mmapped, which a fix must get past); this hints at the shape of the fix. The doc-warning sentence comes from the commit message and is untested.
@@ -41,3 +41,4 @@ A statement the owner rejects is rewritten once, and a second rejection drops th
 - **18** (`39b50e74`): Two new unexported helpers named with signatures; spliceImageBlock's return type is inferred from the test iterating sg.Special/sg.Text, encodeVisionSegments' first return is unused by the test ([]int is my guess). Stated required error substring 'image block'. The banned pattern (Encode over Render) is stated because a test enforces it by regex. The 'role prefix and body in one span' hint comes from the commit message and test comment; it is a strong hint at a pitfall and the owner may judge it too helpful. 'renders, splices and encodes' describes the helper's role, close to the approach.
 - **19** (`06ecdbf4`): The fix is nearly implied by the issue (omitempty on the tags); I did not name it. The error text 'rope_theta must be >0' comes from the commit message, as context only; nothing asserts it.
 - **20** (`ea6a8692`): New identifier maxEnrichBytes is named because the test references it; the 64 KiB value comes from the commit message (the test works for any value). 'at or under' follows from the test building a file strictly over the constant. The remedy (a size ceiling) is the request itself, so it can't be stated without it.
+- **21** (`30a6447f`): The test diff changes exactly two expectations (RMSAddOne true->false, AttnScale 256^-0.5 -> 1.0), so the statement necessarily names both target values; they are domain facts the agent could not derive from the repo (the base test asserts the opposite), and the commit message states both with the same reasons. Because the fix is likely just those two assignments, the statement is close to a spec of the fix; I see no way to state the issue without it. The commit's Step-0/GGUF-dump content (head_dim 512/256, shared_kv_layers, PLE) is not exercised by the named test and was left out. Interface: gemma4Architecture, Config, Architecture fields all exist at base (decoder/registry.go, decoder/arch.go).

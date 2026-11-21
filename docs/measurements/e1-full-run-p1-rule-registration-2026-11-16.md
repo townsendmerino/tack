@@ -9,10 +9,16 @@ whatever that takes". The proposal `e1-full-run-time-cut-proposal-2026-11-18.md`
 **Option S**. The lines below are Option S's. What each replaced, and why, is under "What the amendment changed". The registered
 numbers of 2026-11-16 (60 tasks, 2 runs, *m* = 14, about 14 hours) are not in force.
 
+**Amendment 2, 2026-11-21, before any run, by Francis's decision.** The screen's tasks are **lines 2 to 21** of
+`eval/e1/e1-order.jsonl`, not lines 1 to 20. Line 1 (goinfer `490f760b`) is calibration task 1, and tack's loop was tuned
+on the calibration set: a task the loop was tuned on favours A1. No other line in 2 to 21 is a calibration task, and *N*
+stays 20. The statements for lines 2 to 21 are drafted for the owner's leakage review
+(`e1-screen-statements-review-2026-11-21.md`); none runs before it is reviewed.
+
 - **Question (the P1 screen).** Is tack's loop (A1) not badly worse than the established local agent (A0, opencode at a pinned
   version, its own clean configuration), on the same model, server and tasks: is the gap, A0 − A1, smaller than the margin *m*? **This is
   a screen for a broken loop. It is not a test of competence at 14 points** (see "What a pass and a miss say").
-- **Tasks.** The first **20** of `eval/e1/e1-order.jsonl` after the pilot, at most 30 per repo; each stated as an issue and reviewed for
+- **Tasks.** **Lines 2 to 21** of `eval/e1/e1-order.jsonl` (Amendment 2: line 1 is a calibration task), at most 30 per repo; each stated as an issue and reviewed for
   leakage by the owner. **N = 20**, fixed before the first run. The first N of a fixed order is not a selection by outcome.
 - **Arms.** A0: opencode with the repo's instruction files unmodified. A1: tack as released, with the bundle as it ships at the
   registering commit (adopted settings only), snapshots on (ADR-006). Web tools off in both. A0k, A2, A3 are P2's. A0's possible window
