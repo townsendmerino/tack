@@ -196,6 +196,32 @@ func TestA1Arms(t *testing.T) {
 	}
 }
 
+// TestScreenArms: -screen is the P1 screen's job: one tack arm, A1, with the -setting list, run once per task beside
+// opencode's A0, each run after a cell check. It takes no second arm and no repeats, and needs -opencode.
+func TestScreenArms(t *testing.T) {
+	bundle := settingList{"fit_window", "stop_repeats"}
+	arms, reps, cells, err := remote{screen: true, opencode: "/oc", settings: bundle}.arms()
+	if err != nil || len(arms) != 1 || arms[0].Name != "A1" || reps != 0 || !cells || fmt.Sprint(arms[0].Settings) != "[fit_window stop_repeats]" {
+		t.Errorf("screen: %+v %d %v %v", arms, reps, cells, err)
+	}
+	for name, r := range map[string]remote{
+		"no opencode":  {screen: true, settings: bundle},
+		"a second arm": {screen: true, opencode: "/oc", compare: settingList{"verify_done"}},
+		"repeats":      {screen: true, opencode: "/oc", reps: 2},
+	} {
+		if _, _, _, err := r.arms(); err == nil || !strings.Contains(err.Error(), "-screen") {
+			t.Errorf("%s: %v; want a -screen error", name, err)
+		}
+	}
+	// Without -a1 the flag is refused before anything starts: the screen reaches its server only through -a1's path.
+	var stdout, stderr bytes.Buffer
+	if code := dispatch([]string{"eval", "pilot", "-screen", "-tasks", "x", "-mirrors", "x", "-opencode", "x", "-ken-mcp", "x",
+		"-ken-model", "x", "-goinfer-serve", "x", "-model-path", "x", "-out", t.TempDir()}, &stdout, &stderr); code != exitUsage ||
+		!strings.Contains(stderr.String(), "-screen") {
+		t.Errorf("-screen without -a1: exit %d, %s", code, stderr.String())
+	}
+}
+
 // TestServeOptionsReachTheOpencodeServer: -serve-option reaches the goinfer-serve that the opencode arms (the smoke, and
 // A0 with A0k) run against, as it does pilot-serve's for -a1, so A0 is measured on the server the screen registers
 // (thinking off, -moe-cache-experts) and not on goinfer's defaults.

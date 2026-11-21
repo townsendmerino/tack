@@ -59,6 +59,9 @@ type Arm struct {
 	NoTitle bool
 	// Settings are A1's: the [run] settings switched on in this arm's config.toml, each one of RunSettings.
 	Settings []string
+	// Opencode marks a screen's A0 (Options.Screen): the arm runs opencode against the job's server, where an arm of a job
+	// with A1 runs tack. RunPilot sets it; nothing else does.
+	Opencode bool
 }
 
 // replyLimit is opencode's limit.output: the tokens a reply may take, and so what goinfer reserves beyond the prompt

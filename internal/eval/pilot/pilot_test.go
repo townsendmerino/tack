@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,6 +20,10 @@ import (
 // With TACK_FAKE_OPENCODE set, this test binary is opencode: it records its args, cwd and XDG dirs, prints two JSON
 // events, and then either exits or (TACK_FAKE_OPENCODE=hang) starts a child and sleeps, so the cap must kill a group.
 func TestMain(m *testing.M) {
+	if os.Getenv("TACK_FAKE_TACK") == "1" && slices.Contains(os.Args, "--edit") {
+		fakeTack() // `tack run --config … --edit …`, A1's command (RunTack)
+		return
+	}
 	// opencode is invoked as `opencode run …`; ken-mcp with no arguments. Both fakes can be armed in one test.
 	isOpencode := len(os.Args) > 1 && os.Args[1] == "run"
 	if !isOpencode && os.Getenv("TACK_FAKE_KENMCP") == "1" {
@@ -287,3 +292,7 @@ func hasMCP(repo string) bool {
 	b, _ := os.ReadFile(filepath.Join(repo, "opencode.json"))
 	return strings.Contains(string(b), `"mcp"`)
 }
+
+// fakeTack stands in for `tack run --edit` (RunTack): it says nothing on stdout, changes nothing, and exits 0, so its
+// run is graded on the base: a fail.
+func fakeTack() {}

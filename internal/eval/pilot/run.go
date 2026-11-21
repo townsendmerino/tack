@@ -67,6 +67,15 @@ func ArmOrder(n int, a0, a0k Arm) []Arm {
 	return []Arm{a0k, a0}
 }
 
+// ScreenOrder is a screen task's two runs: A0 then A1 on the screen's odd tasks (place, 1-based), A1 then A0 on the
+// even ones, so a drift in the box falls evenly on both arms.
+func ScreenOrder(place int, a0, a1 Arm) []Arm {
+	if place%2 == 1 {
+		return []Arm{a0, a1}
+	}
+	return []Arm{a1, a0}
+}
+
 // interleave is the order of a task's runs when two or three A1 arms are compared, n per arm (3 for n of 0): the arms
 // in order, then reversed, and so on, so two arms at 3 per arm run A B B A A B, 7 per arm A B B A A B B A A B B A A B,
 // and three arms at 3 per arm A B C C B A A B C (owner, 2026-10-19: comparisons are interleaved;
@@ -395,6 +404,11 @@ type Options struct {
 	// A1Reps is how many times each arm of A1Arms runs on each task, its runs named <arm>-1, <arm>-2 …; 0 means once
 	// for a lone arm and 3 for two.
 	A1Reps int
+	// Screen, with A1 and Opencode, is the P1 screen's job (e1-full-run-p1-rule-registration-2026-11-16.md): each task
+	// runs once on A0, opencode as o.A0 configures it, and once on A1, tack with A1Arms[0]'s settings (none when A1Arms
+	// is empty), both against Server, A0 first on the odd tasks and A1 first on the even ones by their place in Tasks
+	// (ScreenOrder). Every run of both arms waits for Cell.
+	Screen bool
 	// Cell is checked before each A1 run. state is recorded with the run; a non-empty void means the run would start
 	// under heavy load or on battery: that cell is recorded void and re-run in its place after CellWait, up to
 	// CellTries times, after which the job stops. nil checks nothing.
@@ -476,6 +490,9 @@ func RunPilot(ctx context.Context, o Options) error {
 	if o.ForcedCallMode == "" && o.Server.Direct != "" {
 		o.ForcedCallMode = ForcedToolCall(ctx, o.Server.Direct, o.Server.APIKey, o.Server.Model)
 	}
+	if o.Screen && (o.A1 == "" || o.Opencode == "" || len(o.A1Arms) > 1 || o.A1Reps != 0) {
+		return errors.New("pilot: a screen runs opencode (Opencode) and tack (A1) once each per task, with at most one A1 arm")
+	}
 	if len(o.A1Arms) != 0 && (o.A1 == "" || len(o.A1Arms) > 3) {
 		return errors.New("pilot: A1Arms is one arm of A1, or two or three to compare")
 	}
@@ -498,6 +515,7 @@ func RunPilot(ctx context.Context, o Options) error {
 	}
 	armsPerTask := 2
 	switch {
+	case o.Screen:
 	case len(o.A1Arms) >= 2:
 		ab, _ := interleave(o.A1Arms, o.A1Reps)
 		armsPerTask = len(ab)
@@ -512,9 +530,17 @@ func RunPilot(ctx context.Context, o Options) error {
 		fmt.Fprintf(o.Log, time.Now().Format("15:04:05")+" pilot: "+format+"\n", args...)
 	}
 	logf("start %s, %d tasks x %d run(s), cap %s per run", start.Format("15:04 MST"), len(o.Tasks), armsPerTask, o.Cap)
-	for _, t := range o.Tasks {
+	for place, t := range o.Tasks {
 		arms, reps := ArmOrder(t.N, o.A0, o.A0k), []int{0, 0}
 		switch {
+		case o.Screen:
+			a1 := Arm{Name: "A1"}
+			if len(o.A1Arms) == 1 {
+				a1 = o.A1Arms[0]
+			}
+			a0 := o.A0
+			a0.Opencode = true
+			arms = ScreenOrder(place+1, a0, a1)
 		case len(o.A1Arms) >= 2:
 			arms, reps = interleave(o.A1Arms, o.A1Reps)
 		case len(o.A1Arms) == 1:
@@ -635,7 +661,8 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Recor
 	if o.Capture != nil {
 		o.Capture.SetDir(filepath.Join(dir, "requests"))
 	}
-	if o.A1 != "" {
+	tackArm := o.A1 != "" && !arm.Opencode // else opencode: the A0 pilot's arms, or a screen's A0
+	if tackArm {
 		ml, err := os.Create(filepath.Join(dir, "modules.log"))
 		if err == nil {
 			err = DownloadModules(ctx, repo, ml)
@@ -675,7 +702,8 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Recor
 		rec.ForcedCallMode = o.ForcedCallMode
 	}
 	if o.A1 != "" {
-		// A remote server's log arrives over ssh: wait, briefly, for its lines to catch up with the capture.
+		// A1's server is remote (a screen's A0 uses it too): its log arrives over ssh: wait, briefly, for its lines to
+		// catch up with the capture.
 		reqDir := filepath.Join(dir, "requests")
 		for range 50 {
 			if timed, err := PairTimings(rec.Requests, reqDir); err == nil {
@@ -689,6 +717,8 @@ func runOne(ctx context.Context, o Options, t Task, arm Arm, rep int) (rec Recor
 			_, err := PairTimings(rec.Requests, reqDir)
 			rec.TimingErr = fmt.Sprint(err)
 		}
+	}
+	if tackArm {
 		tack := SummarizeTack(filepath.Join(dir, "events.jsonl"))
 		rec.TackRun = &tack
 		rec.Events = EventSummary{ToolCalls: tack.ToolCalls, LeftRepo: TackLeftRepo(filepath.Join(dir, "events.jsonl"), repo)}
