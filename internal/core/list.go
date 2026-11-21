@@ -32,7 +32,7 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 	}
 	want := ""
 	if p.Workspace != "" {
-		want = filepath.Clean(p.Workspace)
+		want = resolveDir(p.Workspace)
 	}
 	c.listMu.Lock()
 	defer c.listMu.Unlock()
@@ -43,6 +43,7 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 		if l == nil {
 			l = &listed{next: 1}
 		}
+		before := c.turnMark(id) // read before the log, so a turn that ends while it is read is not taken for a crash
 		switch err := c.catchUpListed(id, l); {
 		case errors.Is(err, fs.ErrNotExist): // deleted since it was listed
 			continue
@@ -55,7 +56,7 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 		}
 		info := l.info
 		info.ID = id
-		info.Status = c.listStatus(id, l)
+		info.Status = listStatus(l, before, c.turnMark(id))
 		res.Sessions = append(res.Sessions, info)
 	}
 	c.listed = live
@@ -66,17 +67,19 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 }
 
 // catchUpListed reads id's log from where l stopped. A log that no longer matches what was read is read again from the
-// start.
+// start. It reads into a copy and keeps it only when the read succeeds, so a failed read leaves l as it was.
 func (c *Core) catchUpListed(id proto.SessionID, l *listed) error {
-	end, next, err := c.opt.Store.ScanFrom(id, l.off, l.next, l.add)
+	read := *l
+	end, next, err := c.opt.Store.ScanFrom(id, read.off, read.next, read.add)
 	if err != nil && l.off > 0 && !errors.Is(err, fs.ErrNotExist) {
-		*l = listed{next: 1}
-		end, next, err = c.opt.Store.ScanFrom(id, 0, 1, l.add)
+		read = listed{next: 1}
+		end, next, err = c.opt.Store.ScanFrom(id, 0, 1, read.add)
 	}
 	if err != nil {
 		return err
 	}
-	l.off, l.next = end, next
+	read.off, read.next = end, next
+	*l = read
 	return nil
 }
 
@@ -110,25 +113,53 @@ func (l *listed) add(ev proto.Event) error {
 	return nil
 }
 
-// listStatus is id's status: running while this Core runs a turn in it; else interrupted when its log has a turn open
-// (a crash, or another process's turn); else held or idle.
-func (c *Core) listStatus(id proto.SessionID, l *listed) string {
+// turnState is what this Core says of a session's turns at one moment: whether one is running, and how many have begun
+// (session.turn). here is false for a session this Core does not have in memory.
+type turnState struct {
+	here, running bool
+	turn          uint64
+}
+
+// turnMark is id's turnState now.
+func (c *Core) turnMark(id proto.SessionID) turnState {
 	c.mu.Lock()
 	s := c.sessions[id]
 	c.mu.Unlock()
-	if s != nil {
-		s.mu.Lock()
-		running := s.running
-		s.mu.Unlock()
-		if running {
-			return proto.StatusRunning
-		}
+	if s == nil {
+		return turnState{}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return turnState{here: true, running: s.running, turn: s.turn}
+}
+
+// listStatus is a session's status from its log as read (l) and this Core's turns just before and just after the read.
+// It is running when a turn ran here at either moment, or one began between them; else interrupted when the log has a
+// turn open (a crash, or another process's turn); else held or idle. So a turn that ends while the log is read shows
+// running, and one that begins while it is read shows running with the last_turn_at the read saw: at most a moment
+// stale, never interrupted.
+func listStatus(l *listed, before, after turnState) string {
 	switch {
+	case before.running || after.running || before.here && after.here && before.turn != after.turn:
+		return proto.StatusRunning
 	case l.turnOpen:
 		return proto.StatusInterrupted
 	case l.held:
 		return proto.StatusHeld
 	}
 	return proto.StatusIdle
+}
+
+// resolveDir is p as session/new resolves a workspace (tools.NewWorkspace): absolute, with symlinks resolved, so a
+// filter by the path a client knows matches the path the log holds (macOS's /var is /private/var). A path that cannot
+// be resolved, one since removed, is taken cleaned.
+func resolveDir(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if r, err := filepath.EvalSymlinks(abs); err == nil {
+		return r
+	}
+	return abs
 }
