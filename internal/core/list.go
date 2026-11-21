@@ -16,12 +16,15 @@ type listed struct {
 	off, next      int64
 	info           proto.SessionInfo // ID and Status are set per call, from turnOpen, held and this Core's running turns
 	created        bool              // session.created has been read
+	root           string            // info.Workspace resolved as a filter is (resolveDir), once, when session.created is read
 	turnOpen, held bool              // a user.message after the last turn.end; a session.held after the last release
 }
 
 // listSessions is session/list: every session in the store with a log, newest first, read from the logs. Each log is
-// read once and then only from where the last call stopped, so a call costs the events appended since. It changes
-// nothing and logs nothing.
+// read once and then only from where the last call stopped, so a call costs the events appended since; a filtered call
+// does not read on in a log already known to be another workspace's. A log that cannot be read is left out of the
+// answer and what was read of it before is kept, so one damaged log does not fail the list. It changes nothing and logs
+// nothing.
 func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult, *proto.Error) {
 	if c.opt.Store == nil {
 		return proto.SessionListResult{}, &proto.Error{Code: proto.CodeInvalidRequest, Message: "session/list: this session core has no store"}
@@ -32,6 +35,9 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 	}
 	want := ""
 	if p.Workspace != "" {
+		if !filepath.IsAbs(p.Workspace) {
+			return proto.SessionListResult{}, &proto.Error{Code: proto.CodeInvalidParams, Message: "session/list: workspace " + p.Workspace + " is not an absolute path"}
+		}
 		want = resolveDir(p.Workspace)
 	}
 	c.listMu.Lock()
@@ -43,15 +49,20 @@ func (c *Core) listSessions(p proto.SessionListParams) (proto.SessionListResult,
 		if l == nil {
 			l = &listed{next: 1}
 		}
+		if l.created && want != "" && l.root != want { // another workspace's: nothing to read for this answer
+			live[id] = l
+			continue
+		}
 		before := c.turnMark(id) // read before the log, so a turn that ends while it is read is not taken for a crash
 		switch err := c.catchUpListed(id, l); {
 		case errors.Is(err, fs.ErrNotExist): // deleted since it was listed
 			continue
-		case err != nil:
-			return proto.SessionListResult{}, &proto.Error{Code: proto.CodeInternalError, Message: "session/list: " + string(id) + ": " + err.Error()}
+		case err != nil: // unreadable: left out, what was read before kept
+			live[id] = l
+			continue
 		}
 		live[id] = l
-		if !l.created || want != "" && filepath.Clean(l.info.Workspace) != want { // no session.created yet: not a session to list
+		if !l.created || want != "" && l.root != want { // no session.created yet: not a session to list
 			continue
 		}
 		info := l.info
@@ -83,8 +94,8 @@ func (c *Core) catchUpListed(id proto.SessionID, l *listed) error {
 	return nil
 }
 
-// add takes one event of the session's log into l. A mode.changed that cannot be read leaves the mode "", as modeFromLog
-// does, rather than guessing.
+// add takes one event of the session's log into l. A session.created or mode.changed that cannot be read is an error:
+// the session cannot be opened either (modeFromLog), and the list leaves it out rather than guess its mode.
 func (l *listed) add(ev proto.Event) error {
 	switch ev.Type {
 	case proto.EvSessionCreated:
@@ -94,12 +105,14 @@ func (l *listed) add(ev proto.Event) error {
 		}
 		sc := v.(proto.SessionCreated)
 		l.created = true
+		l.root = resolveDir(sc.Workspace)
 		l.info.Workspace, l.info.Created, l.info.Model, l.info.Mode, l.info.Parent = sc.Workspace, ev.Time, sc.Model, sc.Mode, sc.Parent
 	case proto.EvModeChanged:
-		l.info.Mode = ""
-		if v, err := ev.Decode(); err == nil {
-			l.info.Mode = v.(proto.ModeChanged).Mode
+		v, err := ev.Decode()
+		if err != nil {
+			return err
 		}
+		l.info.Mode = v.(proto.ModeChanged).Mode
 	case proto.EvUserMessage:
 		t := ev.Time
 		l.info.LastTurnAt, l.turnOpen = &t, true
@@ -134,13 +147,16 @@ func (c *Core) turnMark(id proto.SessionID) turnState {
 }
 
 // listStatus is a session's status from its log as read (l) and this Core's turns just before and just after the read.
-// It is running when a turn ran here at either moment, or one began between them; else interrupted when the log has a
-// turn open (a crash, or another process's turn); else held or idle. So a turn that ends while the log is read shows
-// running, and one that begins while it is read shows running with the last_turn_at the read saw: at most a moment
-// stale, never interrupted.
+// It is running when a turn runs here after the read. A turn the log holds open is interrupted (a crash, or another
+// process's turn) unless this Core's turns account for it: one ran before the read, or one began between the two
+// marks, the session's first in this Core if it was opened during the read. Such a turn shows running, at most a moment
+// stale, never interrupted. Else the session is held or idle, as the log says.
 func listStatus(l *listed, before, after turnState) string {
+	began := after.here && (before.here && after.turn != before.turn || !before.here && after.turn > 0)
 	switch {
-	case before.running || after.running || before.here && after.here && before.turn != after.turn:
+	case after.running:
+		return proto.StatusRunning
+	case l.turnOpen && (before.running || began):
 		return proto.StatusRunning
 	case l.turnOpen:
 		return proto.StatusInterrupted
@@ -151,15 +167,22 @@ func listStatus(l *listed, before, after turnState) string {
 }
 
 // resolveDir is p as session/new resolves a workspace (tools.NewWorkspace): absolute, with symlinks resolved, so a
-// filter by the path a client knows matches the path the log holds (macOS's /var is /private/var). A path that cannot
-// be resolved, one since removed, is taken cleaned.
+// filter by the path a client knows matches the path the log holds (macOS's /var is /private/var). Both sides of the
+// comparison go through it. For a path that no longer exists, its nearest existing parent is resolved and the rest kept,
+// so a removed workspace under /var still matches the /private/var/... its log holds.
 func resolveDir(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return filepath.Clean(p)
 	}
-	if r, err := filepath.EvalSymlinks(abs); err == nil {
-		return r
+	rest := ""
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(dir) == dir {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
 	}
-	return abs
 }

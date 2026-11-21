@@ -30,6 +30,16 @@ func byID(ss []proto.SessionInfo, id proto.SessionID) (proto.SessionInfo, bool) 
 	return proto.SessionInfo{}, false
 }
 
+// mustFind is the session id in ss, failing the test when it is not there.
+func mustFind(t *testing.T, ss []proto.SessionInfo, id proto.SessionID) proto.SessionInfo {
+	t.Helper()
+	s, ok := byID(ss, id)
+	if !ok {
+		t.Fatalf("%s is not listed: %+v", id, ss)
+	}
+	return s
+}
+
 // TestSessionListThroughTheCore: session/list lists every session in the store, newest first, with its workspace,
 // model, current mode, the time its last turn began and its status: running while a turn waits on a question, idle
 // once it ends, interrupted for a log whose turn no daemon is running. A mode change made since the last call shows,
@@ -55,7 +65,7 @@ func TestSessionListThroughTheCore(t *testing.T) {
 	if len(all) != 3 || all[0].ID != gone || all[1].ID != plan || all[2].ID != asking {
 		t.Fatalf("all sessions, newest first: %+v", all)
 	}
-	if s := all[2]; s.Workspace != ws || s.Model != "main" || s.Mode != proto.ModeAuto || s.LastTurnAt != nil || s.Status != proto.StatusIdle || s.Created.IsZero() {
+	if s := all[2]; s.Workspace != resolveDir(ws) || s.Model != "main" || s.Mode != proto.ModeAuto || s.LastTurnAt != nil || s.Status != proto.StatusIdle || s.Created.IsZero() {
 		t.Errorf("the asking session before a turn: %+v", s)
 	}
 	if s := all[0]; s.Status != proto.StatusInterrupted || s.LastTurnAt == nil || s.Mode != proto.ModeAsk {
@@ -66,7 +76,7 @@ func TestSessionListThroughTheCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := await(t, events, proto.EvPermissionRequested)
-	if s, _ := byID(listOf(t, tui, ""), asking); s.Status != proto.StatusRunning || s.LastTurnAt == nil {
+	if s := mustFind(t, listOf(t, tui, ""), asking); s.Status != proto.StatusRunning || s.LastTurnAt == nil {
 		t.Errorf("while its turn waits on a question: %+v", s)
 	}
 	v, _ := q.Decode()
@@ -75,7 +85,7 @@ func TestSessionListThroughTheCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	await(t, events, proto.EvTurnEnd)
-	if s, _ := byID(listOf(t, tui, ""), asking); s.Status != proto.StatusIdle {
+	if s := mustFind(t, listOf(t, tui, ""), asking); s.Status != proto.StatusIdle {
 		t.Errorf("after its turn: %+v", s)
 	}
 
@@ -83,7 +93,7 @@ func TestSessionListThroughTheCore(t *testing.T) {
 	if err := tui.Call(proto.MethodSessionSetMode, proto.SessionSetModeParams{Session: plan, Mode: proto.ModeAsk}, &mr); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ := byID(listOf(t, tui, ""), plan); s.Mode != mr.Mode {
+	if s := mustFind(t, listOf(t, tui, ""), plan); s.Mode != mr.Mode {
 		t.Errorf("after setMode to %s: %+v", mr.Mode, s)
 	}
 
@@ -139,44 +149,48 @@ func TestSessionListReadsTheLogs(t *testing.T) {
 		store.NewSessionID(now.Add(2*time.Second)), store.NewSessionID(now.Add(3*time.Second)), store.NewSessionID(now.Add(4*time.Second))
 	writeLog(t, f, parent, created(proto.ModeAsk, ""))
 	writeLog(t, f, child, created(proto.ModePlan, parent))
-	writeLog(t, f, held, created(proto.ModeAsk, ""), ev(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{"x"}}))
+	// Events written once and reused, so a log rewritten with the same first lines keeps their bytes, and a read goes on from
+	// where the last stopped rather than from the start.
+	cAsk, hold := created(proto.ModeAsk, ""), ev(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{"x"}})
+	writeLog(t, f, held, cAsk, hold)
 	user := ev(t, proto.EvUserMessage, proto.UserMessage{Content: []proto.ContentBlock{proto.Text("hi")}})
 	end := ev(t, proto.EvTurnEnd, proto.TurnEnd{StopReason: proto.StopEndTurn})
-	writeLog(t, f, short, created(proto.ModeAsk, ""), user, end)
-	writeLog(t, f, bad, created(proto.ModeAsk, ""))
+	writeLog(t, f, short, cAsk, user, end)
+	writeLog(t, f, bad, cAsk)
 
 	all := listOf(t, f.client, "")
-	if s, _ := byID(all, child); s.Parent != parent || s.Mode != proto.ModePlan {
+	if s := mustFind(t, all, child); s.Parent != parent || s.Mode != proto.ModePlan {
 		t.Errorf("the subagent: %+v", s)
 	}
-	if s, _ := byID(all, held); s.Status != proto.StatusHeld {
+	if s := mustFind(t, all, held); s.Status != proto.StatusHeld {
 		t.Errorf("the held session: %+v", s)
 	}
-	if s, _ := byID(all, short); s.LastTurnAt == nil || s.Status != proto.StatusIdle {
+	if s := mustFind(t, all, short); s.LastTurnAt == nil || s.Status != proto.StatusIdle {
 		t.Errorf("before the log is cut: %+v", s)
 	}
 
-	writeLog(t, f, held, created(proto.ModeAsk, ""), ev(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{"x"}}),
-		ev(t, proto.EvSessionReleased, proto.SessionReleased{By: "user"}))
+	writeLog(t, f, held, cAsk, hold, ev(t, proto.EvSessionReleased, proto.SessionReleased{By: "user"}))
 	writeLog(t, f, short, created(proto.ModeEdits, "")) // shorter than what was read: read again from the start
 	all = listOf(t, f.client, "")
-	if s, _ := byID(all, held); s.Status != proto.StatusIdle {
+	if s := mustFind(t, all, held); s.Status != proto.StatusIdle {
 		t.Errorf("after the release: %+v", s)
 	}
-	if s, _ := byID(all, short); s.Mode != proto.ModeEdits || s.LastTurnAt != nil {
+	if s := mustFind(t, all, short); s.Mode != proto.ModeEdits || s.LastTurnAt != nil {
 		t.Errorf("the cut log, read again from the start: %+v", s)
 	}
 
-	// A hold, then a line that cannot be read: the call fails, and the hold it read must not outlive it.
+	// A hold, then a line that cannot be read: that log is left out of the list, the others are still listed, and the hold
+	// the failed read saw must not outlive it. The rewritten log keeps its first line's bytes, so the next read goes on from
+	// where the last good one stopped.
 	unreadable := ev(t, proto.EvSessionCreated, proto.SessionCreated{})
 	unreadable.Payload = json.RawMessage(`{"workspace":5}`)
-	writeLog(t, f, bad, created(proto.ModeAsk, ""), ev(t, proto.EvSessionHeld, proto.SessionHeld{Commands: []string{"x"}}), unreadable)
-	var r proto.SessionListResult
-	if err := f.client.Call(proto.MethodSessionList, proto.SessionListParams{}, &r); err == nil {
-		t.Fatalf("a log that cannot be read was listed: %+v", r.Sessions)
+	writeLog(t, f, bad, cAsk, hold, unreadable)
+	all = listOf(t, f.client, "")
+	if _, ok := byID(all, bad); ok || len(all) != 4 {
+		t.Fatalf("with one log unreadable: %d listed, the unreadable one among them: %v; want the other 4", len(all), ok)
 	}
-	writeLog(t, f, bad, created(proto.ModeAsk, ""), user, end)
-	if s, _ := byID(listOf(t, f.client, ""), bad); s.Status != proto.StatusIdle {
+	writeLog(t, f, bad, cAsk, user, end)
+	if s := mustFind(t, listOf(t, f.client, ""), bad); s.Status != proto.StatusIdle {
 		t.Errorf("after a failed read, the log as it is now: %+v; want idle, with nothing kept from the failed read", s)
 	}
 
@@ -187,11 +201,23 @@ func TestSessionListReadsTheLogs(t *testing.T) {
 	if in := listOf(t, f.client, link); len(in) != 5 {
 		t.Errorf("filtered by a symlink to the workspace: %d sessions; want all 5", len(in))
 	}
+	// The other way round, as on macOS: a log that holds the path through the symlink (/var/...) is found by a filter of
+	// the resolved path (/private/var/...), since both sides are resolved alike.
+	via := store.NewSessionID(now.Add(5 * time.Second))
+	writeLog(t, f, via, ev(t, proto.EvSessionCreated, proto.SessionCreated{Workspace: link, Model: "main", Mode: proto.ModeAsk}))
+	if in := listOf(t, f.client, ws); len(in) != 6 || in[0].ID != via {
+		t.Errorf("filtered by the resolved path, with one log holding the symlink: %d sessions; want 6, newest first", len(in))
+	}
+	var pe *proto.Error
+	if err := f.client.Call(proto.MethodSessionList, proto.SessionListParams{Workspace: "repo"}, nil); !errors.As(err, &pe) || pe.Code != proto.CodeInvalidParams {
+		t.Errorf("a relative workspace filter: %v; want invalid params", err)
+	}
 }
 
-// TestListStatusAcrossTheRead: the status reads this Core's turns before and after the log is read, so a turn that ends
-// or begins during the read shows running, never interrupted; only a turn the log holds open and no turn here ran
-// across the read is interrupted.
+// TestListStatusAcrossTheRead: the status reads this Core's turns before and after the log is read. A turn the log holds
+// open shows running when this Core's turns account for it (one ran before the read, or one began between the marks,
+// including in a session opened during the read), and interrupted only when they do not. A turn whose end the read saw
+// is not running, so a hold it ended on shows.
 func TestListStatusAcrossTheRead(t *testing.T) {
 	idle, running := turnState{here: true, turn: 1}, turnState{here: true, running: true, turn: 1}
 	for name, c := range map[string]struct {
@@ -200,6 +226,10 @@ func TestListStatusAcrossTheRead(t *testing.T) {
 		want          string
 	}{
 		"ended during the read":   {true, false, running, idle, proto.StatusRunning},
+		"ended, its end read":     {false, false, running, idle, proto.StatusIdle},
+		"ended on a hold, read":   {false, true, running, idle, proto.StatusHeld},
+		"opened and ran during":   {true, false, turnState{}, turnState{here: true, turn: 1}, proto.StatusRunning},
+		"opened, no turn here":    {true, false, turnState{}, turnState{here: true}, proto.StatusInterrupted},
 		"began during the read":   {false, false, idle, running, proto.StatusRunning},
 		"began and ended between": {true, false, idle, turnState{here: true, turn: 2}, proto.StatusRunning},
 		"open, nothing ran here":  {true, false, idle, idle, proto.StatusInterrupted},
@@ -209,6 +239,32 @@ func TestListStatusAcrossTheRead(t *testing.T) {
 	} {
 		if got := listStatus(&listed{turnOpen: c.open, held: c.held}, c.before, c.after); got != c.want {
 			t.Errorf("%s: %s; want %s", name, got, c.want)
+		}
+	}
+}
+
+// TestResolveDir: a path through a symlink resolves to its target, and a path that no longer exists resolves through its
+// nearest existing parent, so a removed workspace still matches the resolved path its log holds.
+func TestResolveDir(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(base, "real")
+	os.MkdirAll(real, 0o755)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		link:                              real,
+		link + "/":                        real,
+		filepath.Join(link, "gone"):       filepath.Join(real, "gone"),
+		filepath.Join(link, "gone", "ws"): filepath.Join(real, "gone", "ws"),
+		real:                              real,
+	} {
+		if got := resolveDir(in); got != want {
+			t.Errorf("resolveDir(%q) = %q; want %q", in, got, want)
 		}
 	}
 }
