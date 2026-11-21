@@ -2,7 +2,9 @@
 
 <!-- citations-at: 0cf8edd -->
 
-Status: **proposed**, for the owner's review. Nothing here is built, registered or queued. Written in the Claude app
+Status: **proposed**, for the owner's review; on 2026-11-09 nothing here was built, registered or queued. **Since:**
+decision 8 (§5.1 to §5.3) is decided yes (Francis, 2026-11-21); §5.1 is built (`2e00c09`, `8142ab8`), and §5.2 and
+§5.3 are built and in review (#211, #212). Written in the Claude app
 on Francis's word (2026-11-09: review the design, then "yes please" to one consolidated task doc). One doc, by his
 standing preference: the loop change with its draft registration (§2), the measurement changes (§3), the direction
 questions that need an ADR (§4), smaller fixes (§5), features (§6), the order (§7), and the decisions for Francis,
@@ -230,7 +232,8 @@ until a model that needs it is in use.
 | 5.5 | **Snapshots hold the index and refs.** Copy the index file and record `for-each-ref` and the stash list in the snapshot's manifest, so `git reset`, `git branch -D` and the stash commands can be undone and leave the ask list. The list then shrinks instead of growing | DESIGN §6.8, "What keeps asking" | M |
 | 5.6 | **Named profiles.** `[run]` has 26 on-or-off switches among about 40 settings, nearly all off by default, and "the bundle" is seven of them set by each launcher. A `profile = "bundle-v1"` setting names the tested combination, the eval arms name profiles, and what ships is a profile that was measured. No switch is removed | `internal/config/config.go` | S |
 
-5.1 to 5.3 are ordinary engineering and should land before the owner's week of real use (P1's exit).
+5.1 to 5.3 are ordinary engineering and should land before the owner's week of real use (P1's exit). Decided yes as decision 8 (Francis,
+2026-11-21): 5.1 built in `2e00c09` and `8142ab8`; 5.2 in #211 and 5.3 in #212.
 
 ---
 

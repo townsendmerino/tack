@@ -1,8 +1,9 @@
 # Proposal: the protocol methods the TUI needs (P1 step 8)
 
-Status: **accepted** by the owner, 2026-11-09, with all four design calls as proposed (their answers are below). It
-was drafted by mbp2-tack-p1s4, and the TUI's needs come from mbp2-tack-p1s5, who builds it. Nothing is built yet:
-the methods land in the order at the end, each in its own PR.
+Status: **accepted** by the owner, 2026-11-09, with all four design calls as proposed (their answers are below). The
+TUI's needs come from the session that builds it. **Built** (read at `e0a7801`, 2026-11-21): `permission/respond`,
+`session/cancel`, `workspace/complete` and `session/setMode` are on main; `session/list`, the fifth, is in review
+(#213). Each landed in its own PR, in the order at the end.
 
 The TUI (DESIGN §10) needs three methods that do not exist yet:
 - a permission answer, for inline approvals;
