@@ -1,8 +1,9 @@
 # The P1 screen's 20 task statements: drafts for the owner's leakage review, 2026-11-21
 
-**Status: drafted, not reviewed.** The statements for lines 2 to 21 of `eval/e1/e1-order.jsonl`, the P1 screen's tasks
-(`e1-full-run-p1-rule-registration-2026-11-16.md`, Amendment 2), are in that file's `statement` field. None has a
-`reviewed_by`, so `pilot.LoadTasks` refuses every one until the owner reviews it (`TestLoadTasksRefusesDrafts`).
+**Status: reviewed by the owner, 2026-11-21; all 20 accepted as drafted.** The statements for lines 2 to 21 of
+`eval/e1/e1-order.jsonl`, the P1 screen's tasks (`e1-full-run-p1-rule-registration-2026-11-16.md`, Amendment 2), are in
+that file's `statement` field, and each now carries `reviewed_by` (Francis, 2026-11-21: "219 approved", then "write
+reviewed_by Francis on lines 2–21"). Until then `pilot.LoadTasks` refused every one (`TestLoadTasksRefusesDrafts`).
 A statement the owner rejects is rewritten once, and a second rejection drops the task
 (`e1-task-selection-preregistration-2026-10-16.md`, "Statement and oracle").
 
