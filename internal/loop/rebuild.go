@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -165,7 +166,47 @@ func Resume(cfg Config, history []proto.Event) (*Session, error) {
 		}
 	}
 	s.tokens, s.calls = Spent(history)
+	if s.cfg.Source != nil && s.cfg.Source.Window() > 0 {
+		base := *s.conv
+		base.Model = s.cfg.Source.Model() // as each live turn sets it
+		if s.winPrompt, s.winBytes, err = lastWindowMark(history, cfg.WS.Root(), base); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// lastWindowMark is the last response's reported prompt tokens (over 0, outside the summarizer's request 0) and the JSON
+// bytes of the request it answered, rebuilt from the log up to that request.sent: the live loop's winPrompt and winBytes,
+// so a resumed session checks its first request against the window as the live one would (overWindow). Zeros when
+// no response reported one.
+func lastWindowMark(history []proto.Event, root string, base server.Conversation) (int, int, error) {
+	prompt, at := 0, int64(0)
+	for _, ev := range history {
+		if ev.Type != proto.EvUsage {
+			continue
+		}
+		v, err := ev.Decode()
+		if err != nil {
+			return 0, 0, fmt.Errorf("resume: seq %d: %w", ev.Seq, err)
+		}
+		if u := v.(proto.Usage); u.Request != 0 && u.Prompt > 0 && ev.Cause > 0 {
+			prompt, at = u.Prompt, ev.Cause // a usage's cause is its request.sent
+		}
+	}
+	i := slices.IndexFunc(history, func(ev proto.Event) bool { return ev.Seq == at && ev.Type == proto.EvRequestSent })
+	if prompt == 0 || i < 0 {
+		return 0, 0, nil
+	}
+	conv, _, err := rebuild(history[:i], root, base)
+	if err != nil {
+		return 0, 0, err
+	}
+	b, err := json.Marshal(conv.Request())
+	if err != nil {
+		return 0, 0, err
+	}
+	return prompt, len(b), nil
 }
 
 // Spent is what a session's log says it has spent, as its budgets count it: the tokens its server computed (the

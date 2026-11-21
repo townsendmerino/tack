@@ -1,7 +1,12 @@
 # E1 screen of `summarize` and `summary_retrieve`: registration, 2026-11-16
 
-Registered before any run. No run has been made, and nothing is queued: GPU time is approved separately by Francis. This
-page closes P1 step 6's "E1 screen of summarize not registered" (`docs/design/p1-notes.md`). It registers calibration
+**Status (2026-11-21):** 36 of the 108 runs are made, read as a partial with no verdict in
+`e1-summarize-screen-partial-2026-11-21.md`. Francis decided on 2026-11-21 that C12 continues; tasks 5 to 12 are to run
+the nights of 2026-11-22 and 2026-11-23, two tasks a block and two blocks a night. This page first said "Registered before any run. No run has been made",
+which was wrong: task 1's nine runs were made the night of 2026-11-10 under §18's rule (drafted 2026-11-09), and tasks
+2 to 4 the night of 2026-11-17. The rule, sizes and stopping rule below are unchanged.
+
+This page closes P1 step 6's "E1 screen of summarize not registered" (`docs/design/p1-notes.md`). It registers calibration
 pre-registration §18 (C12, drafted 2026-11-09) at the size below; §18 holds the mechanism checks and predictions and
 stays the detail authority. Nothing here changes §18's rule or sizes.
 

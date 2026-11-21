@@ -87,6 +87,10 @@ type Scripted struct {
 	Model  string
 	Window int
 	Tokens int
+	// Counted is how many /v1/messages/count_tokens requests were answered.
+	Counted int
+	// OnCount, when set, runs as each count_tokens request arrives, before it is answered.
+	OnCount func()
 
 	mu      sync.Mutex
 	replies []Reply
@@ -108,6 +112,10 @@ func (s *Scripted) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": []any{map[string]any{
 			"id": s.Model, "object": "model", "context_window": s.Window, "fast_model": s.Model + "-fast"}}})
 	case "/v1/messages/count_tokens":
+		s.Counted++
+		if s.OnCount != nil {
+			s.OnCount()
+		}
 		json.NewEncoder(w).Encode(map[string]any{"input_tokens": s.Tokens})
 	case "/v1/messages":
 		var body json.RawMessage
