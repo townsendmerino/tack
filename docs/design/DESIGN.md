@@ -484,6 +484,11 @@ Around the turn:
   `budget.exceeded` and asks the user. Tokens are what the server computed (prefilled plus output). *Proposed*
   defaults, in `config.toml`'s `[run]`: per turn 40 requests, 100 tool calls, 30 minutes, 200,000 tokens, 8 failed
   calls in a row; per session 2,000,000 tokens and 1,000 tool calls.
+- **No request past the window.** Before each request, its prompt is estimated from the last response's prompt and
+  the bytes added since. Past 90% of the served window it is counted with the server's `count_tokens`, and a request
+  the count puts over the window is not sent: the turn ends `window_full`, as the server would otherwise refuse it as
+  too long (`internal/loop/fit.go:overWindow`; design review §5.3, Francis, 2026-11-21). An estimate alone never ends
+  a turn.
 - **Subagents.** A `task` tool starts a child session with its own context, a restricted tool set and its own budget,
   and returns a summary; read-only by default. On one local model, subagents queue rather than run side by side: goinfer
   decodes one request at a time per model (its work-queue design keeps one worker per model,

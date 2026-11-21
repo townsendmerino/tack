@@ -178,6 +178,7 @@ type Session struct {
 	obs        []observation
 	vers       fileVersions
 	lastPrompt int
+	lastBytes  int        // the JSON bytes of the request lastPrompt answered; 0 until a response reports one (overWindow)
 	compacted  bool       // a compaction has run
 	maskFloor  int        // the prompt of the first response after the last compaction; 0 until it arrives
 	cliffNote  bool       // a result got fit_window's nearly-full note since the last request (Config.CompactAtCliff)
@@ -409,15 +410,19 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 				return stopped()
 			}
 		}
-		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
-		if err != nil {
-			return proto.StopError, err
-		}
-		reqBytes := 0 // the request's size, for the window's bytes-per-token rate (fitRoom)
-		if s.cfg.FitWindow {
+		reqBytes := 0 // the request's size, for the window's bytes-per-token rate (fitRoom, overWindow)
+		if w := s.cfg.Source.Window(); w > 0 {
 			if b, err := json.Marshal(s.conv.Request()); err == nil {
 				reqBytes = len(b)
 			}
+			if s.overWindow(ctx, srv, w, reqBytes) { // the server would refuse it: the turn ends here, and the session does not count the request
+				s.requests--
+				return end(proto.StopWindowFull)
+			}
+		}
+		reqEv, err := s.record(proto.EvRequestSent, cause, proto.RequestSent{Request: n, Server: srv.Name(), Model: s.conv.Model})
+		if err != nil {
+			return proto.StopError, err
 		}
 		resp, err := s.stream(ctx, srv, reqEv.Seq)
 		if err != nil {
@@ -444,6 +449,7 @@ func (s *Session) Run(ctx context.Context) (string, error) {
 		}
 		u := usageOf(n, srv.Name(), resp)
 		s.noteUsage(u.Prompt)
+		s.lastBytes = reqBytes
 		if _, err := s.record(proto.EvUsage, reqEv.Seq, u); err != nil {
 			return proto.StopError, err
 		}

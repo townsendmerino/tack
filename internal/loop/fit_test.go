@@ -848,3 +848,32 @@ func TestCompactAtCliffAloneDoesNotWiden(t *testing.T) {
 		t.Fatalf("shown %v, want [200 200 200]", got)
 	}
 }
+
+// TestARequestPastTheWindowIsNotSent: a request the server counts as over its window ends the turn as window_full
+// before it goes out, instead of meeting the server's prompt-too-long refusal, and the log still rebuilds the session.
+// The scripted server reports a 100-token prompt, so the second request's estimate is about 100 + 16 KB of JSON / fitMaxRate,
+// about 2,800 tokens; it is counted (count_tokens answers 2,500) only past nearWindowShare of the window, and only the
+// count decides. FitWindow is off: the check holds without it.
+func TestARequestPastTheWindowIsNotSent(t *testing.T) {
+	for _, c := range []struct {
+		window, count, requests int
+		stop                    string
+	}{
+		{2000, 2500, 1, proto.StopWindowFull}, // counted, and over
+		{2600, 2500, 2, proto.StopEndTurn},    // counted, and it fits
+		{2000, 0, 2, proto.StopEndTurn},       // the estimate alone is over: it never ends a turn
+		{4000, 9999, 2, proto.StopEndTurn},    // under nearWindowShare: not counted at all
+	} {
+		h := fitHarness(t, c.window, goinfertest.Calls("", "t1", "read", bigRead), goinfertest.Says("ok"))
+		h.sess.cfg.FitWindow = false
+		h.script.Tokens = c.count
+		stop, err := h.sess.Turn(context.Background(), "go")
+		if err != nil || stop != c.stop || len(h.script.Requests) != c.requests || len(h.payloads(proto.EvRequestSent)) != c.requests {
+			t.Fatalf("window %d, count %d: stop %q, %v, after %d requests", c.window, c.count, stop, err, len(h.script.Requests))
+		}
+		if len(h.payloads(proto.EvError)) != 0 {
+			t.Fatalf("window %d: errors %+v", c.window, h.payloads(proto.EvError))
+		}
+		h.checkRebuild(t)
+	}
+}

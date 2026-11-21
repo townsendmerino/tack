@@ -1,10 +1,12 @@
 package loop
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/townsendmerino/tack/internal/proto"
+	"github.com/townsendmerino/tack/internal/server"
 	"github.com/townsendmerino/tack/internal/store"
 	"unicode/utf8"
 )
@@ -100,4 +102,25 @@ func lineCount(s string) int {
 		n++
 	}
 	return n
+}
+
+// nearWindowShare is the share of the window, in percent, past which a request's estimated prompt is counted exactly
+// before it is sent (overWindow).
+const nearWindowShare = 90
+
+// overWindow says whether a request of reqBytes JSON bytes is over window w, so the server would refuse it as too long
+// (design review §5.3). Its prompt is first estimated as the last response's prompt plus the bytes the request has
+// grown by since, at that request's own bytes per token, held to [fitMinRate, fitMaxRate]. Only an estimate past
+// nearWindowShare of w is asked of the server's count_tokens, and only that count decides: an estimate never ends a
+// turn. With no response yet to measure against, or when the count fails, the request goes out as it always has.
+func (s *Session) overWindow(ctx context.Context, srv server.Server, w, reqBytes int) bool {
+	if s.lastPrompt <= 0 || s.lastBytes <= 0 || reqBytes <= 0 {
+		return false
+	}
+	rate := min(max(float64(s.lastBytes)/float64(s.lastPrompt), fitMinRate), fitMaxRate)
+	if est := float64(s.lastPrompt) + float64(reqBytes-s.lastBytes)/rate; est*100 < float64(nearWindowShare*w) {
+		return false
+	}
+	n, err := srv.CountTokens(ctx, s.conv.Request())
+	return err == nil && n > w
 }
