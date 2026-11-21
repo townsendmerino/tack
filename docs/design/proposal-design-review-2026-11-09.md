@@ -280,7 +280,7 @@ C12 waits behind step 4 (§2.3).
 | 5 | An opencode row on the 35B at 32k (§3.1) | yes, one night, reported only |
 | 6 | ADR-008: center the design on the 35B, and state the Mac tiers (§4.1, §4.2) | yes, written after decisions 1 and 5 have read |
 | 7 | P2 leads with the ledger and inspector, not auto-context (§4.3) | yes |
-| 8 | The three small fixes before the week of real use (§5.1–§5.3) | yes |
+| 8 | The three small fixes before the week of real use (§5.1–§5.3) | yes. **Decided yes** (Francis, 2026-11-21) |
 | 9 | Freeze the guard; extend snapshots to the index and refs (§5.4, §5.5) | freeze now; the snapshot work after P1's exit |
 | 10 | Profiles (§5.6) | yes, when the next arm setting is added |
 | 11 | Which features, and when (§6) | `tack fix` and the autopsy after P1's exit; overnight fixes once worktrees or workspace copies exist |
