@@ -134,6 +134,9 @@ type remote struct {
 	reps                                   int             // runs per arm per task; 0 means once for one arm, 3 for two
 	cellCheck                              bool            // run the cell check once against the loaded server, and stop
 	allowBattery                           bool            // the owner's override: a cell that starts on battery is not void (cellVoid)
+	screen                                 bool            // the P1 screen: A0, opencode, beside one tack arm, once each per task
+	opencode                               string          // the screen's A0: opencode's binary, run here against the forwarded server
+	noTitle                                bool            // the screen's A0: opencode's title agent off (-title=false)
 }
 
 // serveCmdArgs is the remote command that starts pilot-serve for r.
@@ -280,6 +283,9 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 			Server: srv, ServeLog: serveLog, Out: out, Cap: capD, Log: stderr, CountTokens: counter(srv), TackRev: tackRev,
 			ServerOptions: r.options}
 		o.A1Arms, o.A1Reps = arms, reps
+		if r.screen {
+			o.Screen, o.Opencode, o.A0 = true, r.opencode, pilot.Arm{Name: "A0", NoTitle: r.noTitle}
+		}
 		if cells {
 			o.Cell = hostCell(r.host, r.allowBattery)
 		}
@@ -296,13 +302,20 @@ func a1Cmd(ctx context.Context, ts []pilot.Task, mirrors, out string, capD time.
 	return exitOK
 }
 
-// arms is the job r asks for: with -compare-setting, arms A and B, B with those settings added to A's, reps each per task
+// arms is the job r asks for: with -screen, A1 with the -setting list once per task beside opencode's A0 (Options.Screen);
+// with -compare-setting, arms A and B, B with those settings added to A's, reps each per task
 // in A B B A order (3 for 0: A B B A A B), and with -then-setting a third arm C, B's settings plus those, in
 // A B C C B A order (calibration §18); else, with -setting or -reps, one arm A1 with the settings, reps times per
 // task (a mechanism check, calibration §12.9); else nil, A1 as registered, once per task. cells reports whether each run
 // waits for a clean cell check, as every C6 run does.
 func (r remote) arms() (arms []pilot.Arm, reps int, cells bool, err error) {
 	switch {
+	case r.screen && r.opencode == "":
+		return nil, 0, false, errors.New("-screen needs -opencode: its A0 is opencode")
+	case r.screen && (len(r.compare) > 0 || len(r.then) > 0 || r.reps != 0):
+		return nil, 0, false, errors.New("-screen runs one tack arm once per task: no -compare-setting, -then-setting or -reps")
+	case r.screen:
+		return []pilot.Arm{{Name: "A1", Settings: []string(r.settings)}}, 0, true, nil
 	case r.reps < 0:
 		return nil, 0, false, errors.New("-reps is runs per arm per task, 0 or more")
 	case len(r.compare) > 0:

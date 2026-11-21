@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -296,5 +298,74 @@ func TestOracleCheck(t *testing.T) {
 	}
 	if o, err := os.ReadFile(filepath.Join(out, "task-01", "oracle-check", "oracle.log")); err != nil || !strings.Contains(string(o), `"Test":"TestAdd"`) {
 		t.Fatalf("oracle.log: %v %q", err, o)
+	}
+}
+
+// TestScreenRunsBothArms: a screen (Options.Screen) runs each task once on A0, opencode, and once on A1, tack, against
+// the one server: A0 first on the screen's odd tasks and A1 first on its even ones, each run after a cell check, A1's
+// with tack's settings and A0's without, and a failed run capped at the cap (PAR-1). The fake opencode fixes the task
+// and the fake tack does not.
+func TestScreenRunsBothArms(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	f := newFixture(t)
+	mirrors := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", "--mirror", f.src, filepath.Join(mirrors, "m.git")).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	t.Setenv("TACK_FAKE_OPENCODE", "ok")
+	t.Setenv("TACK_FAKE_TACK", "1")
+	t.Setenv("TACK_FAKE_OPENCODE_FIX", f.fixedSrc)
+	t.Setenv("TACK_FAKE_OPENCODE_FIX_DEST", "calc/calc.go")
+	t.Setenv("TACK_FAKE_OPENCODE_FIX_ARM_HAS_MCP", "false")
+	out := t.TempDir()
+	serveLog := filepath.Join(out, "serve.log")
+	os.WriteFile(serveLog, nil, 0o644)
+	t1, t2 := f.task, f.task
+	t1.N, t2.N = 8, 9 // their lines in the file, of the other parity; the screen's order goes by their place in the screen, 1 and 2
+	cells := 0
+	err := RunPilot(context.Background(), Options{Tasks: []Task{t1, t2}, Mirrors: mirrors, Opencode: os.Args[0], A1: os.Args[0],
+		Screen: true, A0: Arm{Name: "A0"}, A1Arms: []Arm{{Name: "A1", Settings: []string{"fit_window"}}},
+		Cell:   func(context.Context) (string, string) { cells++; return "clean", "" },
+		Server: Server{BaseURL: "http://x", Model: "qwen", Context: 16384}, ServeLog: serveLog, Out: out, MinFree: 1,
+		Cap: time.Minute, Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf, _ := os.Open(filepath.Join(out, "results.jsonl"))
+	defer rf.Close()
+	var order []string
+	sc := bufio.NewScanner(rf)
+	for sc.Scan() {
+		var r Record
+		json.Unmarshal(sc.Bytes(), &r)
+		order = append(order, fmt.Sprintf("%d:%s", r.Task, r.Run.Arm))
+		switch r.Run.Arm {
+		case "A0":
+			if !r.Pass || r.TackRun != nil || len(r.Settings) != 0 || r.Cell != "clean" || r.CappedSecs >= 60 {
+				t.Errorf("task %d A0: %+v", r.Task, r)
+			}
+		case "A1":
+			if r.Pass || r.TackRun == nil || !slices.Equal(r.Settings, []string{"fit_window"}) || r.Cell != "clean" || r.CappedSecs != 60 {
+				t.Errorf("task %d A1: %+v", r.Task, r)
+			}
+		}
+	}
+	if want := []string{"8:A0", "8:A1", "9:A1", "9:A0"}; !slices.Equal(order, want) || cells != 4 {
+		t.Fatalf("runs %v after %d cell checks; want %v after 4", order, cells, want)
+	}
+}
+
+// TestScreenOptionsAreChecked: a screen needs both harnesses, and is one run per arm of one tack arm.
+func TestScreenOptionsAreChecked(t *testing.T) {
+	base := Options{Screen: true, A1: "tack", Opencode: "opencode", Out: t.TempDir(), Log: io.Discard}
+	for name, o := range map[string]Options{
+		"no opencode":  func() Options { o := base; o.Opencode = ""; return o }(),
+		"no tack":      func() Options { o := base; o.A1 = ""; return o }(),
+		"two A1 arms":  func() Options { o := base; o.A1Arms = []Arm{{Name: "A"}, {Name: "B"}}; return o }(),
+		"repeated A1s": func() Options { o := base; o.A1Arms = []Arm{{Name: "A1"}}; o.A1Reps = 2; return o }(),
+	} {
+		if err := RunPilot(context.Background(), o); err == nil || !strings.Contains(err.Error(), "screen") {
+			t.Errorf("%s: %v; want a screen error", name, err)
+		}
 	}
 }
