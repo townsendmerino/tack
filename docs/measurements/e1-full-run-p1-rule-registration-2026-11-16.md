@@ -22,9 +22,7 @@ left open. Where a line above disagrees, this one governs: *m* = 25 (not 29), ca
 - **Model that runs.** Qwen3.6-35B-A3B `q4_k_m` on nobara at **`-ctx 24576` for every arm** (Francis, 2026-11-22, option (a)),
   goinfer **v0.24.1** (for the `-fast` alias, as C12 records), thinking off, `-moe-cache-experts`, sampling 0.7 / 0.8 / 20, from
   `~/models`. Why 24,576: opencode 1.19.0's system prompt and tool definitions take 16,998 tokens and a reply needs 2,048 more, so the
-  server refused A0's first request at 16,384 (the A0 smoke of 2026-11-22 03:00). A1 runs at 24,576 too, so the arms share one
-  server. The A1 pilot ran at 16,384; A1's window use is unchanged by a larger `-ctx`, and the 16k design claim (§15) is a
-  separate matter this screen does not test. Fit at 24,576: 0.9 GB KV, 29.2 GB left.
+  server refused A0's first request at 16,384 (the A0 smoke of 2026-11-22 03:00). A1 runs at 24,576 too, so the arms share one server. **The pilot ran at 16,384, and A1's window use is not the same at 24,576:** the bundle sets `fit_window`, and `internal/loop/fit.go:fitRoom` sizes tool results from the server's reported window, so at 24,576 A1's tool results get more room. The pilot's *w* and *b* therefore estimate A1 at a smaller window than the screen's. *m* is computed from them by the registered rule, so *m* = 25 stands as registered; whether a re-pilot at 24,576 should replace it is Francis's decision (status file, DECISION NEEDED). Fit at 24,576: 0.9 GB KV, 29.2 GB left.
 - **Pilot (A1, 2026-11-22 01:38; 20 runs over 10 tasks):** 5 passes (*p* 0.250), 0 cap hits, **mean 3.29 minutes a run**. Recomputed
   with `wbm.sh`: *w* 0.050, *b* 0.138, *V*(1) 0.196, SE 9.9 points, 2.5 SE 24.8. The pilot moves *m* by 4 from 29, more than 2, so by
   the registered rule ***m* = 25**, committed here before the first run and never changed after. The parked band stays 8 points
