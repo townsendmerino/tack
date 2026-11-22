@@ -15,6 +15,41 @@ on the calibration set: a task the loop was tuned on favours A1. No other line i
 stays 20. The statements for lines 2 to 21 are drafted for the owner's leakage review
 (`e1-screen-statements-review-2026-11-21.md`); none runs before it is reviewed.
 
+**Amendment 3, 2026-11-22, before any screen run.** The pilot, the A0 smoke and Francis's context decision fix what Amendment 1
+left open. Where a line above disagrees, this one governs: *m* = 25 (not 29), cap 10 minutes (not 6), context 24,576 (not
+16,384), goinfer v0.24.1 (not `00584c35`).
+
+- **Model that runs.** Qwen3.6-35B-A3B `q4_k_m` on nobara at **`-ctx 24576` for every arm** (Francis, 2026-11-22, option (a)),
+  goinfer **v0.24.1** (for the `-fast` alias, as C12 records), thinking off, `-moe-cache-experts`, sampling 0.7 / 0.8 / 20, from
+  `~/models`. Why 24,576: opencode 1.19.0's system prompt and tool definitions take 16,998 tokens and a reply needs 2,048 more, so the
+  server refused A0's first request at 16,384 (the A0 smoke of 2026-11-22 03:00). A1 runs at 24,576 too, so the arms share one server. **The pilot ran at 16,384, and A1's window use is not the same at 24,576:** the bundle sets `fit_window`, and `internal/loop/fit.go:fitRoom` sizes tool results from the server's reported window, so at 24,576 A1's tool results get more room. The pilot's *w* and *b* therefore estimate A1 at a smaller window than the screen's. *m* is computed from them by the registered rule, so *m* = 25 stands as registered; whether a re-pilot at 24,576 should replace it is Francis's decision (status file, DECISION NEEDED). Fit at 24,576: 0.9 GB KV, 29.2 GB left.
+- **Pilot (A1, 2026-11-22 01:38; 20 runs over 10 tasks):** 5 passes (*p* 0.250), 0 cap hits, **mean 3.29 minutes a run**. Recomputed
+  with `wbm.sh`: *w* 0.050, *b* 0.138, *V*(1) 0.196, SE 9.9 points, 2.5 SE 24.8. The pilot moves *m* by 4 from 29, more than 2, so by
+  the registered rule ***m* = 25**, committed here before the first run and never changed after. The parked band stays 8 points
+  (the registered figure; 0.7 SE is now 6.9; `p1screen -band 8`). Read as: lower bound ≥ −25 passes; −33 ≤ lower bound < −25
+  parked; below −33 a miss. The floor, A0 under 3 of 20, is unchanged. A pass now rules out a gap over about 25 points.
+- **opencode pin: 1.19.0.** On nobara `~/harnesses/node_modules/.bin/opencode` (npm); on the Mac
+  `~/harnesses/opencode-1.19.0/x/package/bin/opencode` (the registry's `opencode-darwin-arm64` tarball, sha512 matching the registry's
+  integrity), installed by Francis's approval of 2026-11-21. The screen's A0 runs on the Mac (`-a1 -screen`).
+- **Cap checks.** Check 1 (the 95% rule on the chosen model's own records) already holds: the records are the 35B's. **Check 2
+  (the cap is at least 1.5 times A0's smoke time):** the A0 smoke at 24,576 (2026-11-22 06:50 to 07:01) exited 0 in **327 s** with no
+  cap hit (A0k: 308 s). 6 minutes = 360 s is under 1.5 × 327 = 491 s, so by this page's own fallback the cap is the smallest of 8 and
+  10 minutes that clears it: 8 minutes = 480 s does not, so **the cap is 10 minutes**, the same for both arms. Record: Mac
+  `a0-smoke-24k/summary.json`, launcher `p1-smoke-24k-launch.sh`.
+- **Tasks:** lines 2 to 21 of `eval/e1/e1-order.jsonl` (Amendment 2); the 20 statements were reviewed and accepted by Francis on
+  2026-11-21 (merged in #220).
+- **Harness:** `tack eval pilot -a1 -screen -opencode <the Mac's opencode>` with the bundle's `-setting` list, `-ctx 24576 -cap 10m`,
+  read by `go run ./tools/p1screen -m 25` (#217, #218).
+- **Machine time and the night.** Expected, **about 3.1 hours**: 20 A1 runs at the pilot's 3.3 minutes (66 min), 20 A0 runs at about
+  5.5 minutes (109 min, taking the smoke's 327 s as the guide; the smoke task was a trivial one, so A0 may run longer), and about 10
+  minutes of load, warm-up and cell checks. This is over two hours, so a night job on the Mac driving nobara, **`--est 240`**, which
+  is under night.py's 360-minute cap without `--force`. The worst case, every run at the 10-minute cap, is 40 × 10 = 400 minutes
+  (6.7 h), which exceeds 360; it needs every run to hit the cap and is not the expectation. **If A0 averages over about 8 minutes the
+  screen no longer fits one night**; then the split, A1 on one night and A0 on the next (order alternation lost), is Francis's to
+  decide. A night that ends early is listed, not counted, and re-run whole.
+- **Plan.** The screen runs on the night of **Tuesday 2026-11-24**, after C12's Sunday and Monday nights. It is **not queued**; the
+  queue entry is a separate step and needs Francis's word on the night.
+
 - **Question (the P1 screen).** Is tack's loop (A1) not badly worse than the established local agent (A0, opencode at a pinned
   version, its own clean configuration), on the same model, server and tasks: is the gap, A0 − A1, smaller than the margin *m*? **This is
   a screen for a broken loop. It is not a test of competence at 14 points** (see "What a pass and a miss say").
@@ -100,6 +135,8 @@ stays 20. The statements for lines 2 to 21 are drafted for the owner's leakage r
 | name | the P1 rule | the P1 screen | the screen does not establish competence at 14 points |
 | model | Qwen3.6-35B-A3B | a parameter, fixed before the run | Qwen3-Coder-30B-A3B's C9 |
 | P1's exit | the P1 rule | the P1 screen and the owner's week of real use | DESIGN §15.3, §16 |
+
+Amendment 3 (2026-11-22) changed *m* 29 → 25, cap 6 → 10 minutes, `-ctx` 16,384 → 24,576, goinfer `00584c35` → v0.24.1, and pinned opencode 1.19.0; see above.
 
 The arms, the metric, the analysis, the floor's rate, the tier, the box and the one-sided 95% bootstrap are unchanged. Records cited are in the
 proposal.
