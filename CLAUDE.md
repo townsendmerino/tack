@@ -206,6 +206,26 @@ tack's claims are measurements (DESIGN §15), so these are load-bearing:
 - **Docs cite code by declaration, never by line:** `internal/loop/turn.go:runTurn`. A dated record (a measurement, an
   audit) instead pins `<!-- citations-at: <commit> -->` in its first lines and may cite lines at that commit.
 
+## Go style and structure
+
+- **Structure over growth.** Do not append unrelated state to a struct, file or package that is already large
+  (`internal/perms`, `internal/loop`, `cmd/tack`): group related state into a cohesive sub-struct, or split along a clean
+  seam early. A new test seam is an injected option, a struct field or a constructor parameter, not a package-global
+  `*ForTest` hook or a side-effect `init()` registration: globals break `t.Parallel()` and hide coupling. Existing
+  globals stay unless touched.
+- **An interface lives in the package that consumes it** and stays narrow (a handful of methods). Do not add a wide
+  interface mirroring a whole concrete type only so a test can fake it. Existing interfaces stay as they are.
+- **The standard library comes before a hand-rolled helper** (`go.mod` targets Go 1.27): `slices` (`Contains`, `Index`,
+  `Clone`, `Sort`, `SortFunc`, `Sorted`, `Backward`), `maps` (`Clone`, `Copy`, `Keys`), `strings` (`Cut`, `CutPrefix`,
+  `CutSuffix`, `SplitSeq`, `FieldsSeq`), `errors.AsType`, `sync.WaitGroup.Go`, `cmp.Or`, `min`/`max`, `for range n`,
+  `new(expr)` and `math/rand/v2`.
+- **Run `go fix -diff` on the packages you touch, for darwin and linux** (`GOOS=darwin` and `GOOS=linux`, since
+  build-constrained files are seen only under their own target), and review each suggestion before applying it: keep
+  imports grouped, and check nil-map behavior before a hand copy becomes `maps.Clone` (a nil map clones to nil).
+- **One receiver kind per type:** do not mix pointer and value receivers; a type with mutating methods, a lock or a
+  large body takes pointer receivers. Return a modified slice instead of taking a `*[]T` out-parameter; explicit
+  allocation-free scratch reuse and `sync.Pool` buffers are fine.
+
 ## Long-running work
 
 - Anything over a few minutes that you do launch must be detached. On Linux: `setsid nohup … </dev/null &` and check the
