@@ -57,6 +57,11 @@ doc comments say what each will hold.
 - **CI** (`.github/workflows/ci.yml`) runs `touched -all`, `lint` and the release build on Linux and macOS for every
   pull request, docs-only ones included, and for every push to `main` that touches more than docs and eval records. A
   branch with no pull request gets no run, and a run on `main` is never cancelled.
+  - The macOS job also runs the race detector over the whole module (`go test -race`, cgo off). Before pushing a change
+    that starts goroutines or shares state between them, run `CGO_ENABLED=0 go test -race` on the packages it touches.
+  - `govulncheck.yml` scans the module on both systems nightly, on every tag, and on any pull request that changes
+    `go.mod` or `go.sum`, at a pinned version. A red scan is read like any red: a reachable vulnerability is fixed by
+    upgrading the dependency or the toolchain, not by excluding it.
 - **A flake gets one rerun; nothing merges past a red that is not understood** (owner, 2026-11-10). A failure that is
   clearly a known flake, one with an open issue whose text matches, gets one rerun
   (`gh run rerun <id> --failed`). A second failure, or any failure that is not a known flake, is read and explained
