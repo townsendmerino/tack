@@ -10,9 +10,9 @@ require (
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/mattn/go-isatty v0.0.24
 	github.com/mattn/go-runewidth v0.0.16
-	github.com/townsendmerino/aikit v1.76.0
+	github.com/townsendmerino/aikit v1.80.0
 	github.com/townsendmerino/aikit/chunk/treesitter v1.2.0
-	github.com/townsendmerino/ken v1.19.1
+	github.com/townsendmerino/ken v1.20.1
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.62.0
 	mvdan.cc/sh/v3 v3.14.1
