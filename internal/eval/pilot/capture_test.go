@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -161,6 +162,26 @@ func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	// The handler checks "during request n" after the response is written, so the client can read the whole body first:
+	// post waits for that check, and the run's sleep is set through mu, never by replacing SleepGap while a check reads it.
+	var (
+		mu      sync.Mutex
+		sleepOn string
+		d       time.Duration
+	)
+	checked := make(chan struct{}, 1)
+	c.SleepGap = func(start, end time.Time, where string) time.Duration {
+		mu.Lock()
+		on, gap := sleepOn, d
+		mu.Unlock()
+		if strings.HasPrefix(where, "during request") {
+			defer func() { checked <- struct{}{} }()
+		}
+		if where == on {
+			return gap
+		}
+		return 0
+	}
 	post := func() {
 		resp, err := http.Post(c.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
 		if err != nil {
@@ -168,16 +189,18 @@ func TestCaptureNamesTheRequestTheHostSleptThrough(t *testing.T) {
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
-	}
-	// sleepOn names the one interval that reports a sleep of d.
-	run := func(sleepOn string, d time.Duration, requests int) string {
-		c.SetDir(t.TempDir())
-		c.SleepGap = func(start, end time.Time, where string) time.Duration {
-			if where == sleepOn {
-				return d
-			}
-			return 0
+		select {
+		case <-checked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the request's sleep check did not run within 5s")
 		}
+	}
+	// on names the one interval that reports a sleep of gap.
+	run := func(on string, gap time.Duration, requests int) string {
+		c.SetDir(t.TempDir())
+		mu.Lock()
+		sleepOn, d = on, gap
+		mu.Unlock()
 		for range requests {
 			post()
 		}

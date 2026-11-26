@@ -51,7 +51,30 @@ func askingSession(t *testing.T) (*fixture, *Client, chan proto.Event, proto.Ses
 	if err := tui.Call(proto.MethodSessionSubscribe, proto.SessionSubscribeParams{Session: sid}, nil); err != nil {
 		t.Fatal(err)
 	}
+	awaitWatched(t, f, sid)
 	return f, tui, events, sid, ws, pipe
+}
+
+// awaitWatched waits until a privileged client's subscription to sid is registered. session/subscribe answers before
+// its replay registers the subscriber, so a question a test emits by hand right after the answer can find the session
+// unwatched and go unregistered.
+func awaitWatched(t *testing.T, f *fixture, sid proto.SessionID) {
+	t.Helper()
+	s, perr := f.core.session(sid)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		s.mu.Lock()
+		w := s.watched()
+		s.mu.Unlock()
+		if w {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the subscription was not registered within 5s")
+		}
+	}
 }
 
 // await returns the first event of type typ on events, failing after 5 s.
@@ -231,6 +254,37 @@ func TestAnAnswerSettlesOnlyItsOwnQuestion(t *testing.T) {
 	}
 	if a := <-second; a.Allow {
 		t.Fatal("the re-ask was allowed; it was denied")
+	}
+}
+
+// TestAnAnswerBeforeTheApproverWaitsIsKept: the loop emits permission.requested and only then calls Approve, so a quick
+// client can answer in between. That answer must reach the approver, and a second answer to the same question is still
+// not_pending.
+func TestAnAnswerBeforeTheApproverWaitsIsKept(t *testing.T) {
+	f, tui, _, sid, _, _ := askingSession(t)
+	s, perr := f.core.session(sid)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	req := proto.PermissionRequested{ID: "b1", Tool: "bash", Mode: proto.ModeAuto, Command: "make", Reasons: []string{"reason A"}}
+	ev, err := proto.NewEvent(6, time.Now(), proto.EvPermissionRequested, 5, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.emit(ev)
+	respond := func() error {
+		return tui.Call(proto.MethodPermissionRespond, proto.PermissionRespondParams{Session: sid, Seq: 6, ID: "b1", Decision: proto.DecisionAllow}, nil)
+	}
+	if err := respond(); err != nil {
+		t.Fatal(err)
+	}
+	var pe *proto.Error
+	if err := respond(); !errors.As(err, &pe) || pe.Code != proto.CodeNotPending {
+		t.Fatalf("a second answer to a settled question: %v; want not_pending", err)
+	}
+	a, err := (approver{s}).Approve(context.Background(), req)
+	if err != nil || !a.Allow {
+		t.Fatalf("an allow given before Approve waited: %+v, %v; want it allowed", a, err)
 	}
 }
 

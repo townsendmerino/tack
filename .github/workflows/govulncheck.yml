@@ -1,0 +1,50 @@
+name: govulncheck
+
+# Reachability-filtered vulnerability scan of the module: govulncheck reports only vulnerabilities in functions the
+# build can reach, so an unreachable advisory in a dependency does not fail it. It runs nightly, so a newly published
+# advisory against code that has not changed is caught by the next run; on every tag; and on any pull request or push
+# that changes go.mod or go.sum. Both systems: darwin-only code (sandbox, launchd, Keychain) has its own call graph.
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/govulncheck.yml"
+    tags: ["v*"] # path filters are not evaluated for tag pushes: a release tag always scans
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/govulncheck.yml"
+  schedule:
+    - cron: "17 9 * * *" # nightly, 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pinned, not @latest: a new govulncheck release can change what it reports, and that would look like a regression.
+# Bump deliberately (`go list -m -versions golang.org/x/vuln`).
+env:
+  GOVULNCHECK_VERSION: v1.10.0
+
+jobs:
+  govulncheck:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-24.04", "macos-latest"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+      - name: govulncheck ./...
+        env:
+          CGO_ENABLED: "0"
+        run: govulncheck ./...

@@ -30,6 +30,9 @@ type question struct {
 	// computes the ones it lists, and not read back from the text of the event. An edited rule is held to these, never to anything the
 	// client says it was shown.
 	shown []perms.Rule
+	// settled is set once an answer is sent on ch, under s.mu. The question stays registered until its approver has read
+	// the answer, because the loop emits the event before it calls Approve and a quick client can answer in between.
+	settled bool
 }
 
 // ask registers the question ev asks, as ev is emitted and before any subscriber can see it, so an answer can never
@@ -94,11 +97,11 @@ func (s *session) watched() bool {
 
 // endUnwatched ends the waiting question once no privileged client is subscribed. The caller holds s.mu.
 func (s *session) endUnwatched() {
-	if s.question == nil || s.watched() {
+	if s.question == nil || s.question.settled || s.watched() {
 		return
 	}
+	s.question.settled = true
 	s.question.ch <- answer{err: errNoWatcher}
-	s.question = nil
 }
 
 // respond is permission/respond (DESIGN §9.2): the user's answer to the waiting question, named by its
@@ -139,7 +142,7 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 	}
 	s.mu.Lock()
 	q := s.question
-	if q == nil || q.seq != p.Seq || q.id != p.ID {
+	if q == nil || q.settled || q.seq != p.Seq || q.id != p.ID {
 		s.mu.Unlock()
 		return nil, &proto.Error{Code: proto.CodeNotPending, Message: "permission/respond: the question at seq " + strconv.FormatInt(p.Seq, 10) +
 			" is not waiting: it was answered, asked again, or never asked"}
@@ -162,7 +165,7 @@ func (c *Core) respond(cn *conn, p proto.PermissionRespondParams) (any, *proto.E
 			return nil, &proto.Error{Code: proto.CodeInvalidParams, Message: "permission/respond: " + err.Error()}
 		}
 	}
-	s.question = nil
+	q.settled = true
 	s.mu.Unlock()
 	q.ch <- answer{approval: ap}
 	return proto.PermissionRespondResult{}, nil
